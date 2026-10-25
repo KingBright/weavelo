@@ -344,3 +344,56 @@ Reviewed Studio `./scripts/test_release.sh` completed **944 total, 919 passed,
 25 skipped**, zero failures (`/tmp/weavelo-linux-bootstrap-reviewed-release.log`).
 The focused startup set passed 18; the normal-exit set had 10 passed/1 native-Linux
 skip. Native Linux must execute that owned-child pidfd/SIGINT test before applying.
+
+## Actual startup correction, old exit and strict stock-unit retention
+
+HO5 native fixed regression on 643fd6b completed **944 total, 903 passed,
+41 skipped**, zero failures, operation 8cdd9222-a59a-46c5-adb0-a426011a938d.
+The owned native pidfd/SIGINT child fixture actually passed. This was not repeated
+after the already completed run.
+
+The bound public-profile correction plan SHA-256 was
+36aad32a41242b93137bc98befe43e4d1dd508795a79bac08602ab843cd51e49.
+A capacity/connection interruption occurred before apply; readback first proved
+no record, pending, owned drop-in or app transaction existed. The subsequent
+single apply operation ba114a2e-a7b1-4421-8627-8512167a2f32 started at
+13:50:43.483571Z and completed exit 0. Its completed journal SHA-256 is
+3527134936cec5fbcee48d17db3fc8325bd8311a14167107920a37d0a3a64944.
+Independent operation 8b7c59ff-d144-4a6d-9244-e2b73e7db6ee confirmed the loaded
+canonical launcher, unchanged original files/profile and still-running old owner.
+
+The normal-exit plan bound SHA-256
+29e19826c9d94a0af20650234a81a8564489ad4f2d5548bc613de9c9f43c1a69.
+Its one apply, operation 694e4c92-6948-4e02-b4fd-89c5a019111c, started
+13:53:07.218679Z and completed exit 0: exact GUI/background pidfds observed exit,
+KWin normal close and one SIGINT, profile preserved, not idle-only. Subsequent
+readback confirmed both original PID directories absent, systemd inactive,
+background endpoint absent and all stopped locks free. The conservative status
+wrapper reports unconfirmed after its ELF verifier wraps an absent-PID exception;
+that was not used as proof of absence or as a reason to repeat the quit.
+
+The first real installation plan refused before transaction creation because the
+installed unit is the exact package stock %h template, while fresh.payloads now
+renders a canonical profile. Readback 9a3f3c94-cb0f-4ebc-9731-f19940a99135 proved
+launcher/desktop/icon equality and stock-unit byte equality. Installed unit SHA-256
+is 5658a9013f0bf01a6baede3c6581e087359f72a70f90e12dfc2cf5b1504c4601;
+the rendered form is 22a48709eb12b56194a69e28b585a9e7d792dd2739a73284c1258cf83f0f8862.
+The existing fixed public-profile wrapper makes retaining that exact stock unit
+safe without editing it.
+
+The adapter now recognizes only this precise retained-stock case: actual loaded
+canonical launcher plus completed/no-pending authorization, and exact installed
+unit digest equal to the already verified ZIP's stock template. Unknown custom
+units, unverified/not-loaded wrappers and changes to the other three entries
+still refuse. The plan records the four entry decisions; recovered records bind
+the service exception to the exact fixed launcher arguments. Old unit bytes stay
+pinned before/after exchange and rollback.
+
+Four additional isolated cases plus the existing upgrade cases passed **45/45**
+on HO5, operation 07632a76-7759-4955-9ef3-91b9539d8a83. Independent logic review
+found no new blocker under these complete conditions; it did not independently
+observe HO5 or claim installation. Only this necessary adapter increment was
+edited through version-checked Octendra changes in HO5's existing primary main
+while Studio's executor repeatedly disconnected. No new checkout/branch, product
+rebuild or published-package mutation was introduced. Installation and actual
+runtime/media results remain to be recorded separately.

@@ -80,6 +80,34 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(up.image(self.up.slot),self.old);self.assertTrue(self.up.status()['rollback_tuple_verified']);self.unchanged()
         r=self.up.recover(r['transaction_id']);self.assertEqual(r['phase'],'rolled-back')
         self.assertEqual(up.image(self.paths['app']),self.old);self.unchanged()
+    def stock_service_fixture(self):
+        with zipfile.ZipFile(self.archive) as source:stock=source.read('Weavelo/deploy/linux/weavelo-desktop.service')
+        self.paths['service'].write_bytes(stock)
+        self.entries['service']=(b'canonical rendered public profile template',0o644)
+        self.control.configuration=lambda:{'enabled':'enabled','dropins':{},'active':'inactive','pid':0,
+            'canonical_profile_launch':True,'policy':{'execution':{'canonical_profile_launcher':up.profile_launch.arguments(self.paths)}}}
+        return stock
+    def test_exact_stock_unit_is_preserved_only_with_verified_canonical_launcher(self):
+        stock=self.stock_service_fixture()
+        with patch.object(up.profile_launch,'authorize',return_value=True):
+            plan,digest=self.plan();self.assertEqual(plan['startup_entry_compatibility']['service'],'retained-stock-template-with-canonical-launcher')
+            result=self.up.apply(plan,digest);self.assertEqual(result['phase'],'completed')
+            self.assertEqual(self.paths['service'].read_bytes(),stock)
+            self.up.recover(result['transaction_id']);self.assertEqual(self.paths['service'].read_bytes(),stock);self.unchanged()
+    def test_stock_unit_without_completed_or_loaded_canonical_launcher_refuses(self):
+        self.stock_service_fixture()
+        with patch.object(up.profile_launch,'authorize',return_value=False),self.assertRaises(ValueError):self.plan()
+        config=self.control.configuration();config['canonical_profile_launch']=False;self.control.configuration=lambda:config
+        with patch.object(up.profile_launch,'authorize',return_value=True),self.assertRaises(ValueError):self.plan()
+        self.assertFalse(self.up.transaction.exists());self.assertEqual(self.calls,[]);self.unchanged()
+    def test_unknown_nonstock_unit_is_not_adopted(self):
+        self.stock_service_fixture();self.paths['service'].write_bytes(b'unknown custom unit')
+        with patch.object(up.profile_launch,'authorize',return_value=True),self.assertRaises(ValueError):self.plan()
+        self.assertEqual(self.paths['service'].read_bytes(),b'unknown custom unit');self.assertFalse(self.up.transaction.exists());self.unchanged()
+    def test_canonical_launcher_does_not_waive_other_startup_or_ui_changes(self):
+        self.stock_service_fixture();self.entries['launcher']=(b'unknown changed launcher',0o755)
+        with patch.object(up.profile_launch,'authorize',return_value=True),self.assertRaises(ValueError):self.plan()
+        self.assertFalse(self.up.transaction.exists());self.assertEqual(self.calls,[]);self.unchanged()
     def test_old_unsupported_gui_or_background_blocks_before_any_transaction_or_stop(self):
         for reason in ['old GUI normal quit required','old background idle-only stop unsupported']:
             self.runtime['blockers']=[reason];plan,digest=self.plan()

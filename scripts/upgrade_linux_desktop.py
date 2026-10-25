@@ -360,9 +360,20 @@ class Upgrade:
         old_sha=next(r['sha256'] for r in old['files'] if r['path']=='weavelo')
         require(old_sha==original['plan']['binary_sha256'],'Installed original binary differs')
         require(manifest['binary_sha256']!=old_sha,'Candidate is already installed')
+        configuration=self.control.configuration();compatibility={}
         for key,(raw,_) in fresh.payloads(self.home,archive).items():
-            require(gate.digest(raw)==fixed['entries'][key]['sha256'],'Candidate changes existing startup/UI entry; separate plan required')
-        configuration=self.control.configuration();before=self.control.observe(old_sha)
+            if gate.digest(raw)==fixed['entries'][key]['sha256']:
+                compatibility[key]='matching-rendered-template'
+                continue
+            require(key=='service' and configuration.get('canonical_profile_launch') is True
+                    and profile_launch.authorize(self.paths),
+                    'Candidate changes existing startup/UI entry; separate plan required')
+            with zipfile.ZipFile(archive) as source:
+                stock=source.read('Weavelo/deploy/linux/weavelo-desktop.service')
+            require(gate.digest(stock)==fixed['entries'][key]['sha256'],
+                    'Installed unit is not the exact verified package stock template; preserved')
+            compatibility[key]='retained-stock-template-with-canonical-launcher'
+        before=self.control.observe(old_sha)
         opaque=any(row.get('opaque_environment_preserved') for row in configuration['dropins'].values())
         require(not opaque or configuration.get('canonical_profile_launch') is True,
                 'Opaque environment preserved; explicit canonical profile launcher required before upgrade')
@@ -370,6 +381,7 @@ class Upgrade:
                 'archive':str(Path(archive).resolve()),'pins':list(pins),'invariants':fixed,'old_image':old,
                 'old_sha256':old_sha,'new_sha256':manifest['binary_sha256'],'new_files':manifest['files'],
                 'configuration':{k:v for k,v in configuration.items() if k in ('enabled','dropins','policy')},'runtime':before,
+                'startup_entry_compatibility':compatibility,
                 'applicable':not before['blockers'],'persistent_permissions_changed':False,'membership_changed':False}
     def same(self,plan):
         check_mount_layout(self.paths)
@@ -448,6 +460,14 @@ class Upgrade:
         require(plan['schema']==1 and plan['kind']=='weavelo-independent-desktop-linux-upgrade'
                 and plan['home']==str(self.home) and gate.digest(gate.canonical(plan))==record['plan_sha256'],
                 'Unknown transaction plan retained')
+        compatibility=plan.get('startup_entry_compatibility',{})
+        require(set(compatibility)=={'launcher','service','desktop','icon'}
+                and all(value=='matching-rendered-template' or key=='service' and
+                    value=='retained-stock-template-with-canonical-launcher' for key,value in compatibility.items()),
+                'Unknown startup compatibility proof retained')
+        if compatibility['service']=='retained-stock-template-with-canonical-launcher':
+            require(plan['configuration'].get('policy',{}).get('execution',{}).get('canonical_profile_launcher')
+                    ==profile_launch.arguments(self.paths),'Unbound retained stock unit proof')
         candidate=record.get('candidate_image')
         if candidate is not None:
             require(set(candidate)=={'files','directories','protection'} and candidate['files']==plan['new_files']
