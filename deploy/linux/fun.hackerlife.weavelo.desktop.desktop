@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Weavelo
+Name=Weavelo Desktop
 Exec=weavelo-desktop
 Icon=fun.hackerlife.weavelo
 StartupWMClass=fun.hackerlife.weavelo.desktop

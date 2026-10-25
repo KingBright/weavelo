@@ -132,6 +132,17 @@ class IndependentLinuxTests(unittest.TestCase):
         self.assertIn(b'WEAVELO_RELAY=0',selected['service'].read_bytes())
         with self.assertRaisesRegex(ValueError,'collision'):install.apply(reviewed,install.plan_sha(reviewed))
 
+    def test_independent_menu_name_is_distinct_without_changing_identity(self):
+        entry = install.payloads(self.home, self.zip)['desktop'][0].decode()
+        self.assertEqual(entry.splitlines().count('Name=Weavelo Desktop'), 1)
+        self.assertIn('Exec="'+str(install.paths(self.home)['launcher'])+'"', entry)
+        self.assertIn('StartupWMClass=fun.hackerlife.weavelo.desktop', entry)
+        packaged = (desktop.ROOT/'deploy/linux/fun.hackerlife.weavelo.desktop.desktop').read_text()
+        retained = (desktop.ROOT/'deploy/linux/fun.hackerlife.weavelo.desktop').read_text()
+        self.assertIn('Name=Weavelo Desktop', packaged.splitlines())
+        self.assertIn('Name=Weavelo', retained.splitlines())
+        self.assertNotIn('Name=Weavelo Desktop', retained.splitlines())
+
     def test_installed_service_and_launcher_share_the_canonical_profile(self):
         rendered=install.payloads(self.home,self.zip)['service'][0].decode()
         expected='Environment="WEAVELO_DEVICE_GROUP_DIR='+str(install.paths(self.home)['profile'])+'"'

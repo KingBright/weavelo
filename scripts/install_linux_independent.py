@@ -136,7 +136,7 @@ def payloads(home, archive):
     with zipfile.ZipFile(archive) as source:
         icon = source.read('Weavelo/assets/icon.svg')
         service = service_for_home(home, source.read('Weavelo/deploy/linux/weavelo-desktop.service'))
-    entry = ('[Desktop Entry]\nType=Application\nName=Weavelo\nExec="'+str(p['launcher'])+'"\n'
+    entry = ('[Desktop Entry]\nType=Application\nName=Weavelo Desktop\nExec="'+str(p['launcher'])+'"\n'
         'Icon=fun.hackerlife.weavelo.desktop\nStartupWMClass=fun.hackerlife.weavelo.desktop\n'
         'Terminal=false\nCategories=Network;RemoteAccess;\n').encode()
     return {'launcher':(launcher(home),0o755),'service':(service,0o644),

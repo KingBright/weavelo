@@ -482,3 +482,23 @@ entries currently show the visible name `Weavelo`; identify them by application
 ID/Exec for acceptance. No menu was clicked again, no new GUI was launched and
 no installed entry was edited. A real click and rendered-frame acceptance remain
 open.
+
+## Desktop menu display-name source pending a supported installed update
+
+The independent package template and first-install renderer now specify
+`Name=Weavelo Desktop`; the retained-client template and both application IDs
+are unchanged. The focused independent package and Linux upgrade fixtures passed
+60/60 on HO5. This is a source/template result, not an installed menu change.
+
+The currently installed Desktop entry still says `Name=Weavelo`. The existing
+`install_linux_independent.py --apply` is intentionally first-install-only and
+rejects its already occupied Desktop destination. The existing
+`upgrade_linux_desktop.py --apply` requires a different verified binary and
+normal owner stop, and its plan refuses a changed UI entry independently of the
+service-only stock-template exception. Neither CLI supports a menu-only live
+update. No direct file overwrite, reinstallation, GUI launch or service restart
+was substituted. A narrowly scoped, reviewed menu-only transaction in the
+installer (with exact old/new bytes, CAS and recoverable readback), or a later
+separately reviewed full upgrade, is needed before claiming the visible name is
+installed. Until then a future upgrade plan will conservatively reject the
+menu-template drift.
