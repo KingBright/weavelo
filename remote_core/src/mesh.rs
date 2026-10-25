@@ -2264,4 +2264,43 @@ mod tests {
         assert_eq!(fs::read_to_string(store.config_path()).unwrap(), encode_mesh_config_metadata(&before));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn protected_checkpoint_helper_stages_existing_core_backward_recovery() {
+        for marker in ["", "\u{001c}", "\u{001d}", "\u{001e}", "\u{001f}"] {
+        let temp = TempTree::new("checkpoint-core-wire");
+        let root = fs::canonicalize(&temp.root).unwrap();
+        let store = AppPrivateMeshConfigStore::new(&root);
+        let mut before = MeshConfig::generate("原名称");
+        before.network_secret = MeshSecret::new(format!("{marker}synthetic-original-secret{marker}")).unwrap();
+        store.save(&before).unwrap();
+        create_private_dir(&root.join("gui-state")).unwrap();
+        write_private_file(&root.join("desktop-instance.lock"), b"").unwrap();
+        write_private_file(&root.join("gui-state/desktop-instance.lock"), b"").unwrap();
+        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("scripts");
+        let helper = |action: &str, identifier: &str| {
+            let output = std::process::Command::new("python3").args(["-B", "-c",
+                "import sys,pathlib,json;sys.path.insert(0,sys.argv[1]);import mesh_profile_checkpoint as m;m.no_extra_acl=(lambda _p:None) if sys.platform=='darwin' else m.no_extra_acl;p=pathlib.Path(sys.argv[2]);expected=m.public(m.read(p/'mesh.conf'));r=m.create(p,expected) if sys.argv[3]=='create' else m.stage_restore(p,sys.argv[4],expected);print(json.dumps(r))"])
+                .arg(&scripts).arg(&root).arg(action).arg(identifier).output().unwrap();
+            assert!(output.status.success(), "checkpoint helper refused synthetic fixture");
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(!text.contains(before.network_secret.expose_secret()));
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        };
+        let created = helper("create", "");
+        let after = MeshConfig::generate("Remote");
+        store.join(&after.invite_code(), "ignored").unwrap();
+        let staged = helper("restore", created["checkpoint_id"].as_str().unwrap());
+        assert_eq!(staged["core_startup_required"], true);
+        assert_eq!(store.secret_store.load_secret().unwrap(), Some(after.network_secret));
+        // On macOS only the Linux ACL query is mocked for this wire fixture;
+        // it does not certify a macOS credential protection adapter.
+        // The unchanged production recovery implementation consumes the helper's
+        // exact wire record and restores both original values without replay.
+        assert_eq!(store.load().unwrap().unwrap(), before);
+        assert!(store.secret_store.load_recovery().unwrap().is_none());
+        assert!(root.join("mesh.secret-checkpoint").is_file());
+        }
+    }
+
 }
