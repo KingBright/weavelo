@@ -127,6 +127,13 @@ def loaded_exec(document,executable):
             'Loaded Desktop executable/arguments differ; unknown values are not reported')
     return {'executable':str(executable),'arguments':['--background-service'],'ignore_failure':False}
 
+EXEC_HOOKS=('ExecStartPre','ExecStartPost','ExecCondition','ExecStop','ExecStopPost')
+
+def empty_exec(document):
+    require(isinstance(document,dict) and set(document)=={'type','data'}
+            and document['type']=='a(sasbttttuii)' and document['data']==[],
+            'Loaded command hook is nonempty or unverified; no owner stopped')
+
 FORWARD=('preparing','staged','gui-stop-intent','background-stop-intent','owners-stopped',
          'exchange-intent','exchanged','activation-intent','completed')
 ROLLBACK=('rollback-exchange-intent','rollback-activation-intent','rolled-back')
@@ -152,6 +159,13 @@ class Native:
         r=subprocess.run(['systemctl','--user',*args,'weavelo-desktop.service'],capture_output=True,text=True,timeout=15)
         require(r.returncode==0,'Original Desktop supervisor operation did not confirm')
         return r.stdout
+    def exec_property(self,name):
+        require(name in ('ExecStart',*EXEC_HOOKS),'Only fixed non-secret execution metadata may be queried')
+        result=subprocess.run(['busctl','--user','--json=short','get-property','org.freedesktop.systemd1',
+            '/org/freedesktop/systemd1/unit/weavelo_2ddesktop_2eservice','org.freedesktop.systemd1.Service',name],
+            capture_output=True,text=True,timeout=15)
+        require(result.returncode==0,'Loaded execution metadata unavailable')
+        return json.loads(result.stdout)
     def configuration(self):
         keys=['MainPID','ActiveState','SubState','UnitFileState','FragmentPath','DropInPaths','Restart','Job',
               'TriggeredBy','RestartForceExitStatus','ExecStop','ExecStopPost','OnSuccess','CPUWeight','TimeoutStopFailureMode',
@@ -160,16 +174,16 @@ class Native:
                          capture_output=True,text=True,timeout=15)
         require(r.returncode==0,'Original service readback unavailable')
         fields=dict(line.split('=',1) for line in r.stdout.splitlines())
+        missing=set(keys)-set(fields)
+        require(set(fields)<=set(keys) and missing<=set(EXEC_HOOKS),'Missing service metadata is not presumed empty')
+        for key in sorted(missing):
+            empty_exec(self.exec_property(key));fields[key]=''
         require(set(fields)==set(keys) and fields['UnitFileState'] in ('enabled','disabled')
             and fields['Restart'] in ('no','on-failure')
             and all(not fields[k] for k in ('Job','TriggeredBy','RestartForceExitStatus','ExecStop','ExecStopPost','OnSuccess','ExecStartPre','ExecStartPost','ExecCondition'))
             and fields['NeedDaemonReload']=='no'
             and Path(fields['FragmentPath']).resolve()==self.paths['service'],'Unknown activation or stop policy')
-        command=subprocess.run(['busctl','--user','--json=short','get-property','org.freedesktop.systemd1',
-            '/org/freedesktop/systemd1/unit/weavelo_2ddesktop_2eservice','org.freedesktop.systemd1.Service','ExecStart'],
-            capture_output=True,text=True,timeout=15)
-        require(command.returncode==0,'Loaded Desktop execution metadata unavailable')
-        execution=loaded_exec(json.loads(command.stdout),self.exe)
+        execution=loaded_exec(self.exec_property('ExecStart'),self.exe)
         dropins={}
         for raw in fields['DropInPaths'].split():
             p=Path(raw).resolve(strict=True);m=p.lstat()

@@ -305,6 +305,40 @@ class UpgradeTests(unittest.TestCase):
         native.observe=lambda _:before
         with patch.object(up.time,'sleep'):self.assertEqual(native.start(before,'a'*64),before)
         native.ctl.assert_called_once_with('start')
+    def missing_exec_fixture(self,document=None):
+        from types import SimpleNamespace
+        native=self.native_fixture()
+        keys=['MainPID','ActiveState','SubState','UnitFileState','FragmentPath','DropInPaths','Restart','Job',
+             'TriggeredBy','RestartForceExitStatus','OnSuccess','CPUWeight','TimeoutStopFailureMode','NeedDaemonReload']
+        fields={key:'' for key in keys}
+        fields.update(MainPID='101',ActiveState='active',SubState='running',UnitFileState='enabled',
+                      FragmentPath=str(self.paths['service']),Restart='on-failure',NeedDaemonReload='no')
+        exe=self.paths['app']/'weavelo'
+        def run(argv,**kwargs):
+            self.assertNotIn('Environment',argv);self.assertNotIn('EnvironmentFiles',argv)
+            if argv[0]=='systemctl':return SimpleNamespace(returncode=0,stdout='\n'.join(k+'='+v for k,v in fields.items()))
+            value=({'type':'a(sasbttttuii)','data':[[str(exe),[str(exe),'--background-service'],False,*([0]*7)]]}
+                if argv[-1]=='ExecStart' else (document if document is not None else {'type':'a(sasbttttuii)','data':[]}))
+            return SimpleNamespace(returncode=0,stdout=json.dumps(value))
+        # Exercise real Native.configuration/exec_property instead of the fixture
+        # lookup methods, with exactly the observed deprecated-field shape.
+        native.configuration=lambda:up.Native.configuration(native)
+        return native,run,fields
+    def test_missing_deprecated_exec_fields_require_verified_empty_bus_properties(self):
+        native,run,_=self.missing_exec_fixture()
+        with patch.object(up.subprocess,'run',side_effect=run):
+            result=native.configuration()
+        for key in up.EXEC_HOOKS:self.assertEqual(result['policy'][key],'')
+    def test_nonempty_or_unknown_typed_exec_hook_is_never_normalized_empty(self):
+        for document in [{'type':'a(sasbttttuii)','data':[['synthetic-hook']]},{'type':'unknown','data':[]}]:
+            native,run,_=self.missing_exec_fixture(document)
+            with patch.object(up.subprocess,'run',side_effect=run),self.assertRaises(ValueError):native.configuration()
+        native,run,fields=self.missing_exec_fixture();fields.pop('NeedDaemonReload')
+        with patch.object(up.subprocess,'run',side_effect=run),self.assertRaises(ValueError):native.configuration()
+    def test_execution_metadata_reader_refuses_environment_property_requests(self):
+        native=self.native_fixture()
+        with patch.object(up.subprocess,'run') as run,self.assertRaises(ValueError):native.exec_property('Environment')
+        run.assert_not_called()
     def test_pending_protected_recovery_and_concurrent_installer_refuse(self):
         import fcntl
         fd=os.open(self.paths['work'],os.O_RDONLY|os.O_DIRECTORY)

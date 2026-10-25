@@ -70,6 +70,25 @@ pub(super) fn validate_systemd(text: &str, pid: u32) -> Result<(), String> {
     }
     Ok(())
 }
+pub(super) fn systemd_object_path(unit: &str) -> String {
+    let escaped=unit.bytes().map(|byte|if byte.is_ascii_alphanumeric() {
+        (byte as char).to_string()
+    } else {format!("_{byte:02x}")}).collect::<String>();
+    format!("/org/freedesktop/systemd1/unit/{escaped}")
+}
+pub(super) fn complete_empty_exec_stop_post(text:&str, document:&Value)->Result<String,String> {
+    if document.as_object().is_none_or(|value|value.len()!=2)
+        || document["type"]!="a(sasbttttuii)" || document["data"]!=serde_json::json!([]) {
+        return Err("Loaded ExecStopPost is nonempty or unavailable; stop refused".into());
+    }
+    let values=text.lines().filter_map(|line|line.strip_prefix("ExecStopPost=")).collect::<Vec<_>>();
+    if values.len()>1 || values.iter().any(|value|!value.is_empty()) {
+        return Err("Conflicting ExecStopPost observations; stop refused".into());
+    }
+    let mut completed=text.to_owned();
+    if values.is_empty() {if !completed.ends_with('\n'){completed.push('\n');}completed.push_str("ExecStopPost=\n");}
+    Ok(completed)
+}
 fn output(command: &mut Command) -> io::Result<Vec<u8>> {
     // Only this owned read-only helper is cancelled if it stalls.
     let mut child = command
@@ -155,6 +174,7 @@ pub(super) fn verify(
         let bytes = output(Command::new("systemctl").args([
             "--user",
             "show",
+            "--all",
             &remote_core::desktop_identity::identity().linux_service,
             "-p",
             "MainPID",
@@ -175,7 +195,14 @@ pub(super) fn verify(
             "-p",
             "OnSuccess",
         ]))?;
-        validate_systemd(&String::from_utf8(bytes)?, pid)?;
+        // systemctl versions may omit deprecated empty Exec* properties even
+        // with --all. Require the original typed D-Bus property to prove empty;
+        // absence alone never grants a normal/upgrade shutdown.
+        let unit=remote_core::desktop_identity::identity().linux_service;
+        let document=output(Command::new("busctl").args(["--user","--json=short","get-property",
+            "org.freedesktop.systemd1",&systemd_object_path(&unit),"org.freedesktop.systemd1.Service","ExecStopPost"]))?;
+        let completed=complete_empty_exec_stop_post(&String::from_utf8(bytes)?,&serde_json::from_slice(&document)?)?;
+        validate_systemd(&completed, pid)?;
         Ok(())
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

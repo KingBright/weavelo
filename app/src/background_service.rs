@@ -550,6 +550,20 @@ mod service_contract_tests {
     }
 
     #[test]
+    fn linux_deprecated_exec_property_requires_typed_empty_proof() {
+        let text="MainPID=42\nRestart=on-failure\nActiveState=active\nSubState=running\nJob=\nTriggeredBy=\nRestartForceExitStatus=\nOnSuccess=\n";
+        let empty=serde_json::json!({"type":"a(sasbttttuii)","data":[]});
+        let completed=stop_policy::complete_empty_exec_stop_post(text,&empty).unwrap();
+        stop_policy::validate_systemd(&completed,42).unwrap();
+        assert_eq!(stop_policy::systemd_object_path("weavelo-desktop.service"),"/org/freedesktop/systemd1/unit/weavelo_2ddesktop_2eservice");
+        for document in [serde_json::json!({"type":"a(sasbttttuii)","data":[["synthetic-hook"]]}),
+            serde_json::json!({"type":"unknown","data":[]}),serde_json::Value::Null] {
+            assert!(stop_policy::complete_empty_exec_stop_post(text,&document).is_err());
+        }
+        assert!(stop_policy::complete_empty_exec_stop_post(&(text.to_owned()+"ExecStopPost=unknown\n"),&empty).is_err());
+    }
+
+    #[test]
     fn shutdown_requires_exact_background_owner_and_never_accepts_a_replacement() {
         let closing = Mutex::new(false);
         for (mode, generation, hash) in [(OwnerMode::Standalone,"g","h"),

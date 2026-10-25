@@ -168,3 +168,36 @@ this increment. Studio fixed regression: **912 total, 888 passed, 24 skipped**,
 zero failures (`/tmp/weavelo-linux-profile-owner-release.log`); **38** isolated
 upgrade fixtures passed. Native Linux repetition and the formal package remain
 required before any real upgrade.
+
+## Native registered-owner and systemd compatibility readback
+
+HO5 on 59228dd passed **912 total, 871 passed, 41 skipped** (operation
+81fecf53-c38d-4f7b-94ea-10aa59c146d0). Its five fixed Rust modes also completed
+exit 0, operation add411af-6798-453e-a506-a13e3f237653: upgrade-quit,
+host-upgrade-stop, upgrade-handshake, lifecycle-service-contract and native-file-cli.
+No formal candidate build or install had started at that point.
+
+The next read-only service check found that this systemctl omits five deprecated
+Exec properties even with --all. All other requested fields, supported restart,
+NeedDaemonReload=no and canonical FragmentPath matched. Explicit standard D-Bus
+reads then proved ExecStartPre/Post, ExecCondition and ExecStop/Post each had the
+fixed a(sasbttttuii) type with zero entries (operation
+f81ca718-f903-4617-84be-62c12fca32f6). Values/arguments were not disclosed. Actual
+unit KillMode is control-group and KillSignal is 15; neither was changed.
+
+Python now normalizes only missing members of that exact ExecHook set after a
+typed-empty D-Bus proof. Other missing fields, unknown types and nonempty commands
+still reject. The metadata getter has a fixed execution-property allowlist and
+refuses Environment/EnvironmentFiles requests. The new binary's Linux stop-policy
+reader applies the same explicit proof for ExecStopPost before the existing PID,
+restart, active-state and activation checks. This fixes an existing client-side
+compatibility rejection; it does not grant the already running old binary a new
+exit capability or replace it through signals.
+
+Independent source review found no P1/P2 in this increment. Studio fixed lifecycle
+mode passed **12**, zero failures, source unchanged/group absent
+(`/tmp/weavelo-systemd-typed-stop-rust.log`). Fixed release regression passed
+**915 total, 891 passed, 24 skipped**, zero failures
+(`/tmp/weavelo-systemd-typed-property-release.log`), including **41** isolated
+upgrade fixtures. Native readback/build/package and actual installation remain
+separate gates.
