@@ -147,3 +147,84 @@ build receipt SHA-256
 旧 Book 请求 `b1f512c2-4cd9-4ec1-af38-1483ca235a2e` 只提交了 workspace-open，
 没有附带终端、签名或后续命令。当前工具仅支持 terminal_cancel/transfer_cancel，
 没有 workspace-open 的取消接口；未误用其它取消操作，未重发该请求。
+
+## Studio 安装与 NAS 交付预检（2026-10-25 05:53 UTC）
+
+本轮仅观察，没有 `--apply`、退出应用、切换 launchd、上传或权限修改。
+实际 Info.plist 的版本为 `2.0.0`；上文 `2.0.0-alpha.9` 是产品版本，不应
+将二者混为同一个字段。
+
+| 当前实体 | 实测状态 |
+| --- | --- |
+| Desktop App | `~/Applications/Weavelo/Weavelo.app`，ID `fun.hackerlife.weavelo.desktop`，build `20261023.16` |
+| Desktop 当前 leaf / DR | `8eaa97365d97b8a987cdf1232430eddf9aba8ecf`，DR 精确绑定该 leaf 和 Desktop ID，原生 strict/deep 验签通过 |
+| Desktop 当前运行 | PID `27882`、`27890`；binary `c50d0cafc0cfa2055210fbe7565105c5580f15a95e1dc9f22256e2576ea76d9c` |
+| 保留旧 App | `~/Applications/Weavelo.app`，ID `fun.hackerlife.weavelo`，build `20261017.1`，同一旧 leaf，验签通过，PID `41834` |
+| Desktop profile / state | `~/Library/Application Support/Weavelo/Desktop` / `DesktopInstall`，均为本人所有的 0700 非链接目录 |
+| launch policy | `~/Library/LaunchAgents/fun.hackerlife.weavelo.desktop.host.plist`，本人所有、0600、非链接文件 |
+| 原安装事务 | `install.json: upgrade_completed`，`upgrade.json: completed`；原 source commit `e4a57619c4aea2e0d65790aa30a88414c6efc88b` |
+| 新候选 | 同一 Desktop ID，build `20261025.9`，新 leaf `d38bedce6830fb01240f97c11c7984514ab715c0`，ZIP digest 与上文标准包一致 |
+
+正式只读计划的实际返回（均 exit 1、`applied=false`、`not_applied`）：
+
+- `python3 -B scripts/install_macos_desktop.py`：`Independent destination already exists; inspect its original installation, do not replay`。
+- `python3 -B scripts/install_macos_desktop.py --upgrade`：原生 `codesign` exit 3，`test-requirement: code failed to satisfy specified code requirement(s)`。
+
+因此这台 Studio 不是“新 ID 尚未安装”的情况：已有 Desktop ID 使用旧 leaf。
+新建身份的批准与同签名普通升级不同；现有 upgrade 的 `inspect()` 对原 App
+使用当前新 leaf 策略，按契约在任何安装写入前拒绝。现有
+`migrate_macos_identity.py` 处理的是 `com.remoteplay.unified` 到旧
+`fun.hackerlife.weavelo`，不能作为 Desktop 证书轮换入口。未改策略绕过检查，
+未换目录启动候选，也未把旧 App 的实机表现当成新包验收。
+
+原始精选公开元数据及两次只读拒绝回执：
+`.rust-storage/validation-logs/studio-desktop-install-delivery-preflight-20261025.json`，
+SHA-256 `b3cb8b20efa8bb1bd8a463c575540470f93a6fa8563167a9f8ad984497ee2e3e`。
+未读取 membership secret 正文。
+
+### 待评审的一次性 Desktop signer 迁移方案（尚未实现或执行）
+
+AGENTS.md 要求 “Certificate rotation requires an explicit reviewed migration”
+并要求签名/身份、部署实质变化前确认具体方案。本轮指令只允许现有正式兼容
+路径；上述两个路径都拒绝，因此先提交如下具体方案供统一确认：
+
+1. 在现有 `upgrade_macos_desktop.py` 事务中增加显式一次性迁移类型，保持普通
+   升级路径不变；源只接受 Desktop ID + 旧 `8eaa…` leaf + 上表 binary /
+   install / plist 实测摘要，目标只接受同 ID + 新 `d38b…` leaf + 已验证的
+   `20261025.9` ZIP / manifest / compiler-source pins。拒绝任意 signer、
+   appID、路径及环境覆盖，不将旧 leaf 加入普通新包允许列表。
+2. 沿用本人锁、只读预检、正常 GUI/service quit、固定路径原子交换、版本绑定
+   journal 与现有唯一 rollback app。迁移前独立验旧签名，提交前独立验新签名；
+   崩溃/未知结果只能从原 journal 和实际 bundle 元组读回，不能重放 apply。
+   rollback 明确使用源策略验证旧 bundle，不能用新策略误判或重签旧 App。
+3. 保留 Desktop profile、设备成员身份和现有 launch plist；不复制/读出 secret，
+   不修改旧 `fun.hackerlife.weavelo` App/数据。记录 membership 元数据及原
+   launch 状态，拒绝并发变更，不新建第二 profile、网络 runtime 或 launch job。
+4. fixture 覆盖错误旧/新证书、同名不同证书、manifest/source 冲突、并发 CAS、
+   每阶段中断与 rollback、失败不发布、无 TCC/Gatekeeper/ACL 修改；按固定
+   `./scripts/test_release.sh` 运行受影响检查。另做实际原生旧/新签名验证。
+5. 经确认后，先输出含两端精确 pins 的只读迁移计划，再仅在 Studio 按原回滚
+   流程执行一次并独立读回实际运行版本。新签名可能需要用户重新授权捕获/输入，
+   也可能触发系统启动限制；若出现只报告真实系统界面并暂停该步骤，用户自行
+   处理，绝不 reset TCC、免提示改 ACL、移除隔离属性或绕过 Gatekeeper。
+   GUI/首帧/输入/音频/长时实机验收仍独立，不能由签名或 fixture 替代。
+
+### NAS 非生产交付：未执行，路径尚未证实
+
+固定 `scripts/publish_desktop_nas.sh` 默认是保留的旧公开下载通道
+`/opt/weavelo/downloads` / `https://relay.hackerlife.fun:8443/download`；其
+`verify-stage` 未传 `--desktop`，仍要求旧 leaf，不能把它当作新 Desktop 的
+非生产交付。新 Weavelo relay 的现有记录为 `/opt/weavelo-relay`，`/download/`
+返回 404，没有已确认的新 Desktop 下载映射。未调整公开目录、域名或服务。
+
+一次固定 SSH 只读连接在执行远程命令前关闭（exit 255），没有上传。随后只经
+本机 Octendra **正式默认 agent MCP 接口**读取已登记 NAS runtime 和定向知识：
+2026-10-25 05:50:37 UTC，host `019ff60b-ecda-7311-9741-2605d723abf2`，
+connector healthy，但已登记 `hackerlife.fun:222` 路由为
+`ssh_handshake_failed`、transport disconnected、无 active session/workspace；
+`weavelo desktop` 知识查询 0 项。没有重试不健康连接、重放旧未知写操作、
+注册替代 route、读取 vault、创建远程 workspace 或发起任何上传。
+
+待原 NAS 负责人恢复已登记路由并确认一个**既有非生产目录及对应 Desktop
+包接收契约**后，才能按源/ZIP/manifest 精确 pins、拒绝覆盖、原操作状态读回
+推进一次交付；若不存在，需先评审该独立契约，不能复用旧公开通道冒充交付。
