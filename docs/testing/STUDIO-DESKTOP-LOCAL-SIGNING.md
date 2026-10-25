@@ -79,6 +79,24 @@ DR 验证和旧要求拒绝测试，再进入正式打包。没有看到提示�
 后续需要本机确认私钥访问步骤，并在下一次单个正常请求仍活动期间完成；
 不要改根信任、自动宽放 key ACL 或重复并发请求来尝试消除等待。
 
+### 300 秒单次受控请求已通过
+
+按新的明确安排，原操作确认结束后只启动一个 300 秒请求，立即报告开始时间
+05:28:41 UTC、codesign PID 18488 和原执行会话 55520。该请求在
+05:29:42 UTC 退出 0，约 61 秒；精确新 leaf/DR 验证退出 0，旧 leaf 要求被拒绝。
+没有访问 SecurityAgent 或修改 ACL/partition-list；fixture 没有执行，进程和自有
+临时目录均已确认清理。此前 35/45 秒超时不能直接归因为用户未操作。
+
+原生回执位于
+`.rust-storage/validation-logs/studio-desktop-controlled-signing-300s-20261025.json`，
+SHA-256 `acd7e9e730603dc59097466ed9577c031577f56d19014c8c09fe52d5f416bf36`。
+正式 Desktop 本地身份签名也采用 300 秒有界等待，旧应用签名仍为 45 秒；其它
+验签、包内容与身份门禁没有放宽。发布 fixture 初次发现原归档 stub 不接受
+`run(timeout=...)` 关键字，修正 stub 并断言旧路径仍为 45 秒后重新检查。
+最终固定发布检查：817 项，23 项条件跳过，零失败。
+标准包将复用已验证 compiler output，构成同一身份的第二次实际使用，不重复
+产品构建；包验收和安装/发布状态另行记录。
+
 ## 独立接续入口
 
 只读检查：`python3 -B scripts/setup_macos_desktop_signing.py status`。

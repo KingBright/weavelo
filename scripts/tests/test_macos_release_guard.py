@@ -80,6 +80,17 @@ class ReleaseGateTests(unittest.TestCase):
         path=self.root/'wrong-scope.json';path.write_text(json.dumps(data))
         with self.assertRaisesRegex(guard.ReleaseRejected,'independent Desktop app ID'):guard.load_policy(path)
 
+    def test_local_signing_window_keeps_exact_pin_requirement_and_legacy_timeout(self):
+        for policy,timeout in ((guard.load_policy(guard.DESKTOP_POLICY_FILE),300),(self.policy,45)):
+            with self.subTest(kind=policy.identity_kind),patch.object(guard,'run') as native:
+                guard.sign_app(self.root/'Weavelo.app',policy.certificate_sha1.upper(),policy)
+            command=native.call_args.args[0]
+            self.assertEqual(native.call_args.kwargs['timeout'],timeout)
+            self.assertEqual(command[command.index('--sign')+1],policy.certificate_sha1.upper())
+            self.assertIn('=designated => '+policy.requirement,command)
+            self.assertEqual('--keychain' in command,policy.identity_kind=='studio-local-desktop')
+            self.assertNotIn('--deep',command)
+
     def test_invalid_policy_rejected(self):
         data = json.loads(guard.POLICY_FILE.read_text()); data['certificate_sha1'] = 'Weavelo Local'
         path=self.root/'policy.json'; path.write_text(json.dumps(data))

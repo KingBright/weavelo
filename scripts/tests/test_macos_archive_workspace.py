@@ -122,8 +122,10 @@ class ArchiveWorkspaceTests(unittest.TestCase):
         archive = output / '.Weavelo-macos-arm64.zip.pending'
         receipt = output / '.Weavelo-macos-arm64.verification.json.pending'
         calls = []
-        def command(args, *unused):
+        def command(args, *unused, **options):
             calls.append(args)
+            if args[0] == '/usr/bin/codesign':
+                self.assertEqual(options.get('timeout'),45)
             if args[0] == '/usr/bin/ditto':
                 app, target = map(Path, args[-2:])
                 with zipfile.ZipFile(target, 'w') as z:

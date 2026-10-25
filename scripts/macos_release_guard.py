@@ -351,6 +351,17 @@ def assemble_app(stage: Path, binary: Path, version: str, build: str, policy: Po
     return app
 
 
+def sign_app(app: Path, signer: str, policy: Policy) -> None:
+    local = policy.identity_kind == 'studio-local-desktop'
+    keychain_args = (['--keychain',str(Path.home()/'Library/Keychains/login.keychain-db')]
+                     if local else [])
+    # Match the bounded native acceptance window for local keychain interaction.
+    # Verification timeouts and every signature/package requirement stay intact.
+    run(['/usr/bin/codesign','--force','--sign',signer,*keychain_args,'--timestamp=none',
+         '--identifier',policy.bundle_id,'-r','=designated => '+policy.requirement,str(app)],
+        timeout=300 if local else 45)
+
+
 def package(binary: Path, output: Path, version: str, build: str, policy: Policy, *,
             archive: Path | None = None, receipt: Path | None = None,
             workspace: Path | None = None, current_archive: Path | None = None,
@@ -368,10 +379,7 @@ def package(binary: Path, output: Path, version: str, build: str, policy: Policy
     with packaging_workspace(output, workspace) as stage:
         app = assemble_app(stage, binary, version, build, policy)
         # No mutation of signed bundle contents is permitted after this point.
-        keychain_args = (['--keychain',str(Path.home()/'Library/Keychains/login.keychain-db')]
-                         if policy.identity_kind == 'studio-local-desktop' else [])
-        run(['/usr/bin/codesign', '--force', '--sign', signer, *keychain_args, '--timestamp=none',
-             '--identifier', policy.bundle_id, '-r', '=designated => ' + policy.requirement, str(app)])
+        sign_app(app, signer, policy)
         report = verify_app(app, policy)
         identity_expectations = None
         if observed_build is not None:
