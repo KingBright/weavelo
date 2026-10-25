@@ -236,3 +236,67 @@ connector healthy，但已登记 `hackerlife.fun:222` 路由为
 待原 NAS 负责人恢复已登记路由并确认一个**既有非生产目录及对应 Desktop
 包接收契约**后，才能按源/ZIP/manifest 精确 pins、拒绝覆盖、原操作状态读回
 推进一次交付；若不存在，需先评审该独立契约，不能复用旧公开通道冒充交付。
+
+## 一次性迁移候选实现（已获实现授权，未安装）
+
+用户后续明确授权直接完成目标内实现细节；主任务据此批准先实现和测试上述
+具体迁移方案，提交后独立评审，再决定实际安装。创建新证书的批准不重复询问。
+上节“尚未实现”的文字保留原评审时点；当前状态以本节为准。
+
+- `deploy/macos/desktop-signer-migration.json`：唯一 Studio home/UID、Desktop
+  ID、旧/新 leaf、源/目标 build、两端 binary/树、旧 install/upgrade/plist 以及
+  已交付 ZIP/manifest/compiler source 的精确公开 pins。无 CLI 或环境覆盖入口。
+- `scripts/migrate_macos_desktop_signer.py`：单独的 plan/apply/status/rollback
+  事务；共用原 installer 锁、原生签名/归档/实际产品身份检查、正常退出和原子
+  exchange。旧 App 只用旧策略验证，候选只用新策略验证；普通 `check_upgrade`
+  及 `upgrade_macos_desktop.py` 未放宽、未更改。
+- `scripts/install_macos_desktop.py --migrate-signer`：显式分派到此迁移，禁止
+  同时使用 `--upgrade`，保留迁移 CLI 的失败退出码。
+- `scripts/tests/test_migrate_macos_desktop_signer.py`：25 项 disposable fixture，
+  包括 9 个前向阶段、6 个回滚阶段的中断矩阵，原生 macOS 目录 exchange，
+  交换成功但未写回执、registry 已提交但进程中断、拒绝正常退出、精确记录字节
+  恢复、未知/篡改/硬链接/重定向/CAS 拒绝及普通升级仍拒绝更换 signer。
+
+固定回滚目录在 exchange 前用于本次候选暂存，exchange 后保存原旧 App；完成
+不会删除它。只保存一个 App、三个原元数据文件及原事务 journal，不复制
+profile/secret，不扩展多代归档。正常安装仍是一套 canonical App。已完成后的
+显式回滚保留当时用户已变化的 profile 和组状态，不用旧数据快照覆盖。
+
+前向 apply 不支持 resume/replay。任何已存在的迁移 journal/回滚目录都会阻止
+再次 apply；rollback 必须先读 status 获取原 transaction digest，再验证实际
+新/旧 bundle 元组、原备份和 registry CAS。status 单独报告实际 active/rollback
+文件树、原生签名和 registry 一侧，journal 阶段本身不充当实物证明。部分
+pre-stage 写入尚未凑齐完整可验证备份时，保留现场并拒绝自动清理/回滚；此时
+未请求应用退出或交换。其它未知/不匹配状态也保留，不猜测恢复。
+
+以下为**待独立评审后的操作入口说明，本轮没有执行真实迁移 plan/apply**：
+
+```sh
+python3 -B scripts/install_macos_desktop.py --migrate-signer PACKAGE.zip
+python3 -B scripts/install_macos_desktop.py --migrate-signer PACKAGE.zip --apply --expected-plan-sha256 REVIEWED_PLAN_DIGEST
+python3 -B scripts/install_macos_desktop.py --migrate-signer --status
+python3 -B scripts/install_macos_desktop.py --migrate-signer --rollback --expected-transaction-sha256 OBSERVED_TRANSACTION_DIGEST
+```
+
+新签名的系统权限和实际启动限制仍未知；实现没有 TCC/ACL/信任/Gatekeeper
+写入或免提示逻辑，不代操作安全界面。不重签旧 App，也不调用签名私钥。
+候选包的编译源码仍为 `d722c5a9…`；本轮只改部署机制，不重建/重包产品，不能
+把新脚本提交号写成旧候选的编译源码。
+
+验证记录：首次全量运行在受限执行环境出现 19 个 error、1 个 failure（home
+临时 fixture、`ps` 沙箱限制及 `/var` 链接路径）；没有改测试来掩盖它们。
+使用 `TMPDIR=/private/tmp PYTHONDONTWRITEBYTECODE=1 ./scripts/test_release.sh`
+及获准原生 fixture 进程观察后，842 项、23 条件跳过、零失败。真实签名包的
+独立只读验证还发现 archive report 多出 ZIP digest/size 字段，已修正为完整
+App 签名字段逐项比对并单独验证固定 ZIP digest，fixture 同步使用真实报告形状。
+随后加入原生核验所得完整目标树 pin，并重跑固定回归；最终日志为
+`/tmp/weavelo-desktop-signer-release-tests-final.log`。
+
+最终原生只读核验通过旧/新精确 leaf/DR、旧完整树、候选 ZIP/source/完整树及
+实际 `--product-info-json`，未运行迁移 plan/apply。证据
+`.rust-storage/validation-logs/studio-desktop-signer-migration-native-final-20261025.json`，
+SHA-256 `e2c105e15df0e278e2cbb803181a42df8909e3eec906fb06bde29cbf45b37bdf`；
+最终公开契约 canonical digest
+`f5c2dc8a4dcf321b66d18859d4cff340f3caac15a10d0e59de43579d92b8dd44`。
+本轮候选实现待独立评审；实际安装、启动后系统权限、GUI/视频/输入/音频及
+真实回滚仍未验收。没有以 disposable exchange fixture 代替这些实机项目。

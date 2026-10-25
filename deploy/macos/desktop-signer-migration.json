@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "studio-desktop-signer-transition-20261025",
+  "home": "/Users/jinliang",
+  "uid": 501,
+  "bundle_id": "fun.hackerlife.weavelo.desktop",
+  "old_certificate_sha1": "8eaa97365d97b8a987cdf1232430eddf9aba8ecf",
+  "new_certificate_sha1": "d38bedce6830fb01240f97c11c7984514ab715c0",
+  "current": {
+    "executable": "c50d0cafc0cfa2055210fbe7565105c5580f15a95e1dc9f22256e2576ea76d9c",
+    "info": "fa4aaf380f92e3d4f7411253348e4329f094547e96ecc52edbd2e30d49502e55",
+    "tree": "2595dc5938cfe3afc8bb6ee9ffe0d55f5833ec12427b961220a47d3ccbbefc40",
+    "install": "d0e7e7dcb06674d05d46d93dd8a43edf0ba298a90c37169855549e68b2440a2a",
+    "upgrade": "5417fe3293adf2f976f38b6a14af0410146a6aff746390fc7b3ed3e4d9b6a8d6",
+    "plist": "113253c0990cdc224f1a25c9d9025bb0731dd6aabcbfe4dedb0abb509cc7ea54"
+  },
+  "old_source": {
+    "commit": "e4a57619c4aea2e0d65790aa30a88414c6efc88b",
+    "identity_sha256": "b3e7939494cea24fea42f365ad73987f4a3692cbc09ef4dfa1e86acca075a4ba",
+    "manifest_sha256": "72409ce20a0f0e314f22824cd8050019ff067d13f9ee5274624e3759b2127cb0"
+  },
+  "source": {
+    "commit": "d722c5a9a2a974e1ceb0ab7e0712f699fe11e021",
+    "identity_sha256": "5e415e9e1cdfc89b4eec10085e73c140d7e5fa1dfdb1732327f652fa2fd39908",
+    "manifest_sha256": "0b7753249ba5512169dedae044121fe9c1864768e712d96f95abd9bd819b33ba"
+  },
+  "archive_sha256": "e9858f65390b0c5ed5f33a0a0cd1e75ca7d80153efb083569d423aed76be7165",
+  "new_executable_sha256": "301f80c39e9b8077194f037937c814861a474e794f3cc7e05707f84eaad791b2",
+  "new_tree_sha256": "b7b78985a5a3d8d170c7edabc1f9116e98e74b3f5c3b6f95b5a62f9a5e904abc",
+  "old_build": "20261023.16",
+  "new_build": "20261025.9"
+}

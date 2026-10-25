@@ -107,6 +107,12 @@ def apply(archive, home, pins, archive_sha256):
 
 
 def main():
+    if '--migrate-signer' in sys.argv[1:]:
+        if '--upgrade' in sys.argv[1:]:
+            raise guard.ReleaseRejected('Choose ordinary upgrade or explicit signer migration')
+        import migrate_macos_desktop_signer
+        sys.argv.remove('--migrate-signer')
+        raise SystemExit(migrate_macos_desktop_signer.cli())
     if '--upgrade' in sys.argv[1:]:
         import upgrade_macos_desktop
         sys.argv.remove('--upgrade')
