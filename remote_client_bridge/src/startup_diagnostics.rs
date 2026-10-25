@@ -33,6 +33,8 @@ pub(crate) fn profile_error_code(error: &MeshStoreError, storage: &Path) -> Stri
             format!("profile-unsafe:{}:{}", role(path), kind)
         }
         MeshStoreError::MissingNetworkSecret => "profile-missing-secret".into(),
+        MeshStoreError::CommittedDurabilityUnconfirmed => "profile-commit-unconfirmed".into(),
+        MeshStoreError::TransactionOutcomeUnknown => "profile-transaction-unknown".into(),
         MeshStoreError::InvalidMetadata(_) => "profile-invalid-metadata".into(),
         MeshStoreError::InvalidMeshConfig(_) => "profile-invalid-config".into(),
     }

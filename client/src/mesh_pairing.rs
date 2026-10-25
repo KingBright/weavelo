@@ -1,4 +1,4 @@
-use remote_core::mesh::{AppPrivateMeshConfigStore, MeshConfig};
+use remote_core::mesh::{AppPrivateMeshConfigStore, MeshConfig, MeshStoreError};
 use remote_core::parse_pairing_qr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -135,23 +135,23 @@ impl MeshPairingControl {
             ),
         };
         let store = AppPrivateMeshConfigStore::new(&self.config_dir);
-        match store.prepare_join(&payload.invite_code, &self.display_name) {
-            Ok((_, false)) => self.update_message(
-                "Already a member of this device network.",
-                MeshPairingMessageKind::Success,
-                self.snapshot().restart_required,
-            ),
-            Ok((config, true)) => self.save_and_update(
+        match store.join(&payload.invite_code, &self.display_name) {
+            Ok((config, false)) => {
+                let snapshot = self.snapshot();
+                if snapshot.invite_code != config.invite_code() || snapshot.device_id != config.node_id
+                    || snapshot.display_name != config.display_name {
+                    return self.update_after_save(config, "Loaded the saved device group.", MeshPairingMessageKind::Warning, true);
+                }
+                self.update_message("Already a member of this device network.",
+                    MeshPairingMessageKind::Success, snapshot.restart_required)
+            }
+            Ok((config, true)) => self.update_after_save(
                 config,
                 "Joined the device group from invitation.",
                 MeshPairingMessageKind::Success,
                 true,
             ),
-            Err(err) => self.update_message(
-                format!("Could not read that device-group code: {err}"),
-                MeshPairingMessageKind::Error,
-                false,
-            ),
+            Err(err) => self.handle_save_error(&store, err),
         }
     }
 
@@ -189,28 +189,44 @@ impl MeshPairingControl {
     ) -> MeshPairingSnapshot {
         let store = AppPrivateMeshConfigStore::new(&self.config_dir);
         match store.save(&config) {
-            Ok(()) => {
-                remote_core::session_crypto::refresh_paired_session_secret(
-                    config.network_secret.expose_secret(),
-                );
-                let (message, restart_required) =
-                    self.request_mesh_reload_after_save(message.into(), restart_required);
-                let snapshot = snapshot_from_config(
-                    &config,
-                    self.config_dir.clone(),
-                    message,
-                    message_kind,
-                    restart_required,
-                );
-                *self.snapshot.lock().unwrap() = snapshot.clone();
-                snapshot
-            }
-            Err(err) => self.update_message(
-                format!("Could not save device-group config: {err}"),
-                MeshPairingMessageKind::Error,
-                false,
-            ),
+            Ok(()) => self.update_after_save(config, message, message_kind, restart_required),
+            Err(err) => self.handle_save_error(&store, err),
         }
+    }
+
+    fn handle_save_error(&self, store: &AppPrivateMeshConfigStore, err: MeshStoreError) -> MeshPairingSnapshot {
+        if matches!(err, MeshStoreError::CommittedDurabilityUnconfirmed) {
+            if let Ok(Some(config)) = store.load() {
+                return self.update_after_save(config,
+                    "Device-group change is saved. Storage durability confirmation reported an error.",
+                    MeshPairingMessageKind::Warning, true);
+            }
+            return self.update_message("Saved device-group state could not be read. Restart Weavelo; do not repeat the change.",
+                MeshPairingMessageKind::Error, true);
+        }
+        let restart_required = matches!(err, MeshStoreError::TransactionOutcomeUnknown);
+        self.update_message(format!("Could not save device-group config: {err}"),
+            MeshPairingMessageKind::Error, restart_required)
+    }
+
+    fn update_after_save(
+        &self, config: MeshConfig, message: impl Into<String>,
+        message_kind: MeshPairingMessageKind, restart_required: bool,
+    ) -> MeshPairingSnapshot {
+        remote_core::session_crypto::refresh_paired_session_secret(
+            config.network_secret.expose_secret(),
+        );
+        let (message, restart_required) =
+            self.request_mesh_reload_after_save(message.into(), restart_required);
+        let snapshot = snapshot_from_config(
+            &config,
+            self.config_dir.clone(),
+            message,
+            message_kind,
+            restart_required,
+        );
+        *self.snapshot.lock().unwrap() = snapshot.clone();
+        snapshot
     }
 
     fn request_mesh_reload_after_save(
@@ -448,4 +464,51 @@ mod tests {
         builder.create(&root).expect("create private temp dir");
         root
     }
+    #[test]
+    fn committed_error_reconciles_saved_config_and_unknown_never_claims_success() {
+        let root = temp_dir("committed-readback");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let control = MeshPairingControl::load_or_create(&root, "Local").unwrap().with_mesh_reload_tx(tx);
+        let before = control.snapshot();
+        let store = AppPrivateMeshConfigStore::new(&root);
+        let remote = MeshConfig::generate("Remote");
+        store.join(&remote.invite_code(), "ignored").unwrap();
+        let outcome = control.handle_save_error(&store, MeshStoreError::CommittedDurabilityUnconfirmed);
+        assert_eq!(outcome.message_kind, MeshPairingMessageKind::Warning);
+        assert_eq!(outcome.network_name, remote.network_name);
+        assert_eq!(outcome.device_id, before.device_id);
+        assert_eq!(outcome.display_name, before.display_name);
+        rx.try_recv().unwrap();
+        assert!(rx.try_recv().is_err());
+        let unknown = control.handle_save_error(&store, MeshStoreError::TransactionOutcomeUnknown);
+        assert_eq!(unknown.message_kind, MeshPairingMessageKind::Error);
+        assert!(unknown.restart_required);
+        assert!(rx.try_recv().is_err());
+        store.delete().unwrap();
+        let missing = control.handle_save_error(&store, MeshStoreError::CommittedDurabilityUnconfirmed);
+        assert_eq!(missing.message_kind, MeshPairingMessageKind::Error);
+        assert!(missing.restart_required);
+        assert!(rx.try_recv().is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn already_saved_group_reconciles_a_stale_runtime_snapshot_once() {
+        let root = temp_dir("stale-noop");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let control = MeshPairingControl::load_or_create(&root, "Local").unwrap().with_mesh_reload_tx(tx);
+        let before = control.snapshot();
+        let remote = MeshConfig::generate("Remote");
+        AppPrivateMeshConfigStore::new(&root).join(&remote.invite_code(), "ignored").unwrap();
+        let actual = control.join_from_invite_code(&remote.invite_code());
+        assert_eq!(actual.network_name, remote.network_name);
+        assert_eq!(actual.device_id, before.device_id);
+        assert_eq!(actual.message_kind, MeshPairingMessageKind::Warning);
+        rx.try_recv().unwrap();
+        let repeated = control.join_from_invite_code(&remote.invite_code());
+        assert_eq!(repeated.message_kind, MeshPairingMessageKind::Success);
+        assert!(rx.try_recv().is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
 }

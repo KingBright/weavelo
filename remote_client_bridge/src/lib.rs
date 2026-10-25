@@ -21,7 +21,7 @@ use remote_core::discovery::{
     DiscoveryPeerSnapshot, DiscoveryRouteOverride, DiscoveryRuntimeConfig, DiscoveryScope,
     run_discovery_runtime,
 };
-use remote_core::mesh::{AppPrivateMeshConfigStore, MeshConfig, default_app_private_mesh_dir};
+use remote_core::mesh::{AppPrivateMeshConfigStore, MeshConfig, MeshStoreError, default_app_private_mesh_dir};
 #[cfg(test)]
 use remote_core::net::UdpMultiplexer;
 use remote_core::p2p::{
@@ -228,6 +228,39 @@ fn manual_subscription(id: u32, rates: (u32, u32)) -> SubscriptionRequest {
     }
 }
 
+// Lifecycle-locked callers clear the flag only after reconciling the saved
+// secret and network. A failed readback must survive the next no-op invitation.
+fn pairing_change_outcome(
+    result: Result<(MeshConfig, bool), MeshStoreError>,
+    reconcile_needed: &AtomicBool,
+    read_saved: impl FnOnce() -> Result<Option<MeshConfig>, MeshStoreError>,
+) -> Result<(MeshConfig, bool, bool), String> {
+    match result {
+        Ok((config, changed)) => {
+            let reconcile = reconcile_needed.load(Relaxed);
+            Ok((config, changed || reconcile, reconcile))
+        }
+        Err(MeshStoreError::CommittedDurabilityUnconfirmed) => {
+            reconcile_needed.store(true, Relaxed);
+            let config = read_saved().map_err(|err| err.to_string())?
+                .ok_or_else(|| "Saved device-group state is missing; do not repeat the change".to_owned())?;
+            Ok((config, true, true))
+        }
+        Err(MeshStoreError::TransactionOutcomeUnknown) => {
+            reconcile_needed.store(true, Relaxed);
+            Err(MeshStoreError::TransactionOutcomeUnknown.to_string())
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn finish_pairing_reconcile(reload_queued: bool, reconcile_needed: &AtomicBool) -> Result<(), String> {
+    reconcile_needed.store(!reload_queued, Relaxed);
+    if reload_queued { Ok(()) } else {
+        Err("Device-group change is saved, but network refresh is unavailable. Restart Weavelo; do not repeat the change.".into())
+    }
+}
+
 pub struct RemoteBridgeClient {
     runtime: OnceLock<Runtime>,
     state_tx: watch::Sender<BridgeSessionState>,
@@ -259,6 +292,7 @@ pub struct RemoteBridgeClient {
     desired_media_paused: AtomicBool,
     network_reload_tx: mpsc::UnboundedSender<()>,
     network_enabled: Arc<AtomicBool>,
+    pairing_reconcile_needed: AtomicBool,
     network_diagnostics: Arc<NetworkDiagnostics>,
 }
 
@@ -312,6 +346,7 @@ impl RemoteBridgeClient {
             desired_media_paused: AtomicBool::new(false),
             network_reload_tx,
             network_enabled: Arc::new(AtomicBool::new(true)),
+            pairing_reconcile_needed: AtomicBool::new(false),
             network_diagnostics: Arc::default(),
         };
         client.ensure_discovery(network_reload_rx);
@@ -505,13 +540,13 @@ impl RemoteBridgeClient {
         let payload = parse_pairing_qr(raw).map_err(|err| err.to_string())?;
         let _lifecycle = self.lifecycle.lock().unwrap();
         let store = AppPrivateMeshConfigStore::new(bridge_device_group_dir());
-        let (config, changed) = store
-            .prepare_join(&payload.invite_code, "Weavelo Android")
-            .map_err(|err| err.to_string())?;
+        let (config, changed, durability_warning) = pairing_change_outcome(
+            store.join(&payload.invite_code, "Weavelo Android"),
+            &self.pairing_reconcile_needed, || store.load(),
+        )?;
         if !changed {
             return Ok((format!("Already in network {}", config.network_name), false));
         }
-        store.save(&config).map_err(|err| err.to_string())?;
         self.stop_live();
         *self.last_connect.lock().unwrap() = None;
         let _ = self.state_tx.send(BridgeSessionState::Disconnected);
@@ -520,11 +555,12 @@ impl RemoteBridgeClient {
         );
         self.devices_tx.send_replace(Vec::new());
         self.network_enabled.store(true, Relaxed);
-        self.request_discovery_reload();
+        finish_pairing_reconcile(self.request_discovery_reload(), &self.pairing_reconcile_needed)?;
         Ok((
             format!(
-                "Joined network {}. Discovering members...",
-                config.network_name
+                "Joined network {}. Discovering members...{}",
+                config.network_name,
+                if durability_warning { " Storage durability confirmation reported an error." } else { "" }
             ),
             true,
         ))
@@ -540,11 +576,13 @@ impl RemoteBridgeClient {
         ));
     }
 
-    fn request_discovery_reload(&self) {
+    fn request_discovery_reload(&self) -> bool {
         self.network_diagnostics.request_reload();
-        if self.network_reload_tx.send(()).is_err() {
+        let queued = self.network_reload_tx.send(()).is_ok();
+        if !queued {
             self.network_diagnostics.failed(NetworkFailure::SupervisorUnavailable);
         }
+        queued
     }
 
     /// Suspend discovery and route keepalives only after the live session has ended.
