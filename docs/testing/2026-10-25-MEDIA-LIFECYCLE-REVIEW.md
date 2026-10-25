@@ -198,9 +198,11 @@ Both producer transactions ended; Mac fixed identity inputs were removed by
 their owner and the identity state is empty. No cache cleanup was performed.
 
 Not eligible for deployment from this run. No NAS publication or application
-installation was performed. The signed Mac release and Windows package
-transaction/native acceptance remain incomplete, independently of the successful
-Linux candidate package and the existing Windows build-only entry.
+installation was performed. The Studio-new-identity follow-up has now completed
+the signed Mac candidate (build `20261025.9`), recorded in
+[STUDIO-DESKTOP-LOCAL-SIGNING.md](STUDIO-DESKTOP-LOCAL-SIGNING.md). Windows package
+transaction/native acceptance and physical media acceptance remain separate from
+the successful Mac/Linux candidates and the existing Windows build-only entry.
 
 Physical acceptance remains separate: two-Mac pause/resume resource identities,
 fresh actual presentation and reliable input, controlled audio without replay,

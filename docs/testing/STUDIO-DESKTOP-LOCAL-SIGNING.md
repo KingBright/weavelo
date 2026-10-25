@@ -4,6 +4,10 @@
 新品牌独立 appID。此前的旧密钥迁入/原机接续不再作为交付前提；本轮没有访问
 Book、重复导出/迁移原密钥，或借用 Remote Hosts 身份。
 
+**当前结果：Studio 原生签名和标准签名 ZIP 均已通过独立验收，原公共事务已
+提交并完成清理。** 版本 `2.0.0-alpha.9` / build `20261025.9`。下文保留创建和
+短窗口超时的历史，最终产物见“标准包完成”。未安装或发布 NAS。
+
 ## 固定身份和边界
 
 | 项目 | 值 |
@@ -97,6 +101,37 @@ SHA-256 `acd7e9e730603dc59097466ed9577c031577f56d19014c8c09fe52d5f416bf36`。
 标准包将复用已验证 compiler output，构成同一身份的第二次实际使用，不重复
 产品构建；包验收和安装/发布状态另行记录。
 
+### 标准包完成
+
+通过 `bash scripts/package_macos_unified.sh --desktop` 原入口完成正式包；六个
+observed-build pins 保持原值，使用既有 compiler output，没有重新构建产品。
+这构成同一固定新身份的第二次实际签名，原生 fixture 与正式 App 的 leaf/DR 一致。
+
+| 产物/证据 | 结果 |
+| --- | --- |
+| 默认 ZIP | `~/rust-target/package/macos/Weavelo-desktop-macos-arm64.zip` |
+| 版本 / build | `2.0.0-alpha.9` / `20261025.9` |
+| ZIP bytes | `10487048` |
+| ZIP SHA-256 | `e9858f65390b0c5ed5f33a0a0cd1e75ca7d80153efb083569d423aed76be7165` |
+| 包验证回执 SHA-256 | `4431a48124b1b3daa5007af4b2d8082bfc60cbd63abcb5591469f240988402de` |
+| manifest SHA-256 | `0b7753249ba5512169dedae044121fe9c1864768e712d96f95abd9bd819b33ba` |
+| 已签名 executable SHA-256 | `301f80c39e9b8077194f037937c814861a474e794f3cc7e05707f84eaad791b2` |
+| 编译源码 commit | `d722c5a9a2a974e1ceb0ab7e0712f699fe11e021` |
+| 打包 tooling commit | `154f01cd75d1618cac0f2ebbc6fe751b5c4cb7d0` |
+| 公共 component | `macos-desktop-arm64-release` |
+
+独立 `verify-archive --desktop` 同时提供原 source commit、compiled identity 和
+manifest pins，验证归档里的实际签名、精确新 leaf/DR 和清单通过。
+然后单独从原公共 helper `release-preflight --observe-only` 读回，current 文件组/
+验证 digest 匹配，`current_update_state=idle`，无在途事务或 pending 路径。
+原生产者返回 `current_committed=true`、`cleanup_status=completed`。
+验收回执保留在
+`.rust-storage/validation-logs/studio-desktop-signed-package-independent-readback-20261025.json`。
+
+编译输出仍为原 `87769a…`，已安装 Desktop 仍为 `20261023.16`、binary
+`c50d0c…`，没有被签名包替换。包的本地签名通过不等于 Apple Developer ID、
+公证、旧证书安装的兼容升级，或 GUI/视频/输入/音频/长时验收完成。
+
 ## 独立接续入口
 
 只读检查：`python3 -B scripts/setup_macos_desktop_signing.py status`。
@@ -107,7 +142,7 @@ build receipt SHA-256
 `430db7f1839ca5e66b24e3a6737a532a3ce5cd549f7448526ea28254be98a6b7`。
 本阶段只改签名 tooling/公开策略，后续应先独立核对该既有二进制和回执，复用
 正式 `package_macos_unified.sh --desktop`，而非重做已经通过的产品构建。
-未完成 native 签名授权/验收之前不启动生产打包，不安装或发布 NAS。
+该流程现已完成；安装和 NAS 发布仍未执行，需分别满足其既有门禁。
 
 旧 Book 请求 `b1f512c2-4cd9-4ec1-af38-1483ca235a2e` 只提交了 workspace-open，
 没有附带终端、签名或后续命令。当前工具仅支持 terminal_cancel/transfer_cancel，
