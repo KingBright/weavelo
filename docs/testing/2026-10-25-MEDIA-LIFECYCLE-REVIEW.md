@@ -89,6 +89,12 @@ uses `Weavelo-desktop-macos-arm64.zip`.
 
 ### Formal candidate follow-up
 
+The signing-machine handoff described in this historical stage is superseded by
+the user's subsequent explicit Studio-new-identity approval. Current signing
+status and remaining native authorization are recorded in
+[STUDIO-DESKTOP-LOCAL-SIGNING.md](STUDIO-DESKTOP-LOCAL-SIGNING.md); no Book
+continuation is required by that route.
+
 Both native builds below consumed clean primary `main` source
 `d722c5a9a2a974e1ceb0ab7e0712f699fe11e021`, snapshot
 `3f52d939469af087f0885b9490c8fd2125e998e5f2983a4fd30c9cc29ae4a409`.

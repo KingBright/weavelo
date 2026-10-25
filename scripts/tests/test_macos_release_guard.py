@@ -57,6 +57,29 @@ class ReleaseGateTests(unittest.TestCase):
         with patch.object(guard, 'run', return_value=' 1) ' + self.policy.certificate_sha1.upper() + ' "Weavelo Local"\n'):
             self.assertEqual(guard.preflight(self.policy), self.policy.certificate_sha1.upper())
 
+    def test_local_desktop_identity_does_not_need_or_add_root_trust(self):
+        policy=guard.load_policy(guard.DESKTOP_POLICY_FILE)
+        line=' 1) '+policy.certificate_sha1.upper()+' "Desktop fixture" (CSSMERR_TP_NOT_TRUSTED)\n'
+        with patch.object(guard,'run',return_value=line) as run:
+            self.assertEqual(guard.preflight(policy),policy.certificate_sha1.upper())
+        command=run.call_args.args[0]
+        self.assertNotIn('-v',command)
+        self.assertEqual(command[-1],str(Path.home()/'Library/Keychains/login.keychain-db'))
+        self.assertNotIn('add-trusted-cert',command)
+        with patch.object(guard,'run',return_value=line.replace('NOT_TRUSTED','CERT_EXPIRED')):
+            with self.assertRaisesRegex(guard.ReleaseRejected,'additional certificate error'):guard.preflight(policy)
+
+    def test_local_desktop_pin_never_accepts_retained_or_another_project_identity(self):
+        policy=guard.load_policy(guard.DESKTOP_POLICY_FILE)
+        for pin in (self.policy.certificate_sha1,'4e2761cca9860dc0f29b2a2c6ea01b0c567611a8'):
+            with self.subTest(pin=pin),patch.object(guard,'run',return_value=' 1) '+pin.upper()+' "Desktop fixture"\n'):
+                with self.assertRaises(guard.ReleaseRejected):guard.preflight(policy)
+
+    def test_local_identity_kind_cannot_change_the_retained_app(self):
+        data=json.loads(guard.POLICY_FILE.read_text());data['identity_kind']='studio-local-desktop'
+        path=self.root/'wrong-scope.json';path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(guard.ReleaseRejected,'independent Desktop app ID'):guard.load_policy(path)
+
     def test_invalid_policy_rejected(self):
         data = json.loads(guard.POLICY_FILE.read_text()); data['certificate_sha1'] = 'Weavelo Local'
         path=self.root/'policy.json'; path.write_text(json.dumps(data))

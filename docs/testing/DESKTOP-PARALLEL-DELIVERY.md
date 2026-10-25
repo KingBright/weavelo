@@ -1,8 +1,11 @@
 # Independent Weavelo desktop delivery
 
 The retained clients and servers remain maintenance channels. The new desktop
-identity is `fun.hackerlife.weavelo.desktop`, with display name **Weavelo** and
-the original signing certificate. The public contract lives in
+identity is `fun.hackerlife.weavelo.desktop`, with display name **Weavelo**.
+As explicitly approved on 2026-10-25, its new signing policy pins a persistent
+Studio-local certificate; retained app signing remains unchanged. See
+[Studio local signing](STUDIO-DESKTOP-LOCAL-SIGNING.md) for actual status and
+the boundary with previously signed Desktop installations. The public contract lives in
 `deploy/desktop/product-identity.json`; it is embedded in the actual executable's
 `--product-info-json` output.
 
@@ -38,7 +41,7 @@ This explicit unsigned preparation is **not installable** and is recorded as
 `unsigned-dev`; it has no signed-release receipt. Both signed-archive consumers
 reject its preparation marker. No signing failure silently selects this mode.
 
-Once the existing pinned identity is available, the same formal entry with
+Once the pinned Studio identity passes native signing acceptance, the same formal entry with
 `--desktop` signs and verifies a distinct
 `Weavelo-desktop-macos-arm64.zip` component under the same public authority.
 The original release component and installed maintenance app are untouched.

@@ -56,9 +56,12 @@ class ParallelDesktopTests(unittest.TestCase):
         self.assertNotEqual(env['WEAVELO_DISCOVERY_PORT'],'38117')
         self.assertEqual(agent['KeepAlive'],{'SuccessfulExit':False})
 
-    def test_new_bundle_preserves_original_signer_but_not_legacy_app_id(self):
+    def test_new_bundle_uses_approved_studio_identity_without_changing_retained_policy(self):
         old=guard.load_policy();new=guard.load_policy(guard.DESKTOP_POLICY_FILE)
-        self.assertEqual(old.certificate_sha1,new.certificate_sha1)
+        self.assertEqual(old.certificate_sha1,'8eaa97365d97b8a987cdf1232430eddf9aba8ecf')
+        self.assertNotEqual(old.certificate_sha1,new.certificate_sha1)
+        self.assertEqual(old.identity_kind,'existing-authorized')
+        self.assertEqual(new.identity_kind,'studio-local-desktop')
         self.assertNotEqual(old.bundle_id,new.bundle_id)
         self.assertEqual(new.bundle_id,desktop.identity()['application_id'])
         self.assertEqual(installer.gate.macos_policy_for_product({}).bundle_id,old.bundle_id)

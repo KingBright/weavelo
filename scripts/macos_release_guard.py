@@ -37,6 +37,7 @@ class Policy:
     executable: str
     app_name: str
     certificate_sha1: str
+    identity_kind: str = 'existing-authorized'
 
     @property
     def requirement(self) -> str:
@@ -47,13 +48,17 @@ def load_policy(path: Path = POLICY_FILE) -> Policy:
     data = json.loads(path.read_text())
     if data.get('schema') != 1:
         raise ReleaseRejected('Unsupported signing policy schema')
-    policy = Policy(**{key: data[key] for key in Policy.__dataclass_fields__})
+    policy = Policy(**{key: data[key] for key in Policy.__dataclass_fields__ if key in data})
     if not re.fullmatch(r'[a-zA-Z0-9.-]+', policy.bundle_id):
         raise ReleaseRejected('Invalid bundle identifier')
     if not re.fullmatch(r'[0-9a-f]{40}', policy.certificate_sha1):
         raise ReleaseRejected('Expected a pinned public certificate fingerprint')
     if policy.executable != 'weavelo' or policy.app_name != 'Weavelo':
         raise ReleaseRejected('Unexpected product name or executable')
+    if policy.identity_kind not in ('existing-authorized','studio-local-desktop'):
+        raise ReleaseRejected('Unknown signing identity kind')
+    if policy.identity_kind == 'studio-local-desktop' and policy.bundle_id != 'fun.hackerlife.weavelo.desktop':
+        raise ReleaseRejected('Studio local identity is restricted to the independent Desktop app ID')
     return policy
 
 
@@ -78,10 +83,26 @@ def sha256(path: Path, *, check=None) -> str:
 
 
 def preflight(policy: Policy) -> str:
+    if policy.identity_kind == 'studio-local-desktop':
+        if policy.bundle_id != 'fun.hackerlife.weavelo.desktop':
+            raise ReleaseRejected('Local identity cannot sign the retained application namespace')
+        # A pinned local identity is not a system-trusted root or Developer ID.
+        # Match the actual certificate/key pair, then require native codesign and
+        # exact leaf/DR verification. Never change trust settings to make -v pass.
+        identities = run(['/usr/bin/security','find-identity','-p','codesigning',
+                          str(Path.home()/'Library/Keychains/login.keychain-db')])
+        for line in identities.splitlines():
+            match=re.match(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"[^"\n]+"(.*)$',line)
+            if match and match[1].lower()==policy.certificate_sha1:
+                detail=match[2].strip()
+                if detail not in ('','(CSSMERR_TP_NOT_TRUSTED)'):
+                    raise ReleaseRejected('Pinned local identity has an additional certificate error')
+                return policy.certificate_sha1.upper()
+        raise ReleaseRejected('Pinned Studio Desktop identity unavailable; inspect its recorded creation state, never regenerate or substitute it')
     identities = run(['/usr/bin/security', 'find-identity', '-v', '-p', 'codesigning'])
     fingerprints = re.findall(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"', identities, re.M)
     if policy.certificate_sha1 not in {fingerprint.lower() for fingerprint in fingerprints}:
-        raise ReleaseRejected('The pinned release signing identity is unavailable. Build the binary here, but sign on the existing authorized signing Mac. No ad-hoc fallback and no new certificate will be created.')
+        raise ReleaseRejected('The pinned retained release signing identity is unavailable. Retained app identity is unchanged; no ad-hoc fallback or automatic certificate replacement is permitted.')
     return policy.certificate_sha1.upper()
 
 
@@ -347,7 +368,9 @@ def package(binary: Path, output: Path, version: str, build: str, policy: Policy
     with packaging_workspace(output, workspace) as stage:
         app = assemble_app(stage, binary, version, build, policy)
         # No mutation of signed bundle contents is permitted after this point.
-        run(['/usr/bin/codesign', '--force', '--sign', signer, '--timestamp=none',
+        keychain_args = (['--keychain',str(Path.home()/'Library/Keychains/login.keychain-db')]
+                         if policy.identity_kind == 'studio-local-desktop' else [])
+        run(['/usr/bin/codesign', '--force', '--sign', signer, *keychain_args, '--timestamp=none',
              '--identifier', policy.bundle_id, '-r', '=designated => ' + policy.requirement, str(app)])
         report = verify_app(app, policy)
         identity_expectations = None
