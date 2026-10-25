@@ -145,3 +145,26 @@ protected, and content/mode/inode/symlink mutation during a read. Independent re
 found no concrete blocker. Studio fixed regression then passed **906 total, 882
 passed, 24 skipped**, zero failures (`/tmp/weavelo-release-stable-read-regression.log`).
 The native Linux repeat must pass before a formal candidate build starts.
+
+That native repeat on 02fa376 completed **906 total, 865 passed, 41 skipped**,
+zero failures (operation ff3e10c6-05b2-4f7c-87e5-7185696aaaa5). The subsequent SDK
+pins, mount and profile checks succeeded, but the old global same-UID /proc scan
+failed on unrelated protected PID 1865/exe (EACCES). No process was stopped or
+permissions changed; the denied executable metadata was not fetched another way.
+
+Owner discovery now queries only the fixed service MainPID and, while its role
+lock is busy, the canonical profile's private GUI endpoint. Each resulting PID
+still requires native loaded-image/inode/hash verification. GUI PID comes from
+NetworkDiagnostics, matched to Status generation/hash and the original renderer;
+it is not guessed from a generation string. MainPID zero requires inactive plus
+all three locks free. Busy frontend with missing/conflicting private state or any
+known target PID denial still refuses. Startup performs one start and polls only
+observations through transient process readiness. The proof is for registered
+owners of this canonical profile, not all same-named processes on the machine.
+
+Six new fixtures exercise that scope, busy locks, target EACCES, GUI/supervisor
+replacement and non-replayed activation. Independent review found no P1/P2 in
+this increment. Studio fixed regression: **912 total, 888 passed, 24 skipped**,
+zero failures (`/tmp/weavelo-linux-profile-owner-release.log`); **38** isolated
+upgrade fixtures passed. Native Linux repetition and the formal package remain
+required before any real upgrade.

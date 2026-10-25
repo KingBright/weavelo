@@ -187,14 +187,40 @@ class Native:
         policy={k:v for k,v in fields.items() if k not in ('MainPID','ActiveState','SubState','DropInPaths','UnitFileState')}
         return {'enabled':fields['UnitFileState'],'dropins':dropins,'policy':dict(policy,execution=execution),'active':fields['ActiveState'],
                 'substate':fields['SubState'],'pid':int(fields['MainPID'])}
+    def frontend_busy(self):
+        path=self.paths['profile']/'gui-state/desktop-instance.lock'
+        before=private(path);private(path.parent,True)
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        try:
+            require((os.fstat(fd).st_dev,os.fstat(fd).st_ino)==(before.st_dev,before.st_ino),'Frontend lock changed')
+            try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:return True
+            fcntl.flock(fd,fcntl.LOCK_UN)
+            return False
+        finally:os.close(fd)
+    def gui_owner(self,sha):
+        status=self.query('--gui-status-json')
+        diagnostics=self.query('--gui-network-diagnostics-json')
+        require(status.get('ok') is True and status.get('renderer')==gate.RENDERER
+                and status.get('executable_sha256')==sha and diagnostics.get('ok') is True
+                and diagnostics.get('executable_sha256')==sha and status.get('generation')==diagnostics.get('generation'),
+                'GUI endpoint identity/generation conflict; no owner stopped')
+        pid=diagnostics.get('pid')
+        require(type(pid) is int and pid>1 and status.get('pid',pid)==pid,'Explicit native GUI PID required')
+        gate.verify_running_linux(pid,self.exe,sha)
+        return dict(status,pid=pid)
     def owners(self,sha):
-        found=set()
-        for p in Path('/proc').iterdir():
-            if not p.name.isdecimal():continue
-            try:
-                if p.stat().st_uid==os.getuid() and os.readlink(p/'exe')==str(self.exe):
-                    gate.verify_running_linux(int(p.name),self.exe,sha);found.add(int(p.name))
-            except (FileNotFoundError,ProcessLookupError):pass
+        # Scope is the canonical Desktop profile, not every same-UID process.
+        # Never request executable metadata for an unrelated protected process.
+        config=self.configuration();pid=config['pid']
+        if pid==0:
+            require(config['active']=='inactive','Supervisor owner is still transitioning')
+            with stopped_locks(self.paths['profile']):pass
+            return set()
+        require(type(pid) is int and pid>1,'Exact registered service PID required')
+        gate.verify_running_linux(pid,self.exe,sha)
+        found={pid}
+        if self.frontend_busy():found.add(self.gui_owner(sha)['pid'])
         return found
     def query(self,*args):
         r=subprocess.run([str(self.exe),*args],env=self.env,capture_output=True,text=True,timeout=20)
@@ -212,9 +238,8 @@ class Native:
                 and config['active']=='active' and config['substate']=='running','Unknown background process')
         known={bg['pid']};gui=None;blockers=[]
         if pids!=known:
-            gui=self.query('--gui-status-json')
-            require(gui.get('ok') is True and gui['executable_sha256']==sha,'Unknown GUI executable')
-            pid=gui.get('pid') or int(gui['generation'].split('-',1)[0]);known.add(pid)
+            gui=self.gui_owner(sha)
+            pid=gui['pid'];known.add(pid)
             require(pids==known,'Additional unidentified Desktop owners')
             require(gui['sessions']['pending']==0 and gui['sessions']['sessions']==[] and gui['lease'] is None,
                     'GUI has active/pending sessions, transfers or lease')
@@ -249,18 +274,19 @@ class Native:
             self.ctl('start')
             end=time.monotonic()+40
             while True:
-                if self.owners(sha):break
+                try:
+                    owners=self.owners(sha);bg=self.query('--background-status-json')
+                    if (bg.get('role')=='background-service' and bg.get('executable_sha256')==sha
+                            and bg.get('profile')==str(self.paths['profile']) and bg.get('pid') in owners):break
+                except (ValueError,OSError,gate.IdentityRejected,subprocess.TimeoutExpired):pass
                 require(time.monotonic()<end,'Background activation unconfirmed');time.sleep(.2)
-            bg=self.query('--background-status-json')
-            require(bg['executable_sha256']==sha,'New background identity not confirmed')
         if before['gui']:
             subprocess.Popen([str(self.exe),'--gui'],env=self.env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
             end=time.monotonic()+40
             while True:
                 try:
-                    status=self.query('--gui-status-json')
-                    if status.get('ok') is True and status.get('executable_sha256')==sha:break
-                except (ValueError,subprocess.TimeoutExpired):pass
+                    self.gui_owner(sha);break
+                except (ValueError,OSError,gate.IdentityRejected,subprocess.TimeoutExpired):pass
                 require(time.monotonic()<end,'GUI activation unconfirmed');time.sleep(.2)
         observed=self.observe(sha)
         require(all((observed[k] is None)==(before[k] is None) for k in ('background','gui')) and observed['active']==before['active'],

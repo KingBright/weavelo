@@ -253,6 +253,58 @@ class UpgradeTests(unittest.TestCase):
             bad=dict(fields);bad[key]=value
             result=SimpleNamespace(returncode=0,stdout='\n'.join(k+'='+v for k,v in bad.items()))
             with patch.object(up.subprocess,'run',return_value=result),self.assertRaises(ValueError):native.configuration()
+    def native_fixture(self):
+        native=up.Native.__new__(up.Native);native.paths=self.paths;native.exe=self.paths['app']/'weavelo'
+        native.configuration=lambda:{'pid':101,'active':'active','substate':'running'}
+        native.frontend_busy=lambda:True
+        def query(flag):
+            if flag=='--gui-status-json':return {'ok':True,'renderer':up.gate.RENDERER,'generation':'102-1','executable_sha256':'a'*64}
+            if flag=='--gui-network-diagnostics-json':return {'ok':True,'generation':'102-1','executable_sha256':'a'*64,'pid':102}
+            raise ValueError('unexpected synthetic query')
+        native.query=query
+        return native
+    def test_only_registered_profile_pids_are_read_not_unrelated_protected_proc(self):
+        native=self.native_fixture()
+        with patch.object(Path,'iterdir',side_effect=PermissionError('unrelated proc')),patch.object(up.gate,'verify_running_linux') as verify:
+            self.assertEqual(native.owners('a'*64),{101,102})
+        self.assertEqual([call.args[0] for call in verify.call_args_list],[101,102])
+    def test_known_target_process_permission_failure_is_never_ignored(self):
+        native=self.native_fixture()
+        with patch.object(up.gate,'verify_running_linux',side_effect=[None,PermissionError('target proc')]),self.assertRaises(PermissionError):
+            native.owners('a'*64)
+    def test_zero_mainpid_with_any_canonical_profile_lock_busy_is_not_stopped(self):
+        import fcntl
+        native=self.native_fixture();native.configuration=lambda:{'pid':0,'active':'inactive','substate':'dead'}
+        for path in (self.paths['profile'],self.paths['profile']/'desktop-instance.lock',self.paths['profile']/'gui-state/desktop-instance.lock'):
+            fd=os.open(path,os.O_RDONLY)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):native.owners('a'*64)
+            finally:os.close(fd)
+        self.assertEqual(native.owners('a'*64),set())
+    def test_busy_frontend_missing_or_replaced_private_status_refuses(self):
+        native=self.native_fixture();query=native.query
+        def replaced(flag):
+            value=query(flag)
+            if flag=='--gui-network-diagnostics-json':value['generation']='103-2';value['pid']=103
+            return value
+        with patch.object(up.gate,'verify_running_linux'):
+            native.query=replaced
+            with self.assertRaises(ValueError):native.owners('a'*64)
+            native.query=lambda *_:(_ for _ in ()).throw(ValueError('missing endpoint'))
+            with self.assertRaises(ValueError):native.owners('a'*64)
+    def test_supervisor_owner_replacement_during_observation_refuses(self):
+        native=self.native_fixture();native.owners=lambda _:{101}
+        native.query=lambda *_:{'role':'background-service','pid':103,'executable_sha256':'a'*64,'profile':str(self.paths['profile'])}
+        with self.assertRaises(ValueError):native.observe('a'*64)
+    def test_activation_transitional_reads_do_not_repeat_the_start_operation(self):
+        from unittest.mock import Mock
+        native=self.native_fixture();before={'background':{'pid':101,'generation':'101-1'},'gui':None,'active':True,'blockers':[]}
+        native.ctl=Mock();native.owners=Mock(side_effect=[PermissionError('not yet inspectable'),{101}])
+        native.query=lambda *_:{'role':'background-service','pid':101,'executable_sha256':'a'*64,'profile':str(self.paths['profile'])}
+        native.observe=lambda _:before
+        with patch.object(up.time,'sleep'):self.assertEqual(native.start(before,'a'*64),before)
+        native.ctl.assert_called_once_with('start')
     def test_pending_protected_recovery_and_concurrent_installer_refuse(self):
         import fcntl
         fd=os.open(self.paths['work'],os.O_RDONLY|os.O_DIRECTORY)
