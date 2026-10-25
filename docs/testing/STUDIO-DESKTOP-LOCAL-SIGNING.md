@@ -322,3 +322,49 @@ SHA-256 `e2c105e15df0e278e2cbb803181a42df8909e3eec906fb06bde29cbf45b37bdf`；
 本地核对回执
 `.rust-storage/validation-logs/studio-desktop-private-delivery-readiness-20261025.json`，
 SHA-256 `41f0c2bb6cbc5f52f26e3cadf99507194188242324ac86eb2a3c5f43caac1001`。
+
+## 323f1f1a 独立评审阻断项修复（候选，仍未安装）
+
+原候选未执行真实 apply。主任务独立评审指出固定 O_EXCL pending 在函数内部
+崩溃时可能阻塞回滚，以及 completed 后后台已退出无法保留停止态；另要求补全
+目录持久化。本轮按该明确指示修复，继续等待独立评审，不自行开始安装。
+
+- P1：`atomic_record` 保留普通路径遇已存在 pending 即拒绝的默认行为；拆出
+  完整私有文件比较和原子 byte 写入，仅一次性迁移的显式 rollback 使用
+  `recover_matching`。持原安装锁、核对原 transaction digest、新/旧实际签名树、
+  备份和 registry CAS 后，才识别同一 plan/不可变字段/相邻阶段的完整 journal
+  pending，并原子提交该**进度元数据**，不执行任何前向 App 动作。完整 forward
+  registry pending 只按确切已绑定新记录字节退役，不顺向发布；完整原 registry
+  restore pending 可直接完成恢复。部分写入、非 canonical、错事务/阶段/元组、
+  未知字段、链接或非私有文件均保留拒绝，不清理未知内容。首次回滚的 pending
+  运行形态还须匹配当前只读观察；外部活动已改变该观察时暂停，不猜测恢复。
+- P2：运行快照分别保留 loaded、background 和 GUI。前向迁移仍只接受原有
+  已登记运行后台；completed 后的显式回滚允许后台已停止，保留 loaded 或
+  unloaded 状态，不 bootstrap/unload launchd、不为健康检查唤起已停止后台。
+  有 GUI 才按原 `--gui` 入口恢复并独立观察，只有请求后台运行才调用原 start；
+  未登记的手动后台或过程中 loaded 状态改变仍拒绝处理。
+- 持久化：完整 copytree 验证后 fsync 每个 regular file，目录自底向上及其父
+  目录；交换前同步保留的旧树，原生 exchange 后同步源/目标双方父目录。
+  错误时保留 journal 和新旧实物，不宣称完成。没有 F_FULLFSYNC 或实际断电测试，
+  因此只确认代码及 disposable fixture 的调用/中断语义，**不声称断电恢复已验收**。
+
+新增函数内部低级 `os.write`、文件 fsync、replace、父目录 fsync 前后中断矩阵：
+5 类记录 × 7 个完整边界共 35 个案例，以及 5 类部分写入案例；覆盖首次回滚
+checkpoint、前向 checkpoint/registry、回滚 checkpoint/原 registry 恢复。
+还覆盖 terminal rollback pending 只观察不重复启停、linked/错事务 pending
+保留、停止态 loaded/GUI 四组合与中断恢复、文件/目录同步顺序、双方父目录同步。
+这些案例不是物理断电或真实产品服务验收。
+
+测试计数明确区分：定向 **total 37 / pass 37 / skip 0**；固定
+`TMPDIR=/private/tmp PYTHONDONTWRITEBYTECODE=1 ./scripts/test_release.sh` 为
+**total 854 / pass 831 / skip 23 / failure 0 / error 0**。旧一轮记录的 842 是
+total，实际 pass 819、skip 23，不应称 842 全部通过。
+最终日志 `/tmp/weavelo-desktop-signer-review-release-tests.log`，SHA-256
+`84315ec7633e40b437c53bdcd341ad4a05b7fa8bd397a02bcfcd262b15e44559`。
+源码摘要及回执
+`.rust-storage/validation-logs/studio-desktop-signer-review-fixes-20261025.json`，
+SHA-256 `32bcf9316165bf6a95fe7fc9096b5166f01afc35a9fb38057a07731d95954b44`。
+
+仍未实际安装/回滚或操作系统权限；现有身份和数据目录绑定不变，不重建或重签
+候选产品。父任务同时报告 NAS 协调者已在 06:17:49 完整读回交付的两个私有候选
+文件；本任务依此停止上传方向，不重复传输，该交付读回不是本任务独立执行。

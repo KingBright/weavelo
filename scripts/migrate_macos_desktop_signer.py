@@ -15,6 +15,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 
 import upgrade_macos_desktop as up
 import macos_release_guard as guard
@@ -117,6 +118,9 @@ def make_plan(home, c, candidate, signed):
     p = layout(home, c)
     absent(p['journal']); absent(p['rollback'])
     absent(p['app'].parent / '.desktop-upgrade.pending')
+    for path in (p['journal'], p['state'] / 'install.json', p['state'] / 'upgrade.json'):
+        absent(path.with_name(path.name + '.upgrade-tmp'))
+    absent((p['state'] / 'install.json.signer-restore.pending'))
     p, record, previous, old, membership = source_context(home, c)
     validate_candidate(candidate, signed, c)
     require(guard.version_key(signed['version']) >= guard.version_key(old['version']), 'Version downgrade rejected')
@@ -171,14 +175,53 @@ def checkpoint(p, data, phase, expected):
 
 
 def runtime_record(before):
-    # NativeControl.start uses only GUI presence and these public group digests.
-    require(before.get('loaded') is True and before.get('background'),
-            'Transition requires the original registered background to be running')
-    network = (before['background'].get('network_diagnostics') or {}).get('network') or {}
+    # Keep loaded, background and frontend state independent, including stopped.
+    require(type(before.get('loaded')) is bool, 'Known launchd loaded state required')
+    background = before.get('background')
+    network = ((background or {}).get('network_diagnostics') or {}).get('network') or {}
     groups = network.get('relay_groups') or {}
-    return {'loaded': True, 'gui': {'pid': before['gui']['pid']} if before.get('gui') else None,
-            'background': {'network_diagnostics': {'network': {'relay_groups':
-                {k: groups.get(k) for k in ('control_sha256', 'discovery_sha256')}}}}}
+    result = {'loaded': before['loaded'], 'gui': {'pid': before['gui']['pid']} if before.get('gui') else None,
+              'background': {'network_diagnostics': {'network': {'relay_groups':
+                  {k: groups.get(k) for k in ('control_sha256', 'discovery_sha256')}}}} if background else None}
+    validate_runtime_record(result)
+    return result
+
+
+def validate_runtime_record(value):
+    require(set(value) == {'loaded', 'gui', 'background'} and type(value['loaded']) is bool,
+            'Unknown runtime restore state')
+    if value['gui'] is not None:
+        require(set(value['gui']) == {'pid'} and type(value['gui']['pid']) is int and value['gui']['pid'] > 1,
+                'Known GUI restore state required')
+    if value['background'] is not None:
+        require(value['loaded'] is True, 'Unregistered running background cannot be restored')
+        groups = value['background']['network_diagnostics']['network']['relay_groups']
+        require(set(groups) == {'control_sha256', 'discovery_sha256'}, 'Unknown membership observation')
+        for item in groups.values():
+            if item is not None: gate.sha(item)
+
+
+def restore_runtime(control, desired, expected_sha):
+    validate_runtime_record(desired)
+    require(control.loaded() == desired['loaded'], 'Launchd loaded state changed; no bootstrap or unload attempted')
+    if desired['background'] is not None:
+        return control.start(desired, expected_sha)
+    require(control.query('--background-status-json', False) is None and not control.owners(),
+            'Unexpected owner before stopped-state restore')
+    if desired['gui'] is not None:
+        subprocess.run(['/usr/bin/open', '-n', str(control.paths['app']), '--args', '--gui'],
+                       check=True, capture_output=True, timeout=15)
+    deadline = time.monotonic() + 40
+    while True:
+        observed = control.before(expected_sha)
+        require(observed['loaded'] == desired['loaded'] and observed['background'] is None,
+                'Stopped background state changed during restore')
+        if bool(observed['gui']) == bool(desired['gui']): break
+        require(time.monotonic() < deadline, 'Frontend state not restored')
+        time.sleep(.5)
+    return {'executable_sha256': expected_sha, 'loaded': observed['loaded'], 'background_pid': None,
+            'frontend_pid': observed['gui']['pid'] if observed['gui'] else None,
+            'runtime_membership_preserved': True}
 
 
 def migration_record(record, c):
@@ -205,6 +248,8 @@ def apply(archive, home, expected_plan):
             control = up.NativeControl(p)
             before = control.before(c['current']['executable'])
             before_record = runtime_record(before)
+            require(before_record['loaded'] and before_record['background'],
+                    'Transition requires the original registered background to be running')
             data = {'schema': 1, 'kind': KIND, 'plan': value, 'plan_sha256': expected_plan,
                     'before': before_record, 'new_install': next_record,
                     'new_install_sha256': gate.digest(encoded(next_record))}
@@ -220,6 +265,8 @@ def apply(archive, home, expected_plan):
             require(up.tree_digest(staged) == value['new_tree'], 'Staged candidate changed')
             guard.verify_app(staged, policies(c)[1])
             verify_backups(p, c)
+            up.fsync_tree(staged)
+            up.fsync(p['rollback'])
             journal_sha = checkpoint(p, data, 'staged', journal_sha)
             _, _, _, _, membership = source_context(home, c)
             require(membership == value['membership'], 'Membership changed before normal quit')
@@ -230,6 +277,7 @@ def apply(archive, home, expected_plan):
                 _, _, _, _, membership = source_context(home, c)
                 require(membership == value['membership'] and gate.hash_file(archive) == c['archive_sha256'],
                         'Membership or archive changed before exchange')
+                up.fsync_tree(p['app'])
                 journal_sha = checkpoint(p, data, 'exchanging', journal_sha)
                 up.exchange(staged, p['app'])
                 journal_sha = checkpoint(p, data, 'exchanged', journal_sha)
@@ -328,16 +376,84 @@ def validate_transaction(data, p, c):
     require(gate.digest(encoded(data['new_install'])) == data['new_install_sha256'], 'New registry binding changed')
     require(data['new_install'].get('source') == c['source']
             and data['new_install'].get('signer_transition') == KIND, 'Unknown new installation record')
+    validate_runtime_record(data['before'])
+    if 'rollback_restore' in data: validate_runtime_record(data['rollback_restore'])
 
 
 def restore_registry(path, raw, expected):
-    # Exact original formatting is part of the pinned original registry digest.
-    up.private(path)
-    require(gate.hash_file(path) == expected, 'Registry changed before exact restore')
-    temporary = path.with_name(path.name + '.signer-restore.pending')
-    write_new(temporary, raw)
-    require(gate.hash_file(path) == expected, 'Registry changed during exact restore')
-    os.replace(temporary, path); up.fsync(path.parent)
+    # Only explicit rollback calls this, after binding original transaction/tuple.
+    return up.atomic_bytes(path, raw, expected, suffix='.signer-restore.pending', recover_matching=True)
+
+
+def recover_checkpoint_pending(p, c, data, sha, side, registry_sha, current_restore=None):
+    """Explicit rollback only: consume a complete next metadata checkpoint.
+
+    This commits known progress metadata, never resumes a forward app action.
+    Unknown/partial bytes, non-adjacent phases and changed bindings stay untouched.
+    """
+    path = p['journal'].with_name(p['journal'].name + '.upgrade-tmp')
+    if not path.exists() and not path.is_symlink(): return data, sha, False
+    pending, pending_sha = up.read_record(path)
+    validate_transaction(pending, p, c)
+    require(gate.digest(encoded(pending)) == pending_sha, 'Noncanonical pending checkpoint')
+    phase = pending['phase']; before = data['phase']
+    forward = dict(zip(('prepared', 'staged', 'stopping', 'stopped', 'exchanging', 'exchanged',
+                        'activating', 'activated', 'committing'),
+                       ('staged', 'stopping', 'stopped', 'exchanging', 'exchanged', 'activating',
+                        'activated', 'committing', 'completed')))
+    backward = {'rollback_stopping': {'rollback_stopped'},
+                'rollback_stopped': {'rollback_exchanging', 'rollback_exchanged'},
+                'rollback_exchanging': {'rollback_exchanged'},
+                'rollback_exchanged': {'rollback_registry'},
+                'rollback_registry': {'rollback_activating'},
+                'rollback_activating': {'rolled_back'}}
+    require(phase == forward.get(before) or phase in backward.get(before, set())
+            or (phase == 'rollback_stopping' and before != 'rolled_back'),
+            'Pending checkpoint is not the original next phase')
+    for key, value in data.items():
+        if key != 'phase': require(pending.get(key) == value, 'Pending checkpoint changed original fields')
+    introduced = set(pending) - set(data)
+    allowed = {'activated': {'runtime'}, 'rollback_stopping': {'rollback_restore'},
+               'rolled_back': {'rollback_runtime'}}.get(phase, set())
+    require(introduced <= allowed, 'Unknown pending checkpoint fields')
+    if 'rollback_restore' in introduced:
+        wanted = current_restore() if before == 'completed' else data['before']
+        require(pending['rollback_restore'] == wanted, 'Pending rollback state does not match its original observation')
+    for name in introduced & {'runtime', 'rollback_runtime'}:
+        report = pending[name]
+        expected = c['new_executable_sha256'] if name == 'runtime' else c['current']['executable']
+        require(isinstance(report, dict) and report.get('executable_sha256') == expected
+                and set(report) <= {'executable_sha256', 'background_pid', 'frontend_pid', 'loaded',
+                                    'runtime_membership_preserved', 'native_pairing_cli_verified'},
+                'Pending runtime report differs from the pinned executable')
+    if phase in ('staged', 'stopping', 'stopped', 'exchanging'):
+        require(side == 'old', 'Pending pre-exchange phase conflicts with actual bundle')
+    elif phase in ('exchanged', 'activating', 'activated', 'committing', 'completed'):
+        require(side == 'new', 'Pending post-exchange phase conflicts with actual bundle')
+    elif phase == 'rollback_exchanging':
+        require(side == 'new', 'Pending rollback exchange conflicts with actual bundle')
+    elif phase in ('rollback_exchanged', 'rollback_registry', 'rollback_activating', 'rolled_back'):
+        require(side == 'old', 'Pending rollback phase conflicts with actual bundle')
+    if phase == 'completed':
+        require(registry_sha == data['new_install_sha256'], 'Pending commit lacks its exact registry')
+    if phase == 'rolled_back':
+        require(registry_sha == c['current']['install'], 'Pending rollback lacks its original registry')
+    observed_sha = up.atomic_bytes(p['journal'], encoded(pending), sha, recover_matching=True)
+    require(observed_sha == pending_sha, 'Recovered checkpoint digest changed')
+    return pending, observed_sha, True
+
+
+def recover_registry_pending(p, c, data, original_raw, registry_sha):
+    """Retire only the exact forward registry intent, never publish it forward."""
+    registry = p['state'] / 'install.json'
+    pending = registry.with_name(registry.name + '.upgrade-tmp')
+    if pending.exists() or pending.is_symlink():
+        up.discard_matching_pending(pending, encoded(data['new_install']))
+    pending = registry.with_name(registry.name + '.signer-restore.pending')
+    if pending.exists() or pending.is_symlink():
+        up.matching_pending(pending, original_raw)
+        if registry_sha == c['current']['install']:
+            up.discard_matching_pending(pending, original_raw)
 
 
 def rollback(home, expected_transaction):
@@ -360,12 +476,21 @@ def rollback(home, expected_transaction):
                 'User installation record changed; no restore attempted')
         control = up.NativeControl(p)
         expected_exe = c['current']['executable'] if side == 'old' else c['new_executable_sha256']
+        data, sha, recovered = recover_checkpoint_pending(
+            p, c, data, sha, side, registry_sha,
+            current_restore=lambda: runtime_record(control.before(expected_exe)))
+        original_raw = (p['rollback'] / 'install.before.json').read_bytes()
+        recover_registry_pending(p, c, data, original_raw, registry_sha)
         current = control.before(expected_exe)
+        if data['phase'] == 'rolled_back':
+            return dict(data, rolled_back=True, outcome='rollback_commit_observed',
+                        runtime_observed=runtime_record(current), recovered_checkpoint=recovered)
         # After completion preserve the currently running group's metadata/state;
         # an interrupted transition restores the original known running shape.
         restore = data.get('rollback_restore')
         if restore is None:
             restore = runtime_record(current) if data['phase'] == 'completed' else data['before']
+        require(control.loaded() == restore['loaded'], 'Original launchd loaded state changed')
         membership = up.membership_metadata(p['profile'])
         data['rollback_restore'] = restore
         sha = checkpoint(p, data, 'rollback_stopping', sha)
@@ -377,6 +502,7 @@ def rollback(home, expected_transaction):
             _, fresh_sha = up.read_record(p['state'] / 'install.json')
             require(fresh_sha == registry_sha, 'Registry changed before rollback exchange')
             if side == 'new':
+                up.fsync_tree(p['app']); up.fsync_tree(p['rollback'] / 'Weavelo.app')
                 sha = checkpoint(p, data, 'rollback_exchanging', sha)
                 up.exchange(p['rollback'] / 'Weavelo.app', p['app'])
             sha = checkpoint(p, data, 'rollback_exchanged', sha)
@@ -388,7 +514,7 @@ def rollback(home, expected_transaction):
             require(gate.digest(raw) == c['current']['install'], 'Original registry bytes changed')
             restore_registry(p['state'] / 'install.json', raw, registry_sha)
         sha = checkpoint(p, data, 'rollback_activating', sha)
-        data['rollback_runtime'] = control.start(restore, c['current']['executable'])
+        data['rollback_runtime'] = restore_runtime(control, restore, c['current']['executable'])
         require(up.membership_metadata(p['profile']) == membership, 'Membership changed during rollback activation')
         verify_tuple(p, c, value, 'old')
         checkpoint(p, data, 'rolled_back', sha)

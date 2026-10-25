@@ -52,22 +52,30 @@ class Fixture:
         self.c['current'] = {'executable': self.image_sha(b'old'), 'info': self.image_sha(b'old-info'),
                              'tree': up.tree_digest(self.p['app']), 'install': up.gate.hash_file(self.registry),
                              'upgrade': up.gate.hash_file(self.upgrade), 'plist': up.gate.hash_file(self.p['plist'])}
-        self.calls = []; self.running = 'old'; self.gui = True; self.groups = {'control_sha256': '1'*64, 'discovery_sha256': '2'*64}
+        self.calls = []; self.running = 'old'; self.gui = True; self.loaded = True
+        self.groups = {'control_sha256': '1'*64, 'discovery_sha256': '2'*64}
         self.stop_hook = self.start_hook = None
         owner = self
         class Control:
             def __init__(self, paths): self.paths = paths
             def before(self, expected):
                 owner.calls.append('before')
+                if owner.gui and expected != owner.image_sha((owner.p['app']/'Contents/MacOS/weavelo').read_bytes()):
+                    raise guard.ReleaseRejected('Unexpected GUI owner')
                 if owner.running is not None:
                     if expected != owner.image_sha(owner.running.encode()): raise guard.ReleaseRejected('Unexpected runtime owner')
-                    return {'loaded': True, 'gui': {'pid': 102} if owner.gui else None,
+                    return {'loaded': owner.loaded, 'gui': {'pid': 102} if owner.gui else None,
                             'background': {'pid': 101, 'network_diagnostics': {'network': {'relay_groups': owner.groups.copy()}}}}
-                return {'loaded': True, 'gui': None, 'background': None}
+                return {'loaded': owner.loaded, 'gui': {'pid':102} if owner.gui else None, 'background': None}
+            def loaded(self): return owner.loaded
+            def owners(self): return ({101} if owner.running is not None else set()) | ({102} if owner.gui else set())
+            def query(self, flag, required=True):
+                if flag != '--background-status-json': raise AssertionError('Unexpected query')
+                return None if owner.running is None else {'pid':101}
             def stop(self, before):
                 owner.calls.append('stop')
                 if owner.stop_hook: owner.stop_hook()
-                owner.running = None
+                owner.running = None; owner.gui = False
             def start(self, before, expected):
                 owner.calls.append('start')
                 if owner.start_hook: owner.start_hook()
@@ -114,6 +122,44 @@ class Fixture:
     def rollback(self): return migration.rollback(self.home, self.status()['transaction_sha256'])
     def image(self): return (self.p['app'] / 'Contents/MacOS/weavelo').read_bytes()
     def rollback_app(self): return self.p['app'].parent / '.desktop-signer-rollback/Weavelo.app'
+
+
+@contextlib.contextmanager
+def atomic_fault(pending, boundary, phase=None):
+    """Interrupt inside actual low-level write/fsync/replace, once, at this file."""
+    real_write, real_sync, real_replace = os.write, os.fsync, os.replace
+    state = {'fired': False, 'armed': False}
+    def selected(raw):
+        return phase is None or json.loads(raw).get('phase') == phase
+    def same_fd(fd, path):
+        return path.exists() and os.fstat(fd).st_ino == path.stat().st_ino
+    def write(fd, raw):
+        if same_fd(fd, pending) and not state['fired'] and selected(raw):
+            state['armed'] = True
+            if boundary in ('partial_write', 'full_write'):
+                real_write(fd, raw[:len(raw)//2] if boundary == 'partial_write' else raw)
+                state['fired'] = True; raise KeyboardInterrupt()
+        return real_write(fd, raw)
+    def sync(fd):
+        file_sync = same_fd(fd, pending)
+        directory_sync = (state['armed'] and not pending.exists() and same_fd(fd, pending.parent))
+        prefix = 'file_fsync' if file_sync else 'directory_fsync' if directory_sync else None
+        if prefix and not state['fired'] and (state['armed'] or selected(pending.read_bytes())):
+            if boundary == prefix + '_before':
+                state['fired'] = True; raise KeyboardInterrupt()
+            if boundary == prefix + '_after':
+                real_sync(fd); state['fired'] = True; raise KeyboardInterrupt()
+        return real_sync(fd)
+    def replace(source, target):
+        if Path(source) == pending and not state['fired'] and selected(pending.read_bytes()):
+            if boundary == 'replace_before':
+                state['fired'] = True; raise KeyboardInterrupt()
+            if boundary == 'replace_after':
+                real_replace(source, target); state['fired'] = True; raise KeyboardInterrupt()
+        return real_replace(source, target)
+    with patch.object(os, 'write', side_effect=write), patch.object(os, 'fsync', side_effect=sync), \
+         patch.object(os, 'replace', side_effect=replace):
+        yield state
 
 
 class SignerTransitionTests(unittest.TestCase):
@@ -273,6 +319,172 @@ class SignerTransitionTests(unittest.TestCase):
         count = len(f.calls)
         with self.assertRaisesRegex(guard.ReleaseRejected, 'Unexpected rollback contents'): f.rollback()
         self.assertEqual(len(f.calls), count); self.assertEqual(extra.read_bytes(), b'keep')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_completed_stopped_background_rollback_preserves_loaded_and_gui_states(self):
+        for loaded, gui in [(True, False), (False, False), (True, True), (False, True)]:
+            with self.subTest(loaded=loaded, gui=gui):
+                f = Fixture()
+                try:
+                    f.apply(); f.running = None; f.gui = gui; f.loaded = loaded
+                    def open_frontend(*a, **kw):
+                        self.assertEqual(a[0], ['/usr/bin/open', '-n', str(f.p['app']), '--args', '--gui'])
+                        f.gui = True
+                    with patch.object(migration.subprocess, 'run', side_effect=open_frontend):
+                        result = f.rollback()
+                    self.assertTrue(result['rolled_back']); self.assertEqual(f.image(), b'old')
+                    self.assertEqual((f.loaded, f.running, f.gui), (loaded, None, gui))
+                    self.assertIsNone(result['rollback_runtime']['background_pid'])
+                    self.assertNotIn('start', f.calls[f.calls.index('start')+1:])
+                finally: f.close()
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_stopped_restore_state_survives_a_rollback_checkpoint_interruption(self):
+        f = self.f; f.apply(); f.running = None; f.gui = False; f.loaded = False
+        real = migration.checkpoint
+        def interrupted(p, data, phase, expected):
+            value = real(p, data, phase, expected)
+            if phase == 'rollback_stopped': raise KeyboardInterrupt()
+            return value
+        with patch.object(migration, 'checkpoint', side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt): f.rollback()
+        self.assertTrue(f.rollback()['rolled_back'])
+        self.assertEqual((f.loaded, f.running, f.gui), (False, None, False))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_internal_pending_boundaries_recover_only_through_explicit_rollback(self):
+        boundaries = ('full_write', 'file_fsync_before', 'file_fsync_after', 'replace_before',
+                      'replace_after', 'directory_fsync_before', 'directory_fsync_after')
+        for kind in ('forward_checkpoint', 'forward_registry', 'rollback_entry_checkpoint', 'rollback_checkpoint', 'rollback_registry'):
+            for boundary in boundaries:
+                with self.subTest(kind=kind, boundary=boundary):
+                    f = Fixture()
+                    try:
+                        original = f.registry.read_bytes()
+                        journal = f.p['state'] / 'signer-migration.json'
+                        pending = (journal.with_name(journal.name+'.upgrade-tmp') if 'checkpoint' in kind else
+                                   f.registry.with_name(f.registry.name + ('.signer-restore.pending' if kind == 'rollback_registry' else '.upgrade-tmp')))
+                        phase = {'forward_checkpoint':'exchanged', 'rollback_entry_checkpoint':'rollback_stopping',
+                                 'rollback_checkpoint':'rollback_registry'}.get(kind)
+                        if kind.startswith('rollback'): f.apply()
+                        with atomic_fault(pending, boundary, phase) as fault:
+                            with self.assertRaises(KeyboardInterrupt):
+                                f.rollback() if kind.startswith('rollback') else f.apply()
+                        self.assertTrue(fault['fired'])
+                        if not kind.startswith('rollback'):
+                            with self.assertRaisesRegex(guard.ReleaseRejected, 'Prior transition'): f.apply('0'*64)
+                        self.assertTrue(f.rollback()['rolled_back'])
+                        self.assertEqual(f.image(), b'old'); self.assertEqual(f.registry.read_bytes(), original)
+                        self.assertFalse(pending.exists()); self.assertEqual(f.running, 'old')
+                    finally: f.close()
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_partial_pending_bytes_are_preserved_and_block_before_more_process_actions(self):
+        for kind in ('forward_checkpoint', 'forward_registry', 'rollback_entry_checkpoint', 'rollback_checkpoint', 'rollback_registry'):
+            with self.subTest(kind=kind):
+                f = Fixture()
+                try:
+                    journal = f.p['state']/'signer-migration.json'
+                    pending = (journal.with_name(journal.name+'.upgrade-tmp') if 'checkpoint' in kind else
+                               f.registry.with_name(f.registry.name + ('.signer-restore.pending' if kind == 'rollback_registry' else '.upgrade-tmp')))
+                    phase = {'forward_checkpoint':'exchanged', 'rollback_entry_checkpoint':'rollback_stopping',
+                             'rollback_checkpoint':'rollback_registry'}.get(kind)
+                    if kind.startswith('rollback'): f.apply()
+                    with atomic_fault(pending, 'partial_write', phase):
+                        with self.assertRaises(KeyboardInterrupt):
+                            f.rollback() if kind.startswith('rollback') else f.apply()
+                    raw = pending.read_bytes(); before = list(f.calls); image = f.image()
+                    with self.assertRaises((guard.ReleaseRejected, ValueError)): f.rollback()
+                    self.assertEqual(pending.read_bytes(), raw); self.assertEqual(f.calls, before)
+                    self.assertEqual(f.image(), image)
+                finally: f.close()
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_fully_written_terminal_rollback_checkpoint_is_observed_without_restarting(self):
+        f = self.f; f.apply()
+        journal = f.p['state']/'signer-migration.json'; pending = journal.with_name(journal.name+'.upgrade-tmp')
+        with atomic_fault(pending, 'replace_before', 'rolled_back'):
+            with self.assertRaises(KeyboardInterrupt): f.rollback()
+        stops, starts = f.calls.count('stop'), f.calls.count('start')
+        result = f.rollback()
+        self.assertEqual(result['outcome'], 'rollback_commit_observed')
+        self.assertEqual((f.calls.count('stop'), f.calls.count('start')), (stops, starts))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_pending_from_wrong_transaction_or_nonadjacent_phase_is_never_promoted(self):
+        f = self.f; f.apply(); journal = f.p['state']/'signer-migration.json'
+        pending = journal.with_name(journal.name+'.upgrade-tmp')
+        base = f.status()['transaction']
+        for change in ('plan', 'phase', 'extra'):
+            value = copy.deepcopy(base)
+            value['phase'] = 'rollback_stopping'; value['rollback_restore'] = value['before']
+            if change == 'plan': value['plan']['new_tree'] = '0'*64
+            if change == 'phase': value['phase'] = 'rollback_registry'
+            if change == 'extra': value['unrecognized'] = True
+            pending.write_bytes(migration.encoded(value)); pending.chmod(0o600)
+            raw = pending.read_bytes(); count = len(f.calls)
+            with self.assertRaises(guard.ReleaseRejected): f.rollback()
+            self.assertEqual(len(f.calls), count); self.assertEqual(pending.read_bytes(), raw)
+            pending.unlink()
+
+    def test_ordinary_atomic_record_never_adopts_an_existing_complete_pending(self):
+        f = self.f; value = dict(f.original, sentinel='new metadata')
+        pending = f.registry.with_name(f.registry.name+'.upgrade-tmp')
+        pending.write_bytes(migration.encoded(value)); pending.chmod(0o600)
+        before = f.registry.read_bytes()
+        with self.assertRaises(FileExistsError): up.atomic_record(f.registry, value, f.c['current']['install'])
+        self.assertEqual(f.registry.read_bytes(), before); self.assertEqual(pending.read_bytes(), migration.encoded(value))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_pending_first_rollback_snapshot_must_match_actual_completed_runtime(self):
+        f = self.f; f.apply(); base = f.status()['transaction']
+        journal = f.p['state']/'signer-migration.json'; journal_before = journal.read_bytes()
+        pending = journal.with_name(journal.name+'.upgrade-tmp')
+        base.update(phase='rollback_stopping', rollback_restore={'loaded':False,'background':None,'gui':None})
+        pending.write_bytes(migration.encoded(base)); pending.chmod(0o600)
+        stops, starts = f.calls.count('stop'), f.calls.count('start')
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'original observation'): f.rollback()
+        self.assertEqual(journal.read_bytes(), journal_before); self.assertTrue(pending.exists())
+        self.assertEqual((f.calls.count('stop'), f.calls.count('start')), (stops, starts))
+
+    def test_complete_linked_pending_is_not_reused_or_retired(self):
+        f = self.f; raw = migration.encoded({'fixture':'exact known bytes'})
+        pending = f.registry.with_name(f.registry.name+'.upgrade-tmp')
+        alias = f.registry.with_name('fixture-pending-original')
+        alias.write_bytes(raw); alias.chmod(0o600)
+        for linked in ('symlink', 'hardlink'):
+            if linked == 'symlink': pending.symlink_to(alias)
+            else: os.link(alias, pending)
+            with self.assertRaises(guard.ReleaseRejected):
+                up.atomic_bytes(f.registry, raw, f.c['current']['install'], recover_matching=True)
+            with self.assertRaises(guard.ReleaseRejected): up.discard_matching_pending(pending, raw)
+            self.assertEqual(alias.read_bytes(), raw); pending.unlink()
+
+    def test_copy_tree_sync_failure_preserves_old_runtime_and_never_exchanges(self):
+        f = self.f
+        with patch.object(up, 'fsync_tree', side_effect=OSError('fixture fsync failed')):
+            with self.assertRaisesRegex(OSError, 'fsync failed'): f.apply()
+        self.assertEqual(f.image(), b'old'); self.assertEqual(f.running, 'old')
+        self.assertNotIn('stop', f.calls); self.assertNotIn('start', f.calls)
+
+    def test_fsync_tree_flushes_files_before_bottom_up_directories_and_parent(self):
+        f = self.f; root = f.candidate; paths = [root, *root.rglob('*'), root.parent]
+        identities = {p.stat().st_ino: p for p in paths}
+        real = os.fsync; seen = []
+        def synced(fd):
+            seen.append(identities[os.fstat(fd).st_ino]); real(fd)
+        with patch.object(os, 'fsync', side_effect=synced): up.fsync_tree(root)
+        files = {p for p in paths if p.is_file()}; dirs = {p for p in paths if p.is_dir()}
+        self.assertEqual(set(seen), files | dirs); self.assertEqual(seen[-1], root.parent)
+        self.assertTrue(max(seen.index(p) for p in files) < min(seen.index(p) for p in dirs))
+        self.assertTrue(seen.index(root/'Contents/MacOS') < seen.index(root/'Contents') < seen.index(root))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native atomic directory exchange')
+    def test_exchange_flushes_both_distinct_parent_directories(self):
+        f = self.f; real = up.fsync
+        with patch.object(up, 'fsync', wraps=real) as sync:
+            up.exchange(f.candidate, f.p['app'])
+        self.assertEqual([x.args[0] for x in sync.call_args_list], [f.candidate.parent, f.p['app'].parent])
 
     @unittest.skipUnless(sys.platform == 'darwin', 'native atomic directory exchange')
     def test_interrupted_forward_phases_only_support_explicit_exact_rollback(self):

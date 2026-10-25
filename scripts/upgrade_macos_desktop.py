@@ -73,28 +73,94 @@ def read_record(path):
     return data, hashlib.sha256(raw).hexdigest()
 
 
-def atomic_record(path, data, expected):
-    raw = (json.dumps(data, indent=2) + '\n').encode()
+def matching_pending(path, raw, *, sync=False):
+    """Read a private, complete pending file; never accept a prefix/unknown inode."""
+    info = private(path)
+    require(info.st_size == len(raw) <= LIMIT, 'Incomplete or unknown pending metadata')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        require(os.fstat(fd).st_ino == info.st_ino, 'Pending metadata changed')
+        found = b''
+        while len(found) <= LIMIT:
+            block = os.read(fd, LIMIT + 1 - len(found))
+            if not block: break
+            found += block
+        require(found == raw and path.lstat().st_ino == info.st_ino,
+                'Incomplete or unknown pending metadata')
+        if sync: os.fsync(fd)
+    finally:
+        os.close(fd)
+    return info.st_ino
+
+
+def atomic_bytes(path, raw, expected, *, suffix='.upgrade-tmp', recover_matching=False):
+    # Recovery is an internal explicit-rollback capability, never an upgrade CLI
+    # option. The caller must first bind its original transaction and app tuple.
     require(len(raw) <= LIMIT, 'Installation history exceeds limit; nothing was discarded')
     actual = gate.hash_file(path) if path.exists() else None
     require(actual == expected and not path.is_symlink(), 'Installation record version conflict')
-    temp = path.with_name(path.name + '.upgrade-tmp')
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'wb') as target:
-        target.write(raw); target.flush(); os.fsync(target.fileno())
+    temp = path.with_name(path.name + suffix)
+    if recover_matching and (temp.exists() or temp.is_symlink()):
+        inode = matching_pending(temp, raw, sync=True)
+    else:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            offset = 0
+            while offset < len(raw):
+                count = os.write(fd, raw[offset:])
+                require(count > 0, 'Pending metadata write made no progress')
+                offset += count
+            os.fsync(fd)
+            inode = os.fstat(fd).st_ino
+        finally:
+            os.close(fd)
     require((gate.hash_file(path) if path.exists() else None) == expected,
             'Installation record changed before commit; inspect pending transaction')
+    require(temp.lstat().st_ino == inode, 'Pending metadata changed before commit')
     os.replace(temp, path)
     fsync(path.parent)
     return hashlib.sha256(raw).hexdigest()
 
 
+def atomic_record(path, data, expected):
+    return atomic_bytes(path, (json.dumps(data, indent=2) + '\n').encode(), expected)
+
+
+def discard_matching_pending(path, raw):
+    inode = matching_pending(path, raw, sync=True)
+    require(path.lstat().st_ino == inode, 'Pending metadata changed before retirement')
+    os.unlink(path)
+    fsync(path.parent)
+
+
 def fsync(path):
-    fd = os.open(path, os.O_RDONLY)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def fsync_tree(root):
+    """Flush regular bundle files, then directories bottom-up. Not a power-loss test."""
+    require(root.is_dir() and not root.is_symlink(), 'Real bundle tree required for sync')
+    directories = [root]
+    for path in sorted(root.rglob('*')):
+        info = path.lstat()
+        require(not stat.S_ISLNK(info.st_mode), 'Linked bundle cannot be synced')
+        if stat.S_ISDIR(info.st_mode):
+            directories.append(path)
+        else:
+            require(stat.S_ISREG(info.st_mode), 'Special bundle file cannot be synced')
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                require(os.fstat(fd).st_ino == info.st_ino and stat.S_ISREG(os.fstat(fd).st_mode),
+                        'Bundle changed during sync')
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    for path in sorted(directories, key=lambda p: len(p.parts), reverse=True): fsync(path)
+    fsync(root.parent)
 
 
 def membership_metadata(profile):
@@ -347,7 +413,7 @@ def exchange(source, target):
     native.renamex_np.restype = ctypes.c_int
     if native.renamex_np(os.fsencode(source), os.fsencode(target), 2):
         raise OSError(ctypes.get_errno(), 'Atomic independent application exchange failed')
-    fsync(target.parent)
+    for parent in dict.fromkeys((source.parent, target.parent)): fsync(parent)
 
 
 def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=None):
