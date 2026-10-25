@@ -102,3 +102,25 @@ An original Desktop group checkpoint still needs a supported protected-backend
 interface and recovery fixtures; the transient profile transaction and application
 rollback are not permanent original-group recovery sources. No real group move or
 video/input/audio acceptance is implied by these build/package/fixture results.
+
+## Studio compatible install completed
+
+The single formal install_macos_desktop.py --upgrade --apply completed. Actual
+installed build is 20261025.10 with the same pinned d38bedce signer and bundle ID.
+The running background PID 69042 and frontend PID 69053 independently reported
+b79e3b9; executable SHA256 is
+66ef666ce608ed8af5699e7eac21d2cd7e2e5034d19ba9ade2dc4430ad0fa6b1.
+Install registry SHA256 is
+30eaf2d9dd3956daa05912ca37369e35a94685327f5b7ea2ca0eb1a3a8723c52.
+Public device/group/name stayed equal to the preflight, and launch plist SHA256
+remains 113253c0990cdc224f1a25c9d9025bb0731dd6aabcbfe4dedb0abb509cc7ea54.
+The new same-signer old-app rollback plan verified independently; the prior
+signer-transition rollback and retained legacy application remain present.
+
+Formal Computer Use read the actual new Weavelo window: original dark screen-first
+layout, compact top controls and Device & Network Control drawer. Devices is
+selected, This device is MacStudio.local, filter All, no devices in this filter,
+and the center reads Ready for incoming and outgoing sessions. No pairing page
+was opened or invitation captured. This verifies the idle rendered window only,
+not connected video/input/audio. Native install receipt remains at
+.rust-storage/validation-logs/b79e3b9-studio-compatible-upgrade.json.
