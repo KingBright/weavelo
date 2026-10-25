@@ -15,7 +15,7 @@ class UpgradeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
+        self.home = Path(self.temp.name).resolve()
         self.p = upgrade.transaction_paths(self.home)
         for name in ('app', 'profile', 'state'):
             self.p[name].mkdir(parents=True)

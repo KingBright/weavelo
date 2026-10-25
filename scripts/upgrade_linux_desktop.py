@@ -22,6 +22,7 @@ import uuid
 import zipfile
 
 import build_identity_gate as gate
+import linux_desktop_profile_launch as profile_launch
 import install_linux_independent as fresh
 from install_linux_desktop import sync
 from upgrade_macos_desktop import private, read_record, atomic_record, atomic_bytes, fsync_tree, discard_matching_pending
@@ -117,10 +118,15 @@ def check_mount_layout(paths):
                 'Exchange source/target belong to different mount IDs; no owner stopped')
 
 
-def loaded_exec(document,executable):
+def loaded_exec(document,executable,paths=None,*,profile_launch_preparing=False):
     require(set(document)=={'type','data'} and document['type']=='a(sasbttttuii)' and len(document['data'])==1,
             'One standard loaded Desktop ExecStart required')
     row=document['data'][0]
+    if paths is not None and profile_launch.authorize(paths,preparing=profile_launch_preparing):
+        require(len(row)==10 and row[2] is False and row[0]=='/usr/bin/env'
+                and row[1]==profile_launch.arguments(paths),'Loaded canonical profile launcher differs')
+        return {'executable':str(executable),'arguments':['--background-service'],
+                'ignore_failure':False,'canonical_profile_launcher':profile_launch.arguments(paths)}
     require(len(row)==10 and row[2] is False and isinstance(row[0],str) and
             isinstance(row[1],list) and len(row[1])==2 and row[1][1]=='--background-service'
             and Path(row[0]).resolve(strict=True)==executable and Path(row[1][0]).resolve(strict=True)==executable,
@@ -166,7 +172,12 @@ class Native:
             capture_output=True,text=True,timeout=15)
         require(result.returncode==0,'Loaded execution metadata unavailable')
         return json.loads(result.stdout)
-    def configuration(self):
+    def stopped_state(self):
+        r=subprocess.run(['systemctl','--user','show','--all','weavelo-desktop.service',
+                          '-p','MainPID','-p','ActiveState','-p','Job'],capture_output=True,text=True,timeout=15)
+        require(r.returncode==0,'Stopped supervisor observation unavailable')
+        return dict(line.split('=',1) for line in r.stdout.splitlines())=={'MainPID':'0','ActiveState':'inactive','Job':''}
+    def configuration(self,*,profile_launch_preparing=False):
         keys=['MainPID','ActiveState','SubState','UnitFileState','FragmentPath','DropInPaths','Restart','Job',
               'TriggeredBy','RestartForceExitStatus','ExecStop','ExecStopPost','OnSuccess','CPUWeight','TimeoutStopFailureMode',
               'NeedDaemonReload','ExecStartPre','ExecStartPost','ExecCondition']
@@ -183,11 +194,19 @@ class Native:
             and all(not fields[k] for k in ('Job','TriggeredBy','RestartForceExitStatus','ExecStop','ExecStopPost','OnSuccess','ExecStartPre','ExecStartPost','ExecCondition'))
             and fields['NeedDaemonReload']=='no'
             and Path(fields['FragmentPath']).resolve()==self.paths['service'],'Unknown activation or stop policy')
-        execution=loaded_exec(self.exec_property('ExecStart'),self.exe)
+        execution=loaded_exec(self.exec_property('ExecStart'),self.exe,self.paths,profile_launch_preparing=profile_launch_preparing)
         dropins={}
         for raw in fields['DropInPaths'].split():
-            p=Path(raw).resolve(strict=True);m=p.lstat()
+            original=Path(raw);p=original.resolve(strict=True);m=p.lstat()
+            require(original==p,'Linked service drop-in refused')
             require(m.st_uid in (0,os.getuid()) and stat.S_ISREG(m.st_mode) and not m.st_mode&0o022,'Untrusted service drop-in')
+            if p.parent==self.paths['service'].parent/(self.paths['service'].name+'.d') and p.name in ('profile.conf','relay.conf'):
+                dropins[str(p)]=dict(profile_launch.opaque_pin(p),opaque_environment_preserved=True)
+                continue
+            if p==profile_launch.location(self.paths):
+                require(profile_launch.authorize(self.paths,preparing=profile_launch_preparing),'Unverified canonical launcher')
+                dropins[str(p)]=profile_launch.opaque_pin(p)
+                continue
             lines=[s.strip() for s in p.read_text().splitlines() if s.strip() and not s.lstrip().startswith(('#',';'))]
             require(lines and lines[0]=='[Service]' and all(s.startswith(('CPUWeight=','TimeoutStopFailureMode=')) for s in lines[1:]),
                     'Unreviewed service drop-in semantics')
@@ -200,7 +219,8 @@ class Native:
             dropins[str(p)]={'sha256':gate.hash_file(p),'device':m.st_dev,'inode':m.st_ino,'uid':m.st_uid,'mode':stat.S_IMODE(m.st_mode)}
         policy={k:v for k,v in fields.items() if k not in ('MainPID','ActiveState','SubState','DropInPaths','UnitFileState')}
         return {'enabled':fields['UnitFileState'],'dropins':dropins,'policy':dict(policy,execution=execution),'active':fields['ActiveState'],
-                'substate':fields['SubState'],'pid':int(fields['MainPID'])}
+                'substate':fields['SubState'],'pid':int(fields['MainPID']),
+                'canonical_profile_launch':'canonical_profile_launcher' in execution}
     def frontend_busy(self):
         path=self.paths['profile']/'gui-state/desktop-instance.lock'
         before=private(path);private(path.parent,True)
@@ -343,6 +363,9 @@ class Upgrade:
         for key,(raw,_) in fresh.payloads(self.home,archive).items():
             require(gate.digest(raw)==fixed['entries'][key]['sha256'],'Candidate changes existing startup/UI entry; separate plan required')
         configuration=self.control.configuration();before=self.control.observe(old_sha)
+        opaque=any(row.get('opaque_environment_preserved') for row in configuration['dropins'].values())
+        require(not opaque or configuration.get('canonical_profile_launch') is True,
+                'Opaque environment preserved; explicit canonical profile launcher required before upgrade')
         return {'schema':1,'kind':'weavelo-independent-desktop-linux-upgrade','home':str(self.home),
                 'archive':str(Path(archive).resolve()),'pins':list(pins),'invariants':fixed,'old_image':old,
                 'old_sha256':old_sha,'new_sha256':manifest['binary_sha256'],'new_files':manifest['files'],

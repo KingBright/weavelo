@@ -267,3 +267,80 @@ transaction exists. No app exit, install, real group move or credential export
 was performed. Confidential invitation transport and protected original-group
 recovery remain separate required gates; mutual discovery, displayed video,
 input and audio remain physically unaccepted.
+
+## Formal package and reviewed old-version bootstrap continuation
+
+The release observer failure was not reproduced by one initial and three bounded
+fresh repetitions of its original before/arguments/after process contract. All
+four had complete command identity coverage; arguments were not disclosed.
+Read-only authority metadata then confirmed current_update absent, the old ZIP
+unchanged and all exact owned stage paths absent. With this new evidence, the
+same formal packager was attempted once, without modifying the observer or ELF.
+Operation 5e1ecdf7-3c2c-49f1-91cc-623ff01ddc53 completed exit 0,
+current_committed=true and cleanup_status=completed. Source remains 81d772c;
+packaging-source 0874351 differs only by the preceding evidence document.
+
+| Formal current Linux artifact | Binding |
+| --- | --- |
+| ZIP SHA-256 | 94bb46ede676ee94ad0e872064256f6ce754084d4cba1aed89f17918ebf22df2 |
+| ZIP bytes | 18316751 |
+| Manifest SHA-256 | c1f159415c44caa5b305cef5cfe9e198bbff197ad1f8c76578f2961eb6b4c334 |
+| Package receipt SHA-256 | d53240426a61064dfb1ba3086538ddb8fe1f38f7553b3c18010447d116301771 |
+
+The newly authorized bootstrap uses the old release's existing normal lifecycle,
+not an invented capability: its attached primary-window close handler releases
+input/closes sessions and calls cx.quit; its background awaits ctrl_c/SIGINT and
+shutdown_host. No SIGTERM handler was found. Source- and SHA-bound
+quit_linux_desktop_legacy.py obtains both native pidfds before requesting a single
+normal KWin close, then one SIGINT through the exact original background pidfd.
+Visible active/pending GUI work or a receive lease still refuses. Old releases
+cannot atomically freeze every new activity: receipts explicitly say this is
+normal quit, **not idle-only**. Timeouts/unknowns persist the intent and cannot
+replay. The ordinary upgrader remains unchanged in requiring the original owners
+stopped or supporting its normal upgrade API. In this bootstrap it runs only
+after those actual old process exits and all three stopped locks are confirmed.
+
+HO5 uses a Wayland window, so X11's client list did not identify the target. The
+existing KWin public scripting API exposed exactly one normal, closeable,
+non-dialog Weavelo window for native verified GUI PID 144550/start tick 117542761,
+UUID {3ce50827-6483-47a7-a87b-c870902a5d43}, matching Desktop application ID.
+The metadata-only temporary probe was unloaded; no window action occurred.
+Background PID/start tick were 144473/117542742. These are observations, never
+permanent PID constants: actual quit must recreate and compare its whole plan.
+KWin's documented closeWindow method is a normal compositor close request, not
+killWindow or injected desktop input ([KDE API](https://develop.kde.org/docs/plasma/kwin/api/)).
+
+An attempted complete /proc/PID/environ read was rejected by automatic review
+because filtering afterward still probes potentially private credentials. It did
+not execute, and was not retried through another process-environment reader.
+Instead linux_desktop_profile_launch.py adds one private, exclusively created
+drop-in with an exact /usr/bin/env public-profile assignment and direct product
+exec. Original unit/profile/relay files and their values remain untouched. The
+canonical value is explicitly applied after systemd environment processing, so
+no secret environment read or condition-to-exec race is needed. Native transient
+systemd fixture 78e8b1aa-aeba-4bab-b4da-e5707b744bab passed even with a synthetic
+wrong inherited value and UnsetEnvironment; the actual product unit was unchanged.
+
+The startup correction has its own durable create/reload record and explicit
+stopped-state backward removal, never auto-activation. Default authorization only
+accepts completed with no pending metadata. Incomplete/unknown files remain
+protected; complete matching terminal removal pending commits metadata only.
+Recorded inode/stat identity is rechecked immediately before removal. Application
+rollback retains this canonical startup correction; removing the correction is a
+separate stopped-state action, not a claim of fully restoring the original startup
+configuration while running. Original environment files are stat-pinned, never
+read/hashed/copied. Whole configuration CAS is part of both normal-exit boundaries.
+
+Independent source review found the four initial concrete issues fixed. Their
+new fixtures cover incomplete authorization, terminal recovery without reload,
+same-content inode replacement, and configuration drift before close/interrupt.
+The first fixed Studio regression exposed seven existing Windows-fixture errors
+because its temporary home retained macOS's /var alias; only the disposable home
+now resolves canonically, preserving the production linked-path rejection.
+Final native repetition, startup correction, normal exit, installation and actual
+media remain separate steps; no physical result is inferred from these fixtures.
+
+Reviewed Studio `./scripts/test_release.sh` completed **944 total, 919 passed,
+25 skipped**, zero failures (`/tmp/weavelo-linux-bootstrap-reviewed-release.log`).
+The focused startup set passed 18; the normal-exit set had 10 passed/1 native-Linux
+skip. Native Linux must execute that owned-child pidfd/SIGINT test before applying.
