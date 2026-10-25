@@ -324,6 +324,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         self.send_activity();
     }
     pub fn set_view_selected(&mut self, selected: bool) {
+        if self.view_selected && !selected { self.release_input(); }
         self.view_selected = selected;
         self.send_activity();
     }
@@ -475,6 +476,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             }
         } else if !self.conn.input_ready(self.video_id,self.source_revision) {
             "Waiting for this host to bind safe input to the current source"
+        } else if !self.view_selected {
+            "This view is not selected; remote control is paused"
         } else if !self.input_focused {
             "Weavelo window is inactive; remote control is paused"
         } else if self.paused || self.presentation_hidden || self.activity_pending.is_some() {
@@ -507,6 +510,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             && self.supports_input
             && self.conn.input_ready(self.video_id,self.source_revision)
             && !self.locked
+            && self.view_selected
             && self.input_focused
             && !self.paused
             && !self.presentation_hidden
@@ -1167,6 +1171,62 @@ mod static_input_tests {
         let decoded = now - Duration::from_secs(600);
         assert!(current_input_frame(Some(decoded), start, true));
     }
+    #[tokio::test]
+    async fn deselected_view_releases_input_while_another_consumer_keeps_payload_active() {
+        let (mut session, _received, recorder, _temp) = recorder_session().await;
+        let (video, _packets) = tokio::sync::mpsc::channel(1);
+        session
+            .conn
+            .subscribe(
+                session.request.clone(),
+                video,
+                session.stats.clone(),
+                session.host_stats.clone(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !session.conn.input_ready(session.video_id, 0) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Synthetic paint eligibility only. No capture, native window or OS input.
+        session.confirmed = true;
+        session.supports_input = true;
+        session.first_frame_after = Instant::now() - Duration::from_secs(1);
+        session.uploaded_at = Some(Instant::now());
+        session.uploaded_epoch = Some(session.stats.video_recovery.snapshot().epoch);
+        let background = session
+            .attach_consumer(1, remote_core::media_demand::MediaDemand::BOTH)
+            .unwrap();
+        let connection_id = session.conn.id;
+        let activity_revision = session.activity_revision;
+        assert!(session.can_input());
+        session.keys.insert(0);
+        session.mouse.insert(0);
+        session.modifiers = protocol::input_modifiers::SHIFT;
+
+        session.set_view_selected(false);
+
+        assert!(session.keys.is_empty(), "the unselected view must release held keys");
+        assert!(session.mouse.is_empty(), "the unselected view must release held buttons");
+        assert_eq!(session.modifiers, 0);
+        assert!(!session.can_input(), "another consumer's video cannot grant GUI input");
+        assert_eq!(session.input_status(), "This view is not selected; remote control is paused");
+        assert_eq!(session.payload_demand(), remote_core::media_demand::MediaDemand::BOTH);
+        assert_eq!(session.activity_revision, activity_revision);
+        assert!(!session.media_activity_pending());
+        assert_eq!(session.conn.id, connection_id);
+        assert!(session.connected);
+
+        session.set_view_selected(true);
+        assert!(session.can_input());
+        assert!(session.detach_consumer(background));
+        recorder.abort();
+    }
+
     #[tokio::test]
     async fn delayed_ack_and_poll_preserve_the_only_current_output_without_reusing_old_paint() {
         let (mut session, _received, recorder, _temp) = recorder_session().await;
