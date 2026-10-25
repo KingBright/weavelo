@@ -15,7 +15,6 @@ import plistlib
 import shutil
 import subprocess
 import sys
-import time
 
 import upgrade_macos_desktop as up
 import macos_release_guard as guard
@@ -190,6 +189,8 @@ def runtime_record(before):
 def validate_runtime_record(value):
     require(set(value) == {'loaded', 'gui', 'background'} and type(value['loaded']) is bool,
             'Unknown runtime restore state')
+    require(value['background'] is not None or value['gui'] is None,
+            'GUI-only state cannot be restored without its running background; no process was stopped')
     if value['gui'] is not None:
         require(set(value['gui']) == {'pid'} and type(value['gui']['pid']) is int and value['gui']['pid'] > 1,
                 'Known GUI restore state required')
@@ -208,19 +209,11 @@ def restore_runtime(control, desired, expected_sha):
         return control.start(desired, expected_sha)
     require(control.query('--background-status-json', False) is None and not control.owners(),
             'Unexpected owner before stopped-state restore')
-    if desired['gui'] is not None:
-        subprocess.run(['/usr/bin/open', '-n', str(control.paths['app']), '--args', '--gui'],
-                       check=True, capture_output=True, timeout=15)
-    deadline = time.monotonic() + 40
-    while True:
-        observed = control.before(expected_sha)
-        require(observed['loaded'] == desired['loaded'] and observed['background'] is None,
-                'Stopped background state changed during restore')
-        if bool(observed['gui']) == bool(desired['gui']): break
-        require(time.monotonic() < deadline, 'Frontend state not restored')
-        time.sleep(.5)
+    observed = control.before(expected_sha)
+    require(observed['loaded'] == desired['loaded'] and observed['background'] is None and observed['gui'] is None,
+            'Stopped runtime state changed during restore')
     return {'executable_sha256': expected_sha, 'loaded': observed['loaded'], 'background_pid': None,
-            'frontend_pid': observed['gui']['pid'] if observed['gui'] else None,
+            'frontend_pid': None,
             'runtime_membership_preserved': True}
 
 
@@ -476,20 +469,21 @@ def rollback(home, expected_transaction):
                 'User installation record changed; no restore attempted')
         control = up.NativeControl(p)
         expected_exe = c['current']['executable'] if side == 'old' else c['new_executable_sha256']
+        current = control.before(expected_exe)
+        current_record = runtime_record(current)  # Refuse GUI-only before any pending retirement, quit or exchange.
         data, sha, recovered = recover_checkpoint_pending(
             p, c, data, sha, side, registry_sha,
-            current_restore=lambda: runtime_record(control.before(expected_exe)))
+            current_restore=lambda: current_record)
         original_raw = (p['rollback'] / 'install.before.json').read_bytes()
         recover_registry_pending(p, c, data, original_raw, registry_sha)
-        current = control.before(expected_exe)
         if data['phase'] == 'rolled_back':
             return dict(data, rolled_back=True, outcome='rollback_commit_observed',
-                        runtime_observed=runtime_record(current), recovered_checkpoint=recovered)
+                        runtime_observed=current_record, recovered_checkpoint=recovered)
         # After completion preserve the currently running group's metadata/state;
         # an interrupted transition restores the original known running shape.
         restore = data.get('rollback_restore')
         if restore is None:
-            restore = runtime_record(current) if data['phase'] == 'completed' else data['before']
+            restore = current_record if data['phase'] == 'completed' else data['before']
         require(control.loaded() == restore['loaded'], 'Original launchd loaded state changed')
         membership = up.membership_metadata(p['profile'])
         data['rollback_restore'] = restore

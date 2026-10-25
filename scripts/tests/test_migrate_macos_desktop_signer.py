@@ -321,22 +321,58 @@ class SignerTransitionTests(unittest.TestCase):
         self.assertEqual(len(f.calls), count); self.assertEqual(extra.read_bytes(), b'keep')
 
     @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
-    def test_completed_stopped_background_rollback_preserves_loaded_and_gui_states(self):
-        for loaded, gui in [(True, False), (False, False), (True, True), (False, True)]:
-            with self.subTest(loaded=loaded, gui=gui):
+    def test_completed_stopped_background_without_gui_preserves_loaded_state(self):
+        for loaded in (True, False):
+            with self.subTest(loaded=loaded):
                 f = Fixture()
                 try:
-                    f.apply(); f.running = None; f.gui = gui; f.loaded = loaded
-                    def open_frontend(*a, **kw):
-                        self.assertEqual(a[0], ['/usr/bin/open', '-n', str(f.p['app']), '--args', '--gui'])
-                        f.gui = True
-                    with patch.object(migration.subprocess, 'run', side_effect=open_frontend):
-                        result = f.rollback()
+                    f.apply(); f.running = None; f.gui = False; f.loaded = loaded
+                    result = f.rollback()
                     self.assertTrue(result['rolled_back']); self.assertEqual(f.image(), b'old')
-                    self.assertEqual((f.loaded, f.running, f.gui), (loaded, None, gui))
+                    self.assertEqual((f.loaded, f.running, f.gui), (loaded, None, False))
                     self.assertIsNone(result['rollback_runtime']['background_pid'])
                     self.assertNotIn('start', f.calls[f.calls.index('start')+1:])
                 finally: f.close()
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
+    def test_gui_only_completed_rollback_refuses_before_quit_or_file_change(self):
+        for loaded, has_pending in ((True, False), (False, False), (True, True), (False, True)):
+            with self.subTest(loaded=loaded, has_pending=has_pending):
+                f = Fixture()
+                try:
+                    f.apply(); f.running = None; f.gui = True; f.loaded = loaded
+                    pending = f.p['state']/'signer-migration.json.upgrade-tmp'
+                    if has_pending:
+                        value = f.status()['transaction']
+                        value.update(phase='rollback_stopping', rollback_restore=value['before'])
+                        pending.write_bytes(migration.encoded(value)); pending.chmod(0o600)
+                    def snapshot():
+                        return (up.tree_digest(f.p['app']), up.tree_digest(f.rollback_app()),
+                                f.registry.read_bytes(), (f.p['state']/'signer-migration.json').read_bytes(),
+                                f.upgrade.read_bytes(), f.p['plist'].read_bytes(),
+                                up.membership_metadata(f.p['profile']), (f.loaded, f.running, f.gui),
+                                pending.read_bytes() if pending.exists() else None)
+                    before = snapshot(); stops, starts = f.calls.count('stop'), f.calls.count('start')
+                    with patch.object(up, 'exchange', side_effect=AssertionError('Must not exchange')), \
+                         patch.object(migration.subprocess, 'run', side_effect=AssertionError('Must not launch')):
+                        with self.assertRaisesRegex(guard.ReleaseRejected, 'GUI-only'): f.rollback()
+                    self.assertEqual(snapshot(), before)
+                    self.assertEqual((f.calls.count('stop'), f.calls.count('start')), (stops, starts))
+                    self.assertEqual(pending.exists(), has_pending)
+                finally: f.close()
+
+    def test_gui_only_forward_apply_refuses_before_staging_or_quit(self):
+        f = self.f; f.running = None; f.gui = True
+        # A completed source installation already owns this fixed installer lock.
+        lock = f.p['state'].parent/'.desktop-install.lock'; lock.write_bytes(b''); lock.chmod(0o600)
+        before = (up.tree_digest(f.p['app']), f.registry.read_bytes(), f.p['plist'].read_bytes(),
+                  up.membership_metadata(f.p['profile']), (f.loaded, f.running, f.gui))
+        with patch.object(up, 'exchange', side_effect=AssertionError('Must not exchange')):
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'GUI-only'): f.apply()
+        self.assertEqual(before, (up.tree_digest(f.p['app']), f.registry.read_bytes(), f.p['plist'].read_bytes(),
+                                 up.membership_metadata(f.p['profile']), (f.loaded, f.running, f.gui)))
+        self.assertEqual(f.calls, ['before']); self.assertFalse(f.rollback_app().parent.exists())
+        self.assertEqual(f.status()['phase'], 'not_started')
 
     @unittest.skipUnless(sys.platform == 'darwin', 'native directory exchange in disposable fixture')
     def test_stopped_restore_state_survives_a_rollback_checkpoint_interruption(self):
@@ -395,7 +431,8 @@ class SignerTransitionTests(unittest.TestCase):
                             f.rollback() if kind.startswith('rollback') else f.apply()
                     raw = pending.read_bytes(); before = list(f.calls); image = f.image()
                     with self.assertRaises((guard.ReleaseRejected, ValueError)): f.rollback()
-                    self.assertEqual(pending.read_bytes(), raw); self.assertEqual(f.calls, before)
+                    self.assertEqual(pending.read_bytes(), raw)
+                    self.assertEqual([x for x in f.calls if x != 'before'], [x for x in before if x != 'before'])
                     self.assertEqual(f.image(), image)
                 finally: f.close()
 
@@ -424,7 +461,7 @@ class SignerTransitionTests(unittest.TestCase):
             pending.write_bytes(migration.encoded(value)); pending.chmod(0o600)
             raw = pending.read_bytes(); count = len(f.calls)
             with self.assertRaises(guard.ReleaseRejected): f.rollback()
-            self.assertEqual(len(f.calls), count); self.assertEqual(pending.read_bytes(), raw)
+            self.assertEqual(f.calls[count:], ['before']); self.assertEqual(pending.read_bytes(), raw)
             pending.unlink()
 
     def test_ordinary_atomic_record_never_adopts_an_existing_complete_pending(self):

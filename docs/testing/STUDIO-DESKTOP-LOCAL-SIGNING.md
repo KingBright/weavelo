@@ -368,3 +368,51 @@ SHA-256 `32bcf9316165bf6a95fe7fc9096b5166f01afc35a9fb38057a07731d95954b44`。
 仍未实际安装/回滚或操作系统权限；现有身份和数据目录绑定不变，不重建或重签
 候选产品。父任务同时报告 NAS 协调者已在 06:17:49 完整读回交付的两个私有候选
 文件；本任务依此停止上传方向，不重复传输，该交付读回不是本任务独立执行。
+
+## 二次评审 GUI-only 最小补修与真实只读 plan
+
+二次独立评审确认：旧 `e4a57619` 的 attached GUI 在建窗口前需要连接后台，
+所以前轮 fixture 用 mock 将 GUI 直接改为存在，不能证明“后台停止但 GUI
+存在”的状态可以恢复。此前“四组合均支持”的描述作废。当前只支持后台运行
+时按原逻辑恢复 GUI，或**无 GUI、后台停止**时保留 loaded/unloaded；不扩展
+产品启动能力。
+
+`validate_runtime_record` 显式拒绝 GUI-only。rollback 在任何 pending 退役、
+checkpoint 写入、应用退出或文件交换前验证当前运行形态；前向 apply 同样在
+创建迁移 journal/staging 和退出前拒绝。删除停止后台分支中的 `open --gui`
+与等待循环，不再试图恢复无法建立的窗口。
+测试覆盖 loaded/unloaded 两种 GUI-only 状态及有/无原 pending，验证旧/新
+bundle 树、install/upgrade/journal/pending/plist 字节、membership 元数据及
+运行形态均不变，且没有 stop/start/exchange/launch。无 GUI 停止态的两种
+loaded 状态和中断恢复继续通过。
+
+本轮执行了新显式迁移机制的**真实只读 plan**，没有重试此前被拒绝的普通
+install/upgrade plan，也没有 apply。归档、源码、原/新证书及固定当前安装 pins
+全部通过。运行状态通过原认证 CLI 单独只读观察，不是截图、首帧或 GUI 点击
+验收，也不是 plan 对未来运行状态的保证；执行路径仍会重新检查。
+
+| 输入/观察 | 实际结果 |
+| --- | --- |
+| Bundle ID（两端相同） | `fun.hackerlife.weavelo.desktop` |
+| build | 当前 `20261023.16` → 候选 `20261025.9` |
+| 旧 leaf SHA-1 | `8eaa97365d97b8a987cdf1232430eddf9aba8ecf` |
+| 新 leaf SHA-1 | `d38bedce6830fb01240f97c11c7984514ab715c0` |
+| 候选编译源码 | `d722c5a9a2a974e1ceb0ab7e0712f699fe11e021` |
+| ZIP SHA-256 | `e9858f65390b0c5ed5f33a0a0cd1e75ca7d80153efb083569d423aed76be7165` |
+| 固定契约 canonical digest | `f5c2dc8a4dcf321b66d18859d4cff340f3caac15a10d0e59de43579d92b8dd44` |
+| plan digest | `bc3c0af7b6c89df6ba29118f2dc72e88c15863bd055c079afc5f6a5bdc80e2ba` |
+| 当时运行状态 | loaded=true，后台 PID `27882`，GUI PID `27890`，GUI-only=false |
+| applied | false |
+
+完整固定当前 executable/info/tree/install/upgrade/plist pins、候选
+source/identity/manifest/完整树、代码文件摘要和实际 plan 保存在
+`.rust-storage/validation-logs/studio-desktop-signer-gui-only-readonly-plan-20261025.json`，
+SHA-256 `6ab7543e9500fb2e146dacefbeb63061c9c9a8c790a92ddacf25edc24c8c17a7`。
+本轮源码摘要与该只读 plan 记录一致。
+
+定向 **total 39 / pass 39 / skip 0**；固定发布回归
+**total 856 / pass 833 / skip 23 / failure 0 / error 0**，最终日志
+`/tmp/weavelo-desktop-signer-gui-only-release-tests.log`。没有实际迁移/回滚、
+权限变化、NAS 操作或新签名/打包；候选继续等待独立评审。
+验证回执 `.rust-storage/validation-logs/studio-desktop-signer-gui-only-fix-validation-20261025.json`，
+SHA-256 `4dadbadd00bd2b2d53e82181f0180a2535f74492a266112a20aacb9fa29d1ce4`。
