@@ -564,3 +564,36 @@ class CargoContractTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class StableReleaseReadTests(unittest.TestCase):
+    def test_only_access_time_is_excluded_from_read_identity(self):
+        names=('st_dev','st_ino','st_uid','st_gid','st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+        values={name:index+1 for index,name in enumerate(names)}
+        before=SimpleNamespace(**values,st_atime_ns=1)
+        accessed=SimpleNamespace(**values,st_atime_ns=999)
+        self.assertEqual(hook.stable_identity(before),hook.stable_identity(accessed))
+        for name in names:
+            changed=dict(values);changed[name]+=1
+            self.assertNotEqual(hook.stable_identity(before),hook.stable_identity(SimpleNamespace(**changed,st_atime_ns=1)))
+    def test_first_read_after_old_atime_keeps_hash_and_document_valid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder).resolve()/'receipt';raw=b'{"synthetic":true}'
+            p.write_bytes(raw);p.chmod(0o600)
+            os.utime(p,ns=(1,time.time_ns()))
+            self.assertEqual(hook.hashed(p),(hashlib.sha256(raw).hexdigest(),len(raw)))
+            os.utime(p,ns=(1,time.time_ns()))
+            self.assertEqual(hook.document(p),(json.loads(raw),hashlib.sha256(raw).hexdigest()))
+    def test_content_protection_and_inode_changes_during_read_still_refuse(self):
+        for change in ('content','mode','inode','symlink'):
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as folder:
+                p=Path(folder).resolve()/'release';p.write_bytes(b'synthetic');p.chmod(0o600)
+                with self.assertRaises((hook.Refusal,OSError)):
+                    with hook.stable_read(p,'changed') as (source,_):
+                        source.read()
+                        if change=='content':p.write_bytes(b'changed')
+                        elif change=='mode':p.chmod(0o640)
+                        elif change=='inode':
+                            other=p.with_name('other');other.write_bytes(b'synthetic');os.replace(other,p)
+                        else:
+                            other=p.with_name('other');p.rename(other);p.symlink_to(other)

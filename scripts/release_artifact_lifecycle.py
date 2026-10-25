@@ -49,21 +49,37 @@ def regular(path):
     return path
 
 
+def stable_identity(info):
+    # A read may legitimately update atime (notably Linux relatime). Keep all
+    # object, ownership, protection and content-change fields in the CAS tuple.
+    return (info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode,info.st_nlink,
+            info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+
+@contextmanager
+def stable_read(path, message):
+    path=regular(path);before=path.stat()
+    fd=os.open(path,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_BINARY',0))
+    with os.fdopen(fd,'rb') as incoming:
+        require(stable_identity(os.fstat(incoming.fileno()))==stable_identity(before),message)
+        yield incoming,before
+        require(stable_identity(os.fstat(incoming.fileno()))==stable_identity(before),message)
+        require(stable_identity(regular(path).stat())==stable_identity(before),message)
+
+
 def hashed(path):
-    path = regular(path); before = path.stat(); value = hashlib.sha256()
-    with path.open('rb') as incoming:
-        for block in iter(lambda: incoming.read(1024 ** 2), b''):
-            value.update(block)
-    require(path.stat() == before, 'Release file changed while hashing')
-    return value.hexdigest(), before.st_size
+    value=hashlib.sha256()
+    with stable_read(path,'Release file changed while hashing') as (incoming,before):
+        for block in iter(lambda:incoming.read(1024**2),b''):value.update(block)
+    return value.hexdigest(),before.st_size
 
 
 def document(path):
-    path = regular(path); before = path.stat()
-    require(before.st_size <= 256 * 1024, 'Release receipt exceeds metadata bound')
-    raw = path.read_bytes()
-    require(path.stat() == before, 'Release receipt changed while reading')
-    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+    with stable_read(path,'Release receipt changed while reading') as (incoming,before):
+        require(before.st_size<=256*1024,'Release receipt exceeds metadata bound')
+        raw=incoming.read(256*1024+1)
+        require(len(raw)<=256*1024,'Release receipt exceeds metadata bound')
+    return json.loads(raw),hashlib.sha256(raw).hexdigest()
 
 
 def public(action, *arguments):

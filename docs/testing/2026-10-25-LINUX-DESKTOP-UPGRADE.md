@@ -124,3 +124,24 @@ be recorded after the source commit. Actual GUI exit/install/media acceptance is
 not established by these fixtures. The existing transport still lacks a verified
 private cross-device invitation stream; real checkpoint creation and group move
 remain paused without using terminal_input or ordinary files for secrets.
+
+## First native HO5 readback and release-read correction
+
+HO5 cleanly fast-forwarded to b02b26f. Its fixed release script completed **903
+total: 861 passed, 41 skipped, 1 error**, operation
+bb812f53-4abd-45dc-b945-bec3784dccc1, log
+`/tmp/weavelo-ho5-b02b26f-python.log`. The error was the existing Android publication
+fixture's first read: release_artifact_lifecycle.hashed compared the entire stat
+result, including access time. A Linux read can update that field without changing
+the release file. No Android package or real output was published by the fixture.
+
+The project-local adapter's hash/receipt readers now hold a fixed no-follow file
+descriptor and compare descriptor plus canonical-path identities: device, inode,
+UID/GID, mode, link count, size, mtime_ns and ctime_ns. Only atime is excluded. The
+receipt bound remains 256 KiB. Content/protection/inode/path changes still refuse;
+there is no change to the public storage authority, signing or producer gates.
+Three added fixtures cover first reads with old atime, exactly which fields remain
+protected, and content/mode/inode/symlink mutation during a read. Independent review
+found no concrete blocker. Studio fixed regression then passed **906 total, 882
+passed, 24 skipped**, zero failures (`/tmp/weavelo-release-stable-read-regression.log`).
+The native Linux repeat must pass before a formal candidate build starts.
