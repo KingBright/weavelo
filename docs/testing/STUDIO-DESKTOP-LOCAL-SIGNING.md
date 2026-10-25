@@ -416,3 +416,73 @@ SHA-256 `6ab7543e9500fb2e146dacefbeb63061c9c9a8c790a92ddacf25edc24c8c17a7`。
 权限变化、NAS 操作或新签名/打包；候选继续等待独立评审。
 验证回执 `.rust-storage/validation-logs/studio-desktop-signer-gui-only-fix-validation-20261025.json`，
 SHA-256 `4dadbadd00bd2b2d53e82181f0180a2535f74492a266112a20aacb9fa29d1ce4`。
+
+## Studio 显式迁移已执行（2026-10-25 07:04 UTC）
+
+主任务独立复核 `648feccb` 后确认原 P1/P2 无剩余阻断，明确调度一次受控显式
+迁移。没有重走此前拒绝的普通 install/upgrade。执行前持原安装锁重新检查无
+未知 journal/pending/rollback 冲突，旧安装/双 cert、`d722c5a9` ZIP 及完整树
+和 reviewed plan `bc3c0af7…` 完全一致。原 GUI/background 重新认证得到
+`27890` / `27882`（不是直接沿用历史 PID）。
+
+正式 `install_macos_desktop.py --migrate-signer … --apply` 只启动一次：
+2026-10-25 07:03:58.225605 UTC，PID `54659`；07:04:02.517367 UTC，exit 0，
+stderr 0 bytes，`phase=completed`、`applied=true`、`rollback_retained=true`。
+原控制器确认正常退出后交换；未 force quit、重放 apply、执行 rollback 或修改
+TCC/ACL/Gatekeeper/系统信任，未调用签名私钥。安装不等于新证书的捕获/输入/
+音频权限已经获准。
+
+| 独立读回 | 实际结果 |
+| --- | --- |
+| 当前 canonical App | `~/Applications/Weavelo/Weavelo.app`，build `20261025.9` |
+| 当前 leaf / DR | Desktop ID + `d38bedce6830fb01240f97c11c7984514ab715c0`，原生验签通过 |
+| 当前 executable SHA-256 | `301f80c39e9b8077194f037937c814861a474e794f3cc7e05707f84eaad791b2` |
+| 当前完整树 | `b7b78985a5a3d8d170c7edabc1f9116e98e74b3f5c3b6f95b5a62f9a5e904abc` |
+| 实际编译源码 | `d722c5a9a2a974e1ceb0ab7e0712f699fe11e021`，实际 `--product-info-json` 匹配 |
+| 默认 GUI | `restored-original-gpui`，compiled=true，无诊断后端替代 |
+| 实际运行 | loaded=true；后台 PID `54713`、frontend PID `54719`，均认证到新 executable |
+| 原 profile / 组 | 原 membership inode/size/mtime/ctime/mode/uid 元数据一致；启动前后运行组摘要一致 |
+| 原 launch plist | SHA-256 `113253c0990cdc224f1a25c9d9025bb0731dd6aabcbfe4dedb0abb509cc7ea54` 保持 |
+| 保留旧客户端 | `~/Applications/Weavelo.app` 原 executable 摘要保持，未替换 |
+| 持久回滚 | `.desktop-signer-rollback/Weavelo.app` 为原 `20261023.16`、旧 `8eaa…` leaf/DR；完整树 `2595dc59…` 原生验签通过；三个原元数据文件精确匹配 |
+| 新 install registry | SHA-256 `f185a9301bd18a9c472f5623b6db4252a4b75a73e206727aeaa19aea96520668` |
+| 原 transaction digest | `ca2c20824ab9cca46a35f28023dbbeb36a2c089b697638765c2022360733bfa0` |
+
+### 实际 GUI 与基本连接观察
+
+正式 CUA 绑定 **Desktop bundle ID** 的新 App，实际截图显示 Weavelo 窗口、
+原深色 GPUI、Device & Network Control 抽屉、Devices/Pairing/Files/Security/
+Settings 标签、`This device: MacStudio.local` 和
+`Ready for incoming and outgoing sessions`。点击 Edit name 实际打开名称编辑，
+可见原值、Save name / Use host name / Cancel；点击 Cancel 再回 Devices 成功。
+没有保存或恢复名称值，之后再次独立检查 profile 元数据及 plist 未变。
+
+**GUI 观察中的意外曝光：** Edit name 会转到 Pairing 页，该页同屏显示邀请凭据；
+该次 CUA 截图意外包含它。立即取消并回 Devices，已观察到凭据页关闭。
+没有复制、使用、转写邀请码或把该截图存入仓库/证据文件，后续不再截取该页；
+没有擅自轮换组或凭据。这里不声称截图未产生，也不把该交互当远程输入验收。
+
+后台及 GUI 的 owner/projection 一致：routes/unique_devices/online_devices 均
+为 0，Devices → All 实际显示无设备。控制和发现 relay 均 connected/active、
+HTTP 101，各 1 次 TLS/WebSocket upgrade，各 50 次 ping/pong，观察时最近 pong
+约 1360 ms，无 relay last_error。LAN discovery running=true，但 UDP 有 1 次
+send error（250 sends），另收到/解码 500 个 self packet；没有足够诊断将其
+归因于权限，未修改任何系统设置。Relay discovery 251 sends、0 send errors。
+
+因此基本 GUI 渲染/点击和 relay 连接有实际证据；**当前没有同组在线对端可发起
+端到端会话**。远端视频首帧、输入、音频、文件互传及长时验收均未完成，不以
+relay/WebSocket 成功代替。需一个既有同组设备在线后接续，不创建假 peer 或改组。
+
+### 本次原始回执（本地，未上传敏感 UI）
+
+| 文件（`.rust-storage/validation-logs/` 下） | SHA-256 |
+| --- | --- |
+| `studio-desktop-signer-migration-preapply-20261025.json` | `9b7cae680193c24cbbd569c657369f9904ab92c0e02532c80ce2ce86cc614fe4` |
+| `studio-desktop-signer-migration-apply-20261025.stdout.json` | `80da0bceee47c0366905c1b450fe12bb3711ec0ce644f5fb48a97043e409b868` |
+| `studio-desktop-signer-migration-independent-installed-20261025.json` | `4acf250c9a99511c0823418fba096d45a3326eacfdde6f695627207a52fa43ce` |
+| `studio-desktop-signer-migration-gui-network-20261025.json` | `4a255110aa7b7cd7388a5990745e635f18ab4dc32875a69f07e7eb6cc68721d8` |
+| `studio-desktop-signer-migration-delivery-outcome-20261025.json` | `85f1e8f3ce7bf325c3a4caf34226dfca17798843bed9b2c15593e404bb513d04` |
+
+本阶段没有产品源码或打包变更，没有重建/重签候选、没有重复 NAS 交付。
+固定代码回归保持此前记录的 total 856 / pass 833 / skip 23；本次另列真实安装
+与 GUI/连接证据，未将 fixture 计数充当实机测试计数。
