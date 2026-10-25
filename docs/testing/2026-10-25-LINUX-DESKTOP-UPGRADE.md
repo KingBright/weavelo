@@ -397,3 +397,38 @@ edited through version-checked Octendra changes in HO5's existing primary main
 while Studio's executor repeatedly disconnected. No new checkout/branch, product
 rebuild or published-package mutation was introduced. Installation and actual
 runtime/media results remain to be recorded separately.
+
+## HO5 installation result and pending runtime acceptance
+
+The strict stock-unit adapter was committed on HO5 main as
+c8892dc2794932426dd9320dd4c79bae93aaa557. The prior push operation
+9791918d-e6ae-4eb0-ac93-0f32350cbc44 timed out; a read-only remote ref
+check c53ee903-f974-4d7e-9679-28df21bcb1ed showed main still at 643fd6b.
+One retry d96b808e-5fb9-4286-9eeb-90cef50ff00e also timed out; read-only
+07c88932-6080-4621-9461-200db54b6b7a again showed remote main at 643fd6b.
+Do not infer that c889 is pushed or repeat a timed-out push without reading the
+remote ref first.
+
+The final real plan d92adf28-7a50-432c-9625-509fac9660ae was applicable
+and bound SHA-256 776c6bba63dc2a0b45d99c87dae24862ad5eeccbca4a261616ba54d022905bf9.
+Its one apply, operation b392d10d-0810-44ed-9188-f5868b827648, completed
+exit 0 as transaction 22ae314a-2e76-4b1e-a5d7-b67b72e04937. The installed
+ELF is source 81d772c7389d9e7f8deea03fb5e4f3dc55a9b774, SHA-256
+5aef25ca02fc7664ef6412d7466f3e32395f391f017984854905d961f685285a.
+It kept original profile/startup configuration and a rollback image.
+Independent status 4eb292ad-6808-41e3-a300-f4d5e277d579 verified phase
+completed, live_side=new, slot_state=verified, rollback_tuple_verified=true,
+pending_metadata=false, no owners and inactive supervisor. Direct installed ELF
+hash read 97dcc089-aa30-423a-b68f-7f85a9d5d2fe matched. Actual
+--product-info-json read deaba61d-4c2d-465c-bbec-37d20e737207 confirms the
+compiled original GPUI and native Linux video feature, not actual presentation.
+
+A single normal `systemctl --user start weavelo-desktop.service` request was
+automatically rejected because the reviewer treated the earlier Mac Studio GUI
+scope as the only authorization. After read-only unit confirmation, the exact same
+action was retried once and rejected again; neither request executed. Do not
+replace it with direct binary execution or another start route. The installed
+new app remains stopped; real background connection, GUI rendering, video,
+input and audio remain unverified. A secure invitation transport for the
+previously approved group move also remains unproven; no group credential,
+checkpoint or membership was changed.
