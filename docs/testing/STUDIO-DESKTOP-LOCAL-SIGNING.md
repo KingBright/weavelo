@@ -67,6 +67,18 @@ pipe 中使用，不进入 argv、环境、stdout、聊天、Git、Library 或 S
 DR 验证和旧要求拒绝测试，再进入正式打包。没有看到提示时如实反馈，不能假定
 提示存在或重复签名制造更多请求。
 
+用户随后回复“好了”。在独立确认旧 codesign 已退出、自有 fixture 不存在、原
+编译/包/回执和已安装 binary 摘要不变后，仅恢复了一次新的正常签名请求。
+这次第一步签名仍在 45 秒后超时，未进入第二次复用验证。原 runner 已杀死并
+等待该子进程，自有 fixture 随后清理；再次观察没有同用户 codesign 进程、
+没有新 signed release ZIP，也没有 native passing receipt。
+只读 Security.framework 访问列表元数据显示新密钥确有 `/usr/bin/codesign`
+条目；没有导出私钥、读取 SecurityAgent 界面或改变 ACL/partition-list。
+因此不能将这次超时解释成“证书未创建”，也不能将用户回复本身当作签名成功。
+失败不发布、错误身份拒绝和子进程退出后 abort 的三个固定 fixture 已通过。
+后续需要本机确认私钥访问步骤，并在下一次单个正常请求仍活动期间完成；
+不要改根信任、自动宽放 key ACL 或重复并发请求来尝试消除等待。
+
 ## 独立接续入口
 
 只读检查：`python3 -B scripts/setup_macos_desktop_signing.py status`。
