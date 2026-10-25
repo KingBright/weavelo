@@ -201,3 +201,69 @@ mode passed **12**, zero failures, source unchanged/group absent
 (`/tmp/weavelo-systemd-typed-property-release.log`), including **41** isolated
 upgrade fixtures. Native readback/build/package and actual installation remain
 separate gates.
+
+## Native candidate 81d772c and remaining admission gates
+
+HO5 repeated the fixed Python release regression on 7fd92f6: **915 total,
+874 passed, 41 skipped**, zero failures (operation
+ffcc014b-29db-4f8d-aa06-66f85fd14a53). Its native lifecycle compilation exposed
+E0507 in the Linux-only service policy branch: moving linux_service out of the
+static identity reference. Commit 81d772c borrows that field instead; independent
+source review found no remaining issue in that correction. The native fixed
+lifecycle mode then passed **12**, zero failures, with sources unchanged and its
+owned process group absent.
+
+The single formal native identity build used primary clean main 81d772c and the
+existing target/verified SDK; operation 74111879-ba5b-4903-993b-a305b6d5dfda
+completed exit 0. Build started 2026-10-25T12:53:06.675336Z (PID 1675513).
+This candidate includes the profile transaction and d138c7d lock-lifetime fix.
+
+| Binding | SHA-256 |
+| --- | --- |
+| Source snapshot | 7247a0d596cd9ff702f6e8e837e799ee783aaf1fce427cc3f5771fb8c5147950 |
+| Compiled identity | abb1efd97378fa80694e5f95ba5b9f71ff49b3dafe2eca6d0d4d208defd8b3f5 |
+| Compiler ELF | 5aef25ca02fc7664ef6412d7466f3e32395f391f017984854905d961f685285a |
+| Observed build receipt | 37479182ce03436ccf92db3037b5f295808e12fd3c8d90fe1aa70170fc6f4547 |
+
+The receipt is `.rust-storage/validation-logs/81d772c-linux-release.observed-build.json`
+on HO5. It executes the exact ELF's non-starting product-info entry and confirms
+restored-original-gpui, original GUI/native video compiled and Desktop identity.
+This is compilation/provenance evidence, not installed or physical media evidence.
+
+Formal packaging used the unchanged package_linux_desktop.sh wrapper through bash
+(the tracked wrapper has no executable bit; HO5's copy is 0600). Initial local
+orchestration path/mode checks failed before starting the packager and were read
+back, not treated as successful packaging. The actual packager started once at
+12:57:42.782867Z, PID 1682109, operation
+1e6feaa1-6c22-4d31-b587-3149f19690f3, and exited 1 at public release-admit:
+`Linux release observation unknown: process-command-identity-unconfirmed`.
+No alternate publisher, raw ZIP, observer exemption, process termination or
+permission change was used. The public helper remains outside this project's
+implementation ownership.
+
+Independent readback 2706a512-b307-4d8e-b92f-937af5b1a0c9 re-executed only the
+new ELF's product-info flag, verified the retained b79e3b9 ZIP and manifest, and
+confirmed its original SHA-256 a8e7561e2aff4a21bef6cf837fa96b0f1cc7e4d6b6293612df55d151540b1af5.
+The producer lock is free and the packaging auxiliary stage is absent. The HO5
+public helper does not advertise the newer --observe-only preflight option;
+no mutating preflight or manual registry cleanup was substituted for it.
+
+Two additional real installation gates remain. Existing private profile.conf and
+relay.conf drop-ins use Environment directives. Only paths, ownership/mode and
+directive names were observed; no values were read, hashed or reported. Merely
+preserving their stat tuple cannot establish that the next service activation
+uses the current runtime profile: a previously reloaded configuration can differ
+from its still-running process. Independent review therefore keeps activation
+blocked rather than weakening the gate. The running old GUI also lacks the new
+upgrade-quit capability, and the old background advertises shutdown.v1 but not
+shutdown-idle.v1; neither can be retrofitted by the candidate.
+
+Independent installed-state readback (operation
+0bffb67d-dfa4-4ab2-a526-ce34e1283c91) still found source
+26a9c0c21d9e74fa293f07c54e5a70ebbabdce37, ELF
+aded05f172f8caf87f60ee9d8cbc9cc5ae3b73521f5cff5c8778fec5f32b5d81,
+background PID 144473, GUI ok with zero pending/sessions and no lease. No upgrade
+transaction exists. No app exit, install, real group move or credential export
+was performed. Confidential invitation transport and protected original-group
+recovery remain separate required gates; mutual discovery, displayed video,
+input and audio remain physically unaccepted.
