@@ -585,6 +585,17 @@ pub struct AppPrivateMeshConfigStore<S = AppPrivateMeshSecretStore> {
     config_path: PathBuf,
     secret_store: S,
 }
+struct MeshProfileLock(fs::File);
+impl Drop for MeshProfileLock {
+    fn drop(&mut self) {
+        // A concurrent fork can briefly retain the same open file description
+        // until exec closes CLOEXEC descriptors. Closing only this owner's fd
+        // would leave its flock held after the transaction scope has ended.
+        // Unlock while ownership is still explicit, then close the descriptor.
+        // Failure still falls back to close; no retry or concurrency bypass.
+        let _ = self.0.unlock();
+    }
+}
 impl AppPrivateMeshConfigStore<AppPrivateMeshSecretStore> {
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();
@@ -621,7 +632,7 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
         private_file_metadata(&self.config_path)?;
         self.secret_store.validate_access()
     }
-    fn lock(&self) -> Result<fs::File, MeshStoreError> {
+    fn lock(&self) -> Result<MeshProfileLock, MeshStoreError> {
         self.validate_access()?;
         create_private_dir(&self.root_dir)?;
         #[cfg(unix)]
@@ -637,10 +648,11 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
             let opened = file.metadata().map_err(|e| MeshStoreError::io(path.clone(), e))?;
             if !same_profile_file(&before, &opened) { return Err(transaction_error("profile changed while locking")); }
             file.try_lock().map_err(|_| transaction_error("profile is busy; mutation/read refused"))?;
+            let lock = MeshProfileLock(file);
             validate_private_dir(path)?;
             let now = fs::symlink_metadata(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
             if !same_profile_file(&now, &opened) { return Err(transaction_error("profile lock changed; nothing replayed")); }
-            Ok(file)
+            Ok(lock)
         }
         #[cfg(not(unix))]
         {
@@ -651,10 +663,11 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
             let opened = file.metadata().map_err(|e| MeshStoreError::io(path.clone(), e))?;
             check_private_file(&path, &opened)?;
             file.try_lock().map_err(|_| transaction_error("profile is busy; mutation/read refused"))?;
+            let lock = MeshProfileLock(file);
             if private_file_metadata(&path)?.as_ref().is_none_or(|now| !same_profile_file(now, &opened)) {
                 return Err(transaction_error("profile lock changed; nothing replayed"));
             }
-            Ok(file)
+            Ok(lock)
         }
     }
 
@@ -2040,6 +2053,28 @@ mod tests {
             assert!(other.delete().is_err());
         }).join().unwrap();
         drop(lock);
+        assert_eq!(store.load().unwrap().unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn profile_lock_scope_releases_even_with_an_inherited_description() {
+        let temp = TempTree::new("transaction-inherited-lock");
+        let store = AppPrivateMeshConfigStore::new(&temp.root);
+        let before = store.load_or_generate("Original").unwrap();
+        let lock = store.lock().unwrap();
+        // dup models the same open-file-description reference retained across
+        // fork, deterministically and without spawning another test process.
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(store.load().is_err());
+        drop(lock);
+        assert_eq!(store.load().unwrap().unwrap(), before);
+        let next_owner = store.lock().unwrap();
+        drop(inherited);
+        // Closing an old inherited description must not unlock a later owner's
+        // independent open description.
+        assert!(store.load().is_err());
+        drop(next_owner);
         assert_eq!(store.load().unwrap().unwrap(), before);
     }
 

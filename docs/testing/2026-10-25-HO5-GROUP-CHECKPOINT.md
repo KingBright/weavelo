@@ -52,3 +52,37 @@ entries still need a reachable authenticated SSH stream or a dedicated nonloggin
 opaque stream attachment. No new listener, key, trust or plaintext fallback was
 introduced. Actual checkpoint creation, group change, mutual discovery and
 connected video/input/audio acceptance remain unperformed.
+
+## Native Linux fixture readback and profile-lock release
+
+HO5 fast-forwarded its clean primary main to 261b851. Its fixed Python regression
+completed: **871 total, 830 passed, 41 conditional skips**, zero failures; operation
+e513055a-cf4f-42ea-a5c4-d5f558219176. These include real Linux protection queries
+on disposable synthetic profiles. No real profile was opened by this helper.
+
+The first native mesh-profile run exited 101: **35 passed, 3 failed** with profile
+busy at sequential re-locks; the new helper-to-core recovery fixture passed.
+Receipt: `.rust-storage/validation-logs/mesh-profile-xxnuy26i.jsonl`, operation
+73204df9-3d48-44b2-99da-81265cb6c8b2. No process remained. A separate synthetic
+Linux descriptor probe (82661300-11b6-44e9-8b72-fcf8003c3108, exit 0) confirmed
+that a duplicated open-file-description retains flock after the owner's fd closes,
+and explicit unlock releases it while that duplicate remains open. Concurrent
+fork/exec in the new parallel fixture is a mechanism consistent with the failures;
+individual failed fork descriptor lifetimes were not traced.
+
+The core now uses a scoped lock guard: explicit unlock before close on normal,
+error and unwind paths. Successful acquisition is wrapped before later validation.
+No waiting, retry, lock bypass or test serialization was introduced. A deterministic
+dup regression verifies live-owner rejection, release with an inherited description
+still open, and that closing that old description cannot release a later owner's
+lock. Independent source review found no concrete blocker.
+
+Studio's final default-parallel fixed mesh-profile run passed **39 tests**, zero
+failures/ignored; sources unchanged and owned process group absent (receipt
+`.rust-storage/validation-logs/mesh-profile-fb2r0d8x.jsonl`). Fixed Python regression
+passed **871 total, 847 passed, 24 skips** in the ordinary local-user environment
+(`/tmp/weavelo-profile-lock-scope-release-native.log`). An earlier sandboxed run
+failed because HOME temporary fixtures and /bin/ps were denied; the fixed script
+and safety/acceptance thresholds were not changed. Linux repeat remains a separate
+readback after source synchronization. The installed/package b79e3b9 binaries do
+not contain this subsequent production lock-lifetime fix.
