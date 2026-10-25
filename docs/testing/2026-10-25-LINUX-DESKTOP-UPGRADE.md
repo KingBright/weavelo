@@ -423,12 +423,40 @@ hash read 97dcc089-aa30-423a-b68f-7f85a9d5d2fe matched. Actual
 --product-info-json read deaba61d-4c2d-465c-bbec-37d20e737207 confirms the
 compiled original GPUI and native Linux video feature, not actual presentation.
 
-A single normal `systemctl --user start weavelo-desktop.service` request was
-automatically rejected because the reviewer treated the earlier Mac Studio GUI
-scope as the only authorization. After read-only unit confirmation, the exact same
-action was retried once and rejected again; neither request executed. Do not
-replace it with direct binary execution or another start route. The installed
-new app remains stopped; real background connection, GUI rendering, video,
-input and audio remain unverified. A secure invitation transport for the
-previously approved group move also remains unproven; no group credential,
-checkpoint or membership was changed.
+The first two normal `systemctl --user start weavelo-desktop.service` requests
+were rejected by automatic review without execution. The delegated thread then
+received direct relevant authorization for ordinary HO5 Linux upgrade and service
+restart. After independent state readback cfc827d9-dc0d-44ec-9f09-ac6b9e82c960,
+one same-action retry 0cc1df44-54c3-48a4-aadb-353cb5c440f9 completed exit 0.
+Systemd readback dfd9455e-b21f-43a4-acd5-e2a6a9136045 showed active/running,
+MainPID 1772859 and the exact canonical profile launcher. /proc running-image
+check 8f50a14a-4eba-476b-a6a0-a8cff79a5c67 matched the installed release
+SHA-256. Product status 9e3cbe5c-d35f-45b5-9f10-a0ba8fa56111 confirmed
+role background-service, the same PID, image hash and canonical profile.
+
+The installed Desktop menu entry was invoked once by gtk-launch operation
+b8bbbcbb-a0d0-472d-a81b-1e360b1c68b4 and returned 0, but immediate GUI
+status/diagnostics were absent. With no GUI owner observed, one explicit normal
+`--gui` launch d8635677-187e-4311-a0b0-8285de514d91 started PID 1779219.
+Product status/diagnostics c3297de7-dc9d-4d8e-a000-343bc5fe0a12 then
+confirmed the same PID/generation, new image hash, restored-original-gpui and
+zero sessions. Targeted KWin metadata 7fcfe691-b356-429f-b541-e7e38d443835
+confirmed one normal non-dialog Weavelo window for that PID. This is actual
+window existence, not a visual screenshot or frame presentation proof. Background
+and GUI diagnostics 4bbf3649-f6d2-45d6-acb5-22637ed825f6 reported relay
+control and discovery both connected. Physical video, input, audio and long
+session tests remain unknown. Formal computer-use inspection of the Studio remote
+control app was denied, so no remote visual acceptance is claimed.
+
+HO5 main additionally contains evidence commit 023d633d33d420a3133239fda606f78ede76fea3.
+A dry-run push 6b26d1c2-6297-47b9-99b6-6b63be7a53c9 showed HO5 has no
+usable GitHub write credential. Studio's existing checkout stayed clean at
+643fd6b but its GitHub and gateway DNS failed. A verified 15,634-byte Git
+bundle of the two commits was created with SHA-256
+8497338addc40a4e6f4834054e5262a18a61f28c6f3f1149180f2f75320b66fd;
+the supported file-download link could not be resolved from Studio. An attempted
+terminal-output transfer was rejected by automatic review before execution and
+must not be retried or routed around. Neither commit is claimed pushed or synced.
+
+A secure invitation transport for the previously approved group move remains
+unproven; no group credential, checkpoint or membership was changed.
