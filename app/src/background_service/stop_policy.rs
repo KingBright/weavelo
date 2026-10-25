@@ -198,9 +198,9 @@ pub(super) fn verify(
         // systemctl versions may omit deprecated empty Exec* properties even
         // with --all. Require the original typed D-Bus property to prove empty;
         // absence alone never grants a normal/upgrade shutdown.
-        let unit=remote_core::desktop_identity::identity().linux_service;
+        let unit=&remote_core::desktop_identity::identity().linux_service;
         let document=output(Command::new("busctl").args(["--user","--json=short","get-property",
-            "org.freedesktop.systemd1",&systemd_object_path(&unit),"org.freedesktop.systemd1.Service","ExecStopPost"]))?;
+            "org.freedesktop.systemd1",&systemd_object_path(unit),"org.freedesktop.systemd1.Service","ExecStopPost"]))?;
         let completed=complete_empty_exec_stop_post(&String::from_utf8(bytes)?,&serde_json::from_slice(&document)?)?;
         validate_systemd(&completed, pid)?;
         Ok(())
