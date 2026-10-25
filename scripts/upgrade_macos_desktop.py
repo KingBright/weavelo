@@ -482,6 +482,11 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             checkpoint('staged')
             control = NativeControl(selected)
             before = control.before(current_pins['executable'])
+            import desktop_upgrade_rollback
+            rollback_record = desktop_upgrade_rollback.prepare(context, candidate_pins, candidate_tree, signed, archive_sha, before)
+            data['rollback'] = {'path': str(desktop_upgrade_rollback.slot(selected)),
+                                'record_sha256': gate.digest(desktop_upgrade_rollback.encoded(rollback_record)),
+                                'old_tree': context['tree']}
             data['owners_before'] = {'background_pid': (before.get('background') or {}).get('pid'),
                                      'frontend_pid': (before.get('gui') or {}).get('pid')}
             checkpoint('stopping')
@@ -512,6 +517,9 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             checkpoint('registry_committed')
             require(tree_digest(staged) == context['tree'] and tree_digest(selected['app']) == candidate_tree,
                     'Owned old staging changed; cleanup refused')
+            desktop_upgrade_rollback.verify_backups(selected, rollback_record, old=True)
+            require(gate.hash_file(desktop_upgrade_rollback.slot(selected) / 'rollback.json') == data['rollback']['record_sha256'],
+                    'Rollback record changed before cleanup')
             shutil.rmtree(stage)
             checkpoint('completed')
             return dict(data, applied=True, profile_preserved=True, launch_policy_preserved=True,

@@ -303,4 +303,68 @@ class NativeExitWatchTests(unittest.TestCase):
         with self.assertRaises(OSError):os.fstat(descriptor)
 
 
+
+class PersistentRollbackTests(unittest.TestCase):
+    setUp = UpgradeTests.setUp
+    make_app = UpgradeTests.make_app
+    signed = UpgradeTests.signed
+    archive_view = UpgradeTests.archive_view
+    current = UpgradeTests.current
+    apply = UpgradeTests.apply
+    app_bytes = UpgradeTests.app_bytes
+    @unittest.skipUnless(sys.platform == 'darwin', 'native atomic directory exchange')
+    def test_verified_old_slot_and_explicit_restore_preserve_exact_registry_and_profile(self):
+        import desktop_upgrade_rollback as rollback
+        old_registry = self.registry.read_bytes()
+        profile = upgrade.membership_metadata(self.selected['profile'])
+        self.apply()
+        root = rollback.slot(self.selected)
+        self.assertEqual((root/'Weavelo.app/Contents/MacOS/weavelo').read_bytes(), b'old-image')
+        self.assertEqual((root/'install.before.json').read_bytes(), old_registry)
+        reviewed = rollback.plan(self.home)
+        with patch.object(rollback.native, 'restore_runtime', return_value={'executable_sha256':self.signed(root/'Weavelo.app',guard.load_policy(guard.DESKTOP_POLICY_FILE))['executable_sha256']}):
+            result = rollback.rollback(self.home, reviewed['plan_sha256'])
+        self.assertTrue(result['applied'])
+        self.assertEqual(self.app_bytes(), b'old-image')
+        self.assertEqual(self.registry.read_bytes(), old_registry)
+        self.assertEqual(upgrade.membership_metadata(self.selected['profile']), profile)
+        self.assertEqual((root/'Weavelo.app/Contents/MacOS/weavelo').read_bytes(), b'new-image')
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'already started'):
+            rollback.rollback(self.home, rollback.plan(self.home)['plan_sha256'])
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native atomic directory exchange')
+    def test_post_quit_slot_registry_policy_and_pending_conflicts_refuse_before_exchange(self):
+        import desktop_upgrade_rollback as rollback
+        for change in ('bundle', 'registry', 'active_registry', 'policy', 'pending'):
+            with self.subTest(change=change):
+                # Each subtest is its own existing fixture; no previous slot is reused.
+                fixture = UpgradeTests('test_readonly_plan_preserves_membership_launch_policy_and_user_content')
+                fixture.setUp()
+                try:
+                    fixture.apply(); root = rollback.slot(fixture.selected)
+                    reviewed = rollback.plan(fixture.home)
+                    def mutate():
+                        if change == 'bundle': (root/'Weavelo.app/Contents/MacOS/weavelo').write_bytes(b'unknown')
+                        elif change == 'registry': (root/'install.before.json').write_bytes(b'{}')
+                        elif change == 'active_registry': fixture.registry.write_bytes(b'{}')
+                        elif change == 'policy': fixture.selected['plist'].write_bytes(b'changed')
+                        else: (fixture.selected['profile']/'mesh.secret-recovery').symlink_to('missing')
+                    fixture.stop_hook = mutate
+                    with self.assertRaises((guard.ReleaseRejected, OSError)):
+                        rollback.rollback(fixture.home, reviewed['plan_sha256'])
+                    self.assertEqual(fixture.app_bytes(), b'new-image')
+                    if change == 'active_registry': self.assertEqual(fixture.registry.read_bytes(), b'{}')
+                    else: self.assertEqual(json.loads(fixture.registry.read_text())['source'], fixture.pins)
+                finally: fixture.doCleanups()
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native atomic directory exchange')
+    def test_pending_profile_and_unknown_preexisting_slot_never_stop_owner(self):
+        import desktop_upgrade_rollback as rollback
+        root = rollback.slot(self.selected); root.mkdir(mode=0o700)
+        (root/'unknown').write_bytes(b'preserve')
+        with self.assertRaises((guard.ReleaseRejected, OSError)): self.apply()
+        self.assertNotIn('stop', self.calls)
+        self.assertEqual(self.app_bytes(), b'old-image')
+        self.assertEqual((root/'unknown').read_bytes(), b'preserve')
+
 if __name__=='__main__':unittest.main()
