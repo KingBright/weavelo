@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 import build_identity_gate as gate
+import desktop_identity as desktop
 
 def packaging_environment(build_env, inherited=None):
     """Respect an already chosen process policy; never choose or change one."""
@@ -121,6 +122,8 @@ def main():
         binary = target/'release/weavelo.exe'
         binary_hash = gate.hash_file(binary)
         info = gate.product_info(binary, expected, binary_hash)
+        gate.require(info.get('desktop_identity') == desktop.identity(),
+                     'The current Windows producer requires the independent Desktop namespace')
         helper_hash = None
         if args.with_input_helper:
             helper_command = ['cargo','build','--release','-p','weavelo_app','--example',
@@ -148,11 +151,12 @@ def main():
                 'commit':args.expected_commit,'binary_sha256':binary_hash,'receipt':str(receipt_path)}))
             return
         subprocess.run(['powershell.exe','-NoProfile','-File',str(repo/'scripts/package_windows_unified.ps1'),
-            '-SkipBuild','-BuildReceipt',str(receipt_path),'-FfmpegPath',str(args.ffmpeg)],cwd=repo,env=package_env,check=True)
+            '-Desktop','-SkipBuild','-BuildReceipt',str(receipt_path),'-FfmpegPath',str(args.ffmpeg)],cwd=repo,env=package_env,check=True)
         gate.require(gate.source_snapshot(repo,args.expected_commit,expected_patch=args.expected_patch)==source,
                      'Source changed during packaging')
         print(json.dumps({'build_identity_sha256':expected['identity_sha256'],'commit':args.expected_commit,
-            'binary_sha256':binary_hash,'receipt':str(receipt_path),'package':str(package/'Weavelo-Windows-x64.zip')}))
+            'binary_sha256':binary_hash,'receipt':str(receipt_path),
+            'package':str(package/'desktop/Weavelo-Windows-x64.zip')}))
     finally:
         if child is not None and child.poll() is None:
             subprocess.run(['taskkill.exe','/PID',str(child.pid),'/T','/F'],capture_output=True)

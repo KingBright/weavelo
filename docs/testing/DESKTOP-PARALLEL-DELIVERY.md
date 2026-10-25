@@ -145,6 +145,15 @@ already pinned binary's no-window ProductInfo path during packaging.
 
 ## Windows independent first install
 
+The native identity producer is `python -B scripts/build_windows_current.py
+--expected-commit COMMIT --build-only` in the existing Windows primary `main`
+checkout. It binds the source, native compiler environment and existing local
+cache without invoking PowerShell packaging. The shared macOS/Linux
+`build_identity_gate.py build` entry is not the Windows build entry. The native
+producer now selects `-Desktop` for its package call and reports the matching
+independent output; an unknown/retained compiled namespace cannot mint its
+current build receipt. A build receipt is not a package publication receipt.
+
 The original formal producer must first create
 `target/package/windows/desktop/Weavelo-Windows-x64.zip` using
 `package_windows_unified.ps1 -Desktop -SkipBuild -BuildReceipt ...`.
@@ -153,6 +162,13 @@ do not rebuild a successful binary for an installer-only change. Windows
 `Restricted` still blocks the formal PowerShell package scripts. This installer
 does not select an execution policy, reimplement packaging or consume a loose
 binary as an installable release.
+
+Current-output lifecycle integration remains a separate package gate: the
+PowerShell packager still replaces output without the original public
+`release-admit`/`release-publish` transaction. Do not infer deployment readiness
+from the corrected namespace routing or build-only receipt. The existing
+Windows producer, package policy checks and installer validation remain in place;
+no policy override or alternate output authority is supplied here.
 
 `python -B scripts/install_windows_independent.py` requires
 `--build-receipt-sha256`, `--expected-archive-sha256`, `--expected-commit`

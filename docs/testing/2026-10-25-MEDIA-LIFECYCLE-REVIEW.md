@@ -149,15 +149,39 @@ An independent archive/manifest verification passes, with no pending output
 paths. It is the existing unsigned Linux package type; no service was started.
 
 HO5 and cube primary workspaces were clean and fast-forwarded from `5d3a16b`
-to `d722c5a9`, with no new checkout or protected WIP overwritten. Windows remains
-blocked before a new formal build: the current shared identity producer
-explicitly supports native macOS/Linux only. The Windows packager can verify a
-historical Windows receipt but its default build path does not supply this
-producer contract, and its output replacement is not integrated into the public
-current-output transaction. No raw build, execution-policy change, historical
-producer replay or overwrite of the existing Windows package was attempted.
-Windows needs a reviewed native producer/transaction integration before a new
-source-bound package can be claimed.
+to `d722c5a9`, with no new checkout or protected WIP overwritten. The shared
+identity entry explicitly supports native macOS/Linux only, but the earlier
+conclusion that Windows has no current native producer was too broad:
+`scripts/build_windows_current.py` already supplies a primary-main Windows
+producer with the existing project-local cache, owned fixed identity inputs,
+compiler environment binding and actual ProductInfo verification. Its
+`--build-only` mode does not invoke PowerShell packaging or change policy.
+
+The follow-up corrects a concrete producer/packager mismatch: the producer now
+passes `-Desktop` to the existing packager and reports its actual independent
+`target/package/windows/desktop/Weavelo-Windows-x64.zip` output. It rejects an
+unknown or retained compiled namespace before minting the current receipt.
+Previously it omitted the flag, causing the packager to reject the independent
+binary, and reported the retained package path. The retained output is not
+selected by the corrected invocation.
+
+Three fixed synthetic-compiler fixtures drive the actual Python entry to check
+Desktop routing/receipt binding, namespace rejection and build-only separation.
+The focused Windows suite runs 14 tests with one native-Windows conditional
+skip. The required `./scripts/test_release.sh` suite then runs 808 tests with 23
+conditional skips, zero failures. Neither suite compiles or packages the real
+Windows product; cube is offline and no native acceptance is claimed. No
+execution-policy setting or installed application was changed.
+
+The Windows PowerShell packager still lacks the original public current-output
+transaction: its existing implementation removes old output before assembling
+the replacement. This separate delivery gate is not repaired by the namespace
+fix. A complete integration needs Windows implementations of the original
+helper's producer locks and scoped activity/reference checks, then the existing
+packager must consume `release-admit` staging and publish only after its original
+verification, preserving old current bytes on failure. This requires a reviewed
+native helper adaptation, not a second ledger, raw ZIP writer or alternate cache.
+No new Windows package was attempted during this follow-up.
 
 Small independent evidence is retained under `.rust-storage/validation-logs/`:
 `d722c5a9-macos-release-20261025.observed-build.json`,
@@ -168,8 +192,9 @@ Both producer transactions ended; Mac fixed identity inputs were removed by
 their owner and the identity state is empty. No cache cleanup was performed.
 
 Not eligible for deployment from this run. No NAS publication or application
-installation was performed. The signed Mac release and the new Windows producer
-remain incomplete, independently of the successful Linux candidate package.
+installation was performed. The signed Mac release and Windows package
+transaction/native acceptance remain incomplete, independently of the successful
+Linux candidate package and the existing Windows build-only entry.
 
 Physical acceptance remains separate: two-Mac pause/resume resource identities,
 fresh actual presentation and reliable input, controlled audio without replay,

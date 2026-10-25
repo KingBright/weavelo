@@ -1,4 +1,6 @@
 """Packaging preflight never grants policy or starts a compiler through a refusal."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -6,9 +8,82 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build_windows_current as windows
+
+
+class WindowsCurrentDeliveryTests(unittest.TestCase):
+    """Drive the native entry with a synthetic compiler, never real Windows input."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='weavelo-windows-current-')
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name).resolve()
+        (self.repo/'scripts').mkdir()
+        (self.repo/'VERSION').write_text('2.0.0-alpha.9')
+        self.target = self.repo/'target'
+        (self.target/'release').mkdir(parents=True)
+        (self.target/'release/weavelo.exe').write_bytes(b'synthetic compiler output')
+        self.ffmpeg = self.repo/'ffmpeg.exe'
+        self.ffmpeg.write_bytes(b'synthetic media dependency')
+        self.source = dict(commit='a'*40, git_tree='b'*40, state='clean',
+                           patch_sha256=None, snapshot_sha256='c'*64, file_count=1)
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(windows, '__file__', str(self.repo/'scripts/build_windows_current.py')))
+        stack.enter_context(patch.object(sys, 'platform', 'win32'))
+        stack.enter_context(patch.object(windows.gate, 'git', return_value=b'main'))
+        stack.enter_context(patch.object(windows.gate, 'build_environment', return_value={'PATH':'fixture'}))
+        stack.enter_context(patch.object(windows.gate, 'toolchain_digest', return_value='d'*64))
+        stack.enter_context(patch.object(windows.gate, 'environment_digest', return_value='e'*64))
+        stack.enter_context(patch.object(windows.gate, 'source_snapshot', return_value=self.source))
+        self.product = stack.enter_context(patch.object(windows.gate, 'product_info',
+            return_value={'desktop_identity':windows.desktop.identity()}))
+        stack.enter_context(patch.object(windows.subprocess, 'check_output',
+            return_value=json.dumps({'target_directory':str(self.target)}).encode()))
+        stack.enter_context(patch.object(windows.subprocess, 'CREATE_NEW_PROCESS_GROUP', 512, create=True))
+        self.compiler = stack.enter_context(patch.object(windows.subprocess, 'Popen',
+            return_value=Mock(wait=Mock(return_value=0), poll=Mock(return_value=0))))
+        self.preflight = stack.enter_context(patch.object(windows, 'packaging_preflight'))
+        self.package = stack.enter_context(patch.object(windows.subprocess, 'run'))
+        self.receipt = self.target/'package/windows/windows-current-build-receipt.json'
+
+    def run_entry(self, *options):
+        args = ['build_windows_current.py','--expected-commit','a'*40,
+                '--ffmpeg',str(self.ffmpeg),*options]
+        output = io.StringIO()
+        with patch.object(sys, 'argv', args), contextlib.redirect_stdout(output):
+            windows.main()
+        return json.loads(output.getvalue())
+
+    def test_independent_compiler_output_routes_only_to_desktop_package(self):
+        result = self.run_entry()
+        command = self.package.call_args.args[0]
+        self.assertIn('-Desktop', command)
+        self.assertIn('-SkipBuild', command)
+        self.assertEqual(command[command.index('-BuildReceipt')+1], str(self.receipt))
+        self.assertEqual(result['package'], str(self.target/'package/windows/desktop/Weavelo-Windows-x64.zip'))
+        self.assertEqual(json.loads(self.receipt.read_text())['build_identity']['source']['commit'], 'a'*40)
+        self.assertFalse((self.target/'package/windows/Weavelo-Windows-x64.zip').exists())
+
+    def test_retained_or_unknown_namespace_cannot_mint_current_receipt(self):
+        for namespace in (None, {'application_id':'fun.hackerlife.weavelo'}):
+            with self.subTest(namespace=namespace):
+                self.product.return_value = {'desktop_identity':namespace}
+                with self.assertRaisesRegex(windows.gate.IdentityRejected, 'independent Desktop namespace'):
+                    self.run_entry()
+                self.package.assert_not_called()
+                self.assertFalse(self.receipt.exists())
+                self.assertFalse((self.target/'.weavelo-windows-current.lock').exists())
+
+    def test_build_only_keeps_native_receipt_without_invoking_package_policy(self):
+        result = self.run_entry('--build-only')
+        self.assertEqual(result['stage'], 'build-only')
+        self.assertFalse(result['package_generated'])
+        self.assertTrue(self.receipt.is_file())
+        self.preflight.assert_not_called()
+        self.package.assert_not_called()
+        self.assertEqual(self.compiler.call_count, 1)
 
 
 class WindowsBuildEnvironmentTests(unittest.TestCase):
