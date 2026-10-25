@@ -1074,9 +1074,13 @@ mod static_input_tests {
             }
         });
         let temp = tempfile::tempdir().unwrap();
-        let (conn, events) = WorkspaceConnection::connect(addr, temp.path().join("receive"))
+        // This peer offers only media/input. Do not request file workers or
+        // inherit a user's paired group just to exercise this loopback fixture.
+        let (conn, events) = WorkspaceConnection::connect_media(addr)
             .await
             .unwrap();
+        assert!(!conn.files_available);
+        assert!(conn.file_commands.is_closed());
         let session = SessionState::<(), ()>::new(
             "loopback".into(),
             "Input recorder".into(),

@@ -52,10 +52,42 @@ eligibility, without a native window, screen capture or OS input injection.
   confirmed absent. No other producer was stopped or cache copied.
   Receipt: `.rust-storage/validation-logs/media-lifecycle-boundaries-undt2qxm.jsonl`.
 
-The desktop regression and client boundary tests still need a serial validation
-window in this existing target. Neither the new desktop test nor cross-platform
-retained-resource behavior is claimed as validated. This change is source only;
-it is not a build-identity receipt or release/deployment authorization.
+### Follow-up after the shared target became idle
+
+The two unfinished modes were resumed with their original 1800-second build and
+120-second test deadlines, using the same cache after observing that Forge had
+released it. The previous 805-test fixture suite and 25 core session tests were
+not repeated; their scopes were unchanged.
+
+The first desktop execution compiled successfully but reported two passes and
+three fixture failures before the target assertions. The recorder advertised
+`files=false` but used `WorkspaceConnection::connect`, which correctly rejected
+an unpaired native file session. The test-only fixture now uses the existing
+`connect_media` API and asserts that file capability is unavailable and its file
+command channel is closed. No production authentication rule, device group,
+permission or connection API was changed.
+
+- Failed fixture receipt: `.rust-storage/validation-logs/computer-use-input-holpd1a0.jsonl`.
+- Corrected `computer-use-input`: **5 passed, zero failed/ignored**, including
+  `deselected_view_releases_input_while_another_consumer_keeps_payload_active`.
+  Receipt: `.rust-storage/validation-logs/computer-use-input-lrspctfj.jsonl`.
+- `media-lifecycle-boundaries`: **3 passed, zero failed/ignored**: retained resume
+  IDR, watch/packet-ready ordering, and pause/resume through a full audio queue.
+  Receipt: `.rust-storage/validation-logs/media-lifecycle-boundaries-59pp0_wf.jsonl`.
+
+Both successful follow-up receipts confirm unchanged source hashes, successful
+post-observation and absence of their owned process groups. They validate the
+desktop model and synthetic payload queues, not cross-platform native resource
+retention or physical presentation.
+
+## Deployment assessment
+
+Not eligible for deployment from this run. The canonical
+`package/macos/Weavelo-macos-arm64.zip` was absent when checked, and this run did
+not create a formally observed build-identity receipt or an authorization-compatible
+signed package for the changed source. Library test compilation cannot replace
+the existing identity build, production packaging/signing and compatible install
+plan. No packaging, publication or installation was performed.
 
 Physical acceptance remains separate: two-Mac pause/resume resource identities,
 fresh actual presentation and reliable input, controlled audio without replay,
