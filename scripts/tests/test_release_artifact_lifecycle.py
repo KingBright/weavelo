@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import time
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'release_artifact_lifecycle.py'
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location('release_artifact_lifecycle_fixture', SCRIPT)
 hook = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hook)
@@ -94,6 +96,7 @@ class ReleaseHookTests(unittest.TestCase):
 
     def test_native_inherits_release_lock_through_bash(self):
         shutil.copy2(SCRIPT, self.root / 'scripts/release_artifact_lifecycle.py')
+        shutil.copy2(SCRIPT.with_name('lifecycle_preload_gate.py'), self.root / 'scripts/lifecycle_preload_gate.py')
         with hook.producer('android-release') as (fd, _):
             result = subprocess.run(['bash', '-c', 'exec "$1" -B "$2" check-lock android-native',
                                      'fixture', sys.executable, str(self.root / 'scripts/release_artifact_lifecycle.py')],
@@ -257,6 +260,7 @@ class ReleaseHookTests(unittest.TestCase):
 
     def test_upgrade_native_child_inherits_original_producer_and_exact_mode(self):
         shutil.copy2(SCRIPT, self.root/'scripts/release_artifact_lifecycle.py')
+        shutil.copy2(SCRIPT.with_name('lifecycle_preload_gate.py'), self.root/'scripts/lifecycle_preload_gate.py')
         with patch.dict(os.environ, {hook.ANDROID_UPGRADE_ENV: '1'}):
             with hook.producer('android-release') as (fd, _):
                 process = subprocess.run(['bash', '-c', 'exec "$1" -B "$2" check-lock android-native',
@@ -480,9 +484,18 @@ class ReleaseHookTests(unittest.TestCase):
         producer_lock = self.root / '.rust-storage/release-producer.lock'
         producer_lock.write_text('{}')
         producer_lock.chmod(0o600)
+        real_flock = hook.fcntl.flock
+        producer_flocks = iter([BlockingIOError(), None, None])
+        def scoped_flock(fd, operation):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                return real_flock(fd, operation)
+            result = next(producer_flocks)
+            if isinstance(result, BaseException):
+                raise result
+            return result
         with patch.object(hook, 'buffer_unsigned', return_value=(data, {})), \
              patch.object(hook.os, 'kill', side_effect=ProcessLookupError), \
-             patch.object(hook.fcntl, 'flock', side_effect=[BlockingIOError(), None, None]), \
+             patch.object(hook.fcntl, 'flock', side_effect=scoped_flock), \
              patch.object(hook.time, 'sleep') as wait, \
              patch.object(hook.subprocess, 'check_output', return_value='b'*40), \
              patch.dict(sys.modules, {'verify_release_apk': verifier}), \

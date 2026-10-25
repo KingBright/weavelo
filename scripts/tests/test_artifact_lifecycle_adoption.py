@@ -19,6 +19,7 @@ class LifecycleAdoptionInterfaceTests(unittest.TestCase):
         if not helper.is_file():
             raise unittest.SkipTest("rust-project-lifecycle helper is not installed")
         cls.helper_path = helper
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         spec = importlib.util.spec_from_file_location("rp_lifecycle_fixture_helper", helper)
         cls.helper = importlib.util.module_from_spec(spec)
         previous = sys.dont_write_bytecode

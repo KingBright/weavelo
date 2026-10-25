@@ -19,6 +19,8 @@ import subprocess
 import sys
 import time
 
+import lifecycle_preload_gate as gate
+
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = Path.home().resolve() / '.codex/skills/rust-project-lifecycle/scripts/rust_storage.py'
 AUTHORITY = 'docs/plans/ARTIFACT-LIFECYCLE-ADOPTION.json'
@@ -83,6 +85,12 @@ def document(path):
 
 
 def public(action, *arguments):
+    with gate.admission():
+        return _public(action, *arguments)
+
+
+def _public(action, *arguments):
+    gate.require_admitted()
     regular(HELPER)
     command = [sys.executable, '-B', str(HELPER), action, '--project', str(ROOT), *map(str, arguments)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=180)
@@ -179,10 +187,16 @@ def transition_config(kind):
 
 
 def verify_transition_producer(state, admission, phase='prepare'):
+    with gate.admission():
+        return _verify_transition_producer(state, admission, phase)
+
+
+def _verify_transition_producer(state, admission, phase='prepare'):
     transition = state.get('transition')
     if transition is None:
         return
     regular(HELPER)
+    gate.require_admitted()
     spec = importlib.util.spec_from_file_location('weavelo_transition_helper', HELPER)
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     require(phase in ('prepare', 'sealed'), 'Explicit transition phase is required')
@@ -212,6 +226,14 @@ def write_state(fd, state):
 
 @contextmanager
 def producer(kind):
+    with gate.admission():
+        with _producer(kind) as value:
+            yield value
+
+
+@contextmanager
+def _producer(kind):
+    gate.require_admitted()
     if LOCK_ENV in os.environ:
         yield check_lock(kind)
         return
@@ -592,6 +614,12 @@ def hold_unsigned():
 
 
 def check_current(output_directory):
+    with gate.admission():
+        return _check_current(output_directory)
+
+
+def _check_current(output_directory):
+    gate.require_admitted()
     # The JVM does not preserve arbitrary lock FDs when starting Python. The
     # public check verifies the transaction, process start identity and caller ancestry.
     regular(HELPER)
@@ -655,6 +683,12 @@ def run(kind, arguments):
 
 
 def main():
+    with gate.admission():
+        return _main()
+
+
+def _main():
+    gate.require_admitted()
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='action', required=True)
     command = commands.add_parser('run'); command.add_argument('kind', choices=ENTRIES)
@@ -695,6 +729,6 @@ if __name__ == '__main__':
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         sys.exit(main())
-    except (Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (Refusal, gate.Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f'RELEASE_LIFECYCLE_REJECTED: {error}', file=sys.stderr)
         sys.exit(2)

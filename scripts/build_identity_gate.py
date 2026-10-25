@@ -25,6 +25,29 @@ import zipfile
 
 from verify_desktop_gui import GuiReleaseRejected, validate as validate_gui
 
+# The installed lifecycle helper and its directory flock are POSIX-only.
+# Keep Windows package/receipt verification importable without starting a build.
+if os.name == 'posix':
+    import lifecycle_preload_gate as gate
+    GateRefusal = gate.Refusal
+else:
+    gate = None
+    class GateRefusal(RuntimeError):
+        pass
+
+
+def lifecycle_admission():
+    if gate is None:
+        raise GateRefusal('Native lifecycle producer admission is unavailable on this platform')
+    return gate.admission()
+
+
+def require_lifecycle_admitted():
+    if gate is None:
+        raise GateRefusal('Native lifecycle producer admission is unavailable on this platform')
+    gate.require_admitted()
+
+
 MANIFEST = 'weavelo-release-manifest.json'
 RENDERER = 'restored-original-gpui'
 LIMIT = 1024 ** 3
@@ -372,6 +395,12 @@ def compiled_module(expected: dict) -> bytes:
 
 
 def shared_target(repo: Path, requested: Path | None = None, *, lifecycle_binding: Path | None = None, allow_cross_linux: bool = False) -> Path:
+    with lifecycle_admission():
+        return _shared_target(repo, requested, lifecycle_binding=lifecycle_binding, allow_cross_linux=allow_cross_linux)
+
+
+def _shared_target(repo: Path, requested: Path | None = None, *, lifecycle_binding: Path | None = None, allow_cross_linux: bool = False) -> Path:
+    require_lifecycle_admitted()
     require(lifecycle_binding is None or sys.platform == 'linux' or (allow_cross_linux and sys.platform == 'darwin'), 'Explicit observation binding is Linux only')
     if sys.platform == 'linux' or (allow_cross_linux and lifecycle_binding is not None):
         # Linux already owns a project-local cache. Reconcile its original
@@ -681,6 +710,13 @@ def compiler_environment_record() -> dict:
 
 def process_integration(repo: Path, expected: dict, worker: Path, worker_sha: str,
                         output: Path) -> dict:
+    with lifecycle_admission():
+        return _process_integration(repo, expected, worker, worker_sha, output)
+
+
+def _process_integration(repo: Path, expected: dict, worker: Path, worker_sha: str,
+                         output: Path) -> dict:
+    require_lifecycle_admitted()
     """Release-only test harness under the original identity producer.
     This never emits an observed-build/package receipt or changes live authority.
     """
@@ -746,6 +782,13 @@ def process_integration(repo: Path, expected: dict, worker: Path, worker_sha: st
             'real_screen': False, 'os_input': False, 'release_authorized': False}
 
 def observed_build(repo: Path, expected: dict, target: Path | None = None, *, lifecycle_binding: Path | None = None, defer_linux_observation: bool = False) -> dict:
+    with lifecycle_admission():
+        return _observed_build(repo, expected, target, lifecycle_binding=lifecycle_binding,
+                               defer_linux_observation=defer_linux_observation)
+
+
+def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, lifecycle_binding: Path | None = None, defer_linux_observation: bool = False) -> dict:
+    require_lifecycle_admitted()
     """Only this fixed build path may mint a build receipt; no loose-binary import.
 
     Deferred Linux builds return a distinct pending compiler record, never an
@@ -1209,7 +1252,7 @@ def main() -> None:
                 else:
                     result.update(verify_running_linux(args.pid, args.canonical_executable, result['binary_sha256']))
         print(json.dumps(result, sort_keys=True, indent=2))
-    except (IdentityRejected, GuiReleaseRejected, OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile,
+    except (IdentityRejected, GuiReleaseRejected, GateRefusal, OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile,
             subprocess.SubprocessError) as error:
         # Do not echo private paths, raw native diagnostics, profile or key data.
         print(json.dumps({'identity_verified': False, 'reason': type(error).__name__,

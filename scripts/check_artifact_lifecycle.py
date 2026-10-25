@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import lifecycle_preload_gate as gate
+
 AUTHORITY = "docs/plans/ARTIFACT-LIFECYCLE-ADOPTION.json"
 BINDING = ".rust-storage/adoption.json"
 UNCOVERED = {"build_lock": False, "closure": False, "exact_apply": False, "ide": False}
@@ -28,6 +30,12 @@ def observe_only(binding):
 
 
 def invoke(helper, arguments):
+    with gate.admission():
+        return _invoke(helper, arguments)
+
+
+def _invoke(helper, arguments):
+    gate.require_admitted()
     command = [sys.executable, "-B", str(helper), *arguments]
     run = subprocess.run(command, capture_output=True, text=True, timeout=30)
     if run.returncode:
@@ -76,6 +84,12 @@ def metadata_bytes(path, root, label):
 
 
 def check(action, root, authority, binding_path, helper):
+    with gate.admission():
+        return _check(action, root, authority, binding_path, helper)
+
+
+def _check(action, root, authority, binding_path, helper):
+    gate.require_admitted()
     if action not in {"check", "dry-run"}:
         raise Refusal("only check and dry-run are supported")
     root = root.resolve()
@@ -137,7 +151,7 @@ def main():
         report = check(args.action, root, authority, binding, helper)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
-    except (Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (Refusal, gate.Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(json.dumps({"mode": "refused", "error": str(error), "candidates": []}), file=sys.stderr)
         return 2
 
