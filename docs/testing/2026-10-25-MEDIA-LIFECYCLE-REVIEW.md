@@ -82,12 +82,94 @@ retention or physical presentation.
 
 ## Deployment assessment
 
-Not eligible for deployment from this run. The canonical
-`package/macos/Weavelo-macos-arm64.zip` was absent when checked, and this run did
-not create a formally observed build-identity receipt or an authorization-compatible
-signed package for the changed source. Library test compilation cannot replace
-the existing identity build, production packaging/signing and compatible install
-plan. No packaging, publication or installation was performed.
+The initial test-only stage did not create a release candidate. Its earlier
+repository-relative ZIP check was insufficient: Cargo resolves production macOS
+output to `~/rust-target/package/macos`, and the independent Desktop namespace
+uses `Weavelo-desktop-macos-arm64.zip`.
+
+### Formal candidate follow-up
+
+Both native builds below consumed clean primary `main` source
+`d722c5a9a2a974e1ceb0ab7e0712f699fe11e021`, snapshot
+`3f52d939469af087f0885b9490c8fd2125e998e5f2983a4fd30c9cc29ae4a409`.
+The fixed `build_identity_gate.py build` entry reused each platform's existing
+cache. Both returned `observed-build` receipts, and separate queries executed
+the exact compiler outputs with `--product-info-json`, matching their receipts.
+They confirm original GPUI and native video compilation, not physical acceptance.
+
+| Evidence | Mac Studio | Linux HO5 |
+| --- | --- | --- |
+| Binary SHA-256 | `87769a12b4bbaa1e6487b0044aef5fbc51ba202ce738bc8e468f5ea0eb310b22` | `4235d63da42d73401de7cb1112885fadbfbe5364ac91ae8b45a84fdd6cf839ca` |
+| Build receipt SHA-256 | `430db7f1839ca5e66b24e3a6737a532a3ce5cd549f7448526ea28254be98a6b7` | `15ff7f50e43519597e36469ccd743862e3ab8fab572653bfc3a880e6152b190f` |
+| Compiled identity SHA-256 | `5e415e9e1cdfc89b4eec10085e73c140d7e5fa1dfdb1732327f652fa2fd39908` | `7ec65be683eb183487502c2a86a151bc11b84163abd5088c9b65f84c0f9aef8d` |
+
+On Studio, the release signing preflight **rejected** signing because the pinned
+identity `8eaa97365d97b8a987cdf1232430eddf9aba8ecf` is unavailable in the existing
+keychain search. The unrelated valid Remote Hosts certificate was not used.
+No certificate was created/imported, no key copied, and no security setting
+changed. The existing installed Desktop app independently passes its exact
+certificate/designated-requirement check at version `2.0.0-alpha.9`, build
+`20261023.16`, binary SHA-256
+`c50d0cafc0cfa2055210fbe7565105c5580f15a95e1dc9f22256e2576ea76d9c`.
+
+The existing explicit `package_macos_unified.sh --prepare-desktop` mode then
+completed through the original public transaction. Its current handoff archive
+is `~/rust-target/package/macos/Weavelo-desktop-macos-arm64.prepared.zip`,
+10,630,622 bytes, SHA-256
+`4911570d41ee66e922bd7dec90defff50349c21c247f8830a955027e8329fc55`.
+Its verification receipt SHA-256 is
+`8ae722b74d82ce93bc4814cf19b537f23c96e8f31652b1acb6443b06fb0083a7`.
+Independent preparation verification passes; the marker explicitly states
+`installable=false` and `signature_verified=false`. This is a handoff to the
+existing authorized signing machine, not a signed-release substitute. The signed
+Desktop ZIP remains absent. Completing signing requires that existing authorized
+signing environment; changing the pinned identity is outside this work.
+
+On HO5, the verified existing FFmpeg/Opus SDK bindings were included before
+configuration preparation. Both its installed trusted Linux activity companion
+and the current source hash to
+`5f6d67612014d2bdfc945cca8aa9d241d9c4c73b98d207ae578cea2d44e057c6`.
+The 2026-10-23 missing/metadata-only adapter report is historical: the later
+scoped process, open-file and launch-reference implementation is present.
+`bash scripts/package_linux_desktop.sh` completed normally through the sole
+public release authority; `current_committed=true`, cleanup completed. The
+initial direct wrapper invocation exited 126 before packaging: Git records the
+wrapper as mode 100644 and HO5 stores it as 0600. Calling its declared Bash
+interpreter changed no file permissions, mount options or validation rules.
+
+The current Linux archive is
+`/var/home/liang/workspace/remote_play/target/package/linux/Weavelo-desktop-linux-x64.zip`,
+18,245,308 bytes, SHA-256
+`f73f7ac56331877c2946e4dc76e11b6f8e03c062c333f6de15606a8c53c5a907`.
+Its manifest SHA-256 is
+`be35b5c5fdceea31a0ee3025b19b7ea8b26e441ca87d09c7d5ac996a638fd5b3`,
+verification receipt SHA-256
+`48a0135b78190e055975d5fe36877a4367c53b33a32fe73a3baaf57f9a437f03`.
+An independent archive/manifest verification passes, with no pending output
+paths. It is the existing unsigned Linux package type; no service was started.
+
+HO5 and cube primary workspaces were clean and fast-forwarded from `5d3a16b`
+to `d722c5a9`, with no new checkout or protected WIP overwritten. Windows remains
+blocked before a new formal build: the current shared identity producer
+explicitly supports native macOS/Linux only. The Windows packager can verify a
+historical Windows receipt but its default build path does not supply this
+producer contract, and its output replacement is not integrated into the public
+current-output transaction. No raw build, execution-policy change, historical
+producer replay or overwrite of the existing Windows package was attempted.
+Windows needs a reviewed native producer/transaction integration before a new
+source-bound package can be claimed.
+
+Small independent evidence is retained under `.rust-storage/validation-logs/`:
+`d722c5a9-macos-release-20261025.observed-build.json`,
+`d722c5a9-macos-preparation-independent-evidence-20261025.json`, and
+`d722c5a9-linux-package-independent-evidence-20261025.json`.
+The Linux native build receipt remains in the same evidence directory on HO5.
+Both producer transactions ended; Mac fixed identity inputs were removed by
+their owner and the identity state is empty. No cache cleanup was performed.
+
+Not eligible for deployment from this run. No NAS publication or application
+installation was performed. The signed Mac release and the new Windows producer
+remain incomplete, independently of the successful Linux candidate package.
 
 Physical acceptance remains separate: two-Mac pause/resume resource identities,
 fresh actual presentation and reliable input, controlled audio without replay,
