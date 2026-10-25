@@ -300,3 +300,25 @@ SHA-256 `e2c105e15df0e278e2cbb803181a42df8909e3eec906fb06bde29cbf45b37bdf`；
 `f5c2dc8a4dcf321b66d18859d4cff340f3caac15a10d0e59de43579d92b8dd44`。
 本轮候选实现待独立评审；实际安装、启动后系统权限、GUI/视频/输入/音频及
 真实回滚仍未验收。没有以 disposable exchange fixture 代替这些实机项目。
+
+### NAS 私有候选准入更新（06:11 UTC，仅本地就绪核对）
+
+协调者提供 06:07 独立读回的新私有接收契约，目标为
+`/volume1/@entware-opt/remoteplay/release-evidence/desktop-candidates/macos-arm64-20261025.9-d722c5a9a2a9-e9858f65390b/`。
+目录 0700、准入/策略文件 0600，无公开 Caddy 映射，overwrite=deny。
+`ADMISSION.json` SHA-256
+`f3ef665f3c602a915356af7ef24ef0f72c41449fad92d95d67c7b0fce709e77c`。
+本地原 ZIP 10487048 bytes / `e9858f…` 与 verification JSON 1042 bytes /
+`4431a4…` 均匹配该独立回执；仍是原 `d722c5a9…` 编译候选，不是本轮迁移
+脚本提交的重编译包。
+
+已发现正式 `octendra_upload_file` 支持 exact SHA、mode、overwrite=deny，但它
+依赖原登记 pooled SSH 路由。06:11:20 只读 runtime 仍为
+`ssh_handshake_failed` / disconnected，connector healthy，未证明恢复。
+本任务因此没有读取远端最新准入、排队上传、重试失败 SSH 或替换 route；
+远端 payload 缺失只在协调者 06:07 回执中得到确认，不声称当前已交付。
+由 NAS 协调者使用其已验证路径接续，或先恢复原登记上传路线。
+
+本地核对回执
+`.rust-storage/validation-logs/studio-desktop-private-delivery-readiness-20261025.json`，
+SHA-256 `41f0c2bb6cbc5f52f26e3cadf99507194188242324ac86eb2a3c5f43caac1001`。
