@@ -193,10 +193,18 @@ AGENTS.md 要求 “Certificate rotation requires an explicit reviewed migration
    install / plist 实测摘要，目标只接受同 ID + 新 `d38b…` leaf + 已验证的
    `20261025.9` ZIP / manifest / compiler-source pins。拒绝任意 signer、
    appID、路径及环境覆盖，不将旧 leaf 加入普通新包允许列表。
-2. 沿用本人锁、只读预检、正常 GUI/service quit、固定路径原子交换、版本绑定
-   journal 与现有唯一 rollback app。迁移前独立验旧签名，提交前独立验新签名；
+2. 沿用本人锁、只读预检、正常 GUI/service quit、固定路径原子交换与版本绑定
+   journal。更正前稿：现有 Desktop 升级成功后会删除交换留下的旧 staging，
+   **没有现成的持久 rollback App**；迁移实现须补充固定的本人 0700 目录
+   `~/Applications/Weavelo/.desktop-signer-rollback/`，保留未重签的旧
+   `Weavelo.app`、原 install/upgrade journal、原 launch plist 及旧/新签名和
+   文件树元组回执。该位置若已有未知内容则拒绝，不覆盖或清理；仅保留这一个
+   回滚元组，不创建多代归档。迁移前独立验旧签名，提交前独立验新签名；
    崩溃/未知结果只能从原 journal 和实际 bundle 元组读回，不能重放 apply。
    rollback 明确使用源策略验证旧 bundle，不能用新策略误判或重签旧 App。
+   交换后的受控失败可恢复此精确旧元组及原运行状态；未知结果保留新旧两端，
+   先按原 journal 观察。完成后的回滚必须是独立显式、绑定该回执的操作，
+   不自动删除已验证旧 App 或恢复应用运行后可能已变化的用户数据。
 3. 保留 Desktop profile、设备成员身份和现有 launch plist；不复制/读出 secret，
    不修改旧 `fun.hackerlife.weavelo` App/数据。记录 membership 元数据及原
    launch 状态，拒绝并发变更，不新建第二 profile、网络 runtime 或 launch job。
