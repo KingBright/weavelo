@@ -86,3 +86,13 @@ failed because HOME temporary fixtures and /bin/ps were denied; the fixed script
 and safety/acceptance thresholds were not changed. Linux repeat remains a separate
 readback after source synchronization. The installed/package b79e3b9 binaries do
 not contain this subsequent production lock-lifetime fix.
+
+Final HO5 native readback completed after clean fast-forward to d138c7d: default
+parallel fixed mesh-profile **39 passed, 0 failed, 0 ignored**, source unchanged,
+owned process group absent, exit 0. Original operation
+2ae2ea50-68a1-454b-969d-c6cdca10eaa3 was independently observed exited/succeeded;
+log `/tmp/weavelo-ho5-lock-scope-core-d138c7d.log`. This includes the real Linux
+helper-to-core backward recovery and both descriptor-lifetime assertions. The
+earlier 35/3 result is retained above rather than presented as passed. No product
+build, install, live checkpoint, invitation export or group change ran in this
+follow-up; all owned validation processes have ended.
