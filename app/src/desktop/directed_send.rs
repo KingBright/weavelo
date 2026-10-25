@@ -91,6 +91,7 @@ mod sender {
             source: String,
             target: String,
             routes: Vec<(String, SocketAddr)>,
+            upgrade_operation: super::super::upgrade_quit::Operation,
         ) -> Self {
             let (stop, mut cancelled) = tokio::sync::watch::channel(false);
             let heartbeat = Arc::new(Mutex::new(Instant::now()));
@@ -99,6 +100,7 @@ mod sender {
             let progress = status.clone();
             let peer = target.clone();
             let task = tokio::spawn(async move {
+                let _upgrade_operation=upgrade_operation;
                 let result = run(
                     profile,
                     generation,

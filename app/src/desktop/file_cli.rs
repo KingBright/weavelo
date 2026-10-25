@@ -100,9 +100,10 @@ fn refresh(owner: &OriginalOwner, generation: &str, record: &mut Record) {
         record.detail = snapshot.detail.clone();
     }
 }
-fn launch(owner: Arc<OriginalOwner>, path: PathBuf, mut record: Record) {
+fn launch(owner: Arc<OriginalOwner>, path: PathBuf, mut record: Record, operation:super::upgrade_quit::Operation) {
     let scope = remote_core::shared_files::current_share_scope();
     tokio::spawn(async move {
+        let _operation=operation;
         if let Err(error) = send(&owner, &path, &mut record, scope).await {
             record.state = if record.connection_id.is_some() {
                 "not_confirmed"
@@ -259,6 +260,7 @@ pub(crate) fn dispatch(
     generation: &str,
     id: &str,
     action: Action,
+    operation: super::upgrade_quit::Operation,
 ) -> Result<serde_json::Value, Error> {
     let configuration = crate::UnifiedRuntimeConfig::from_env()?;
     dispatch_scoped(
@@ -268,6 +270,7 @@ pub(crate) fn dispatch(
         generation,
         id,
         action,
+        operation,
     )
 }
 fn settings_profile<'a>(
@@ -290,6 +293,7 @@ fn dispatch_scoped(
     generation: &str,
     id: &str,
     action: Action,
+    operation: super::upgrade_quit::Operation,
 ) -> Result<serde_json::Value, Error> {
     let profile = settings_profile(control_directory, &configuration.mesh_dir)?;
     if !valid_id(id) {
@@ -363,7 +367,7 @@ fn dispatch_scoped(
                         .into();
                 save(&path, &record)?;
                 let reply = response(&record)?;
-                launch(owner, path, record);
+                launch(owner, path, record, operation);
                 return Ok(reply);
             }
             let mut result = response(&record)?;
@@ -422,7 +426,7 @@ fn dispatch_scoped(
             // The reservation survives a disconnected caller or GUI restart. It
             // is never deleted or automatically replayed, including after failure.
             let reply = response(&record)?;
-            launch(owner, path, record);
+            launch(owner, path, record, operation);
             Ok(reply)
         }
         Action::Peers | Action::SetEnabled { .. } => unreachable!(),
@@ -622,6 +626,8 @@ mod tests {
     fn receipt_directory_initializes_once_and_rejects_an_existing_link() {
         let fixture = tempfile::tempdir().unwrap();
         let gui = fs::canonicalize(fixture.path()).unwrap();
+        #[cfg(unix)]
+        { use std::os::unix::fs::PermissionsExt; fs::set_permissions(&gui,fs::Permissions::from_mode(0o700)).unwrap(); }
         let selected = directory(&gui).unwrap();
         assert_eq!(directory(&gui).unwrap(), selected);
         crate::private_ipc::private_directory(&selected).unwrap();
@@ -724,6 +730,7 @@ mod tests {
             "gui-1",
             "query-1",
             Action::Peers,
+            super::super::upgrade_quit::Operation::begin(&Default::default()),
         )
         .unwrap();
         assert_eq!(peers["stored_file_transfer_enabled"], false);
@@ -755,6 +762,7 @@ mod tests {
             "gui-1",
             "send-1",
             Action::Status,
+            super::super::upgrade_quit::Operation::begin(&Default::default()),
         )
         .unwrap();
         assert_eq!(status["file_request"]["request_id"], "send-1");

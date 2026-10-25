@@ -154,6 +154,10 @@ impl Broker {
             s.tickets.remove(&k);
         }
     }
+    pub fn upgrade_busy(&self) -> bool {
+        let state=self.state.lock().unwrap();
+        !state.tickets.is_empty() || state.incoming.values().any(|offer|offer.alive())
+    }
     pub fn set_identity(&self, id: String) {
         self.state.lock().unwrap().identity = Some(id);
     }

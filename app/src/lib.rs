@@ -1655,11 +1655,15 @@ impl UnifiedServiceOwner {
     #[cfg(target_os = "linux")]
     pub fn local_portal_shares(&self) -> Option<mpsc::Sender<host::service::LocalPortalShareCommand>> { self.local_portal_shares.clone() }
 
-    pub async fn shutdown_host(&self) -> Result<(), String> {
+    pub async fn shutdown_host(&self) -> Result<(), String> { self.shutdown_host_mode(false).await }
+
+    pub async fn shutdown_host_if_idle(&self) -> Result<(), String> { self.shutdown_host_mode(true).await }
+
+    async fn shutdown_host_mode(&self, idle_only: bool) -> Result<(), String> {
         let Some(sender) = &self.host_shutdown else { return Ok(()); };
         let (reply, result) = tokio::sync::oneshot::channel();
         tokio::time::timeout(Duration::from_secs(8), async {
-            sender.send(host::service::ShutdownRequest { reply }).await.map_err(|_| "Host control owner unavailable")?;
+            sender.send(host::service::ShutdownRequest { reply, idle_only }).await.map_err(|_| "Host control owner unavailable")?;
             result.await.map_err(|_| "Host cleanup receipt unavailable")?
         }).await.map_err(|_| "Host cleanup timed out; no confirmed stop".to_string())?
     }

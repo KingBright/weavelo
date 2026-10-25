@@ -107,7 +107,7 @@ fn handle_maintenance_command() -> Result<bool, Box<dyn Error + Send + Sync>> {
     }
 
     match command.as_str() {
-        "--gui-status-json" | "--gui-network-diagnostics-json" | "--gui-receive" | "--gui-stop-receive" => {
+        "--gui-status-json" | "--gui-network-diagnostics-json" | "--gui-receive" | "--gui-stop-receive" | "--gui-upgrade-quit-json" => {
             #[cfg(all(any(unix, windows), feature = "gpui-restoration"))]
             {
                 let config = weavelo_app::UnifiedRuntimeConfig::from_env()?;
@@ -118,13 +118,14 @@ fn handle_maintenance_command() -> Result<bool, Box<dyn Error + Send + Sync>> {
             #[cfg(not(all(any(unix, windows), feature = "gpui-restoration")))]
             { Err("The private GUI receive adapter is available on macOS/Linux".into()) }
         }
-        "--background-stop-json" => {
-            if args.next().is_some() { return Err("--background-stop-json takes no extra arguments".into()); }
+        "--background-stop-json" | "--background-upgrade-stop-json" => {
+            let pins=args.collect::<Vec<_>>();
+            if (command=="--background-stop-json" && !pins.is_empty()) || (command=="--background-upgrade-stop-json" && pins.len()!=3) {return Err("Normal stop takes no arguments; upgrade stop requires expected generation, SHA256 and PID".into());}
             #[cfg(any(unix, windows))]
             {
                 let config = weavelo_app::UnifiedRuntimeConfig::from_env()?;
                 let client = weavelo_app::background_service::Client::connect(&config.mesh_dir)?;
-                println!("{}", client.shutdown_verified()?);
+                println!("{}", if command == "--background-upgrade-stop-json" {client.shutdown_upgrade_verified(&pins[0],&pins[1],pins[2].parse()?)?} else {client.shutdown_verified()?});
                 Ok(true)
             }
             #[cfg(not(any(unix, windows)))]

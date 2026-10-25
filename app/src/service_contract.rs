@@ -13,6 +13,7 @@ pub const SNAPSHOT: &str = "snapshot.v1";
 pub const PAIRING: &str = "pairing.v1";
 pub const CONNECTION_DIAGNOSTICS: &str = "connection-diagnostics.v1";
 pub const SHUTDOWN: &str = "shutdown.v1";
+pub const UPGRADE_SHUTDOWN: &str = "shutdown-idle.v1";
 const MAX_CAPABILITIES: usize = 32;
 const MAX_CAPABILITY_BYTES: usize = 96;
 
@@ -50,7 +51,7 @@ pub fn current_offer() -> Offer {
     let mut capabilities = [SNAPSHOT, PAIRING, CONNECTION_DIAGNOSTICS].map(str::to_owned).to_vec();
     // Only the installed macOS/Linux service policy has a reviewed stop path.
     // Windows standalone Quit still cleans its own embedded host directly.
-    if cfg!(any(target_os = "macos", target_os = "linux")) { capabilities.push(SHUTDOWN.into()); }
+    if cfg!(any(target_os = "macos", target_os = "linux")) { capabilities.extend([SHUTDOWN.into(), UPGRADE_SHUTDOWN.into()]); }
     Offer {
         version: VERSION,
         capabilities,

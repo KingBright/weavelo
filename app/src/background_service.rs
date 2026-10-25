@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{fs, io::{self, Read, Write}, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::Duration};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{watch, Semaphore}};
 
-mod exit_observer;
+pub(crate) mod exit_observer;
 mod stop_policy;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -23,7 +23,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Request { Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
+enum Request { ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -130,16 +130,22 @@ impl Service {
                             let mut bytes = vec![0; valid_length(header)?]; socket.read_exact(&mut bytes).await?;
                             Ok::<Request, Error>(serde_json::from_slice(&bytes)?)
                         }).await??;
-                        if let Request::Shutdown { generation: expected, executable_sha256: hash } = &request {
+                        if let Request::Shutdown { generation: expected, executable_sha256: hash } | Request::ShutdownIdle { generation: expected, executable_sha256: hash } = &request {
+                            let idle_only = matches!(&request, Request::ShutdownIdle {..});
+                            if idle_only && { let state = runtime.owner.runtime(); let state = state.lock().unwrap(); !matches!(state.role_state(), remote_core::role::RoleState::Idle) } || idle_only && runtime.owner.file_transfer_snapshot().iter().any(|t|t.is_running()) {
+                                socket.write_all(&frame(&serde_json::to_vec(&Response::Rejected("Active background work prevents upgrade shutdown".into()))?)?).await?;
+                                return Ok::<(), Error>(());
+                            }
                             let admitted = admit_shutdown(owner_mode, expected, hash, &generation, &executable_sha256, &closed);
                             let response = match admitted {
                                 Err(error) => Response::Rejected(error),
-                                Ok(()) => match runtime.owner.shutdown_host().await {
+                                Ok(()) => match if idle_only { runtime.owner.shutdown_host_if_idle().await } else { runtime.owner.shutdown_host().await } {
                                     Ok(()) => Response::StopPrepared { generation: generation.clone(), executable_sha256: executable_sha256.clone(), pid: std::process::id(), cleanup_verified: true },
                                     Err(error) => Response::Rejected(error),
                                 },
                             };
                             let success = matches!(response, Response::StopPrepared { .. });
+                            if idle_only && matches!(&response, Response::Rejected(reason) if reason == "Active or pending host connections prevent upgrade shutdown") { *closed.lock().unwrap() = false; }
                             let write = socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await;
                             // An interrupted caller gets an unknown result, never a false success.
                             // A completed cleanup exits normally even if the reply socket was lost.
@@ -174,6 +180,18 @@ impl Service {
 }
 impl Drop for Service {
     fn drop(&mut self) { let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_gui_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
+}
+fn upgrade_quit_background_owner(expected:(&str,&str,u32), actual:(&str,&str,u32))->Result<(),String> {
+    if expected!=actual {return Err("Planned background generation/executable/PID changed; no stop sent".into());}
+    Ok(())
+}
+#[cfg(test)]
+#[test]
+fn upgrade_quit_background_replacement_is_refused_before_stop() {
+    let mut stops=0;
+    if upgrade_quit_background_owner(("101-1","image",101),("102-2","image",102)).is_ok(){stops+=1;}
+    assert_eq!(stops,0);
+    assert!(upgrade_quit_background_owner(("101-1","image",101),("101-1","image",101)).is_ok());
 }
 fn admit_shutdown(mode: OwnerMode, expected: &str, hash: &str, generation: &str, actual_hash: &str, closing: &Mutex<bool>) -> Result<(), String> {
     if mode != OwnerMode::Background || expected != generation || hash != actual_hash {
@@ -217,7 +235,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::JoinGroup(code) => pairing.join_from_invite_code(&code),
         Request::RenameDevice { expected_name, name } => pairing.rename_device(&expected_name, &name),
         Request::Reload(message) => pairing.request_runtime_reload(message),
-        Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
+        Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
     Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing })
@@ -296,20 +314,27 @@ impl Client {
             "network_diagnostics": diagnostics,
             "discovered_routes": cached.peers.len(), "profile": self.profile})
     }
-    pub fn shutdown_verified(&self) -> Result<serde_json::Value, Error> {
+    pub fn shutdown_verified(&self) -> Result<serde_json::Value, Error> { self.shutdown_verified_mode(false,None) }
+    pub fn shutdown_upgrade_verified(&self, generation:&str, hash:&str, pid:u32) -> Result<serde_json::Value, Error> { self.shutdown_verified_mode(true,Some((generation,hash,pid))) }
+    fn shutdown_verified_mode(&self, idle_only: bool, expected:Option<(&str,&str,u32)>) -> Result<serde_json::Value, Error> {
         let _serial = self.transition.lock().map_err(|_| "Background transition unavailable")?;
         let (generation, pid, mode) = { let cached = self.cached.lock().unwrap(); (cached.generation.clone(), cached.pid, cached.owner_mode) };
+        if idle_only {
+            let pins=expected.ok_or("Upgrade stop requires the plan owner pins")?;
+            upgrade_quit_background_owner(pins,(&generation,&self.executable_sha256,pid))?;
+        }
         if mode != OwnerMode::Background || generation == "unavailable" {
             return Err("No verified independent background owner".into());
         }
-        if !self.contract.lock().unwrap().as_ref().is_some_and(|s| s.capabilities.iter().any(|c| c == service_contract::SHUTDOWN)) {
+        if !self.contract.lock().unwrap().as_ref().is_some_and(|s| s.capabilities.iter().any(|c| c == if idle_only {service_contract::UPGRADE_SHUTDOWN} else {service_contract::SHUTDOWN})) {
             return Err("Background does not support verified shutdown; upgrade both owners".into());
         }
         stop_policy::verify(pid, &std::env::current_exe()?)?;
         // Register an exact native process-exit event before requesting any stop.
         let observer = exit_observer::ExitObserver::open(pid)?;
         eprintln!("WEAVELO_STOP_INTENT {}", serde_json::json!({"generation":generation,"pid":pid,"executable_sha256":self.executable_sha256,"success":false}));
-        let response = exchange_response_timeout(&self.profile, &Request::Shutdown { generation: generation.clone(), executable_sha256: self.executable_sha256.clone() }, STOP_TIMEOUT)?;
+        let request = if idle_only { Request::ShutdownIdle {generation:generation.clone(),executable_sha256:self.executable_sha256.clone()} } else { Request::Shutdown {generation:generation.clone(),executable_sha256:self.executable_sha256.clone()} };
+        let response = exchange_response_timeout(&self.profile, &request, STOP_TIMEOUT)?;
         validate_stop_receipt(response, &generation, &self.executable_sha256, pid)?;
         observer.wait(Duration::from_secs(5))?;
         // A replacement or supervised restart is not the stopped generation.
@@ -319,7 +344,7 @@ impl Client {
         }
         Ok(serde_json::json!({"kind":"verified-background-stop", "scope":"background-service-only", "generation":generation, "pid":pid,
             "executable_sha256":self.executable_sha256,"cleanup_verified":true,"process_exit_observed":true,
-            "endpoint_absent":true,"persistent_startup_changed":false}))
+            "endpoint_absent":true,"persistent_startup_changed":false,"idle_only":idle_only}))
     }
 
     pub async fn frontend_runtime(&self) -> Result<UnifiedRuntimeHandle, Error> {

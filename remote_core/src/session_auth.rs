@@ -245,6 +245,7 @@ pub struct ServerReply {
     pub established: Option<EstablishedSession>,
 }
 impl ServerHandshake {
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -663,6 +664,13 @@ mod tests {
                 .session_id,
             new_id
         );
+    }
+    #[test]
+    fn upgrade_stop_handshake_expiration_preserves_live_challenges() {
+        let now=AuthTime::now();let mut client=ClientHandshake::new(now);let mut server=ServerHandshake::default();
+        challenge(&mut client,&mut server,now);
+        server.expire(later(now,1));assert!(!server.is_empty());
+        server.expire(later(now,60));assert!(server.is_empty());
     }
     #[test]
     fn key_rotation_and_process_restart_drop_pending_challenges() {

@@ -3,7 +3,7 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::{io, time::Duration};
 
-pub(super) struct ExitObserver {
+pub(crate) struct ExitObserver {
     #[cfg(unix)]
     fd: OwnedFd,
     #[cfg(windows)]
@@ -12,7 +12,7 @@ pub(super) struct ExitObserver {
 #[cfg(windows)]
 unsafe impl Send for ExitObserver {}
 impl ExitObserver {
-    pub(super) fn open(pid: u32) -> io::Result<Self> {
+    pub(crate) fn open(pid: u32) -> io::Result<Self> {
         if pid == 0 || pid == std::process::id() {
             return Err(io::Error::other("Refuse self/zero background PID"));
         }
@@ -78,7 +78,7 @@ impl ExitObserver {
             ))
         }
     }
-    pub(super) fn wait(self, timeout: Duration) -> io::Result<()> {
+    pub(crate) fn wait(self, timeout: Duration) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {
             let mut poll = libc::pollfd {

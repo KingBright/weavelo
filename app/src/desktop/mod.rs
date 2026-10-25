@@ -16,6 +16,8 @@ pub(crate) mod instance;
 #[cfg(all(any(unix, windows), feature = "gpui-restoration"))]
 pub(crate) mod directed_receive;
 #[cfg(all(any(unix, windows), feature = "gpui-restoration"))]
+pub(crate) mod upgrade_quit;
+#[cfg(all(any(unix, windows), feature = "gpui-restoration"))]
 pub(crate) mod file_cli;
 #[cfg(feature = "gpui-restoration")]
 pub(crate) mod directed_send;

@@ -25,6 +25,7 @@ mod computer_use_transport_tests;
 pub(crate) enum Request {
     Status,
     NetworkDiagnostics,
+    UpgradeQuit { generation:String, executable_sha256:String, request_id:String, deadline_ms:u64 },
     File {
         generation: String,
         request_id: String,
@@ -61,6 +62,7 @@ pub(crate) struct Command {
 pub(crate) struct Reply {
     body: serde_json::Value,
     pixels: Option<std::sync::Arc<Vec<u8>>>,
+    on_written: Option<oneshot::Sender<()>>,
     revoke_on_drop: Option<(
         std::sync::Weak<super::original_owner::OriginalOwner>,
         String,
@@ -71,6 +73,7 @@ impl From<serde_json::Value> for Reply {
         Self {
             body,
             pixels: None,
+            on_written: None,
             revoke_on_drop: None,
         }
     }
@@ -87,13 +90,18 @@ impl Reply {
         Self {
             body,
             pixels: None,
+            on_written: None,
             revoke_on_drop: Some((std::sync::Arc::downgrade(owner), request)),
         }
     }
     pub fn observation(output: super::computer_use_ipc::Output) -> Self {
-        Self {body:output.body,pixels:output.pixels,revoke_on_drop:None}
+        Self {body:output.body,pixels:output.pixels,revoke_on_drop:None,on_written:None}
+    }
+    pub fn upgrade_exit(body:serde_json::Value, signal:oneshot::Sender<()>) -> Self {
+        Self {body,pixels:None,revoke_on_drop:None,on_written:Some(signal)}
     }
     fn written(&mut self) {
+        if let Some(signal)=self.on_written.take() {let _=signal.send(());}
         self.revoke_on_drop = None;
     }
 }
@@ -117,8 +125,10 @@ pub(crate) struct Adapter {
     pub lease: Option<Lease>,
     seen: HashMap<String,u64>,
     admission_clock: Option<(u64,Instant)>,
+    pub active_operations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 pub(crate) struct Lease {
+    pub _upgrade_operation: super::upgrade_quit::Operation,
     pub request_id: String,
     pub source: String,
     pub expires: Instant,
@@ -201,6 +211,7 @@ impl Adapter {
             lease: None,
             seen: HashMap::new(),
             admission_clock:None,
+            active_operations:Default::default(),
         })
     }
     pub fn admit(&mut self, request: &Request, now_ms: u64) -> Result<(), &'static str> {
@@ -210,6 +221,14 @@ impl Adapter {
         let now_ms=projected.map_or(now_ms,|value|now_ms.max(value));
         match request {
             Request::Status | Request::NetworkDiagnostics => Ok(()),
+            Request::UpgradeQuit {generation,executable_sha256,request_id,deadline_ms} => {
+                if executable_sha256 != &self.executable_sha256 {return Err("GUI executable changed");}
+                valid_request(&self.generation,generation,request_id,*deadline_ms,now_ms)?;
+                self.seen.retain(|_,deadline|*deadline>now_ms);
+                if self.seen.len()>=256 || self.seen.contains_key(request_id) {return Err("Upgrade quit request replay refused");}
+                self.seen.insert(request_id.clone(),*deadline_ms);
+                Ok(())
+            }
             Request::File {generation,request_id,deadline_ms,..} =>
                 valid_request(&self.generation,generation,request_id,*deadline_ms,now_ms),
             Request::ComputerUse {generation,request_id,deadline_ms,call} => {
@@ -332,6 +351,9 @@ pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Val
     } else {
         args
     };
+    if args.first().is_some_and(|arg|arg=="--gui-upgrade-quit-json") {
+        return super::upgrade_quit::command(directory,args);
+    }
     let request = match args {
         [cmd] if cmd == "--gui-status-json" => Request::Status,
         [cmd] if cmd == "--gui-network-diagnostics-json" => Request::NetworkDiagnostics,

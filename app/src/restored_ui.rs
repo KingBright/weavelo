@@ -149,6 +149,7 @@ fn open_restored_window(
     exit_group: Arc<FrontendExitGroup>,
     cx: &mut App,
 ) {
+    if exit_group.stopping.load(Ordering::Acquire) {return;}
     let primary = instance.is_some();
     let attached = instance.as_ref().is_some_and(|i| i.is_frontend());
     let options = WindowOptions {
@@ -326,6 +327,7 @@ pub fn should_auto_hide_toolbar(
 #[derive(Default)]
 struct FrontendExitGroup {
     stopping: AtomicBool,
+    upgrade_operations: Arc<std::sync::atomic::AtomicUsize>,
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
 }
@@ -464,7 +466,7 @@ impl RestoredDashboard {
         #[cfg(any(unix, windows))]
         let directed_receive = instance.as_ref().and_then(|instance| {
             match crate::desktop::directed_receive::Adapter::start(instance.state_directory()) {
-                Ok(adapter) => Some(adapter),
+                Ok(mut adapter) => {adapter.active_operations=exit_group.upgrade_operations.clone();Some(adapter)},
                 Err(error) => { eprintln!("GUI receive adapter unavailable: {error}"); None }
             }
         });
@@ -671,18 +673,25 @@ impl RestoredDashboard {
         loop {
             let Some(command) = self.directed_receive.as_mut().and_then(|a| a.commands.try_recv().ok()) else { break; };
             if command.reply.is_closed() { continue; }
+            if self.exit_group.stopping.load(Ordering::Acquire) && !matches!(&command.request, Request::Status | Request::NetworkDiagnostics) {
+                let _=command.reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested; observe original outcome"}).into());continue;
+            }
             let adapter = self.directed_receive.as_mut().unwrap();
             if let Err(error) = adapter.admit(&command.request, crate::unix_now_ms()) {
                 let _ = command.reply.send(serde_json::json!({"ok":false,"error":error}).into()); continue;
             }
             let generation = adapter.generation.clone();
+            if matches!(&command.request, Request::UpgradeQuit {..}) {
+                self.begin_upgrade_quit(command,cx);continue;
+            }
             if let Request::File {generation,request_id,action,..}=command.request {
                 let profile=self._instance.as_ref().map(|i|i.state_directory().to_path_buf());
                 let owner=self.owner.clone();
+                let operation=crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
                 tokio::task::spawn_blocking(move || {
                     if command.reply.is_closed() {return;}
                     let result=profile.ok_or_else(||"Original GUI profile is unavailable".to_string())
-                        .and_then(|profile|crate::desktop::file_cli::dispatch(owner,&profile,&generation,&request_id,action).map_err(|e|e.to_string()));
+                        .and_then(|profile|crate::desktop::file_cli::dispatch(owner,&profile,&generation,&request_id,action,operation).map_err(|e|e.to_string()));
                     let body=result.unwrap_or_else(|error|serde_json::json!({"ok":false,"error":error}));
                     let _=command.reply.send(body.into());
                 });
@@ -691,7 +700,9 @@ impl RestoredDashboard {
             if let Request::ComputerUse {call,..}=command.request {
                 let dispatcher=adapter.computer_use.clone();
                 let owner=self.owner.clone();
+                let operation=crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
                 tokio::task::spawn_blocking(move || {
+                    let _operation=operation;
                     if !command.reply.is_closed() {
                         let result=dispatcher.dispatch(&owner,call,command.peer_pid,|| command.reply.is_closed());
                         let _=command.reply.send(crate::desktop::directed_receive::Reply::observation(result));
@@ -701,14 +712,14 @@ impl RestoredDashboard {
             }
             let mut newly_accepted = false;
             let response = match command.request {
-                Request::ComputerUse {..} | Request::File {..} => unreachable!(),
+                Request::UpgradeQuit {..} | Request::ComputerUse {..} | Request::File {..} => unreachable!(),
                 Request::NetworkDiagnostics => serde_json::json!({
                     "ok":true, "generation":generation, "pid":std::process::id(),
                     "executable_sha256":adapter.executable_sha256,
                     "build_identity":crate::build_identity::compiled(),
                     "network":self.owner.network_snapshot(),
                 }),
-                Request::Status => serde_json::json!({"ok":true,"generation":generation,
+                Request::Status => serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "lease":adapter.lease.as_ref().map(|lease| serde_json::json!({"request_id":lease.request_id,
@@ -730,6 +741,7 @@ impl RestoredDashboard {
                         self.directed_receive.as_mut().unwrap().lease = Some(Lease {
                             request_id:request_id.clone(),source:source_device_id.clone(), expires:Instant::now()+duration,
                             owner:Arc::downgrade(&self.owner), watchdog, revision:1,
+                            _upgrade_operation:crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations),
                         });
                         // Shared real UI action; only an in-process ownership
                         // receipt differs from the ordinary pull connect path.
@@ -1722,6 +1734,37 @@ impl RestoredDashboard {
             .on_click(move |_, _, cx| {
                 let _ = view.update(cx, |this, cx| this.begin_full_exit(cx));
             }))
+    }
+
+    #[cfg(any(unix,windows))]
+    fn begin_upgrade_quit(&mut self, command: crate::desktop::directed_receive::Command, cx: &mut Context<Self>) {
+        use crate::desktop::{directed_receive::{Request,Reply},upgrade_quit};
+        let Request::UpgradeQuit {generation,executable_sha256,request_id,..}=command.request else {unreachable!()};
+        if self.exit_group.stopping.swap(true,Ordering::AcqRel) {let _=command.reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested"}).into());return;}
+        let adapter=self.directed_receive.as_ref().unwrap();
+        let states=self.exit_group.owners().iter().map(|o|o.diagnostic_snapshot()).collect::<Vec<_>>();
+        let refusal=if !self.exit_group.pending.lock().unwrap().is_empty() {Err("Previous frontend cleanup is unconfirmed; observe it before upgrade quit")}
+            else if self.background.is_none() {Err("Upgrade quit requires an attached independent GUI")}
+            else {upgrade_quit::idle(&states,adapter.lease.is_some(),adapter.active_operations.load(Ordering::Acquire))};
+        if let Err(error)=refusal {self.exit_group.stopping.store(false,Ordering::Release);let _=command.reply.send(serde_json::json!({"ok":false,"error":error}).into());return;}
+        self.full_exit_pending=true; self.session_commands.begin(); self.invalidate_source_commands();
+        let group=self.exit_group.clone();
+        cx.spawn(async move |view,cx| {
+            let result=group.close_verified().await;
+            if let Err(error)=result {
+                group.stopping.store(false,Ordering::Release);
+                let _=command.reply.send(serde_json::json!({"ok":false,"error":error}).into());
+                let _=view.update(cx,|this,cx|{this.full_exit_pending=false;cx.notify();});return;
+            }
+            let (written,ack)=tokio::sync::oneshot::channel();
+            let _=command.reply.send(Reply::upgrade_exit(serde_json::json!({"ok":true,"cleanup_verified":true,
+                "generation":generation,"executable_sha256":executable_sha256,"request_id":request_id,"pid":std::process::id()}),written));
+            // A lost reply is unknown to the caller, never a second quit. This
+            // idle frontend still exits normally after its cleanup completed.
+            let _=tokio::time::timeout(Duration::from_secs(2),ack).await;
+            let _=view.update(cx,|this,cx|{this.quitting=true;cx.quit();});
+        }).detach();
+        cx.notify();
     }
 
     fn begin_full_exit(&mut self, cx: &mut Context<Self>) {
@@ -3626,6 +3669,7 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn send_screen(&mut self,device_id:String)->Result<(),String>{
+        if self.exit_group.stopping.load(Ordering::Acquire) {return Err("GUI exit is already requested".into());}
         if self.directed_send.as_ref().is_some_and(|s|!s.is_finished()){return Err("Stop the current delivery before choosing another target".into());}
         let instance=self._instance.as_ref().ok_or("Send from the main device window")?;
         let directory=instance.state_directory();
@@ -3634,7 +3678,7 @@ impl RestoredDashboard {
         let generation=self.directed_receive.as_ref().ok_or("GUI generation is unavailable")?.generation.clone();
         let routes=self.runtime.owner.discovery_snapshot_rx().map(|rx|crate::desktop::model::candidate_routes(&rx.borrow(),&device_id)).unwrap_or_default();
         if routes.is_empty(){return Err("Target is not currently available".into());}
-        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(profile,generation,identity.node_id,device_id,routes));
+        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(profile,generation,identity.node_id,device_id,routes,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
         self.status="Contacting target to receive this screen".into();Ok(())
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {

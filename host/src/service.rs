@@ -1773,7 +1773,21 @@ impl InputInjector for LazyInputInjector {
     }
 }
 
+fn upgrade_stop_idle(peers:usize,closing:usize,authenticated:usize,handshakes_empty:bool)->bool {
+    peers==0 && closing==0 && authenticated==0 && handshakes_empty
+}
+
+#[cfg(test)]
+#[test]
+fn upgrade_stop_refuses_all_active_owners() {
+    assert!(upgrade_stop_idle(0,0,0,true));
+    for (p,c,a,h) in [(1,0,0,true),(0,1,0,true),(0,0,1,true),(0,0,0,false)] {
+        assert!(!upgrade_stop_idle(p,c,a,h));
+    }
+}
+
 pub struct ShutdownRequest {
+    pub idle_only: bool,
     pub reply: tokio::sync::oneshot::Sender<Result<(), String>>,
 }
 
@@ -1864,6 +1878,11 @@ async fn run_host_service_inner(
                 else { std::future::pending().await }
             } => {
                 if let Some(request) = request {
+                    if request.idle_only { handshakes.expire(remote_core::session_auth::AuthTime::now()); }
+                    if request.idle_only && (!upgrade_stop_idle(peers.len(),closing.len(),authenticated.len(),handshakes.is_empty()) || delivery.as_ref().is_some_and(|broker|broker.upgrade_busy())) {
+                        let _ = request.reply.send(Err("Active or pending host connections prevent upgrade shutdown".into()));
+                        continue;
+                    }
                     stopping = true;
                     let result = shutdown_connections(&mut peers, &mut closing, &mut closed, &mut input_owner, &injector, &udp_sender).await;
                     let success = result.is_ok(); let _ = request.reply.send(result);
