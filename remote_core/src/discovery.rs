@@ -550,8 +550,7 @@ async fn run_discovery_runtime_inner(
                             },
                             Err(err) => {
                                 if let Some(d) = &sender_diagnostics {
-                                    d.traffic(sender_relay_targets.contains(target), |c| c.send_errors += 1);
-                                    d.failure(DiscoveryFailure::Send);
+                                    d.send_failure(sender_relay_targets.contains(target), *target, &err);
                                 }
                                 let _ = sender_events_tx.send(DiscoveryEvent::Error(format!(
                                     "discovery announce to {target} failed: {err}"
@@ -1197,6 +1196,71 @@ mod tests {
         let serialized = serde_json::to_string(&state).unwrap();
         assert!(!serialized.contains("synthetic-peer"));
         assert!(!serialized.contains("synthetic-other"));
+        cancel.send(()).unwrap();
+        task.await.unwrap().unwrap();
+        assert!(!diagnostics.snapshot().running);
+    }
+
+    #[test]
+    fn send_failure_preserves_errno_and_transport_without_sensitive_details() {
+        use std::sync::atomic::AtomicU64;
+        let diagnostics = DiscoveryDiagnostics::new(1, Arc::new(AtomicU64::new(0)));
+        let error = std::io::Error::from_raw_os_error(13);
+        diagnostics.send_failure(false, "255.255.255.255:45678".parse().unwrap(), &error);
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(snapshot.udp.send_errors, 1);
+        assert_eq!(snapshot.relay.send_errors, 0);
+        let observed = snapshot.last_send_failure.unwrap();
+        assert_eq!(observed.raw_os_error, Some(13));
+        assert_eq!(observed.error_kind, format!("{:?}", error.kind()));
+        assert!(observed.target_broadcast);
+        assert!(!observed.relay && !observed.target_ipv6 && !observed.target_loopback);
+
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "synthetic-secret-error-text");
+        diagnostics.send_failure(true, "[::1]:45678".parse().unwrap(), &error);
+        let snapshot = diagnostics.snapshot();
+        assert_eq!(snapshot.udp.send_errors, 1);
+        assert_eq!(snapshot.relay.send_errors, 1);
+        let observed = snapshot.last_send_failure.as_ref().unwrap();
+        assert!(observed.relay && observed.target_ipv6 && observed.target_loopback);
+        assert!(!observed.target_broadcast);
+        assert_eq!(observed.raw_os_error, None);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        for private in ["255.255.255.255", "::1", "45678", "synthetic-secret-error-text"] {
+            assert!(!json.contains(private));
+        }
+    }
+
+    #[test]
+    fn older_discovery_snapshot_without_send_details_remains_readable() {
+        let mut old = serde_json::to_value(crate::discovery_status::DiscoverySnapshot::default()).unwrap();
+        old.as_object_mut().unwrap().remove("last_send_failure");
+        let restored: crate::discovery_status::DiscoverySnapshot = serde_json::from_value(old).unwrap();
+        assert!(restored.last_send_failure.is_none());
+        assert_eq!(restored.udp.send_errors, 0);
+    }
+
+    #[tokio::test]
+    async fn observed_local_address_family_error_retains_os_evidence() {
+        use std::sync::atomic::AtomicU64;
+        let mut config = DiscoveryRuntimeConfig::lan_on_port(sample_announcement(), 0);
+        config.bind_addr = "127.0.0.1:0".parse().unwrap();
+        config.announce_targets = vec!["[::1]:45678".parse().unwrap()];
+        let diagnostics = Arc::new(DiscoveryDiagnostics::new(1, Arc::new(AtomicU64::new(0))));
+        let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (snapshots, _rx) = watch::channel(DiscoveryPeerSnapshot::default());
+        let (cancel, cancel_rx) = broadcast::channel(1);
+        let task = tokio::spawn(run_discovery_runtime_observed(config, events, snapshots, cancel_rx, diagnostics.clone()));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while diagnostics.snapshot().udp.send_errors == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        let observed = diagnostics.snapshot().last_send_failure.unwrap();
+        let errno = observed.raw_os_error.expect("native UDP error must retain its errno");
+        assert_eq!(observed.error_kind, format!("{:?}", std::io::Error::from_raw_os_error(errno).kind()));
+        assert!(observed.target_ipv6 && observed.target_loopback);
+        assert!(!observed.relay);
         cancel.send(()).unwrap();
         task.await.unwrap().unwrap();
         assert!(!diagnostics.snapshot().running);

@@ -34,6 +34,18 @@ pub struct DiscoveryTraffic {
     pub rejected_route: u64,
 }
 
+/// Bounded OS evidence only: never store the error's text, destination, packet
+/// bytes, network name, device identity or relay capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoverySendFailure {
+    pub relay: bool,
+    pub error_kind: String,
+    pub raw_os_error: Option<i32>,
+    pub target_ipv6: bool,
+    pub target_broadcast: bool,
+    pub target_loopback: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoverySnapshot {
     pub running: bool,
@@ -42,6 +54,8 @@ pub struct DiscoverySnapshot {
     pub encode_errors: u64,
     pub receive_errors: u64,
     pub last_error: Option<DiscoveryFailure>,
+    #[serde(default)]
+    pub last_send_failure: Option<DiscoverySendFailure>,
 }
 
 #[derive(Debug)]
@@ -87,6 +101,20 @@ impl DiscoveryDiagnostics {
             DiscoveryFailure::Receive => state.receive_errors += 1,
             _ => {}
         }
+    }
+    pub(crate) fn send_failure(&self, relay: bool, target: std::net::SocketAddr, error: &std::io::Error) {
+        let observation = DiscoverySendFailure {
+            relay,
+            error_kind: format!("{:?}", error.kind()),
+            raw_os_error: error.raw_os_error(),
+            target_ipv6: target.is_ipv6(),
+            target_broadcast: matches!(target.ip(), std::net::IpAddr::V4(ip) if ip.is_broadcast()),
+            target_loopback: target.ip().is_loopback(),
+        };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if relay { state.relay.send_errors += 1; } else { state.udp.send_errors += 1; }
+        state.last_error = Some(DiscoveryFailure::Send);
+        state.last_send_failure = Some(observation);
     }
 }
 
