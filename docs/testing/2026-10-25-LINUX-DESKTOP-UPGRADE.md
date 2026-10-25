@@ -460,3 +460,25 @@ must not be retried or routed around. Neither commit is claimed pushed or synced
 
 A secure invitation transport for the previously approved group move remains
 unproven; no group credential, checkpoint or membership was changed.
+
+## Menu-entry identity correction (read-only)
+
+The earlier `gtk-launch fun.hackerlife.weavelo.desktop` used the **retained client**,
+not the upgraded Desktop entry. The two installed application IDs coexist:
+
+| Application ID passed to gtk-launch | Installed Exec | Binary SHA-256 |
+| --- | --- | --- |
+| `fun.hackerlife.weavelo.desktop` | `/var/home/liang/.local/opt/weavelo/weavelo` | `410fa94b28ceb134acdd3161e946d3dcc7240c995fba5df14455c14e198cb83f` |
+| `fun.hackerlife.weavelo.desktop.desktop` | `/var/home/liang/.local/bin/weavelo-desktop` | `5aef25ca02fc7664ef6412d7466f3e32395f391f017984854905d961f685285a` (launcher target) |
+
+GIO resolved both IDs to these distinct commands without launching either
+(operation ec8cc2f2-9f53-428e-a09e-064187b94ded). The Desktop launcher
+contains the canonical Desktop profile and executes the installed
+`desktop/weavelo`; its read-only `--gui-status-json` returned PID 1779219,
+original GPUI and the new ELF SHA (operation 045a96df-bf95-4afd-a881-4bcc3d2907fc).
+The old top-level executable's same status command returned the old SHA. The
+original menu result therefore did not test the new Desktop menu entry. Both
+entries currently show the visible name `Weavelo`; identify them by application
+ID/Exec for acceptance. No menu was clicked again, no new GUI was launched and
+no installed entry was edited. A real click and rendered-frame acceptance remain
+open.
