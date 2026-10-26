@@ -71,7 +71,9 @@ mod windows_capture;
 mod windows_input;
 #[cfg(any(target_os = "windows", test))]
 mod windows_keymap;
-#[cfg(all(test, not(target_os = "windows")))]
+// The recording API shadows SendInput inside this test module on every target.
+// Exercise the same ownership/failure contract on Windows without posting input.
+#[cfg(test)]
 mod windows_input_contract_tests;
 #[cfg(target_os = "windows")]
 mod windows_video_encode;
