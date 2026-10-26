@@ -31,3 +31,35 @@ behavior remain unverified. The later Computer Use attempt to create a
 synthetic test window was interrupted by the user. No further GUI action was
 taken; the existing file-only GUI session was subsequently observed read-only
 as still connected and responsive.
+
+## First-failure evidence gap
+
+The installed Book host process (`61162`) was running and bound UDP `*:39273`;
+its relay TCP connections were established. Book's installed app passed strict
+`codesign` verification with bundle ID `fun.hackerlife.weavelo.desktop` and
+designated leaf SHA-1 `8eaa97365d97b8a987cdf1232430eddf9aba8ecf`.
+The clamshell was open and macOS reported two online displays. These facts do
+not prove ScreenCaptureKit authorization or successful capture startup.
+
+The current host source logs an asynchronous capture failure to stderr and
+sends it as a session error (`host/src/service.rs`,
+`Capture subscription {id} failed: {error}`). Book's LaunchAgent has neither
+`StandardErrorPath` nor `StandardOutPath`; `WEAVELO_SESSION_TRACE` is absent
+from its plist. The targeted project log directories were absent and a
+unified-log query for host PID `61162` around the attempt returned
+no events. The GUI status exposed the final `subscription is unavailable` but
+not the preceding error, and the original video session was closed. No
+retained host error, original video connection ID, or subscription-event
+timeline exists for these two attempts. The current source's cleanup error
+can reuse the video subscription ID and mask the first failure; commit
+`02adb3a` prevents that masking for a future compatible build.
+
+The minimum next real-device check, after a GUI session resumes and the
+compatible fixed client is installed through the normal signed updater, is
+one Studio→Book **Connect Stream** attempt. Capture the first non-secret
+`video_error`, `connection_id`, `subscription_id`, confirmation and decoded
+frame counts from the existing read-only GUI diagnostic, then stop that
+specific attempt. A capture/startup error would direct investigation to the
+Book host's ScreenCaptureKit/encoder path; a subscription confirmation timeout
+would direct it to host control delivery and cancellation order. Neither
+branch is proven by the old final error alone.
