@@ -23,7 +23,7 @@ def require(ok, reason):
 
 
 def payload(side):
-    require(side in ('book', 'studio'), 'Unknown payload origin')
+    require(side in ('book', 'studio', 'ho5'), 'Unknown payload origin')
     seed = ('weavelo-desktop-duplex-v1:' + side).encode()
     return b''.join(hashlib.sha256(seed + i.to_bytes(4, 'big')).digest()
                     for i in range((SIZE + 31) // 32))[:SIZE]
@@ -127,10 +127,10 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     p = commands.add_parser('prepare')
     p.add_argument('--directory', required=True, type=Path)
-    p.add_argument('--side', required=True, choices=('book', 'studio'))
+    p.add_argument('--side', required=True, choices=('book', 'studio', 'ho5'))
     p = commands.add_parser('verify-content')
     p.add_argument('--file', required=True, type=Path)
-    p.add_argument('--origin', required=True, choices=('book', 'studio'))
+    p.add_argument('--origin', required=True, choices=('book', 'studio', 'ho5'))
     p = commands.add_parser('network')
     p.add_argument('--binary', required=True, type=Path)
     p.add_argument('--profile', required=True, type=Path)

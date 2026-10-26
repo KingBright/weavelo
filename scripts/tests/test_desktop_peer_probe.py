@@ -50,6 +50,9 @@ class DesktopPeerProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve() / 'fixture'
             record = probe.prepare(root, 'book')
+            ho5 = probe.prepare(root, 'ho5')
+            self.assertNotEqual(ho5['sha256'], record['sha256'])
+            self.assertTrue(probe.verify_content(Path(ho5['path']), 'ho5')['content_verified'])
             path = Path(record['path'])
             self.assertEqual(probe.prepare(root, 'book')['sha256'], record['sha256'])
             with self.assertRaises(ValueError):
