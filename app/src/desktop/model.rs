@@ -686,6 +686,13 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.status="Application control paused; video remains available. Correct the host condition and enable control again.".into();
                 }
                 SessionCommand::Error { request_id, reason } => {
+                    // Cleanup uses the same numeric ID as the video request. Once
+                    // fail_video has queued Unsubscribe, its late error (for
+                    // example, "subscription is unavailable") must not erase the
+                    // capture/subscribe failure that caused cleanup.
+                    if request_id == self.video_id && self.video_error.is_some() {
+                        continue;
+                    }
                     let source_permission_failed = request_id == 900_001
                         && self.media.is_some()
                         && self.uploaded_at.is_none()
@@ -1089,6 +1096,31 @@ mod static_input_tests {
             events,
         );
         (session, recorded_rx, recorder, temp)
+    }
+
+    #[tokio::test]
+    async fn late_cleanup_error_keeps_the_first_video_failure() {
+        let (mut session, _received, recorder, _temp) = recorder_session().await;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        session.events.control = receiver;
+        session.pending = Some((session.video_id, Instant::now()));
+        sender.send(SessionCommand::Error {
+            request_id: session.video_id,
+            reason: "synthetic capture startup failed".into(),
+        }).unwrap();
+        session.poll();
+        assert_eq!(session.video_error.as_deref(), Some("synthetic capture startup failed"));
+
+        // The host can reject the cleanup Unsubscribe because it already
+        // removed that subscription. Its reply shares the video request ID.
+        sender.send(SessionCommand::Error {
+            request_id: session.video_id,
+            reason: "subscription is unavailable".into(),
+        }).unwrap();
+        session.poll();
+        assert_eq!(session.video_error.as_deref(), Some("synthetic capture startup failed"));
+        assert_eq!(session.error, "synthetic capture startup failed");
+        recorder.abort();
     }
 
     #[tokio::test]
