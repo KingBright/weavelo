@@ -80,6 +80,18 @@ fn handle_maintenance_command() -> Result<bool, Box<dyn Error + Send + Sync>> {
         return Ok(false);
     };
 
+    if command == "--background-readonly-status-json" {
+        if args.next().is_some() { return Err("Read-only status takes no extra arguments".into()); }
+        #[cfg(any(unix, windows))]
+        {
+            let profile = remote_core::mesh::default_app_private_mesh_dir();
+            println!("{}", weavelo_app::background_service::read_only_status(&profile)?);
+            return Ok(true);
+        }
+        #[cfg(not(any(unix, windows)))]
+        return Err("Read-only background status is unavailable on this platform".into());
+    }
+
     if command.starts_with("--file-") {
         #[cfg(all(any(unix, windows), feature = "gpui-restoration"))]
         {

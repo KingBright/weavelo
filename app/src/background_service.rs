@@ -18,12 +18,13 @@ const SOCKET: &str = "background.sock";
 pub const ROLE_MARKER: &str = "background-service.enabled";
 const LIMIT: usize = 256 * 1024;
 const SCHEMA: u32 = 2;
+const READ_ONLY_SCHEMA: u32 = 1;
 const TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Request { ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
+enum Request { ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -42,7 +43,19 @@ struct Snapshot {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Response { StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
+enum Response { ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadOnlyStatus {
+    schema: u32,
+    role: OwnerMode,
+    version: String,
+    generation: String,
+    executable_sha256: String,
+    pid: u32,
+    idle_now: bool,
+}
 
 /// Deliberately separate from Snapshot: contains no pairing or raw device data.
 #[derive(Serialize, Deserialize)]
@@ -156,7 +169,9 @@ impl Service {
                             Request::Delivery{generation:service,executable_sha256:hash,intent:host::directed_delivery::LocalIntent::Register{generation:gui,..}} if service==&generation&&hash==&executable_sha256=>Some(gui.clone()),
                             _=>None,
                         };
-                        let response=if let Some(gui)=registration {
+                        let response=if let Request::ReadOnlyStatus { schema } = &request {
+                            read_only_answer(*schema, &runtime, &generation, &executable_sha256, owner_mode, &closed).await
+                        } else if let Some(gui)=registration {
                             let _serial=registration_lock.lock().await;
                             let directory=if owner_mode==OwnerMode::Background {profile.join("gui-state")}else{profile.clone()};
                             #[cfg(feature="gpui-restoration")]
@@ -177,6 +192,21 @@ impl Service {
         });
         Ok(Self { path, task, delivery_task, closing, broker, stopped })
     }
+}
+async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:&str, hash:&str, mode:OwnerMode, closing:&Mutex<bool>)->Response {
+    if schema != READ_ONLY_SCHEMA || mode != OwnerMode::Background {
+        return Response::Rejected("Read-only background status version or owner differs".into());
+    }
+    let local_idle = matches!(runtime.owner.runtime().lock().unwrap().role_state(), remote_core::role::RoleState::Idle)
+        && !runtime.owner.file_transfer_snapshot().iter().any(|transfer| transfer.is_running())
+        && !runtime.owner.delivery.upgrade_busy()
+        && closing.lock().is_ok_and(|state| !*state);
+    let host_idle = match runtime.owner.host_idle_now().await {
+        Ok(idle) => idle,
+        Err(_) => return Response::Rejected("Read-only host state unavailable".into()),
+    };
+    Response::ReadOnlyStatus(ReadOnlyStatus { schema, role:mode, version:env!("CARGO_PKG_VERSION").into(),
+        generation:generation.into(), executable_sha256:hash.into(), pid:std::process::id(), idle_now:local_idle && host_idle })
 }
 impl Drop for Service {
     fn drop(&mut self) { let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_gui_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
@@ -235,7 +265,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::JoinGroup(code) => pairing.join_from_invite_code(&code),
         Request::RenameDevice { expected_name, name } => pairing.rename_device(&expected_name, &name),
         Request::Reload(message) => pairing.request_runtime_reload(message),
-        Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
+        Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
     Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing })
@@ -415,10 +445,31 @@ fn request(profile: &Path, command: &Request, executable_sha256: &str) -> Result
     let snapshot = match exchange_response(profile, command)? {
         Response::Snapshot(snapshot) => snapshot,
         Response::Rejected(_) => return Err("Background service rejected the operation".into()),
-        Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
+        Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
     };
     validate_snapshot(&snapshot, profile, executable_sha256)?;
     Ok(snapshot)
+}
+/// Independent observation path. No runtime config, pairing snapshot, credential
+/// store or Client::connect is constructed. The existing private transport checks
+/// same-user endpoints/peers before any frame is exchanged.
+pub fn read_only_status(profile:&Path)->Result<serde_json::Value,Error> {
+    if remote_core::desktop_identity::retained_profile(profile) {
+        return Err("Retained client profile is not a Desktop status endpoint".into());
+    }
+    let hash=executable_hash()?;
+    let response=exchange_response(profile,&Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA})?;
+    let status=validate_read_only_status(response,&hash)?;
+    Ok(serde_json::to_value(status)?)
+}
+fn validate_read_only_status(response:Response, hash:&str)->Result<ReadOnlyStatus,Error> {
+    let Response::ReadOnlyStatus(status)=response else {return Err("Read-only status endpoint version differs".into());};
+    if status.schema!=READ_ONLY_SCHEMA || status.role!=OwnerMode::Background
+        || status.version!=env!("CARGO_PKG_VERSION") || status.executable_sha256!=hash
+        || status.pid<=1 || !status.generation.starts_with(&format!("{}-",status.pid)) {
+        return Err("Read-only status owner/protocol/executable differs".into());
+    }
+    Ok(status)
 }
 fn request_network(profile: &Path, generation: &str, hash: &str) -> Result<ServiceNetworkSnapshot, Error> {
     validate_network_response(exchange_response(profile, &Request::NetworkDiagnostics {
@@ -881,6 +932,55 @@ mod service_contract_tests {
 mod tests {
     use std::os::unix::{fs::{PermissionsExt,MetadataExt}};
     use super::*;
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn read_only_status_does_not_open_or_recover_pending_credentials() {
+        let dir=tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(),fs::Permissions::from_mode(0o700)).unwrap();
+        let pending=dir.path().join("mesh.secret-recovery");
+        let synthetic=b"synthetic-private-recovery-not-a-valid-record";
+        fs::write(&pending,synthetic).unwrap();
+        fs::set_permissions(&pending,fs::Permissions::from_mode(0o600)).unwrap();
+        let before=pending.metadata().unwrap();
+        let mut listener=crate::private_ipc::Listener::bind(dir.path(),SOCKET).unwrap();
+        let hash=executable_hash().unwrap();
+        let profile=dir.path().to_owned();
+        let client=tokio::task::spawn_blocking(move||read_only_status(&profile));
+        let mut socket=listener.accept().await.unwrap();
+        let mut header=[0u8;4];socket.read_exact(&mut header).await.unwrap();
+        let mut request=vec![0;valid_length(header).unwrap()];socket.read_exact(&mut request).await.unwrap();
+        assert!(matches!(serde_json::from_slice::<Request>(&request).unwrap(),Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA}));
+        let response=Response::ReadOnlyStatus(ReadOnlyStatus {schema:READ_ONLY_SCHEMA,role:OwnerMode::Background,
+            version:env!("CARGO_PKG_VERSION").into(),generation:format!("{}-fixture",std::process::id()),
+            executable_sha256:hash,pid:std::process::id(),idle_now:false});
+        socket.write_all(&frame(&serde_json::to_vec(&response).unwrap()).unwrap()).await.unwrap();
+        let result=client.await.unwrap().unwrap();
+        assert_eq!(result["idle_now"],false);
+        assert!(!result.to_string().contains("synthetic-private"));
+        let after=pending.metadata().unwrap();
+        assert_eq!((before.ino(),before.len(),before.mtime(),before.mtime_nsec(),before.atime(),before.atime_nsec(),before.permissions().mode()),
+            (after.ino(),after.len(),after.mtime(),after.mtime_nsec(),after.atime(),after.atime_nsec(),after.permissions().mode()));
+        assert_eq!(fs::read(&pending).unwrap(),synthetic);
+        assert!(!dir.path().join("mesh.conf").exists());
+        assert!(!dir.path().join("mesh.secret").exists());
+    }
+    #[test]
+    fn read_only_status_rejects_version_identity_and_extra_fields() {
+        let make=||ReadOnlyStatus {schema:READ_ONLY_SCHEMA,role:OwnerMode::Background,
+            version:env!("CARGO_PKG_VERSION").into(),generation:"42-fixture".into(),
+            executable_sha256:"exact-image".into(),pid:42,idle_now:true};
+        assert!(validate_read_only_status(Response::ReadOnlyStatus(make()),"exact-image").is_ok());
+        let mut bad=make();bad.schema+=1;
+        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        let mut bad=make();bad.version="older-version".into();
+        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        let mut bad=make();bad.executable_sha256="other-image".into();
+        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        let mut bad=make();bad.generation="other-generation".into();
+        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        let mut bad=make();bad.role=OwnerMode::Standalone;
+        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        assert!(serde_json::from_str::<Response>(r#"{"ReadOnlyStatus":{"schema":1,"role":"Background","version":"v","generation":"1-x","executable_sha256":"h","pid":1,"idle_now":true,"secret":"leak"}}"#).is_err());
+    }
     #[test]
     fn connection_diagnostic_is_readonly_known_id_and_round_trips(){
         let request:Request=serde_json::from_str(r#"{"InspectConnection":{"connection_id":4294967295}}"#).unwrap();
@@ -917,6 +1017,20 @@ mod tests {
         let client = tokio::task::spawn_blocking(move || Client::connect(&profile)).await.unwrap().unwrap();
         assert_eq!(client.status()["service_contract"]["version"]["major"], 1);
         assert!(client.contract.lock().unwrap().is_some());
+        let pending=dir.path().join("mesh.secret-recovery");
+        fs::write(&pending,b"synthetic-private-recovery-not-a-valid-record").unwrap();
+        fs::set_permissions(&pending,fs::Permissions::from_mode(0o600)).unwrap();
+        let before=pending.metadata().unwrap();
+        let profile=dir.path().to_owned();
+        let safe=tokio::task::spawn_blocking(move||read_only_status(&profile)).await.unwrap().unwrap();
+        assert_eq!(safe["role"],"Background");
+        assert!(safe["generation"].as_str().is_some_and(|value|!value.is_empty()));
+        assert!(!safe.to_string().contains("synthetic-private"));
+        let after=pending.metadata().unwrap();
+        assert_eq!((before.ino(),before.len(),before.mtime(),before.mtime_nsec(),before.atime(),before.atime_nsec(),before.permissions().mode()),
+            (after.ino(),after.len(),after.mtime(),after.mtime_nsec(),after.atime(),after.atime_nsec(),after.permissions().mode()));
+        assert_eq!(fs::read(&pending).unwrap(),b"synthetic-private-recovery-not-a-valid-record");
+        fs::remove_file(&pending).unwrap();
         let original = ["mesh.conf", "mesh.secret"].map(|name| {
             let meta = dir.path().join(name).metadata().unwrap(); (meta.ino(), meta.len(), meta.mtime(), meta.mtime_nsec())
         });

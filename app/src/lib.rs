@@ -1464,6 +1464,7 @@ pub struct UnifiedServiceOwner {
     #[cfg(target_os = "linux")]
     local_portal_shares: Option<mpsc::Sender<host::service::LocalPortalShareCommand>>,
     host_shutdown: Option<mpsc::Sender<host::service::ShutdownRequest>>,
+    host_read_only_idle: Option<mpsc::Sender<host::service::ReadOnlyIdleRequest>>,
     pub(crate) delivery: Arc<host::directed_delivery::Broker>,
     pub(crate) delivery_incoming: Mutex<Option<mpsc::Receiver<Arc<host::directed_delivery::Incoming>>>>,
     tasks: Vec<AbortOnDropTask>,
@@ -1565,13 +1566,15 @@ impl UnifiedServiceOwner {
         #[cfg(target_os = "linux")]
         let mut local_portal_shares = None;
         let mut host_shutdown = None;
+        let mut host_read_only_idle = None;
         if let Some(host_config) = config.passive_host {
             let (stop_tx, stop_rx) = mpsc::channel(1); host_shutdown = Some(stop_tx);
+            let (idle_tx, idle_rx) = mpsc::channel(1); host_read_only_idle = Some(idle_tx);
             #[cfg(target_os = "linux")]
             let controls = { let (tx, rx) = mpsc::channel(16); local_portal_shares = Some(tx); rx };
             let broker=delivery.clone();
             tasks.push(AbortOnDropTask(tokio::spawn(async move {
-                let result = host::service::run_host_service_with_delivery(host_config, broker, stop_rx,
+                let result = host::service::run_host_service_with_delivery(host_config, broker, stop_rx, idle_rx,
                     #[cfg(target_os="linux")] controls,
                 ).await;
                 if let Err(err) = result { eprintln!("Unified passive host service stopped: {err}"); }
@@ -1647,7 +1650,7 @@ impl UnifiedServiceOwner {
             side_services: config.side_services,
             #[cfg(target_os = "linux")]
             local_portal_shares,
-            host_shutdown, delivery, delivery_incoming: Mutex::new(Some(delivery_incoming)),
+            host_shutdown, host_read_only_idle, delivery, delivery_incoming: Mutex::new(Some(delivery_incoming)),
             tasks,
         })
     }
@@ -1658,6 +1661,16 @@ impl UnifiedServiceOwner {
     pub async fn shutdown_host(&self) -> Result<(), String> { self.shutdown_host_mode(false).await }
 
     pub async fn shutdown_host_if_idle(&self) -> Result<(), String> { self.shutdown_host_mode(true).await }
+
+    /// Advisory observation only. The later idle-only stop rechecks all owners.
+    pub async fn host_idle_now(&self) -> Result<bool, String> {
+        let Some(sender) = &self.host_read_only_idle else { return Ok(true); };
+        let (reply, result) = tokio::sync::oneshot::channel();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            sender.send(host::service::ReadOnlyIdleRequest { reply }).await.map_err(|_| "Host observer unavailable".to_string())?;
+            result.await.map_err(|_| "Host observation unavailable".to_string())
+        }).await.map_err(|_| "Host observation timed out".to_string())?
+    }
 
     async fn shutdown_host_mode(&self, idle_only: bool) -> Result<(), String> {
         let Some(sender) = &self.host_shutdown else { return Ok(()); };

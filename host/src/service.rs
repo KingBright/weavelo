@@ -1791,6 +1791,12 @@ pub struct ShutdownRequest {
     pub reply: tokio::sync::oneshot::Sender<Result<(), String>>,
 }
 
+/// Observation only: unlike shutdown, this never expires handshakes or changes
+/// connection state. An uncertain or stale handshake keeps the host busy.
+pub struct ReadOnlyIdleRequest {
+    pub reply: tokio::sync::oneshot::Sender<bool>,
+}
+
 async fn shutdown_connections(
     peers: &mut HashMap<SocketAddr, Connection>, closing: &mut HashMap<SocketAddr, ClosingTask>,
     closed: &mut HashMap<SocketAddr, ClosedReceipt>, owner: &mut ActiveInput, injector: &LazyInputInjector,
@@ -1816,7 +1822,7 @@ pub async fn run_host_service(
     config: HostServiceConfig,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     run_host_service_inner(
-        config, None, None,
+        config, None, None, None,
         #[cfg(all(unix, any(test, target_os = "linux")))]
         None,
     )
@@ -1830,16 +1836,17 @@ pub async fn run_host_service_with_portal_shares(
     config: HostServiceConfig,
     controls: mpsc::Receiver<LocalPortalShareCommand>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    run_host_service_inner(config, None, None, Some(controls)).await
+    run_host_service_inner(config, None, None, None, Some(controls)).await
 }
 
 pub async fn run_host_service_with_delivery(
     config: HostServiceConfig,
     delivery: Arc<crate::directed_delivery::Broker>,
     shutdown: mpsc::Receiver<ShutdownRequest>,
+    read_only_idle: mpsc::Receiver<ReadOnlyIdleRequest>,
     #[cfg(target_os="linux")] controls: mpsc::Receiver<LocalPortalShareCommand>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    run_host_service_inner(config, Some(delivery), Some(shutdown),
+    run_host_service_inner(config, Some(delivery), Some(shutdown), Some(read_only_idle),
         #[cfg(target_os="linux")] Some(controls),
         #[cfg(all(unix,test,not(target_os="linux")))] None,
     ).await
@@ -1849,6 +1856,7 @@ async fn run_host_service_inner(
     config: HostServiceConfig,
     delivery: Option<Arc<crate::directed_delivery::Broker>>,
     mut shutdown: Option<mpsc::Receiver<ShutdownRequest>>,
+    mut read_only_idle: Option<mpsc::Receiver<ReadOnlyIdleRequest>>,
     #[cfg(all(unix, any(test, target_os = "linux")))] mut local_shares: Option<
         mpsc::Receiver<LocalPortalShareCommand>,
     >,
@@ -1873,6 +1881,17 @@ async fn run_host_service_inner(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            request = async {
+                if let Some(receiver) = &mut read_only_idle { receiver.recv().await }
+                else { std::future::pending().await }
+            } => {
+                if let Some(request) = request {
+                    let idle = !stopping
+                        && upgrade_stop_idle(peers.len(), closing.len(), authenticated.len(), handshakes.is_empty())
+                        && !delivery.as_ref().is_some_and(|broker| broker.upgrade_busy());
+                    let _ = request.reply.send(idle);
+                } else { read_only_idle = None; }
+            }
             request = async {
                 if let Some(receiver) = &mut shutdown { receiver.recv().await }
                 else { std::future::pending().await }
