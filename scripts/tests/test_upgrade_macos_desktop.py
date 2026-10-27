@@ -90,9 +90,10 @@ class UpgradeTests(unittest.TestCase):
     def current(self):
         return upgrade.inspect(self.home)['pins']
 
-    def apply(self, pins=None, resume=None):
+    def apply(self, pins=None, resume=None, no_new=False):
         return upgrade.apply(self.archive,self.home,self.pins,upgrade.gate.hash_file(self.archive),
-                             self.current() if pins is None else pins, resume_sha=resume)
+                             self.current() if pins is None else pins, resume_sha=resume,
+                             no_new_rollback=no_new)
 
     def app_bytes(self):
         return (self.selected['app']/'Contents/MacOS/weavelo').read_bytes()
@@ -122,6 +123,14 @@ class UpgradeTests(unittest.TestCase):
         with patch.object(upgrade.fresh,'verified_product',side_effect=guard.ReleaseRejected('source')):
             with self.assertRaises(guard.ReleaseRejected):self.apply()
         self.assertFalse(self.calls)
+
+    def test_no_new_rollback_does_not_bypass_signature_or_source_checks(self):
+        with patch.object(guard,'verified_archive',side_effect=guard.ReleaseRejected('signature')):
+            with self.assertRaises(guard.ReleaseRejected):self.apply(no_new=True)
+        with patch.object(upgrade.fresh,'verified_product',side_effect=guard.ReleaseRejected('source')):
+            with self.assertRaises(guard.ReleaseRejected):self.apply(no_new=True)
+        self.assertFalse(self.calls)
+        self.assertFalse((self.selected['state']/'upgrade.json').exists())
 
     def test_same_build_different_bytes_and_signer_change_and_downgrade_are_rejected(self):
         before=self.signed(self.selected['app'],guard.load_policy(guard.DESKTOP_POLICY_FILE))
@@ -250,6 +259,66 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(result['phase'],'completed');self.assertEqual(result['resumed_from_sha256'],digest)
         self.assertEqual(self.calls,['before','before','stop','start'])
         self.assertEqual(self.app_bytes(),b'new-image')
+
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_explicit_no_new_rollback_resumes_staged_conflict_and_preserves_old_slot(self):
+        root=self.selected['app'].parent/'.desktop-upgrade.rollback'
+        root.mkdir(mode=0o700)
+        (root/'historical').write_bytes(b'preserve-prior-slot')
+        pins=self.current()
+        with self.assertRaises((guard.ReleaseRejected, OSError)):
+            self.apply(pins)
+        self.assertEqual(self.calls,['before'])
+        journal=self.selected['state']/'upgrade.json'
+        digest=upgrade.gate.hash_file(journal)
+        self.assertEqual(json.loads(journal.read_text())['phase'],'staged')
+        self.assertEqual((root/'historical').read_bytes(),b'preserve-prior-slot')
+        with self.assertRaisesRegex(guard.ReleaseRejected,'incomplete'):
+            self.apply(pins,no_new=True)
+        result=self.apply(pins,resume=digest,no_new=True)
+        self.assertEqual(result['phase'],'completed')
+        self.assertEqual(result['rollback_policy'],'none_new')
+        self.assertEqual(result['rollback']['new_retained'],False)
+        self.assertTrue(result['rollback']['prior_slot_preserved'])
+        self.assertEqual((root/'historical').read_bytes(),b'preserve-prior-slot')
+        self.assertEqual(self.app_bytes(),b'new-image')
+        self.assertEqual(json.loads(self.registry.read_text())['rollback_policy'],'none_new')
+        self.assertFalse((self.selected['app'].parent/'.desktop-upgrade.pending').exists())
+        self.assertEqual(self.calls,['before','before','stop','start'])
+
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_no_new_rollback_rejects_prior_slot_change_before_exchange(self):
+        root=self.selected['app'].parent/'.desktop-upgrade.rollback'
+        root.mkdir(mode=0o700)
+        marker=root/'historical';marker.write_bytes(b'prior-slot')
+        self.stop_hook=lambda: marker.write_bytes(b'changed')
+        with self.assertRaisesRegex(guard.ReleaseRejected,'Prior rollback slot changed'):
+            self.apply(no_new=True)
+        self.assertEqual(self.app_bytes(),b'old-image')
+        self.assertEqual(json.loads(self.registry.read_text()),self.record)
+        self.assertNotIn('start',self.calls)
+
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_no_new_rollback_without_old_slot_creates_none(self):
+        result=self.apply(no_new=True)
+        self.assertTrue(result['applied'])
+        self.assertFalse(result['rollback']['prior_slot_preserved'])
+        self.assertFalse((self.selected['app'].parent/'.desktop-upgrade.rollback').exists())
+        self.assertEqual(self.app_bytes(),b'new-image')
+
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_no_new_rollback_activation_failure_keeps_staged_old_app_and_prior_slot(self):
+        root=self.selected['app'].parent/'.desktop-upgrade.rollback'
+        root.mkdir(mode=0o700)
+        (root/'historical').write_bytes(b'prior-slot')
+        self.start_hook=lambda: (_ for _ in ()).throw(guard.ReleaseRejected('activation failed'))
+        with self.assertRaisesRegex(guard.ReleaseRejected,'activation failed'):
+            self.apply(no_new=True)
+        self.assertEqual(self.app_bytes(),b'new-image')
+        self.assertEqual((root/'historical').read_bytes(),b'prior-slot')
+        staged=self.selected['app'].parent/'.desktop-upgrade.pending/Weavelo.app/Contents/MacOS/weavelo'
+        self.assertEqual(staged.read_bytes(),b'old-image')
+        self.assertEqual(json.loads(self.registry.read_text()),self.record)
 
     def test_explicit_resume_never_crosses_an_unconfirmed_stop(self):
         pins=self.current()

@@ -416,7 +416,9 @@ def exchange(source, target):
     for parent in dict.fromkeys((source.parent, target.parent)): fsync(parent)
 
 
-def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=None):
+def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=None,
+          *, no_new_rollback=False):
+    rollback_policy = 'none_new' if no_new_rollback else 'verified_slot'
     require(gate.hash_file(archive) == gate.sha(archive_sha), 'Candidate archive digest differs')
     policy = guard.load_policy(guard.DESKTOP_POLICY_FILE)
     with guard.verified_archive(archive, policy, identity_expectations=candidate_pins) as (candidate, signed):
@@ -457,6 +459,7 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 data = {'schema': 1, 'kind': 'independent-desktop-upgrade', 'source': candidate_pins,
                         'archive_sha256': archive_sha, 'current': current_pins,
                         'staging': str(stage), 'retained_client_modified': False}
+            data['rollback_policy'] = rollback_policy
             def checkpoint(phase):
                 nonlocal prior_journal_sha
                 require(phase in PHASES, 'Unknown transaction phase')
@@ -470,6 +473,8 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             new_record.update(history=history, source=candidate_pins, archive_sha256=archive_sha,
                               phase='upgrade_completed', service_started=True,
                               launch_agent_preserved_sha256=current_pins['plist'])
+            if no_new_rollback:
+                new_record['rollback_policy'] = 'none_new'
             require(len(json.dumps(new_record).encode()) < LIMIT - 4096, 'Installation history full; no content discarded')
             staged = stage / 'Weavelo.app'
             if resume_sha is None:
@@ -483,10 +488,23 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             control = NativeControl(selected)
             before = control.before(current_pins['executable'])
             import desktop_upgrade_rollback
-            rollback_record = desktop_upgrade_rollback.prepare(context, candidate_pins, candidate_tree, signed, archive_sha, before)
-            data['rollback'] = {'path': str(desktop_upgrade_rollback.slot(selected)),
-                                'record_sha256': gate.digest(desktop_upgrade_rollback.encoded(rollback_record)),
-                                'old_tree': context['tree']}
+            rollback_root = desktop_upgrade_rollback.slot(selected)
+            if no_new_rollback:
+                # This explicit choice leaves any prior rollback untouched. It is
+                # not a usable rollback for the newly installed version.
+                require(not rollback_root.is_symlink(), 'Linked prior rollback slot')
+                prior_slot = rollback_root.exists()
+                if prior_slot:
+                    private(rollback_root, True)
+                prior_slot_tree = tree_digest(rollback_root) if prior_slot else None
+                data['rollback'] = {'new_retained': False, 'prior_slot_preserved': prior_slot,
+                                    'prior_slot_tree': prior_slot_tree}
+                rollback_record = None
+            else:
+                rollback_record = desktop_upgrade_rollback.prepare(context, candidate_pins, candidate_tree, signed, archive_sha, before)
+                data['rollback'] = {'path': str(rollback_root),
+                                    'record_sha256': gate.digest(desktop_upgrade_rollback.encoded(rollback_record)),
+                                    'old_tree': context['tree']}
             data['owners_before'] = {'background_pid': (before.get('background') or {}).get('pid'),
                                      'frontend_pid': (before.get('gui') or {}).get('pid')}
             checkpoint('stopping')
@@ -496,6 +514,11 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 latest = inspect(home, current_pins, transaction_sha=prior_journal_sha)
                 require(latest['membership'] == context['membership'] and latest['tree'] == context['tree'],
                         'Installation or membership changed before exchange')
+                if no_new_rollback:
+                    require(not rollback_root.is_symlink()
+                            and rollback_root.exists() == data['rollback']['prior_slot_preserved']
+                            and (not rollback_root.exists() or tree_digest(rollback_root) == data['rollback']['prior_slot_tree']),
+                            'Prior rollback slot changed before exchange')
                 require(gate.hash_file(archive) == archive_sha, 'Candidate archive changed')
                 checkpoint('exchanging')
                 exchange(staged, selected['app'])
@@ -517,9 +540,15 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             checkpoint('registry_committed')
             require(tree_digest(staged) == context['tree'] and tree_digest(selected['app']) == candidate_tree,
                     'Owned old staging changed; cleanup refused')
-            desktop_upgrade_rollback.verify_backups(selected, rollback_record, old=True)
-            require(gate.hash_file(desktop_upgrade_rollback.slot(selected) / 'rollback.json') == data['rollback']['record_sha256'],
-                    'Rollback record changed before cleanup')
+            if rollback_record is not None:
+                desktop_upgrade_rollback.verify_backups(selected, rollback_record, old=True)
+                require(gate.hash_file(rollback_root / 'rollback.json') == data['rollback']['record_sha256'],
+                        'Rollback record changed before cleanup')
+            else:
+                require(not rollback_root.is_symlink()
+                        and rollback_root.exists() == data['rollback']['prior_slot_preserved']
+                        and (not rollback_root.exists() or tree_digest(rollback_root) == data['rollback']['prior_slot_tree']),
+                        'Prior rollback slot changed before cleanup')
             shutil.rmtree(stage)
             checkpoint('completed')
             return dict(data, applied=True, profile_preserved=True, launch_policy_preserved=True,
@@ -532,6 +561,8 @@ def main():
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--resume-staged', action='store_true')
+    parser.add_argument('--no-new-rollback', action='store_true',
+                        help='Explicitly install without retaining this update\'s old app; leave any prior slot untouched')
     parser.add_argument('--expected-upgrade-sha256')
     for name in ('commit', 'identity-sha256', 'manifest-sha256', 'archive-sha256',
                  'current-executable-sha256', 'current-install-sha256', 'current-plist-sha256'):
@@ -541,6 +572,7 @@ def main():
     require((not args.resume_staged and not args.expected_upgrade_sha256)
             or (args.apply and args.resume_staged and args.expected_upgrade_sha256),
             'Explicit staged resume requires apply and the observed upgrade-record digest')
+    require(args.apply or not args.no_new_rollback, 'No-new-rollback choice requires apply')
     if args.status:
         path = desktop.paths(home)['state'] / 'upgrade.json'
         result = read_record(path)[0] if path.exists() else {'phase': 'not_started'}
@@ -553,7 +585,8 @@ def main():
         require(args.archive and all(pins.values()) and args.expected_archive_sha256
                 and all(current.values()), 'Candidate and current independent version pins required')
         result = apply(args.archive, home, pins, args.expected_archive_sha256, current,
-                       args.expected_upgrade_sha256 if args.resume_staged else None)
+                       args.expected_upgrade_sha256 if args.resume_staged else None,
+                       no_new_rollback=args.no_new_rollback)
     else:
         c = inspect(home)
         result = {'kind': 'independent-desktop-upgrade-plan', 'applied': False,
