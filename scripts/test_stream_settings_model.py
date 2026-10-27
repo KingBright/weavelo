@@ -65,6 +65,7 @@ SESSION_CLOCK_TESTS = {
     "computer-use-input": ("weavelo_app", "desktop::model::static_input_tests"),
     "computer-use-pixels": ("client", "observation_pixels::"),
     "bridge-network": ("remote_client_bridge", "network_diagnostics::tests"),
+    "bridge-discovery": ("remote_client_bridge", "tests::bridge_discovery_"),
     "pairing-qr": ("remote_core", "pairing_qr::tests"),
     "pairing-image": ("remote_core", "pairing_image::tests"),
     "bridge-invitation": ("remote_client_bridge", "pairing_export::tests"),
@@ -116,7 +117,8 @@ def validation_command(cargo, target, mode):
         package, test_filter = SESSION_CLOCK_TESTS[mode]
         features = {"native-file-cli": ["--no-default-features", "--features", "gpui-restoration"],
                     "pairing-image": ["--features", "pairing-image"],
-                    "bridge-invitation": ["--features", "android"], "bridge-network": ["--features", "android"]}.get(mode, [])
+                    "bridge-invitation": ["--features", "android"], "bridge-network": ["--features", "android"],
+                    "bridge-discovery": ["--features", "android"]}.get(mode, [])
         return [cargo, "test", *shared, "-p", package, "--lib", *features,
                 test_filter, "--", "--nocapture", *(["--ignored", "--test-threads=1"] if mode == "computer-use-process" else [])]
     if mode == "service-contract":
@@ -537,7 +539,7 @@ def guarded_run(args, root, parser):
         paths += subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", *inputs], cwd=root, text=True).splitlines()
         sources = [root / path for path in sorted(set(paths))]
     sources.extend([root / "scripts/test_stream_settings_model.py", root / "scripts/check_artifact_lifecycle.py"])
-    if args.mode == "desktop-identity":
+    if args.mode in ("desktop-identity", "bridge-discovery"):
         sources.append(root / "deploy/desktop/product-identity.json")
     if args.mode in ("linux-x11-check", "platform-linux-check", "lifecycle-linux-native-check", "lifecycle-linux-native-build"):
         sources.extend(root / "scripts/cmake" / name for name in

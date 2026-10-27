@@ -17,7 +17,7 @@ use protocol::session::{CaptureSource, SessionCommand, SubscriptionRequest};
 use protocol::{ControlMessage, TouchAction};
 use remote_core::client_session::{AudioIngressEvent, SharedHostStats};
 use remote_core::discovery::{
-    DEFAULT_DISCOVERY_PORT, DEFAULT_PEER_TTL, DiscoveryAnnouncement, DiscoveryCapabilities,
+    DEFAULT_PEER_TTL, DiscoveryAnnouncement, DiscoveryCapabilities,
     DiscoveryPeerSnapshot, DiscoveryRouteOverride, DiscoveryRuntimeConfig, DiscoveryScope,
     run_discovery_runtime,
 };
@@ -1099,6 +1099,17 @@ async fn run_bridge_network_supervisor(
     diagnostics.stopped();
 }
 
+/// LAN and tunnel delivery must share the desktop product's discovery namespace.
+fn bridge_discovery_config(
+    announcement: DiscoveryAnnouncement,
+) -> (DiscoveryRuntimeConfig, SocketAddr) {
+    let port = remote_core::desktop_identity::identity().discovery_port;
+    (
+        DiscoveryRuntimeConfig::lan_on_port(announcement, port),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    )
+}
+
 async fn run_bridge_network(
     devices_tx: watch::Sender<Vec<BridgeDiscoveredDevice>>,
     cancel_tx: broadcast::Sender<()>,
@@ -1118,8 +1129,7 @@ async fn run_bridge_network(
         display_name: identity.display_name.clone(), control_port: PUBLISHING_PORT.load(Relaxed),
         virtual_ip: None, capabilities: *live_capabilities.borrow(), scope: DiscoveryScope::Lan, ttl: DEFAULT_PEER_TTL,
     };
-    let discovery_target = SocketAddr::from(([127, 0, 0, 1], DEFAULT_DISCOVERY_PORT));
-    let mut discovery_config = DiscoveryRuntimeConfig::lan_default(announcement.clone());
+    let (mut discovery_config, discovery_target) = bridge_discovery_config(announcement.clone());
     discovery_config.accept_any_network = false;
     discovery_config.live_capabilities = Some(live_capabilities.clone());
     let mut tasks = NetworkTasks::default();
@@ -1310,6 +1320,33 @@ fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscover
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_discovery_matches_desktop_lan_and_tunnel_targets() {
+        let port = remote_core::desktop_identity::identity().discovery_port;
+        for control_port in [0, 46001] {
+            let announcement = DiscoveryAnnouncement {
+                network_name: "fixture-group".into(),
+                device_id: "fixture-android".into(),
+                display_name: "Android".into(),
+                control_port,
+                virtual_ip: None,
+                capabilities: inbound_capabilities(control_port, false),
+                scope: DiscoveryScope::Lan,
+                ttl: DEFAULT_PEER_TTL,
+            };
+            let (config, tunnel_target) = bridge_discovery_config(announcement.clone());
+            assert_eq!(config.bind_addr, SocketAddr::from(([0, 0, 0, 0], port)));
+            assert_eq!(
+                config.announce_targets,
+                vec![SocketAddr::from(([255, 255, 255, 255], port))]
+            );
+            // This single loopback target is passed to both Relay and P2P.
+            assert_eq!(tunnel_target, SocketAddr::from(([127, 0, 0, 1], port)));
+            assert_eq!(config.announcement, announcement);
+            assert!(!config.accept_any_network);
+        }
+    }
 
     #[test]
     fn file_receiver_does_not_advertise_screen_capture_authorization() {

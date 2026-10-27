@@ -59,6 +59,7 @@ class ServiceContractEntryTests(unittest.TestCase):
         'computer-use-input': ('weavelo_app', 'desktop::model::static_input_tests'),
         'computer-use-pixels': ('client', 'observation_pixels::'),
         'bridge-network': ('remote_client_bridge', 'network_diagnostics::tests'),
+        'bridge-discovery': ('remote_client_bridge', 'tests::bridge_discovery_'),
         'pairing-qr': ('remote_core', 'pairing_qr::tests'),
         'pairing-image': ('remote_core', 'pairing_image::tests'),
         'bridge-invitation': ('remote_client_bridge', 'pairing_export::tests'),
@@ -141,7 +142,8 @@ class ServiceContractEntryTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 features = {'native-file-cli': ['--no-default-features', '--features', 'gpui-restoration'],
                             'pairing-image': ['--features', 'pairing-image'],
-                            'bridge-invitation': ['--features', 'android'], 'bridge-network': ['--features', 'android']}.get(mode, [])
+                            'bridge-invitation': ['--features', 'android'], 'bridge-network': ['--features', 'android'],
+                            'bridge-discovery': ['--features', 'android']}.get(mode, [])
                 native = (['--profile','release','--target','aarch64-apple-darwin','-j','2']
                           if mode == 'desktop-identity' and runner.sys.platform == 'darwin' else [])
                 self.assertEqual(validation_command('/existing/cargo', Path('/existing/target'), mode), [
