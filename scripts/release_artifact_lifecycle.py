@@ -410,6 +410,27 @@ def unsigned_evidence(apk, receipt):
     return [actual['sha256'], receipt_sha]
 
 
+def prepare_android_inputs(arguments):
+    from android_source_inputs import snapshot
+    pins = [argument.partition('=')[2] for argument in arguments if argument.startswith('--source-commit=')]
+    require(len(pins) <= 1 and all(re.fullmatch('[0-9a-f]{40}', pin) for pin in pins),
+            'Use one full Android source commit')
+    require(not pins or '--sign-prepared' not in arguments, 'Prepared signing retains its recorded build source')
+    try:
+        return snapshot(ROOT, pins[0] if pins else None)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise Refusal(str(error)) from error
+
+
+def verify_android_inputs(state):
+    from android_source_inputs import verify
+    require(isinstance(state.get('android_inputs'), dict), 'Original Android producer input manifest required')
+    try:
+        return verify(ROOT, state['android_inputs'])
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise Refusal(str(error)) from error
+
+
 def registered_unsigned_current():
     path = ROOT / '.rust-storage/release-deliveries.json'
     if not path.exists():
@@ -443,6 +464,11 @@ def buffer_unsigned(expected_sha, expected_pid, expected_commit):
             and recorded.get('sha256') == expected_sha
             and recorded.get('state') == 'unsigned-awaiting-signing',
             'Unsigned source checkpoint differs')
+    if lock.get('android_inputs') is not None or recorded.get('source_inputs') is not None:
+        from android_source_inputs import validate_record
+        inputs = validate_record(recorded.get('source_inputs'))
+        require(inputs == lock.get('android_inputs') and inputs['producer_commit'] == expected_commit,
+                'Unsigned source input manifest differs from original producer')
     actual = verify_unsigned(source, ROOT)
     require(actual['sha256'] == expected_sha
             and all(recorded.get(key) == actual.get(key) for key in actual),
@@ -494,6 +520,8 @@ def save_unsigned(expected_sha, expected_pid, expected_commit):
                       source_commit_observed=expected_commit, retention='current-output',
                       saved_by_commit=subprocess.check_output(
                           ['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip())
+        if recorded.get('source_inputs') is not None:
+            report['source_inputs'] = recorded['source_inputs']
         with receipt.open('x') as outgoing:
             json.dump(report, outgoing, indent=2); outgoing.write('\n')
             outgoing.flush(); os.fsync(outgoing.fileno())
@@ -545,8 +573,10 @@ def stage_unsigned_current(state):
         outgoing.write(data); outgoing.flush(); os.fsync(outgoing.fileno())
     require(hashed(target)[0] == expected, 'Prepared APK stage differs')
     with (directory / 'prepared-unsigned.json').open('x') as outgoing:
-        json.dump({'source_commit_observed': recorded['source_commit_observed'],
-                   'unsigned_sha256': expected}, outgoing)
+        provenance = {'source_commit_observed': recorded['source_commit_observed'], 'unsigned_sha256': expected}
+        if recorded.get('source_inputs') is not None:
+            provenance['source_inputs'] = recorded['source_inputs']
+        json.dump(provenance, outgoing)
         outgoing.write('\n'); outgoing.flush(); os.fsync(outgoing.fileno())
     return target
 
@@ -561,12 +591,19 @@ def publish_android(state):
     prepared_path = candidate.parent / 'prepared-unsigned.json'
     if prepared_path.exists():
         prepared, _ = document(prepared_path)
+        current, _ = document(android_files()[1])
         unsigned = candidate.parent / 'app-release-unsigned.apk'
         require(hashed(unsigned)[0] == prepared.get('unsigned_sha256')
-                and prepared.get('source_commit_observed') == document(android_files()[1])[0].get('source_commit_observed'),
+                and prepared.get('source_commit_observed') == current.get('source_commit_observed')
+                and prepared.get('source_inputs') == current.get('source_inputs'),
                 'Prepared signing provenance changed')
         report.update(source_commit_observed=prepared['source_commit_observed'],
                       signed_from_unsigned_sha256=prepared['unsigned_sha256'])
+        if prepared.get('source_inputs') is not None:
+            report['source_inputs'] = prepared['source_inputs']
+    else:
+        inputs = verify_android_inputs(state)
+        report.update(source_commit_observed=inputs['producer_commit'], source_inputs=inputs)
     value, size = hashed(candidate)
     require(report.get('sha256') == value and report.get('size_bytes') == size, 'APK changed after signing verification')
     require(not apk.exists() and not apk.is_symlink(), 'Staged APK already exists')
@@ -594,13 +631,11 @@ def hold_unsigned():
             and report.get('signer_sha256') is None
             and report.get('signing_status') == 'unsigned',
             'Unsigned preparation must not be a signed delivery')
-    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    require(re.fullmatch('[0-9a-f]{40}', head), 'Invalid source commit')
-    require(not subprocess.check_output(['git', 'status', '--porcelain=v1'], cwd=ROOT, text=True),
-            'Unsigned preparation requires the clean primary checkout')
+    inputs = verify_android_inputs(state)
     deadline = time.monotonic() + 1800
     record = dict(report, state='unsigned-awaiting-signing', path=str(candidate),
-                  source_commit_observed=head, retention='live-public-owned-stage-only',
+                  source_commit_observed=inputs['producer_commit'], source_inputs=inputs,
+                  retention='live-public-owned-stage-only',
                   hold_seconds=1800, producer_pid=state['producer_pid'])
     with (directory / 'unsigned-preparation.json').open('x') as outgoing:
         json.dump(record, outgoing, indent=2); outgoing.write('\n')
@@ -671,7 +706,13 @@ def run(kind, arguments):
         require(check.returncode == 0, 'Signing preflight failed before release lifecycle changes')
     with producer(kind) as (fd, state):
         if kind == 'android-release':
-            state['admission'] = admit_android(state); write_state(fd, state)
+            state['admission'] = admit_android(state)
+            if '--sign-prepared' not in arguments:
+                state['android_inputs'] = prepare_android_inputs(arguments)
+            else:
+                require(not any(arg.startswith('--source-commit=') for arg in arguments),
+                        'Prepared signing retains its recorded build source')
+            write_state(fd, state)
         env = dict(os.environ, **{LOCK_ENV: str(fd), PID_ENV: str(state['producer_pid'])})
         command = ['bash', str(ROOT / 'scripts' / ENTRIES[kind]), *arguments]
         child = subprocess.Popen(command, env=env, pass_fds=(fd,), start_new_session=True)

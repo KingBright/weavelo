@@ -43,6 +43,11 @@ class ReleaseHookTests(unittest.TestCase):
         self.public = patch.object(hook, 'public', side_effect=self.public_call).start()
         self.target = patch.object(hook, 'macos_output_root', return_value=self.root / 'shared/package/macos').start()
         self.state = {'producer_pid': os.getpid()}
+        self.inputs = {'schema': 'weavelo.android-source-inputs.v1',
+                       'product_commit': 'a' * 40, 'producer_commit': 'a' * 40}
+        self.prepare_inputs_patch = patch.object(hook, 'prepare_android_inputs', return_value=self.inputs)
+        self.prepare_inputs = self.prepare_inputs_patch.start()
+        self.verify_inputs = patch.object(hook, 'verify_android_inputs', return_value=self.inputs).start()
 
     def public_call(self, action, *arguments):
         args = list(map(str, arguments)); self.calls.append((action, args))
@@ -87,6 +92,29 @@ class ReleaseHookTests(unittest.TestCase):
             child.return_value.wait.side_effect = lambda: events.append('wait') or 7
             self.assertEqual(hook.run('android-release', []), 7)
         self.assertEqual(events, ['wait', 'abort'])
+        self.prepare_inputs.assert_called_once_with([])
+
+    def test_source_input_refusal_never_starts_packager_or_publishes(self):
+        self.prepare_inputs.side_effect = hook.Refusal('changed Android input')
+        with patch.object(hook.subprocess, 'Popen') as child:
+            with self.assertRaisesRegex(hook.Refusal, 'changed Android input'):
+                hook.run('android-release', [])
+        child.assert_not_called()
+        self.assertTrue(any('--abort-current' in args for _, args in self.calls))
+        self.assertFalse(any(action == 'release-publish' for action, _ in self.calls))
+
+    def test_source_pin_is_full_unique_and_cannot_replace_prepared_provenance(self):
+        self.prepare_inputs_patch.stop()
+        with patch('android_source_inputs.snapshot', return_value=self.inputs) as capture:
+            self.assertEqual(hook.prepare_android_inputs(['--unsigned-only', '--source-commit=' + 'a'*40]), self.inputs)
+            capture.assert_called_once_with(self.root, 'a'*40)
+            for arguments in (['--source-commit=HEAD'], ['--source-commit=' + 'a'*40]*2,
+                              ['--sign-prepared', '--source-commit=' + 'a'*40]):
+                with self.subTest(arguments=arguments), self.assertRaises(hook.Refusal):
+                    hook.prepare_android_inputs(arguments)
+        with patch('android_source_inputs.snapshot', side_effect=ValueError('working bytes differ')):
+            with self.assertRaisesRegex(hook.Refusal, 'working bytes differ'):
+                hook.prepare_android_inputs([])
 
     def test_second_producer_refused_without_work(self):
         with hook.producer('android-native'):
@@ -413,11 +441,25 @@ class ReleaseHookTests(unittest.TestCase):
         self.assertEqual(metadata['state'], 'unsigned-awaiting-signing')
         self.assertIsNone(metadata['signer_sha256'])
         self.assertEqual(metadata['retention'], 'live-public-owned-stage-only')
+        self.assertEqual(metadata['source_inputs'], self.inputs)
+        self.verify_inputs.assert_called_once_with(self.state)
         self.assertIn('UNSIGNED_APK_READY', output.getvalue())
         self.assertFalse(any(action == 'release-publish' for action, _ in self.calls))
         self.assertFalse(any(Path(p).exists() for p in admission['staged_files']))
         self.assertTrue(apk.is_file())
         sleep.assert_called_once_with(1)
+
+    def test_changed_inputs_after_build_cannot_create_unsigned_checkpoint(self):
+        self.state['admission'] = hook.admit_android(self.state)
+        apk, _, report = self.apk(hook.android_workspace() / 'release/app-release-unsigned.apk',
+                                  signer_sha256=None, signing_status='unsigned')
+        self.verify_inputs.side_effect = ValueError('inputs changed during the build')
+        with patch.dict(sys.modules, {'verify_release_apk': SimpleNamespace(verify_unsigned=Mock(return_value=report))}), \
+             patch.object(hook, 'check_lock', return_value=(1, self.state)), patch.object(hook, 'check_current'):
+            with self.assertRaisesRegex(ValueError, 'inputs changed'):
+                hook.hold_unsigned()
+        self.assertFalse((apk.parent / 'unsigned-preparation.json').exists())
+        self.assertFalse(any(action == 'release-publish' for action, _ in self.calls))
 
 
 
@@ -493,7 +535,7 @@ class ReleaseHookTests(unittest.TestCase):
             if isinstance(result, BaseException):
                 raise result
             return result
-        with patch.object(hook, 'buffer_unsigned', return_value=(data, {})), \
+        with patch.object(hook, 'buffer_unsigned', return_value=(data, {'source_inputs': self.inputs})), \
              patch.object(hook.os, 'kill', side_effect=ProcessLookupError), \
              patch.object(hook.fcntl, 'flock', side_effect=scoped_flock), \
              patch.object(hook.time, 'sleep') as wait, \
@@ -512,6 +554,7 @@ class ReleaseHookTests(unittest.TestCase):
         self.assertIsNone(metadata['signer_sha256'])
         self.assertEqual(metadata['source_commit_observed'], 'a'*40)
         self.assertEqual(metadata['state'], 'unsigned-awaiting-local-key-import')
+        self.assertEqual(metadata['source_inputs'], self.inputs)
         self.assertIn('UNSIGNED_APK_SAVED', output.getvalue())
 
     def test_registered_unsigned_current_is_reused_without_fake_signing_adoption(self):
@@ -548,6 +591,33 @@ class ReleaseHookTests(unittest.TestCase):
             with self.assertRaises(hook.Refusal):
                 hook.buffer_unsigned('0'*64, 12345, 'a'*40)
         self.assertFalse(any(p.exists() for p in hook.android_files()))
+
+    def test_prepared_signing_preserves_and_binds_input_manifest(self):
+        apk, receipt, original = self.prepared_current()
+        original['source_inputs'] = self.inputs
+        receipt.write_text(json.dumps(original))
+        registry = self.root / '.rust-storage/release-deliveries.json'
+        state = json.loads(registry.read_text())
+        state['current_components'][hook.android_component()]['validation_digest'] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+        registry.write_text(json.dumps(state))
+        self.state['admission'] = hook.admit_android(self.state)
+        with patch.object(hook, 'check_current'):
+            unsigned = hook.stage_unsigned_current(self.state)
+        provenance = unsigned.parent / 'prepared-unsigned.json'
+        self.assertEqual(json.loads(provenance.read_text())['source_inputs'], self.inputs)
+        candidate = unsigned.parent / 'app-release.apk'
+        candidate.write_bytes(b'synthetic locally signed APK')
+        signed = dict(original, sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                      size_bytes=candidate.stat().st_size, signer_sha256=hook.ANDROID_SIGNER)
+        sys.modules['verify_release_apk'].verify = Mock(return_value=signed)
+        mutated = json.loads(provenance.read_text()); mutated.pop('source_inputs')
+        provenance.write_text(json.dumps(mutated))
+        with self.assertRaisesRegex(hook.Refusal, 'provenance changed'):
+            hook.publish_android(self.state)
+        mutated['source_inputs'] = self.inputs; provenance.write_text(json.dumps(mutated))
+        with contextlib.redirect_stdout(io.StringIO()):
+            hook.publish_android(self.state)
+        self.assertEqual(json.loads(Path(self.state['admission']['staged_files'][1]).read_text())['source_inputs'], self.inputs)
 
 
     def test_formal_gradle_gate_precedes_output_cleanup(self):

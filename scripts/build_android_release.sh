@@ -9,7 +9,8 @@ for option in "$@"; do
         --upgrade-candidate) [[ "$WEAVELO_ANDROID_UPGRADE_CANDIDATE" == 0 ]] || exit 2; export WEAVELO_ANDROID_UPGRADE_CANDIDATE=1 ;;
         --unsigned-only) [[ "$UNSIGNED_ONLY" == 0 ]] || exit 2; UNSIGNED_ONLY=1 ;;
         --sign-prepared) [[ "$SIGN_PREPARED" == 0 ]] || exit 2; SIGN_PREPARED=1 ;;
-        *) echo 'Only --upgrade-candidate, --unsigned-only and --sign-prepared are supported' >&2; exit 2 ;;
+        --source-commit=*) [[ "${option#*=}" =~ ^[0-9a-f]{40}$ ]] || exit 2 ;;
+        *) echo 'Only --upgrade-candidate, --unsigned-only, --sign-prepared and --source-commit=FULL_SHA are supported' >&2; exit 2 ;;
     esac
 done
 [[ "$UNSIGNED_ONLY" == 0 || "$SIGN_PREPARED" == 0 ]] || { echo 'Unsigned preparation and local signing are separate modes' >&2; exit 2; }
