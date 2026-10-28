@@ -30,6 +30,8 @@ import macos_release_guard as guard
 LIMIT = 65536
 PHASES = ('verified', 'staged', 'stopping', 'stopped', 'exchanging',
           'exchanged', 'activated', 'registry_committed', 'completed')
+RETIRED = 'retired_before_stop'
+RETIREMENT = 'independent-desktop-prestop-retirement'
 
 
 def require(ok, text):
@@ -94,8 +96,7 @@ def matching_pending(path, raw, *, sync=False):
 
 
 def atomic_bytes(path, raw, expected, *, suffix='.upgrade-tmp', recover_matching=False):
-    # Recovery is an internal explicit-rollback capability, never an upgrade CLI
-    # option. The caller must first bind its original transaction and app tuple.
+    # Only bound rollback/retirement callers may recover identical pending bytes.
     require(len(raw) <= LIMIT, 'Installation history exceeds limit; nothing was discarded')
     actual = gate.hash_file(path) if path.exists() else None
     require(actual == expected and not path.is_symlink(), 'Installation record version conflict')
@@ -223,7 +224,9 @@ def inspect(home, expected=None, transaction_sha=None):
     previous = None
     if transaction.exists() or transaction.is_symlink():
         previous, previous_sha = read_record(transaction)
-        require(previous.get('schema') == 1 and (previous.get('phase') == 'completed'
+        if previous.get('phase') == RETIRED:
+            verify_retirement(selected, previous)
+        require(previous.get('schema') == 1 and (previous.get('phase') in ('completed', RETIRED)
                 or (transaction_sha is not None and previous_sha == transaction_sha)), 
                 'Existing upgrade is incomplete; inspect --status, never replay apply')
     plist_sha = gate.hash_file(selected['plist'])
@@ -416,6 +419,116 @@ def exchange(source, target):
     for parent in dict.fromkeys((source.parent, target.parent)): fsync(parent)
 
 
+def retirement_root(selected):
+    return selected['app'].parent / '.desktop-upgrade.retired'
+
+
+def verify_retirement(selected, marker):
+    """A terminal pre-stop record needs its original evidence and retained trees."""
+    root = retirement_root(selected); private(root, True)
+    proof = marker.get('retirement', {})
+    require(proof.get('path') == str(root), 'Retirement path binding differs')
+    receipt, receipt_sha = read_record(root / 'retirement.json')
+    original, original_sha = read_record(root / 'original-upgrade.json')
+    require(receipt_sha == proof.get('receipt_sha256')
+            and receipt.get('schema') == 1 and receipt.get('kind') == RETIREMENT
+            and receipt.get('paths') == {k: str(selected[k]) for k in ('app', 'profile', 'state', 'plist')}
+            and receipt.get('upgrade_sha256') == original_sha == proof.get('upgrade_sha256')
+            and original.get('schema') == 1 and original.get('kind') == 'independent-desktop-upgrade'
+            and original.get('phase') == 'staged'
+            and not set(original).intersection(('owners_before', 'runtime', 'rollback'))
+            and original.get('staging') == str(selected['app'].parent / '.desktop-upgrade.pending')
+            and original.get('current') == receipt.get('current')
+            and marker == dict(original, phase=RETIRED, retirement=proof),
+            'Original pre-stop retirement evidence differs')
+    for name, key in (('install.before.json', 'install'), ('launch-agent.before.plist', 'plist')):
+        private(root / name)
+        require(gate.hash_file(root / name) == receipt['current'][key], 'Retired metadata backup changed')
+    require(tree_digest(root / 'Weavelo.app') == receipt['current_tree']
+            and tree_digest(root / 'staging') == receipt['staging_tree'], 'Retired application backup changed')
+    policy = guard.load_policy(guard.DESKTOP_POLICY_FILE)
+    signed = guard.verify_app(root / 'Weavelo.app', policy)
+    require(signed['executable_sha256'] == receipt['current']['executable'], 'Retired executable backup changed')
+    guard.verify_app(root / 'staging/Weavelo.app', policy)
+    return proof
+
+
+def retire_staged(home, current_pins, upgrade_sha, *, apply=False):
+    """Retain one exact, never-stopped stage. Does not stop/start or install apps."""
+    upgrade_sha = gate.sha(upgrade_sha)
+    context = inspect(home, current_pins, transaction_sha=upgrade_sha)
+    selected = context['paths']; journal = selected['state'] / 'upgrade.json'
+    original, observed = read_record(journal)
+    require(observed == upgrade_sha and original.get('schema') == 1
+            and original.get('kind') == 'independent-desktop-upgrade'
+            and original.get('phase') == 'staged' and original.get('current') == current_pins
+            and not set(original).intersection(('owners_before', 'runtime', 'rollback')),
+            'Only the exact pre-stop staged transaction may be retired')
+    stage = selected['app'].parent / '.desktop-upgrade.pending'
+    require(original.get('staging') == str(stage), 'Original staging path differs')
+    root = retirement_root(selected)
+    require(not root.is_symlink(), 'Linked retirement slot')
+    if root.exists(): private(root, True)
+    retained = root / 'staging'
+    require(not (stage.exists() and retained.exists()), 'Two staging trees require inspection')
+    source = stage if stage.exists() else retained
+    private(source, True)
+    require({p.name for p in source.iterdir()} == {'Weavelo.app'}, 'Unknown staged content; nothing retired')
+    staged_signed = guard.verify_app(source / 'Weavelo.app', guard.load_policy(guard.DESKTOP_POLICY_FILE))
+    product_current(source / 'Weavelo.app/Contents/MacOS/weavelo',
+                    dict(context['record'], source=original['source']), staged_signed)
+    rollback = selected['app'].parent / '.desktop-upgrade.rollback'
+    require(not rollback.is_symlink(), 'Linked prior rollback slot')
+    if rollback.exists(): private(rollback, True)
+    receipt = {'schema': 1, 'kind': RETIREMENT, 'upgrade_sha256': upgrade_sha,
+               'paths': {k: str(selected[k]) for k in ('app', 'profile', 'state', 'plist')},
+               'current': current_pins, 'current_tree': context['tree'],
+               'staging_tree': tree_digest(source),
+               'prior_rollback_tree': tree_digest(rollback) if rollback.exists() else None}
+    if root.exists():
+        found, _ = read_record(root / 'retirement.json')
+        require(found == receipt, 'Existing retirement slot differs; preserve and inspect it')
+    plan = dict(receipt, applied=False, phase='retirement_plan', recovery_path=str(root))
+    if not apply: return plan
+    lock = selected['state'].parent / '.desktop-install.lock'
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'r+') as held:
+        private(lock); require(os.fstat(held.fileno()).st_ino == lock.lstat().st_ino, 'Installer lock changed')
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        latest = inspect(home, current_pins, transaction_sha=upgrade_sha)
+        require(latest['tree'] == context['tree'] and latest['membership'] == context['membership']
+                and gate.hash_file(journal) == upgrade_sha, 'Installation changed before retirement')
+        if not root.exists(): root.mkdir(mode=0o700); fsync(root.parent)
+        def retain(name, raw):
+            path = root / name
+            if path.exists() or path.is_symlink(): matching_pending(path, raw, sync=True)
+            else: atomic_bytes(path, raw, None, recover_matching=True)
+        retain('retirement.json', (json.dumps(receipt, indent=2) + '\n').encode())
+        retain('original-upgrade.json', journal.read_bytes())
+        retain('install.before.json', context['record_path'].read_bytes())
+        retain('launch-agent.before.plist', selected['plist'].read_bytes())
+        backup = root / 'Weavelo.app'
+        if not backup.exists() and not backup.is_symlink(): shutil.copytree(selected['app'], backup, symlinks=False)
+        require(tree_digest(backup) == context['tree'], 'Incomplete retirement backup; preserve and inspect it')
+        fsync_tree(backup)
+        require(tree_digest(source) == receipt['staging_tree'], 'Staging changed before retirement')
+        if source == stage:
+            require(not retained.exists() and not retained.is_symlink(), 'Retained staging already exists')
+            os.rename(stage, retained); fsync(stage.parent); fsync(root)
+        proof = {'path': str(root), 'receipt_sha256': gate.hash_file(root / 'retirement.json'),
+                 'upgrade_sha256': upgrade_sha}
+        marker = dict(original, phase=RETIRED, retirement=proof)
+        verify_retirement(selected, marker)
+        latest = inspect(home, current_pins, transaction_sha=upgrade_sha)
+        require(latest['tree'] == context['tree'] and latest['membership'] == context['membership']
+                and not rollback.is_symlink()
+                and (tree_digest(rollback) if rollback.exists() else None) == receipt['prior_rollback_tree'],
+                'Installation or prior rollback changed during retirement')
+        marker_sha = atomic_bytes(journal, (json.dumps(marker, indent=2) + '\n').encode(), upgrade_sha,
+                                  recover_matching=True)
+        return dict(marker, applied=True, installed=False, upgrade_sha256=marker_sha)
+
+
 def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=None,
           *, no_new_rollback=False):
     rollback_policy = 'none_new' if no_new_rollback else 'verified_slot'
@@ -459,6 +572,8 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 data = {'schema': 1, 'kind': 'independent-desktop-upgrade', 'source': candidate_pins,
                         'archive_sha256': archive_sha, 'current': current_pins,
                         'staging': str(stage), 'retained_client_modified': False}
+                if (context['previous_transaction'] or {}).get('phase') == RETIRED:
+                    data['retired_staged'] = context['previous_transaction']['retirement']
             data['rollback_policy'] = rollback_policy
             def checkpoint(phase):
                 nonlocal prior_journal_sha
@@ -473,6 +588,8 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             new_record.update(history=history, source=candidate_pins, archive_sha256=archive_sha,
                               phase='upgrade_completed', service_started=True,
                               launch_agent_preserved_sha256=current_pins['plist'])
+            if 'retired_staged' in data:
+                new_record['retired_staged'] = data['retired_staged']
             if no_new_rollback:
                 new_record['rollback_policy'] = 'none_new'
             require(len(json.dumps(new_record).encode()) < LIMIT - 4096, 'Installation history full; no content discarded')
@@ -561,6 +678,8 @@ def main():
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--resume-staged', action='store_true')
+    parser.add_argument('--retire-staged', action='store_true',
+                        help='Plan or retain one exact pre-stop stage and backups; never install or stop an app')
     parser.add_argument('--no-new-rollback', action='store_true',
                         help='Explicitly install without retaining this update\'s old app; leave any prior slot untouched')
     parser.add_argument('--expected-upgrade-sha256')
@@ -568,14 +687,22 @@ def main():
                  'current-executable-sha256', 'current-install-sha256', 'current-plist-sha256'):
         parser.add_argument('--expected-' + name)
     args = parser.parse_args(); home = Path.home()
-    require(not (args.status and args.apply), 'Choose status or apply')
+    require(not (args.status and (args.apply or args.retire_staged)), 'Choose status or apply')
+    require(not (args.resume_staged and args.retire_staged), 'Choose staged resume or retirement')
     require((not args.resume_staged and not args.expected_upgrade_sha256)
-            or (args.apply and args.resume_staged and args.expected_upgrade_sha256),
+            or ((args.retire_staged or (args.apply and args.resume_staged)) and args.expected_upgrade_sha256),
             'Explicit staged resume requires apply and the observed upgrade-record digest')
     require(args.apply or not args.no_new_rollback, 'No-new-rollback choice requires apply')
     if args.status:
         path = desktop.paths(home)['state'] / 'upgrade.json'
         result = read_record(path)[0] if path.exists() else {'phase': 'not_started'}
+    elif args.retire_staged:
+        require(sys.platform == 'darwin', 'Native macOS retirement required')
+        current = {'executable': args.expected_current_executable_sha256,
+                   'install': args.expected_current_install_sha256, 'plist': args.expected_current_plist_sha256}
+        require(args.expected_upgrade_sha256 and all(current.values())
+                and not args.archive and not args.no_new_rollback, 'Exact current and staged pins required for retirement')
+        result = retire_staged(home, current, args.expected_upgrade_sha256, apply=args.apply)
     elif args.apply:
         require(sys.platform == 'darwin', 'Native macOS upgrade required')
         pins = {'commit': args.expected_commit, 'identity_sha256': args.expected_identity_sha256,

@@ -1,11 +1,13 @@
 """Owned disposable upgrade fixtures. No live service, signing or permission changes."""
 import contextlib
 import copy
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -150,6 +152,134 @@ class UpgradeTests(unittest.TestCase):
         pins=self.current()
         with self.assertRaisesRegex(guard.ReleaseRejected,'staging'):self.apply(pins)
         self.assertFalse(self.calls);self.assertEqual(self.app_bytes(),b'old-image')
+
+    def prestop_stage(self):
+        current = self.current()
+        stage = self.selected['app'].parent / '.desktop-upgrade.pending'
+        stage.mkdir(mode=0o700)
+        shutil.copytree(self.candidate, stage / 'Weavelo.app')
+        value = {'schema': 1, 'kind': 'independent-desktop-upgrade', 'phase': 'staged',
+                 'source': self.pins, 'archive_sha256': upgrade.gate.hash_file(self.archive),
+                 'current': current, 'staging': str(stage), 'retained_client_modified': False}
+        journal = self.selected['state'] / 'upgrade.json'
+        raw = (json.dumps(value, indent=2) + '\n').encode()
+        journal.write_bytes(raw); journal.chmod(0o600)
+        return current, upgrade.gate.hash_file(journal), raw
+
+    def test_retirement_plan_has_no_writes_or_process_control(self):
+        pins, digest, raw = self.prestop_stage()
+        result = upgrade.retire_staged(self.home, pins, digest)
+        self.assertFalse(result['applied'])
+        self.assertEqual((self.selected['state'] / 'upgrade.json').read_bytes(), raw)
+        self.assertFalse(upgrade.retirement_root(self.selected).exists())
+        self.assertEqual(self.calls, [])
+
+    def test_retirement_keeps_exact_history_stage_current_backup_and_old_slot(self):
+        root = self.selected['app'].parent / '.desktop-upgrade.rollback'
+        root.mkdir(mode=0o700); (root / 'sentinel').write_bytes(b'prior rollback')
+        before = upgrade.tree_digest(root)
+        pins, digest, raw = self.prestop_stage()
+        membership = upgrade.membership_metadata(self.selected['profile'])
+        result = upgrade.retire_staged(self.home, pins, digest, apply=True)
+        recovery = upgrade.retirement_root(self.selected)
+        self.assertTrue(result['applied']); self.assertFalse(result['installed'])
+        self.assertEqual(result['phase'], upgrade.RETIRED)
+        self.assertEqual((recovery / 'original-upgrade.json').read_bytes(), raw)
+        self.assertEqual((recovery / 'Weavelo.app/Contents/MacOS/weavelo').read_bytes(), b'old-image')
+        self.assertEqual((recovery / 'staging/Weavelo.app/Contents/MacOS/weavelo').read_bytes(), b'new-image')
+        self.assertEqual((recovery / 'install.before.json').read_bytes(), self.registry.read_bytes())
+        self.assertEqual((recovery / 'launch-agent.before.plist').read_bytes(), self.selected['plist'].read_bytes())
+        self.assertEqual(upgrade.tree_digest(root), before)
+        self.assertEqual(upgrade.membership_metadata(self.selected['profile']), membership)
+        self.assertEqual(self.current(), pins); self.assertEqual(self.app_bytes(), b'old-image')
+        self.assertEqual(self.calls, [])
+
+    def test_retirement_refuses_wrong_phase_current_or_record_pin(self):
+        pins, digest, raw = self.prestop_stage()
+        with self.assertRaises(guard.ReleaseRejected):
+            upgrade.retire_staged(self.home, pins, '1'*64, apply=True)
+        bad = dict(pins, executable='1'*64)
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'version conflict'):
+            upgrade.retire_staged(self.home, bad, digest, apply=True)
+        journal = self.selected['state'] / 'upgrade.json'
+        for change in ({'phase': 'stopping'}, {'owners_before': {}}, {'rollback': {}}):
+            journal.write_text(json.dumps(dict(json.loads(raw), **change)))
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'pre-stop'):
+                upgrade.retire_staged(self.home, pins, upgrade.gate.hash_file(journal), apply=True)
+        self.assertFalse(upgrade.retirement_root(self.selected).exists()); self.assertEqual(self.calls, [])
+
+    def test_retirement_refuses_bad_stage_signature_and_unknown_slot(self):
+        pins, digest, _ = self.prestop_stage()
+        with patch.object(guard, 'verify_app', side_effect=guard.ReleaseRejected('signature')):
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'signature'):
+                upgrade.retire_staged(self.home, pins, digest, apply=True)
+        root = upgrade.retirement_root(self.selected); root.mkdir(mode=0o700)
+        (root / 'sentinel').write_bytes(b'unknown')
+        with self.assertRaises(OSError): upgrade.retire_staged(self.home, pins, digest, apply=True)
+        self.assertEqual((root / 'sentinel').read_bytes(), b'unknown'); self.assertEqual(self.calls, [])
+
+    def test_retirement_refuses_linked_slot_and_busy_installer_before_writes(self):
+        pins, digest, raw = self.prestop_stage()
+        root = upgrade.retirement_root(self.selected); root.symlink_to(self.home, target_is_directory=True)
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'Linked retirement'):
+            upgrade.retire_staged(self.home, pins, digest, apply=True)
+        root.unlink()
+        lock = self.selected['state'].parent / '.desktop-install.lock'
+        with lock.open('w') as held:
+            lock.chmod(0o600); fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError): upgrade.retire_staged(self.home, pins, digest, apply=True)
+        self.assertFalse(root.exists())
+        self.assertEqual((self.selected['state'] / 'upgrade.json').read_bytes(), raw)
+        self.assertEqual(self.calls, [])
+
+    def test_retirement_recovers_exact_moved_stage_before_marker_commit(self):
+        pins, digest, raw = self.prestop_stage()
+        atomic = upgrade.atomic_bytes
+        journal = self.selected['state'] / 'upgrade.json'
+        def interrupt(path, *args, **kwargs):
+            if path == journal: raise OSError('synthetic interruption before marker')
+            return atomic(path, *args, **kwargs)
+        with patch.object(upgrade, 'atomic_bytes', side_effect=interrupt):
+            with self.assertRaisesRegex(OSError, 'synthetic'): upgrade.retire_staged(self.home, pins, digest, apply=True)
+        self.assertEqual(journal.read_bytes(), raw)
+        self.assertTrue((upgrade.retirement_root(self.selected) / 'staging').is_dir())
+        result = upgrade.retire_staged(self.home, pins, digest, apply=True)
+        self.assertEqual(result['phase'], upgrade.RETIRED); self.assertEqual(self.calls, [])
+
+    def test_retirement_incomplete_backup_remains_inspectable(self):
+        pins, digest, raw = self.prestop_stage()
+        def partial(source, destination, **kwargs):
+            destination.mkdir(mode=0o700); (destination / 'partial').write_bytes(b'incomplete')
+        with patch.object(upgrade.shutil, 'copytree', side_effect=partial):
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'Incomplete retirement'):
+                upgrade.retire_staged(self.home, pins, digest, apply=True)
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'Incomplete retirement'):
+            upgrade.retire_staged(self.home, pins, digest, apply=True)
+        self.assertEqual((self.selected['state'] / 'upgrade.json').read_bytes(), raw)
+        self.assertTrue((self.selected['app'].parent / '.desktop-upgrade.pending').is_dir())
+        self.assertEqual(self.app_bytes(), b'old-image'); self.assertEqual(self.calls, [])
+
+    def test_forged_retirement_or_modified_evidence_never_unlocks_apply(self):
+        pins, digest, raw = self.prestop_stage(); journal = self.selected['state'] / 'upgrade.json'
+        journal.write_text(json.dumps(dict(json.loads(raw), phase=upgrade.RETIRED)))
+        with self.assertRaises((OSError, guard.ReleaseRejected)): self.apply(pins)
+        journal.write_bytes(raw)
+        upgrade.retire_staged(self.home, pins, digest, apply=True)
+        evidence = upgrade.retirement_root(self.selected) / 'original-upgrade.json'
+        evidence.write_bytes(evidence.read_bytes() + b'\n')
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'evidence differs'): self.apply(pins)
+        self.assertEqual(self.app_bytes(), b'old-image'); self.assertEqual(self.calls, [])
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'native atomic directory exchange')
+    def test_normal_signed_upgrade_after_retirement_preserves_recovery_reference(self):
+        pins, digest, raw = self.prestop_stage()
+        upgrade.retire_staged(self.home, pins, digest, apply=True)
+        result = self.apply(pins, no_new=True)
+        self.assertEqual(result['phase'], 'completed'); self.assertEqual(self.app_bytes(), b'new-image')
+        self.assertEqual(result['retired_staged']['upgrade_sha256'], digest)
+        record = json.loads(self.registry.read_text())
+        self.assertEqual(record['retired_staged'], result['retired_staged'])
+        self.assertEqual((upgrade.retirement_root(self.selected) / 'original-upgrade.json').read_bytes(), raw)
 
     @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
     def test_native_exchange_upgrade_preserves_membership_plist_history_and_retained_client(self):
