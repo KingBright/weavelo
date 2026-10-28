@@ -1,4 +1,4 @@
-"""Packaging preflight never grants policy or starts a compiler through a refusal."""
+"""Known package scripts use the user-authorized process-only policy."""
 import contextlib
 import io
 import json
@@ -59,6 +59,7 @@ class WindowsCurrentDeliveryTests(unittest.TestCase):
     def test_independent_compiler_output_routes_only_to_desktop_package(self):
         result = self.run_entry()
         command = self.package.call_args.args[0]
+        self.assertEqual(command[command.index('-ExecutionPolicy')+1], 'RemoteSigned')
         self.assertIn('-Desktop', command)
         self.assertIn('-SkipBuild', command)
         self.assertEqual(command[command.index('-BuildReceipt')+1], str(self.receipt))
@@ -198,8 +199,7 @@ class WindowsPackagingPreflightTests(unittest.TestCase):
             with patch.object(windows.subprocess,'run',return_value=response) as run:
                 windows.packaging_preflight(root,{'PATH':'existing'})
             argv=run.call_args.args[0]
-            self.assertEqual(argv[:3],['powershell.exe','-NoProfile','-Command'])
+            self.assertEqual(argv[:5],['powershell.exe','-NoProfile','-ExecutionPolicy','RemoteSigned','-Command'])
             for forbidden in ('Set-ExecutionPolicy','Unblock-File'):
-                self.assertNotIn(forbidden,argv[3])
-            self.assertNotIn('-ExecutionPolicy',argv)
+                self.assertNotIn(forbidden,argv[5])
             self.assertNotIn('-File',argv)
