@@ -257,7 +257,13 @@ def _producer(kind):
         except BlockingIOError as error:
             raise Refusal('Another Weavelo release/JNI producer is active') from error
         # Existing authority remains mandatory; never create an independent current ledger.
-        if kind == 'linux-desktop':
+        binding = state_dir / 'release-binding.json'
+        if binding.exists() or binding.is_symlink():
+            # Each build host may already have its own authoritative inventory.
+            # The public preflight validates that binding and all later outputs;
+            # setup must not try to register this checkout a second time.
+            regular(binding)
+        elif kind == 'linux-desktop':
             public('release-setup', '--authority', ROOT / AUTHORITY, '--output-root', linux_output_root())
         else:
             macos_root = macos_output_root() if kind == 'macos' else (Path.home() / 'rust-target/package/macos').resolve()

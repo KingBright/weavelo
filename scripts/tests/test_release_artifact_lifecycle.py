@@ -81,6 +81,22 @@ class ReleaseHookTests(unittest.TestCase):
         with hook.producer('android-native') as (_, state):
             self.assertEqual(state['producer_pid'], os.getpid())
         self.assertEqual([c[0] for c in self.calls], ['release-setup', 'release-preflight'])
+
+    def test_existing_host_binding_is_validated_without_another_setup(self):
+        state = self.root / '.rust-storage'; state.mkdir()
+        (state / 'release-binding.json').write_text('{}')
+        with hook.producer('android-native'):
+            pass
+        self.assertEqual([c[0] for c in self.calls], ['release-preflight'])
+
+    def test_existing_host_binding_does_not_bypass_public_validation(self):
+        state = self.root / '.rust-storage'; state.mkdir()
+        (state / 'release-binding.json').write_text('{}')
+        self.public.side_effect = hook.Refusal('authoritative binding differs')
+        with self.assertRaisesRegex(hook.Refusal, 'authoritative binding differs'):
+            with hook.producer('android-native'):
+                self.fail('invalid binding admitted')
+        self.assertEqual(self.public.call_args.args[0], 'release-preflight')
         self.target.assert_not_called()
 
     def test_release_finally_calls_abort_after_child_wait(self):
