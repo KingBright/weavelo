@@ -647,7 +647,10 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
             let file = options.open(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
             let opened = file.metadata().map_err(|e| MeshStoreError::io(path.clone(), e))?;
             if !same_profile_file(&before, &opened) { return Err(transaction_error("profile changed while locking")); }
-            file.try_lock().map_err(|_| transaction_error("profile is busy; mutation/read refused"))?;
+            file.try_lock().map_err(|error| match error {
+                std::fs::TryLockError::WouldBlock => MeshStoreError::ProfileBusy,
+                std::fs::TryLockError::Error(source) => MeshStoreError::io(path.clone(), source),
+            })?;
             let lock = MeshProfileLock(file);
             validate_private_dir(path)?;
             let now = fs::symlink_metadata(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
@@ -662,7 +665,10 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
                 .open(&path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
             let opened = file.metadata().map_err(|e| MeshStoreError::io(path.clone(), e))?;
             check_private_file(&path, &opened)?;
-            file.try_lock().map_err(|_| transaction_error("profile is busy; mutation/read refused"))?;
+            file.try_lock().map_err(|error| match error {
+                std::fs::TryLockError::WouldBlock => MeshStoreError::ProfileBusy,
+                std::fs::TryLockError::Error(source) => MeshStoreError::io(path.clone(), source),
+            })?;
             let lock = MeshProfileLock(file);
             if private_file_metadata(&path)?.as_ref().is_none_or(|now| !same_profile_file(now, &opened)) {
                 return Err(transaction_error("profile lock changed; nothing replayed"));
@@ -857,6 +863,7 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
 #[derive(Debug)]
 pub enum MeshStoreError {
     Io { path: PathBuf, source: io::Error },
+    ProfileBusy,
     UnsafeProfile { path: PathBuf, message: String },
     MissingNetworkSecret,
     CommittedDurabilityUnconfirmed,
@@ -872,6 +879,7 @@ impl MeshStoreError {
 impl fmt::Display for MeshStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ProfileBusy => f.write_str("profile is busy; mutation/read refused"),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::UnsafeProfile { path, message } => write!(f, "{}: {message}", path.display()),
             Self::CommittedDurabilityUnconfirmed => f.write_str("device-group change is saved but storage durability confirmation failed; read current state before continuing"),
@@ -891,7 +899,7 @@ impl Error for MeshStoreError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::InvalidMeshConfig(err) => Some(err),
-            Self::MissingNetworkSecret | Self::CommittedDurabilityUnconfirmed | Self::TransactionOutcomeUnknown | Self::InvalidMetadata(_) | Self::UnsafeProfile { .. } => {
+            Self::ProfileBusy | Self::MissingNetworkSecret | Self::CommittedDurabilityUnconfirmed | Self::TransactionOutcomeUnknown | Self::InvalidMetadata(_) | Self::UnsafeProfile { .. } => {
                 None
             }
         }

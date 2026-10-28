@@ -23,7 +23,7 @@ use remote_core::discovery::{
     DiscoveryPeerSnapshot, DiscoveryRouteOverride, DiscoveryRuntimeConfig, DiscoveryScope,
     WEAVELO_DISCOVERY_ENV, discovery_port_from_env, run_discovery_runtime_observed,
 };
-use remote_core::mesh::{AppPrivateMeshConfigStore, MeshStoreError, default_app_private_mesh_dir};
+use remote_core::mesh::{AppPrivateMeshConfigStore, MeshConfig, MeshStoreError, default_app_private_mesh_dir};
 use remote_core::net::{DEFAULT_CONTROL_PORT, UdpMultiplexer, UdpSender};
 use remote_core::p2p::{
     BoundP2pTunnel, P2pTunnelConfig, P2pTunnelSnapshot, derive_p2p_group_id,
@@ -1200,6 +1200,12 @@ fn build_unified_discovery_config(
 ) -> Result<DiscoveryRuntimeConfig, MeshStoreError> {
     let mesh_store = AppPrivateMeshConfigStore::new(&config.mesh_dir);
     let mesh_config = mesh_store.load_or_generate(&config.display_name)?;
+    build_unified_discovery_config_from_mesh(config, &mesh_config)
+}
+
+fn build_unified_discovery_config_from_mesh(
+    config: &UnifiedRuntimeConfig, mesh_config: &MeshConfig,
+) -> Result<DiscoveryRuntimeConfig, MeshStoreError> {
     let control_port = if config.enable_passive_host {
         config.host_bind_addr.port()
     } else {
@@ -1227,9 +1233,9 @@ fn build_unified_discovery_config(
         talkback: config.enable_talkback && cfg!(target_os = "macos"),
     };
     let announcement = DiscoveryAnnouncement {
-        network_name: mesh_config.network_name,
-        device_id: mesh_config.node_id,
-        display_name: mesh_config.display_name,
+        network_name: mesh_config.network_name.clone(),
+        device_id: mesh_config.node_id.clone(),
+        display_name: mesh_config.display_name.clone(),
         control_port,
         virtual_ip: None,
         capabilities,
@@ -1248,6 +1254,12 @@ fn build_unified_p2p_config(
 ) -> Result<UnifiedP2pRuntimeConfig, Box<dyn Error + Send + Sync>> {
     let store = AppPrivateMeshConfigStore::new(&config.mesh_dir);
     let identity = store.load_or_generate(&config.display_name)?;
+    build_unified_p2p_config_from_mesh(config, discovery, &identity)
+}
+
+fn build_unified_p2p_config_from_mesh(
+    config: &UnifiedRuntimeConfig, discovery: &DiscoveryRuntimeConfig, identity: &MeshConfig,
+) -> Result<UnifiedP2pRuntimeConfig, Box<dyn Error + Send + Sync>> {
     let group_id = derive_p2p_group_id(
         &identity.network_name,
         identity.network_secret.expose_secret(),
@@ -1256,7 +1268,7 @@ fn build_unified_p2p_config(
     Ok(UnifiedP2pRuntimeConfig {
         rendezvous: config.p2p_rendezvous.clone(),
         group_id,
-        peer_id: identity.node_id,
+        peer_id: identity.node_id.clone(),
         routing_key: remote_core::routed_relay::derive_routing_key(identity.network_secret.expose_secret().as_bytes()),
         bind_addr: config.p2p_bind_addr,
         announcement,
@@ -1272,16 +1284,23 @@ fn build_unified_p2p_config(
 fn build_unified_relay_config(
     config: &UnifiedRuntimeConfig,
 ) -> Result<Option<UnifiedRelayRuntimeConfig>, Box<dyn Error + Send + Sync>> {
-    let Some(relay_endpoint) = config.relay_endpoint.clone() else {
+    if config.relay_endpoint.is_none() {
         return Ok(None);
-    };
+    }
     let mesh_store = AppPrivateMeshConfigStore::new(&config.mesh_dir);
     let mesh_config = mesh_store.load_or_generate(&config.display_name)?;
+    build_unified_relay_config_from_mesh(config, &mesh_config)
+}
+
+fn build_unified_relay_config_from_mesh(
+    config: &UnifiedRuntimeConfig, mesh_config: &MeshConfig,
+) -> Result<Option<UnifiedRelayRuntimeConfig>, Box<dyn Error + Send + Sync>> {
+    let Some(relay_endpoint) = config.relay_endpoint.clone() else { return Ok(None); };
     let mut relay_config = UnifiedRelayRuntimeConfig::from_mesh_secret(
         relay_endpoint,
         &mesh_config.network_name,
         mesh_config.network_secret.expose_secret(),
-        mesh_config.node_id,
+        mesh_config.node_id.clone(),
     )?;
     relay_config.control_bind_addr = config.relay_control_bind_addr;
     relay_config.discovery_bind_addr = config.relay_discovery_bind_addr;
@@ -2509,8 +2528,22 @@ async fn reload_unified_runtime_components(
             .apply_discovery_snapshot(&DiscoveryPeerSnapshot::default());
     }
 
+    // Pairing's normal refresh briefly holds the private profile lock. Read one
+    // consistent identity for all transports after that reader releases it.
+    // Only lock contention is retryable; invalid/recovery states still fail closed.
+    let mesh_store = AppPrivateMeshConfigStore::new(&config.mesh_dir);
+    let mut attempts = 0;
+    let mesh = loop {
+        match mesh_store.load_or_generate(&config.display_name) {
+            Err(MeshStoreError::ProfileBusy) if attempts < 40 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            result => break result?,
+        }
+    };
     let mut discovery_config = if discovery_runtime.is_some() {
-        Some(build_unified_discovery_config(config)?)
+        Some(build_unified_discovery_config_from_mesh(config, &mesh)?)
     } else {
         None
     };
@@ -2522,7 +2555,7 @@ async fn reload_unified_runtime_components(
         if config.enable_p2p
             && let Some(discovery) = discovery_config.as_ref()
         {
-            match build_unified_p2p_config(config, discovery) {
+            match build_unified_p2p_config_from_mesh(config, discovery, &mesh) {
                 Ok(p2p_config) => match start_unified_p2p_runtime(p2p_config).await {
                     Ok(new_p2p) => {
                         *p2p_state.runtime.lock().expect("p2p runtime lock") = Some(new_p2p);
@@ -2548,7 +2581,7 @@ async fn reload_unified_runtime_components(
             .take();
         drop(old_relay);
         diagnostics.clear_relays();
-        match build_unified_relay_config(config) {
+        match build_unified_relay_config_from_mesh(config, &mesh) {
             Ok(Some(relay_config)) => match start_unified_relay_runtime(relay_config, &diagnostics).await {
                 Ok(new_relay) => {
                     if let Some(discovery) = discovery_config.as_mut() {
@@ -3285,6 +3318,18 @@ mod tests {
         let pairing =
             MeshPairingControl::load_or_create(&mesh_dir, "Reload Device").expect("pairing");
         let paired = pairing.create_new_group();
+
+        #[cfg(unix)]
+        {
+            // Real cross-process profile lock contention, as seen during live
+            // group reloads; it must not permanently remove the relay runtime.
+            let held = std::fs::File::open(&mesh_dir).unwrap();
+            held.try_lock().unwrap();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(75)).await;
+                drop(held);
+            });
+        }
 
         reload_unified_runtime_components(
             Arc::new(Mutex::new(UnifiedAppRuntime::default())),

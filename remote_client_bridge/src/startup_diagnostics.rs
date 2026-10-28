@@ -13,6 +13,7 @@ pub(crate) fn profile_error_code(error: &MeshStoreError, storage: &Path) -> Stri
         }
     };
     match error {
+        MeshStoreError::ProfileBusy => "profile-busy".into(),
         MeshStoreError::Io { path, source } => format!(
             "profile-io:{}:os={}",
             role(path),
@@ -46,6 +47,7 @@ mod tests {
     #[test]
     fn startup_errors_do_not_disclose_profile_paths_or_contents() {
         let private = Path::new("/private/sentinel-owner/files");
+        assert_eq!(profile_error_code(&MeshStoreError::ProfileBusy, private), "profile-busy");
         let error = MeshStoreError::Io {
             path: private.join("secret-value"),
             source: std::io::Error::from_raw_os_error(13),
