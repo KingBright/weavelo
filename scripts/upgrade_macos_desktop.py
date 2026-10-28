@@ -231,7 +231,7 @@ def inspect(home, expected=None, transaction_sha=None):
                 'Existing upgrade is incomplete; inspect --status, never replay apply')
     plist_sha = gate.hash_file(selected['plist'])
     validate_policy(plistlib.loads(selected['plist'].read_bytes()), selected)
-    policy = guard.load_policy(guard.DESKTOP_POLICY_FILE)
+    policy = guard.desktop_policy(selected['app'])
     signed = guard.verify_app(selected['app'], policy)
     executable = selected['app'] / 'Contents/MacOS/weavelo'
     product = product_current(executable, record, signed)
@@ -446,7 +446,7 @@ def verify_retirement(selected, marker):
         require(gate.hash_file(root / name) == receipt['current'][key], 'Retired metadata backup changed')
     require(tree_digest(root / 'Weavelo.app') == receipt['current_tree']
             and tree_digest(root / 'staging') == receipt['staging_tree'], 'Retired application backup changed')
-    policy = guard.load_policy(guard.DESKTOP_POLICY_FILE)
+    policy = guard.desktop_policy(selected['app'])
     signed = guard.verify_app(root / 'Weavelo.app', policy)
     require(signed['executable_sha256'] == receipt['current']['executable'], 'Retired executable backup changed')
     guard.verify_app(root / 'staging/Weavelo.app', policy)
@@ -474,7 +474,7 @@ def retire_staged(home, current_pins, upgrade_sha, *, apply=False):
     source = stage if stage.exists() else retained
     private(source, True)
     require({p.name for p in source.iterdir()} == {'Weavelo.app'}, 'Unknown staged content; nothing retired')
-    staged_signed = guard.verify_app(source / 'Weavelo.app', guard.load_policy(guard.DESKTOP_POLICY_FILE))
+    staged_signed = guard.verify_app(source / 'Weavelo.app', guard.desktop_policy(selected['app']))
     product_current(source / 'Weavelo.app/Contents/MacOS/weavelo',
                     dict(context['record'], source=original['source']), staged_signed)
     rollback = selected['app'].parent / '.desktop-upgrade.rollback'
@@ -533,7 +533,7 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
           *, no_new_rollback=False):
     rollback_policy = 'none_new' if no_new_rollback else 'verified_slot'
     require(gate.hash_file(archive) == gate.sha(archive_sha), 'Candidate archive digest differs')
-    policy = guard.load_policy(guard.DESKTOP_POLICY_FILE)
+    policy = guard.desktop_policy(desktop.paths(home)['app'])
     with guard.verified_archive(archive, policy, identity_expectations=candidate_pins) as (candidate, signed):
         fresh.verified_product(candidate, archive, candidate_pins)
         if resume_sha is not None:

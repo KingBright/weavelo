@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "bundle_id": "fun.hackerlife.weavelo.desktop",
+  "executable": "weavelo",
+  "app_name": "Weavelo",
+  "certificate_sha1": "8eaa97365d97b8a987cdf1232430eddf9aba8ecf",
+  "identity_kind": "existing-authorized",
+  "purpose": "Preserve Book's existing Desktop signer. Selected only after native verification of the current installed app; candidates must retain this exact certificate and designated requirement. No certificate migration."
+}

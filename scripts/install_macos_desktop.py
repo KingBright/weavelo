@@ -53,7 +53,7 @@ def apply(archive, home, pins, archive_sha256):
     # All source/signature checks precede any destination write or profile setup.
     if gate.hash_file(archive) != gate.sha(archive_sha256):
         raise guard.ReleaseRejected('Archive differs from independent digest')
-    policy = guard.load_policy(guard.DESKTOP_POLICY_FILE)
+    policy = guard.desktop_policy(desktop.paths(home)['app'])
     with guard.verified_archive(archive, policy, identity_expectations=pins) as (candidate, signed):
         initial = plan(home); selected = desktop.paths(home)
         product = verified_product(candidate,archive,pins)

@@ -25,6 +25,7 @@ import build_identity_gate as identity_gate
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_FILE = ROOT / 'deploy/macos/signing-policy.json'
 DESKTOP_POLICY_FILE = ROOT / 'deploy/macos/desktop-signing-policy.json'
+BOOK_DESKTOP_POLICY_FILE = ROOT / 'deploy/macos/book-desktop-signing-policy.json'
 
 
 class ReleaseRejected(RuntimeError):
@@ -71,6 +72,21 @@ def run(args: list[str], timeout: int = 45) -> str:
         detail = (result.stdout + result.stderr)[-3000:]
         raise ReleaseRejected(f'{args[0]} rejected the operation ({result.returncode}): {detail}')
     return result.stdout + result.stderr
+
+
+def desktop_policy(app: Path | None = None) -> Policy:
+    """Bind ordinary updates to the installed signer, never an available key."""
+    current = app if app is not None else Path.home() / 'Applications/Weavelo/Weavelo.app'
+    default = load_policy(DESKTOP_POLICY_FILE)
+    if not current.exists() and not current.is_symlink():
+        return default
+    for policy in (default, load_policy(BOOK_DESKTOP_POLICY_FILE)):
+        try:
+            verify_app(current, policy)
+        except ReleaseRejected:
+            continue
+        return policy
+    raise ReleaseRejected('Installed Desktop signature has no verified authorized signer; ordinary upgrade refused')
 
 
 def sha256(path: Path, *, check=None) -> str:
@@ -432,7 +448,7 @@ def main() -> None:
     child.add_argument('--build-receipt-sha256')
     child.add_argument('--expected-commit')
     child.add_argument('--expected-identity-sha256')
-    args = parser.parse_args(); policy = load_policy(DESKTOP_POLICY_FILE if getattr(args, 'desktop', False) else POLICY_FILE)
+    args = parser.parse_args(); policy = desktop_policy() if getattr(args, 'desktop', False) else load_policy()
     if args.command == 'preflight': result = {'signing_identity': preflight(policy), 'ad_hoc_fallback': False}
     elif args.command == 'verify-app': result = verify_app(args.path, policy)
     elif args.command == 'verify-archive':

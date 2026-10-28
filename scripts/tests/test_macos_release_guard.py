@@ -96,6 +96,29 @@ class ReleaseGateTests(unittest.TestCase):
         path=self.root/'policy.json'; path.write_text(json.dumps(data))
         with self.assertRaises(guard.ReleaseRejected): guard.load_policy(path)
 
+    def test_desktop_policy_keeps_the_current_installed_signer(self):
+        current = self.root / 'Weavelo.app'; current.mkdir()
+        for path in (guard.DESKTOP_POLICY_FILE, guard.BOOK_DESKTOP_POLICY_FILE):
+            expected = guard.load_policy(path)
+            def verify(app, policy):
+                self.assertEqual(app, current)
+                if policy != expected:
+                    raise guard.ReleaseRejected('Different certificate or designated requirement')
+                return {}
+            with patch.object(guard, 'verify_app', side_effect=verify):
+                self.assertEqual(guard.desktop_policy(current), expected)
+
+    def test_unknown_or_tampered_desktop_cannot_select_a_signer(self):
+        current = self.root / 'Weavelo.app'; current.mkdir()
+        with patch.object(guard, 'verify_app', side_effect=guard.ReleaseRejected('Invalid signature')):
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'no verified authorized signer'):
+                guard.desktop_policy(current)
+
+    def test_fresh_desktop_uses_only_the_default_policy(self):
+        with patch.object(guard, 'verify_app') as verify:
+            self.assertEqual(guard.desktop_policy(self.root / 'absent.app'), guard.load_policy(guard.DESKTOP_POLICY_FILE))
+        verify.assert_not_called()
+
     def test_numerical_alpha_version_order(self):
         self.assertGreater(guard.version_key('2.0.0-alpha.10'), guard.version_key('2.0.0-alpha.4'))
         self.assertGreater(guard.version_key('2.0.0'), guard.version_key('2.0.0-alpha.999'))

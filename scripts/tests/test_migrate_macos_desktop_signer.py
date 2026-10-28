@@ -203,8 +203,7 @@ class SignerTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(guard.ReleaseRejected, 'certificate_sha1'):
             guard.check_upgrade(f.signed(f.p['app'], migration.policies(f.c)[0]),
                                 f.signed(f.candidate, migration.policies(f.c)[1]))
-        with self.assertRaisesRegex(guard.ReleaseRejected, 'certificate'):
-            up.inspect(f.home)
+        self.assertEqual(up.inspect(f.home)['signed']['certificate_sha1'], migration.OLD_LEAF)
 
     def test_existing_unknown_backup_stage_or_journal_is_never_overwritten(self):
         f = self.f

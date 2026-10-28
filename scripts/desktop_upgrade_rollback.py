@@ -65,7 +65,7 @@ def verify_backups(p, value, *, old):
             and up.gate.hash_file(p['plist']) == value['current']['plist'], 'Original rollback metadata changed')
     tree = value['old_tree'] if old else value['new_tree']
     require(up.tree_digest(root / 'Weavelo.app') == tree, 'Rollback bundle tuple changed')
-    signed = up.guard.verify_app(root / 'Weavelo.app', up.guard.load_policy(up.guard.DESKTOP_POLICY_FILE))
+    signed = up.guard.verify_app(root / 'Weavelo.app', up.guard.desktop_policy(p['app']))
     expected = value['current']['executable'] if old else value['new_executable_sha256']
     require(signed['executable_sha256'] == expected, 'Rollback executable changed')
 
@@ -113,7 +113,7 @@ def observe(home):
     require(active_tree in (value['old_tree'], value['new_tree']), 'Unknown active bundle tuple')
     side = 'old' if active_tree == value['old_tree'] else 'new'
     verify_backups(p, value, old=side == 'new')
-    signed = up.guard.verify_app(p['app'], up.guard.load_policy(up.guard.DESKTOP_POLICY_FILE))
+    signed = up.guard.verify_app(p['app'], up.guard.desktop_policy(p['app']))
     expected = value['current']['executable'] if side == 'old' else value['new_executable_sha256']
     require(signed['executable_sha256'] == expected, 'Active executable differs')
     if registry_sha != value['current']['install']:
