@@ -1128,6 +1128,16 @@ fn validate_private_dir(path: &Path) -> Result<(), MeshStoreError> {
         "profile has no owned existing parent; nothing changed",
     ))
 }
+
+/// Resolve a private profile after rejecting user-controlled links and traversal.
+/// Root-owned OS ancestry aliases (for example Bazzite /home) retain one identity.
+pub fn canonical_private_mesh_dir(path: &Path) -> Result<PathBuf, MeshStoreError> {
+    validate_private_dir(path)?;
+    let canonical = fs::canonicalize(path)
+        .map_err(|source| MeshStoreError::io(path.to_path_buf(), source))?;
+    validate_private_dir(&canonical)?;
+    Ok(canonical)
+}
 fn validate_private_parent(path: &Path) -> Result<(), MeshStoreError> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         validate_private_dir(parent)

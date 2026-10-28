@@ -558,7 +558,11 @@ fn validate_network_response(response: Response, generation: &str, hash: &str) -
     }
 }
 fn validate_snapshot(snapshot: &Snapshot, profile: &Path, executable_sha256: &str) -> Result<(), Error> {
-    if snapshot.executable_sha256 != executable_sha256 || snapshot.schema != SCHEMA || snapshot.version != env!("CARGO_PKG_VERSION") || snapshot.pairing.config_dir != profile {
+    let same_profile = snapshot.pairing.config_dir == profile ||
+        remote_core::mesh::canonical_private_mesh_dir(profile).ok().zip(
+            remote_core::mesh::canonical_private_mesh_dir(&snapshot.pairing.config_dir).ok())
+            .is_some_and(|(requested, serving)| requested == serving);
+    if snapshot.executable_sha256 != executable_sha256 || snapshot.schema != SCHEMA || snapshot.version != env!("CARGO_PKG_VERSION") || !same_profile {
         return Err("Background service executable/protocol/version/profile mismatch; upgrade the service and GUI together".into());
     }
     Ok(())
@@ -872,6 +876,28 @@ mod service_contract_tests {
             assert!(validate_snapshot(&changed, profile, hash).is_err());
         }
         assert!(validate_snapshot(&snapshot(), profile, "different").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_profile_rejects_user_links_and_accepts_safe_os_ancestry_aliases() {
+        use std::os::unix::fs::{symlink,PermissionsExt};
+        let directory=tempfile::tempdir().unwrap();
+        let canonical=directory.path().canonicalize().unwrap();
+        std::fs::set_permissions(&canonical,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut value=snapshot();value.pairing.config_dir=canonical.clone();
+        let hash=value.executable_sha256.clone();
+        assert!(validate_snapshot(&value,directory.path(),&hash).is_ok());
+        let linked=canonical.join("user-link");symlink(&canonical,&linked).unwrap();
+        assert!(validate_snapshot(&value,&linked,&hash).is_err());
+        assert!(validate_snapshot(&value,&canonical.join(".."),&hash).is_err());
+        #[cfg(target_os="macos")]
+        {
+            let alias=Path::new("/var").join(canonical.strip_prefix("/private/var").unwrap());
+            assert_ne!(alias,canonical);
+            assert!(validate_snapshot(&value,&alias,&hash).is_ok());
+            assert!(validate_snapshot(&value,&alias,"different").is_err());
+        }
     }
 
     #[test]
