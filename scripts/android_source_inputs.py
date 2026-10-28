@@ -137,7 +137,8 @@ def check_local_dependencies(root):
 def snapshot(root, product_commit=None):
     root = Path(root).absolute()
     require(root == root.resolve() and root.is_dir(), 'canonical primary source root required')
-    require(Path(git(root, 'rev-parse', '--show-toplevel').decode().strip()).resolve() == root,
+    git_root = Path(git(root, 'rev-parse', '--show-toplevel').decode().strip()).resolve()
+    require(str(git_root).casefold() == str(root).casefold() and git_root.samefile(root),
             'expected repository root')
     require(git(root, 'branch', '--show-current').decode().strip() == 'main', 'primary main required')
     head = git(root, 'rev-parse', 'HEAD').decode().strip()

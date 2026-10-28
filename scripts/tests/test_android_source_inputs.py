@@ -5,11 +5,31 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts import android_source_inputs as inputs
 
 
 class AndroidSourceInputsTests(unittest.TestCase):
+    def test_git_root_case_alias_is_the_same_checkout(self):
+        original = inputs.git
+        def git(root, *args):
+            if args == ('rev-parse', '--show-toplevel'):
+                return (str(self.root).upper() + '\n').encode()
+            return original(root, *args)
+        with patch.object(inputs, 'git', side_effect=git), \
+             patch.object(Path, 'samefile', lambda a,b:str(a).casefold()==str(b).casefold()):
+            self.assertEqual(inputs.snapshot(self.root)['product_commit'], self.commit_id)
+
+    def test_another_git_root_is_rejected(self):
+        original = inputs.git
+        other = self.root/'another'; other.mkdir()
+        def git(root, *args):
+            return (str(other)+'\n').encode() if args == ('rev-parse','--show-toplevel') else original(root,*args)
+        with patch.object(inputs, 'git', side_effect=git):
+            with self.assertRaisesRegex(ValueError, 'expected repository root'):
+                inputs.snapshot(self.root)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='weavelo-android-inputs-')
         self.addCleanup(temporary.cleanup)
