@@ -332,7 +332,7 @@ class NativeControl:
         require(pairing.get('schema') == 1 and pairing.get('accepted') is True,
                 'Running executable does not expose the new native pairing CLI')
         if before['gui']:
-            subprocess.run(['/usr/bin/open', '-n', str(self.paths['app']), '--args', '--gui'],
+            subprocess.run(['/usr/bin/open', '-g', '-n', str(self.paths['app']), '--args', '--gui'],
                            check=True, capture_output=True, timeout=15)
             while True:
                 gui = self.query('--gui-network-diagnostics-json', False)

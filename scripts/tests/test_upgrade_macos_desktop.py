@@ -114,6 +114,22 @@ class UpgradeTests(unittest.TestCase):
             with self.assertRaisesRegex(guard.ReleaseRejected,'version conflict'):self.apply(pins)
         self.assertEqual(self.calls,[]);self.assertEqual(self.app_bytes(),b'old-image')
 
+    def test_native_gui_restart_keeps_current_foreground_application(self):
+        control = NativeControlOriginal(self.selected)
+        digest = self.current()['executable']
+        replies = {'--background-status-json': {'role': 'background-service', 'pid': 201,
+                                               'executable_sha256': digest},
+                   '--pairing-status-json': {'schema': 1, 'accepted': True},
+                   '--gui-network-diagnostics-json': {'ok': True, 'pid': 202,
+                                                     'executable_sha256': digest}}
+        with patch.object(control, 'loaded', return_value=True), \
+             patch.object(control, 'query', side_effect=lambda flag, *args: replies[flag]), \
+             patch.object(upgrade.subprocess, 'run') as run:
+            result = control.start({'background': None, 'gui': {'pid': 102}}, digest)
+        opened = [call.args[0] for call in run.call_args_list if call.args[0][0] == '/usr/bin/open']
+        self.assertEqual(opened, [['/usr/bin/open', '-g', '-n', str(self.selected['app']), '--args', '--gui']])
+        self.assertEqual(result['frontend_pid'], 202)
+
     def test_bad_archive_digest_refuses_before_destination_write(self):
         with self.assertRaisesRegex(guard.ReleaseRejected,'digest'):
             upgrade.apply(self.archive,self.home,self.pins,'1'*64,self.current())
