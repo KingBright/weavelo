@@ -25,6 +25,7 @@ class ServiceContractEntryTests(unittest.TestCase):
         'lifecycle-ownership': ('weavelo_app', 'desktop::instance::tests'),
         'lifecycle-service-contract': ('weavelo_app', 'background_service::service_contract_tests'),
         'background-service': ('weavelo_app', 'background_service::'),
+        'background-readonly-cli': ('weavelo_app', 'cli_rejects_unrelated_socket_peer_without_touching_pending_recovery'),
         'pairing-cli': ('weavelo_app', 'pairing_cli::tests'),
         'background-readonly-host': ('host', 'service::read_only_host_channel_observes_without_stopping'),
         'session-security': ('remote_core', 'session_'),
@@ -147,6 +148,7 @@ class ServiceContractEntryTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 features = {'native-file-cli': ['--no-default-features', '--features', 'gpui-restoration'],
                             'background-service': ['--no-default-features', '--features', 'gpui-restoration'],
+                            'background-readonly-cli': ['--no-default-features', '--features', 'gpui-restoration'],
                             'pairing-cli': ['--no-default-features', '--features', 'gpui-restoration'],
                             'shared-file-publication': ['--no-default-features', '--features', 'gpui-restoration'],
                             'pairing-image': ['--features', 'pairing-image'],
@@ -156,7 +158,7 @@ class ServiceContractEntryTests(unittest.TestCase):
                           if mode == 'desktop-identity' and runner.sys.platform == 'darwin' else [])
                 self.assertEqual(validation_command('/existing/cargo', Path('/existing/target'), mode), [
                     '/existing/cargo', 'test', '--offline', '--locked', '--target-dir',
-                    '/existing/target', '-p', package, '--lib', *features, *native, test_filter, '--', '--nocapture',
+                    '/existing/target', '-p', package, *(['--test','background_readonly_cli'] if mode == 'background-readonly-cli' else ['--lib']), *features, *native, test_filter, '--', '--nocapture',
                 ])
 
     def test_process_mode_binds_reviewed_identity_and_worker_to_original_producer(self):

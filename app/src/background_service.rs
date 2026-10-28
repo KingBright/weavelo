@@ -485,14 +485,19 @@ pub fn read_only_status(profile:&Path)->Result<serde_json::Value,Error> {
     }
     let hash=executable_hash()?;
     let mut socket=crate::private_ipc::connect(profile,SOCKET,TIMEOUT)?;
-    let before=linux_peer_identity(&socket)?;
-    if before.executable_sha256!=hash {return Err("Read-only status peer executable differs".into());}
+    let before=linux_peer_process(&socket)?;
+    // This public, read-only query carries no credentials. Exchange its bounded
+    // frames before hashing the peer image: large debug images can otherwise
+    // exhaust the server's request deadline before the client sends any bytes.
     socket.write_all(&frame(&serde_json::to_vec(&Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA})?)?)?;
     let mut header=[0;4];socket.read_exact(&mut header)?;
     let mut bytes=vec![0;valid_length(header)?];socket.read_exact(&mut bytes)?;
     let after=linux_peer_identity(&socket)?;
-    if before!=after {return Err("Read-only status peer process changed".into());}
-    let status=validate_read_only_status(serde_json::from_slice(&bytes)?,&hash,before.pid,before.start_ticks)?;
+    if before!=(after.pid,after.start_ticks) || before!=linux_peer_process(&socket)? {
+        return Err("Read-only status peer process changed".into());
+    }
+    if after.executable_sha256!=hash {return Err("Read-only status peer executable differs".into());}
+    let status=validate_read_only_status(serde_json::from_slice(&bytes)?,&hash,after.pid,after.start_ticks)?;
     Ok(serde_json::to_value(status)?)
     }
 }
@@ -519,7 +524,7 @@ fn linux_process_start_ticks(pid:u32)->Result<u64,Error> {
     Ok(ticks)
 }
 #[cfg(target_os="linux")]
-fn linux_peer_identity(socket:&std::os::unix::net::UnixStream)->Result<LinuxPeerIdentity,Error> {
+fn linux_peer_process(socket:&std::os::unix::net::UnixStream)->Result<(u32,u64),Error> {
     use std::os::fd::AsRawFd;
     let mut peer=std::mem::MaybeUninit::<libc::ucred>::uninit();
     let mut len=std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -530,6 +535,11 @@ fn linux_peer_identity(socket:&std::os::unix::net::UnixStream)->Result<LinuxPeer
     if peer.pid<=1 || peer.uid!=unsafe {libc::geteuid()} {return Err("Socket peer user or PID differs".into());}
     let pid=peer.pid as u32;
     let start_ticks=linux_process_start_ticks(pid)?;
+    Ok((pid,start_ticks))
+}
+#[cfg(target_os="linux")]
+fn linux_peer_identity(socket:&std::os::unix::net::UnixStream)->Result<LinuxPeerIdentity,Error> {
+    let (pid,start_ticks)=linux_peer_process(socket)?;
     let mut executable=fs::File::open(format!("/proc/{pid}/exe"))?;
     let mut digest=Sha256::new();let mut buffer=[0u8;8192];
     loop {let n=executable.read(&mut buffer)?;if n==0 {break;}digest.update(&buffer[..n]);}
@@ -1034,6 +1044,7 @@ mod tests {
         let dir=tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(),fs::Permissions::from_mode(0o700)).unwrap();
         let mut listener=crate::private_ipc::Listener::bind(dir.path(),SOCKET).unwrap();
+        let hash=executable_hash().unwrap();
         let profile=dir.path().to_owned();
         let client=tokio::task::spawn_blocking(move||read_only_status(&profile));
         let mut socket=listener.accept().await.unwrap();
@@ -1042,10 +1053,10 @@ mod tests {
         assert!(matches!(serde_json::from_slice::<Request>(&request).unwrap(),Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA}));
         let forged=Response::ReadOnlyStatus(ReadOnlyStatus {schema:READ_ONLY_SCHEMA,role:OwnerMode::Background,
             version:env!("CARGO_PKG_VERSION").into(),generation:"999999-fixture".into(),
-            executable_sha256:executable_hash().unwrap(),pid:999999,
+            executable_sha256:hash,pid:999999,
             start_ticks:linux_process_start_ticks(std::process::id()).unwrap(),idle_now:true});
         socket.write_all(&frame(&serde_json::to_vec(&forged).unwrap()).unwrap()).await.unwrap();
-        assert!(client.await.unwrap().is_err());
+        assert!(client.await.unwrap().unwrap_err().to_string().contains("owner/protocol/executable differs"));
     }
     #[test]
     fn read_only_status_rejects_version_identity_and_extra_fields() {

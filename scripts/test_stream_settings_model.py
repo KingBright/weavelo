@@ -31,6 +31,7 @@ SESSION_CLOCK_TESTS = {
     "lifecycle-ownership": ("weavelo_app", "desktop::instance::tests"),
     "lifecycle-service-contract": ("weavelo_app", "background_service::service_contract_tests"),
     "background-service": ("weavelo_app", "background_service::"),
+    "background-readonly-cli": ("weavelo_app", "cli_rejects_unrelated_socket_peer_without_touching_pending_recovery"),
     "pairing-cli": ("weavelo_app", "pairing_cli::tests"),
     "background-readonly-host": ("host", "service::read_only_host_channel_observes_without_stopping"),
     "session-security": ("remote_core", "session_"),
@@ -122,12 +123,14 @@ def validation_command(cargo, target, mode):
         package, test_filter = SESSION_CLOCK_TESTS[mode]
         features = {"native-file-cli": ["--no-default-features", "--features", "gpui-restoration"],
                     "background-service": ["--no-default-features", "--features", "gpui-restoration"],
+                    "background-readonly-cli": ["--no-default-features", "--features", "gpui-restoration"],
                     "pairing-cli": ["--no-default-features", "--features", "gpui-restoration"],
                     "shared-file-publication": ["--no-default-features", "--features", "gpui-restoration"],
                     "pairing-image": ["--features", "pairing-image"],
                     "bridge-invitation": ["--features", "android"], "bridge-network": ["--features", "android"],
                     "bridge-discovery": ["--features", "android"]}.get(mode, [])
-        return [cargo, "test", *shared, "-p", package, "--lib", *features,
+        kind = ["--test", "background_readonly_cli"] if mode == "background-readonly-cli" else ["--lib"]
+        return [cargo, "test", *shared, "-p", package, *kind, *features,
                 test_filter, "--", "--nocapture", *(["--ignored", "--test-threads=1"] if mode == "computer-use-process" else [])]
     if mode == "service-contract":
         return [cargo, "test", *shared, "-p", "weavelo_app", "--lib",
