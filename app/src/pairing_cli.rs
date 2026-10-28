@@ -214,6 +214,21 @@ pub(crate) fn command(args: &[String], profile: &Path) -> Result<Report, Pairing
 mod pipe {
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd};
+    fn anonymous(fd: i32, info: &libc::stat) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            // Linux anonymous pipes have one kernel link. A named FIFO can
+            // have the same link count; bind the open FD to its pipe inode.
+            info.st_nlink == 1
+                && std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()
+                    == Some(std::path::PathBuf::from(format!("pipe:[{}]", info.st_ino)))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = fd;
+            info.st_nlink == 0
+        }
+    }
     fn duplicate(fd: i32, writing: bool) -> Result<File, PairingCliError> {
         let mut info = std::mem::MaybeUninit::<libc::stat>::uninit();
         if unsafe { libc::fstat(fd, info.as_mut_ptr()) } != 0 {
@@ -223,7 +238,7 @@ mod pipe {
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if info.st_mode & libc::S_IFMT != libc::S_IFIFO
             || info.st_uid != unsafe { libc::geteuid() }
-            || info.st_nlink != 0
+            || !anonymous(fd, &info)
             || flags < 0
             || (writing && flags & libc::O_ACCMODE == libc::O_RDONLY)
             || (!writing && flags & libc::O_ACCMODE == libc::O_WRONLY)
@@ -447,6 +462,19 @@ mod tests {
                 libc::close(alias);
             }
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn private_export_rejects_a_named_fifo_with_the_same_link_count_as_a_pipe() {
+        use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("named.fifo");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let fifo = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        assert!(pipe::output(fifo.as_raw_fd() as usize).is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(pipe::output(fifo.as_raw_fd() as usize).is_err());
     }
     #[cfg(unix)]
     #[test]

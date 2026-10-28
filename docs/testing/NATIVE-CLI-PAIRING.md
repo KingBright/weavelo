@@ -63,3 +63,9 @@ Only a confirmed `staged` transaction, before any quit/stop request, can be
 explicitly continued with `--resume-staged --expected-upgrade-sha256 DIGEST`
 and the same candidate/current pins. The staged signed bundle is reverified;
 changed records, changed candidates and any later phase remain blocked.
+
+On Linux, inherited anonymous pipes are checked against their kernel pipe inode
+through `/proc/self/fd`, along with ownership, descriptor access and FIFO type.
+Linux's anonymous pipe link count is one; that alone does not distinguish a
+named FIFO. Named and unlinked filesystem FIFOs remain rejected. macOS retains
+its native zero-link check. No invitation is accepted through a console or file.
