@@ -14,6 +14,7 @@ import os
 import re
 from pathlib import Path
 import select
+import shutil
 import stat
 import subprocess
 import sys
@@ -102,8 +103,8 @@ def check_mount_layout(paths):
             require(len(fields)>=6 and fields[0].isdigit(),'Mount observation unavailable; no owner stopped')
             target=Path(re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),fields[4]))
             mounts.append((target,fields[0]))
-            slot=work/'upgrade/rollback-app'
-            require(not (target==app or app in target.parents or target==slot or slot in target.parents),
+            slots=(work/'upgrade/rollback-app',work/'current-update/candidate-app')
+            require(not (target==app or app in target.parents or any(target==slot or slot in target.parents for slot in slots)),
                     'Mounted application/exchange subtree unsupported; no owner stopped')
         def mount_id(path):
             matches=[(len(target.parts),identifier) for target,identifier in mounts if target==path or target in path.parents]
@@ -114,6 +115,7 @@ def check_mount_layout(paths):
             return ids.pop()
         locations=[work,app.parent]
         if (work/'upgrade').exists():locations.append(work/'upgrade')
+        if (work/'current-update').exists():locations.append(work/'current-update')
         require(len({mount_id(p) for p in locations})==1,
                 'Exchange source/target belong to different mount IDs; no owner stopped')
 
@@ -351,14 +353,17 @@ class Upgrade:
                 and original['plan']['paths']=={k:str(v) for k,v in self.paths.items()},'Original Desktop installation journal differs')
         return {'original_journal_sha256':sha,'entries':{k:file_pin(self.paths[k]) for k in ('launcher','service','desktop','icon')},
                 'profile':profile_pin(self.paths['profile'])}
+    def predecessor(self):
+        require(not self.transaction.exists() and not self.transaction.is_symlink(),'Existing transaction retained; read status, do not replay')
+        original,sha=read_record(self.original)
+        return {'binary_sha256':original['plan']['binary_sha256'],'journal_sha256':sha}
     def plan(self,archive,pins):
         check_mount_layout(self.paths)
-        require(not self.transaction.exists() and not self.transaction.is_symlink(),'Existing transaction retained; read status, do not replay')
+        predecessor=self.predecessor()
         manifest=fresh.verify(Path(archive),*pins)
         fixed=self.invariants();old=image(self.paths['app'])
-        original,_=read_record(self.original)
         old_sha=next(r['sha256'] for r in old['files'] if r['path']=='weavelo')
-        require(old_sha==original['plan']['binary_sha256'],'Installed original binary differs')
+        require(old_sha==predecessor['binary_sha256'],'Installed committed binary differs')
         require(manifest['binary_sha256']!=old_sha,'Candidate is already installed')
         configuration=self.control.configuration();compatibility={}
         for key,(raw,_) in fresh.payloads(self.home,archive).items():
@@ -379,6 +384,7 @@ class Upgrade:
                 'Opaque environment preserved; explicit canonical profile launcher required before upgrade')
         return {'schema':1,'kind':'weavelo-independent-desktop-linux-upgrade','home':str(self.home),
                 'archive':str(Path(archive).resolve()),'pins':list(pins),'invariants':fixed,'old_image':old,
+                'predecessor':predecessor,
                 'old_sha256':old_sha,'new_sha256':manifest['binary_sha256'],'new_files':manifest['files'],
                 'configuration':{k:v for k,v in configuration.items() if k in ('enabled','dropins','policy')},'runtime':before,
                 'startup_entry_compatibility':compatibility,
@@ -390,14 +396,22 @@ class Upgrade:
         require({k:v for k,v in configuration.items() if k in ('enabled','dropins','policy')}==plan['configuration'],'Startup policy drift; preserved')
     def save(self,record,expected):
         return atomic_record(self.journal,record,expected)
+    def begin(self,plan):
+        self.transaction.mkdir(mode=0o700);sync(self.work)
+        return None
+    def finish(self,record,current):
+        record['phase']='completed';self.save(record,current)
+        plan=record['plan']
+        return {'phase':'completed','transaction_id':record['transaction_id'],'source_commit':plan['pins'][2],
+                'installed_sha256':plan['new_sha256'],'rollback_retained':True,'profile_preserved':True,'startup_preserved':True,'running':record['running']}
     def apply(self,plan,digest):
         require(gate.digest(gate.canonical(plan))==digest,'Exact reviewed plan required')
         with self.lock():
             require(self.plan(plan['archive'],plan['pins'])==plan,'Plan changed; no action')
             require(plan['applicable'],'Installed owners lack normal idle-only exit; no stop or file changes')
-            self.transaction.mkdir(mode=0o700);sync(self.work)
+            previous=self.begin(plan)
             record={'schema':1,'kind':RECORD_KIND,'transaction_id':str(uuid.uuid4()),'plan':plan,'plan_sha256':digest,'phase':'preparing'}
-            current=self.save(record,None)
+            current=self.save(record,previous)
             self.slot.mkdir(mode=0o700)
             with zipfile.ZipFile(plan['archive']) as archive:
                 for row in plan['new_files']:
@@ -428,9 +442,7 @@ class Upgrade:
             record['phase']='activation-intent';current=self.save(record,current)
             record['running']=self.control.start(plan['runtime'],plan['new_sha256'])
             self.same(plan);require(image(self.paths['app'])==record['candidate_image'] and image(self.slot)==plan['old_image'],'Final app/rollback changed')
-            record['phase']='completed';self.save(record,current)
-            return {'phase':'completed','transaction_id':record['transaction_id'],'source_commit':plan['pins'][2],
-                    'installed_sha256':plan['new_sha256'],'rollback_retained':True,'profile_preserved':True,'startup_preserved':True,'running':record['running']}
+            return self.finish(record,current)
     def historical_runtime(self,runtime,plan):
         require(isinstance(runtime,dict) and set(runtime)=={'background','gui','blockers','active'}
                 and type(runtime['active']) is bool and runtime['active']==plan['runtime']['active']
@@ -550,13 +562,81 @@ class Upgrade:
             record['phase']='rolled-back';record['running']=running;self.save(record,current)
             return {'phase':'rolled-back','transaction_id':transaction_id,'profile_preserved':True,'running':running}
 
+class CurrentUpgrade(Upgrade):
+    """Repeat ordinary updates in one fixed staging area; retain historical evidence."""
+    def __init__(self,home,control=None):
+        super().__init__(home,control)
+        self.historical=Upgrade(home,self.control)
+        self.transaction=self.work/'current-update'
+        self.journal=self.transaction/'state.json';self.slot=self.transaction/'candidate-app'
+
+    def historical_pin(self):
+        old=self.historical
+        if not old.transaction.exists() and not old.transaction.is_symlink():return None
+        record,sha,pending=old.observed_record()
+        require(pending is None and record['phase']=='completed','Historical update is unfinished; observe its original operation')
+        require(image(old.slot)==record['plan']['old_image'],'Historical rollback tuple changed; retained')
+        old.same(record['plan'])
+        return {'journal_sha256':sha,'rollback_image':image(old.slot)}
+
+    def predecessor(self):
+        historical=self.historical_pin()
+        if self.transaction.exists() or self.transaction.is_symlink():
+            private(self.transaction,True)
+            record,sha,pending=self.observed_record()
+            require(pending is None and record['phase']=='completed','Current update is unfinished; observe its original operation')
+            require(image(self.paths['app'])==record['candidate_image'],'Current installed image changed')
+            if self.slot.exists() or self.slot.is_symlink():
+                require(image(self.slot)==record['plan']['old_image'],'Previous owned staging changed; retained')
+            require({p.name for p in self.transaction.iterdir()}<= {'state.json','candidate-app'},'Unknown current staging entry retained')
+            return {'binary_sha256':record['plan']['new_sha256'],'journal_sha256':sha,'historical':historical}
+        if historical is not None:
+            record,_,_=self.historical.observed_record()
+            require(image(self.paths['app'])==record['candidate_image'],'Historical installed image changed')
+            sha=record['plan']['new_sha256']
+        else:
+            original,_=read_record(self.original);sha=original['plan']['binary_sha256']
+        return {'binary_sha256':sha,'journal_sha256':None,'historical':historical}
+
+    def begin(self,plan):
+        previous=plan['predecessor']['journal_sha256']
+        if previous is None:
+            require(not self.transaction.exists() and not self.transaction.is_symlink(),'Unrecorded staging retained')
+            self.transaction.mkdir(mode=0o700);sync(self.work)
+        else:
+            record,sha,pending=self.observed_record()
+            require(sha==previous and pending is None and record['phase']=='completed','Current journal changed')
+            if self.slot.exists() or self.slot.is_symlink():self.discard_old_stage(record)
+        return previous
+
+    def same(self,plan):
+        super().same(plan)
+        require(self.historical_pin()==plan['predecessor']['historical'],'Historical evidence changed; retained')
+
+    def discard_old_stage(self,record):
+        require(image(self.paths['app'])==record['candidate_image'] and image(self.slot)==record['plan']['old_image'],
+                'Owned staging tuple changed; retained')
+        require(self.historical_pin()==record['plan']['predecessor']['historical'],'Historical evidence changed; retained')
+        shutil.rmtree(self.slot);sync(self.transaction)
+
+    def finish(self,record,current):
+        result=super().finish(record,current)
+        self.discard_old_stage(record)
+        result.update(rollback_retained=False,historical_rollback_preserved=True)
+        return result
+
+    def recover(self,transaction_id):
+        raise ValueError('Current updates retain their observed state for forward repair; no automatic rollback')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive',nargs='?',type=Path)
     for name in ('archive-sha256','manifest-sha256','commit','identity-sha256'):parser.add_argument('--expected-'+name)
     parser.add_argument('--expected-plan-sha256');parser.add_argument('--apply',action='store_true')
     parser.add_argument('--status',action='store_true');parser.add_argument('--recover-transaction')
-    args=parser.parse_args();upgrade=Upgrade(Path.home())
+    args=parser.parse_args();upgrade=CurrentUpgrade(Path.home())
+    if (args.status or args.recover_transaction) and not upgrade.journal.exists():upgrade=upgrade.historical
     if args.status or args.recover_transaction:
         require(not args.archive and not args.apply,'Status/recovery cannot start an upgrade')
         result=upgrade.status() if args.status else upgrade.recover(args.recover_transaction)

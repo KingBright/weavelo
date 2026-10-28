@@ -379,6 +379,73 @@ class UpgradeTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.plan()
 
 
+    def next_candidate(self,raw):
+        self.new['weavelo']=raw
+        with zipfile.ZipFile(self.archive,'w') as archive:
+            for name,value in self.new.items():archive.writestr('Weavelo/'+name,value)
+        self.files[:]=[{'path':n,'bytes':len(v),'sha256':up.gate.digest(v)} for n,v in sorted(self.new.items())]
+        self.manifest['binary_sha256']=up.gate.digest(raw)
+
+    def apply_current(self,current):
+        plan=current.plan(self.archive,self.pins)
+        return current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+
+    def test_current_updates_repeat_without_new_rollback_or_historical_changes(self):
+        plan,digest=self.plan();self.up.apply(plan,digest)
+        historical=self.up.journal.read_bytes();rollback=up.image(self.up.slot)
+        current=up.CurrentUpgrade(self.home,self.control)
+        self.next_candidate(b'current second exe')
+        result=self.apply_current(current)
+        self.assertFalse(result['rollback_retained']);self.assertFalse(current.slot.exists())
+        self.assertEqual(self.up.journal.read_bytes(),historical);self.assertEqual(up.image(self.up.slot),rollback)
+        first_id=result['transaction_id']
+        self.next_candidate(b'current third exe');result=self.apply_current(current)
+        self.assertNotEqual(result['transaction_id'],first_id)
+        self.assertEqual((self.paths['app']/'weavelo').read_bytes(),b'current third exe')
+        self.assertEqual({p.name for p in current.transaction.iterdir()},{'state.json'})
+        self.assertEqual(self.up.journal.read_bytes(),historical);self.assertEqual(up.image(self.up.slot),rollback)
+        self.unchanged()
+
+    def test_current_update_also_supports_first_upgrade_without_new_backup(self):
+        current=up.CurrentUpgrade(self.home,self.control)
+        self.apply_current(current)
+        self.assertFalse(current.slot.exists());self.assertFalse(self.up.transaction.exists());self.unchanged()
+
+    def test_unfinished_historical_update_blocks_before_any_new_stop(self):
+        self.fail='start';plan,digest=self.plan()
+        with self.assertRaises(TimeoutError):self.up.apply(plan,digest)
+        before=list(self.calls);current=up.CurrentUpgrade(self.home,self.control)
+        self.next_candidate(b'current next exe')
+        with self.assertRaisesRegex(ValueError,'Historical update is unfinished'):current.plan(self.archive,self.pins)
+        self.assertEqual(before,self.calls);self.assertFalse(current.transaction.exists())
+
+    def test_current_unknown_activation_is_observed_without_replay(self):
+        current=up.CurrentUpgrade(self.home,self.control);self.fail='start'
+        with self.assertRaises(TimeoutError):self.apply_current(current)
+        record=current.journal.read_bytes();before=list(self.calls)
+        self.assertEqual(current.status()['phase'],'activation-intent')
+        self.assertEqual(up.image(current.slot),self.old)
+        with self.assertRaisesRegex(ValueError,'Current update is unfinished'):self.apply_current(current)
+        self.assertEqual(current.journal.read_bytes(),record);self.assertEqual(before,self.calls);self.unchanged()
+
+    def test_verified_completed_staging_cleanup_can_finish_on_next_update(self):
+        current=up.CurrentUpgrade(self.home,self.control)
+        with patch.object(current,'discard_old_stage',side_effect=OSError('interrupted cleanup')):
+            with self.assertRaises(OSError):self.apply_current(current)
+        self.assertTrue(current.slot.exists());self.assertEqual(current.status()['phase'],'completed')
+        self.next_candidate(b'after cleanup exe');self.apply_current(current)
+        self.assertFalse(current.slot.exists());self.unchanged()
+
+    def test_unknown_staging_or_historical_backup_is_preserved(self):
+        plan,digest=self.plan();self.up.apply(plan,digest)
+        current=up.CurrentUpgrade(self.home,self.control);self.next_candidate(b'current next exe')
+        (self.up.slot/'weavelo').write_bytes(b'unknown historical data')
+        before=list(self.calls)
+        with self.assertRaisesRegex(ValueError,'Historical rollback tuple changed'):self.apply_current(current)
+        self.assertEqual((self.up.slot/'weavelo').read_bytes(),b'unknown historical data')
+        self.assertEqual(before,self.calls);self.assertFalse(current.transaction.exists())
+
+
 # Each boundary gets an independent disposable installation/transaction.
 for _phase in ['preparing','staged','gui-stop-intent','background-stop-intent','owners-stopped','exchange-intent','exchanged','activation-intent','completed']:
     def _case(self,phase=_phase):self.check_phase_interruption(phase)
