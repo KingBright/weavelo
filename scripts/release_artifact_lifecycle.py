@@ -231,13 +231,9 @@ def producer(kind):
             yield value
 
 
-@contextmanager
-def _producer(kind):
+def bind_project_root():
+    """Use the existing authority spelling in subprocesses that cannot inherit FDs."""
     global ROOT
-    gate.require_admitted()
-    if LOCK_ENV in os.environ:
-        yield check_lock(kind)
-        return
     binding = ROOT / '.rust-storage/release-binding.json'
     if binding.exists() or binding.is_symlink():
         record, _ = document(binding)
@@ -248,6 +244,16 @@ def _producer(kind):
                     and str(bound_root).casefold() == str(ROOT).casefold()
                     and bound_root.samefile(ROOT), 'Wrong release binding project')
             ROOT = bound_root  # Preserve the sole authority's APFS path spelling.
+
+
+@contextmanager
+def _producer(kind):
+    global ROOT
+    gate.require_admitted()
+    if LOCK_ENV in os.environ:
+        yield check_lock(kind)
+        return
+    bind_project_root()
     transition = transition_config(kind)  # Reject incomplete intent before any lifecycle mutation.
     state_dir = ROOT / '.rust-storage'
     require(ROOT == ROOT.resolve(strict=True) and not state_dir.is_symlink(), 'Unsafe producer metadata path')
@@ -672,6 +678,7 @@ def check_current(output_directory):
 
 def _check_current(output_directory):
     gate.require_admitted()
+    bind_project_root()
     # The JVM does not preserve arbitrary lock FDs when starting Python. The
     # public check verifies the transaction, process start identity and caller ancestry.
     regular(HELPER)

@@ -414,7 +414,7 @@ class ReleaseHookTests(unittest.TestCase):
         shared = SimpleNamespace(companion=lambda _: SimpleNamespace(validate_producer=Mock(return_value=result)), release_api=lambda: 'api')
         validator = Mock(return_value=result); shared.companion = lambda _: SimpleNamespace(validate_producer=validator)
         spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _: None))
-        patches = [patch.object(hook, 'regular'), patch.object(hook.importlib.util,'spec_from_file_location',return_value=spec),
+        patches = [patch.object(hook.importlib.util,'spec_from_file_location',return_value=spec),
                    patch.object(hook.importlib.util,'module_from_spec',return_value=shared)]
         for item in patches: item.start(); self.addCleanup(item.stop)
         return validator
@@ -437,6 +437,34 @@ class ReleaseHookTests(unittest.TestCase):
         self.current_guard(result)
         with patch.dict(os.environ,{hook.PID_ENV:str(os.getpid())}):
             with self.assertRaises(hook.Refusal): hook.check_current(hook.android_workspace()/'release')
+
+    def test_gradle_child_without_lock_fd_reuses_bound_case_alias(self):
+        alias = self.root.with_name(self.root.name.upper())
+        if not alias.exists() or not alias.samefile(self.root):
+            self.skipTest('Native case-insensitive filesystem fixture')
+        state = self.root / '.rust-storage'; state.mkdir()
+        (state / 'release-binding.json').write_text(json.dumps({
+            'declaration': {'project_root': str(self.root)}}))
+        output = hook.android_workspace() / 'release'; output.mkdir(parents=True)
+        result = {'staged_files': list(map(str, hook.stage_paths(hook.android_files()))),
+                  'owned_aux_stages': [str(hook.android_workspace())]}
+        validator = self.current_guard(result)
+        with patch.object(hook, 'ROOT', alias), patch.dict(os.environ, {hook.PID_ENV: str(os.getpid())}):
+            hook.check_current(output)
+            self.assertEqual(hook.ROOT, self.root)
+        validator.assert_called_once_with('api', str(self.root), 'android-arm64-release',
+                                          list(map(str, hook.android_files())), os.getpid())
+
+    def test_gradle_child_cannot_redirect_bound_project(self):
+        state = self.root / '.rust-storage'; state.mkdir()
+        other = self.root / 'other'; other.mkdir()
+        (state / 'release-binding.json').write_text(json.dumps({
+            'declaration': {'project_root': str(other)}}))
+        validator = self.current_guard({})
+        with patch.dict(os.environ, {hook.PID_ENV: str(os.getpid())}), \
+                self.assertRaisesRegex(hook.Refusal, 'Wrong release binding project'):
+            hook.check_current(self.root)
+        validator.assert_not_called()
 
 
     def test_unsigned_preparation_cannot_be_published_as_release_evidence(self):
