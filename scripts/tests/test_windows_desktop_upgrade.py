@@ -23,6 +23,7 @@ class UpgradeTests(unittest.TestCase):
         (self.p['profile']/'mesh.conf').write_bytes(b'fixture-membership')
         (self.p['profile']/'mesh.secret').write_bytes(b'fixture-only-secret')
         self.old = upgrade.gate.hash_file(self.p['app']/'weavelo.exe')
+        self.old_identity = 'c'*64
         self.candidate = self.home/'candidate'
         self.candidate.mkdir()
         (self.candidate/'weavelo.exe').write_bytes(b'new-image')
@@ -61,7 +62,7 @@ class UpgradeTests(unittest.TestCase):
         source.rename(target)
 
     def reviewed(self):
-        return upgrade.plan(self.home, self.bound, self.old, 'c'*64, 9, 7)
+        return upgrade.plan(self.home, self.bound, self.old, self.old_identity, 9, 7)
 
     def stop(self, *args):
         self.calls.append('stop')
@@ -77,17 +78,19 @@ class UpgradeTests(unittest.TestCase):
     def apply(self, digest, stopper=None):
         security = SimpleNamespace(create_private_directory=lambda p: p.mkdir())
         with patch.object(upgrade.sys, 'platform', 'win32'):
-            return upgrade.apply(self.home, self.bound, self.old, 'c'*64, 9, 7, digest,
+            return upgrade.apply(self.home, self.bound, self.old, self.old_identity, 9, 7, digest,
                 security=security, stopper=stopper or self.stop, starter=self.launch, reader=self.accept)
 
-    def test_upgrade_retains_old_image_membership_and_user_fields(self):
+    def test_upgrade_replaces_current_without_a_new_rollback_and_preserves_user_fields(self):
         before = upgrade.membership_metadata(self.p['profile'])
         _, digest = self.reviewed()
         result = self.apply(digest)
         self.assertEqual(result['phase'], 'completed')
         self.assertEqual(self.calls, ['stop', 'start'])
         self.assertEqual((self.p['app']/'weavelo.exe').read_bytes(), b'new-image')
-        self.assertEqual((self.p['rollback']/'weavelo.exe').read_bytes(), b'old-image')
+        self.assertFalse(self.p['rollback'].exists())
+        self.assertFalse(self.p['pending'].exists())
+        self.assertFalse(result['rollback_preserved'])
         self.assertEqual(upgrade.membership_metadata(self.p['profile']), before)
         registry = json.loads((self.p['state']/'install.json').read_text())
         self.assertEqual(registry['user_notes'], {'keep': 'user text'})
@@ -100,6 +103,22 @@ class UpgradeTests(unittest.TestCase):
             self.apply('0'*64)
         self.assertFalse(self.calls)
         self.assertFalse(self.p['journal'].exists())
+
+    def test_next_update_reuses_completed_state_and_leaves_historical_slot_untouched(self):
+        self.p['rollback'].mkdir()
+        historical = self.p['rollback']/'prior-user-preserved-file'; historical.write_bytes(b'preserve')
+        _, digest = self.reviewed(); self.apply(digest)
+        self.old = self.bound['binary_sha256']; self.old_identity = self.bound['identity_sha256']
+        (self.candidate/'weavelo.exe').write_bytes(b'next-image')
+        self.bound.update(binary_sha256=upgrade.gate.hash_file(self.candidate/'weavelo.exe'),
+                          commit='e'*40, identity_sha256='f'*64,
+                          files=upgrade.original.inventory(self.candidate, upgrade.gate))
+        plan, digest = self.reviewed()
+        self.assertIsNotNone(plan['previous_upgrade_sha256'])
+        self.apply(digest)
+        self.assertEqual((self.p['app']/'weavelo.exe').read_bytes(), b'next-image')
+        self.assertEqual(historical.read_bytes(), b'preserve')
+        self.assertFalse(self.p['pending'].exists())
 
     def test_candidate_tampering_never_stops(self):
         _, digest = self.reviewed()
@@ -150,3 +169,49 @@ class UpgradeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class NativeDesktopOwnersTests(unittest.TestCase):
+    def control(self):
+        exe = Path('C:/Users/fixture/AppData/Local/Weavelo/Desktop/weavelo.exe')
+        control = upgrade.NativeOwners(exe, Path('C:/Users/fixture/AppData/Roaming/Weavelo/Desktop'))
+        control.query = Mock(side_effect=[
+            {'role':'background-service','pid':9,'executable_sha256':'a'*64},
+            {'ok':True,'generation':'10-existing','renderer':'restored-original-gpui','executable_sha256':'a'*64}])
+        control.pids = Mock(return_value={9,10})
+        return control
+
+    def metadata(self, control, pid):
+        return {'pid':pid,'path':os.path.normcase(str(control.exe)),'created':pid*100}
+
+    def test_both_native_owners_are_verified_and_stopped_before_replacement(self):
+        c = self.control(); effects = []
+        def stop(owner, pid, exe, binary, identity):
+            owner.native(pid, exe, binary, identity)
+            effects.append(pid)
+        with patch.object(upgrade, 'process_metadata', side_effect=lambda pid:self.metadata(c,pid)), \
+             patch.object(upgrade.gate, 'verify_running_windows') as verify, \
+             patch.object(upgrade, 'stop_verified', side_effect=stop):
+            before = c.observe('a'*64,9)
+            c.pids.side_effect = [{9,10},set()]
+            c.stop(before,'a'*64,{'compiled':'fixture'})
+        self.assertEqual(effects,[10,9])
+        self.assertEqual([call.args[0] for call in verify.call_args_list],[10,9])
+
+    def test_unidentified_process_blocks_before_any_stop(self):
+        c = self.control(); c.pids.return_value={9,10,11}
+        with patch.object(upgrade, 'process_metadata') as metadata:
+            with self.assertRaisesRegex(upgrade.gate.IdentityRejected,'Unidentified Desktop process'):
+                c.observe('a'*64,9)
+        metadata.assert_not_called()
+
+    def test_reused_gui_pid_is_not_terminated(self):
+        c = self.control(); effects=[]
+        with patch.object(upgrade, 'process_metadata', side_effect=lambda pid:self.metadata(c,pid)):
+            before=c.observe('a'*64,9)
+        def stop(owner,pid,exe,binary,identity):
+            owner.native(pid,exe,binary,identity);effects.append(pid)
+        with patch.object(upgrade,'process_metadata',side_effect=lambda pid:dict(self.metadata(c,pid),created=999)), \
+             patch.object(upgrade,'stop_verified',side_effect=stop):
+            with self.assertRaisesRegex(upgrade.gate.IdentityRejected,'process was replaced'):
+                c.stop(before,'a'*64,{'compiled':'fixture'})
+        self.assertEqual(effects,[])

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pinned upgrade of an existing independent Windows Desktop installation.
 
-Consumes the original observed producer and retains the installed app as rollback.
+Consumes the original observed producer and replaces the installed files in place.
 No membership import, policy/ACL repair, legacy-client stop or automatic rollback.
 An existing transaction is observed with --status, never replayed.
 """
@@ -87,10 +87,21 @@ def current(home, old_binary, old_identity, pid, created):
 
 def plan(home, bound, old_binary, old_identity, pid, created):
     p = transaction_paths(home)
-    for name in ('journal', 'rollback', 'pending'):
+    for name in ('journal', 'pending'):
         private.ordinary_path(p[name])
-        require(not p[name].exists(), 'Existing upgrade transaction/artifact: inspect --status')
+    require(not p['pending'].exists(), 'Unfinished upgrade staging requires repair')
     c = current(home, old_binary, old_identity, pid, created)
+    prior = None
+    if p['journal'].exists():
+        previous = gate.read_json(p['journal'])
+        previous_paths = previous.get('plan', {}).get('paths', {})
+        require(previous.get('schema') == 1 and previous.get('phase') == 'completed'
+                and previous.get('kind') == 'independent-weavelo-windows-desktop-upgrade'
+                and set(previous_paths) == set(p)
+                and all(os.path.normcase(previous_paths[k]) == os.path.normcase(str(v)) for k, v in p.items())
+                and previous.get('plan', {}).get('candidate', {}).get('binary_sha256') == old_binary,
+                'Unfinished or unrelated upgrade transaction requires repair')
+        prior = gate.hash_file(p['journal'])
     require(bound['binary_sha256'] != old_binary, 'No product change; no upgrade')
     require(install.revalidate(bound) == bound['files'], 'Candidate producer changed')
     value = {'schema': 1, 'kind': 'independent-weavelo-windows-desktop-upgrade',
@@ -98,7 +109,8 @@ def plan(home, bound, old_binary, old_identity, pid, created):
              'candidate': {'commit': bound['commit'], 'binary_sha256': bound['binary_sha256'],
                            'identity_sha256': bound['identity_sha256'], 'archive_sha256': bound['archive_sha256'],
                            'receipt_sha256': bound['receipt_sha256'], 'payload': bound['files']},
-             'legacy_clients_modified': False, 'security_policy_changed': False}
+             'legacy_clients_modified': False, 'security_policy_changed': False,
+             'update_mode': 'in-place', 'previous_upgrade_sha256': prior}
     return value, gate.digest(original.canonical(value))
 
 
@@ -124,6 +136,75 @@ def runtime_env(profile):
                 WEAVELO_HOST_BIND_ADDR='0.0.0.0:39273', WEAVELO_DISCOVERY_PORT='38119',
                 WEAVELO_RELAY='1', WEAVELO_RELAY_SERVER_ADDR='wss://weavelo.hackerlife.fun:8443/v1/relay',
                 WEAVELO_P2P='0')
+
+
+class NativeOwners:
+    """The two authenticated Desktop owners, verified again before stopping."""
+    def __init__(self, executable, profile):
+        self.exe, self.profile = executable, profile
+
+    def query(self, flag, required=True):
+        r = subprocess.run([str(self.exe), flag], env=runtime_env(self.profile),
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode and not required:
+            return None
+        require(r.returncode == 0, 'Desktop owner query failed: ' + flag)
+        return json.loads(r.stdout)
+
+    def pids(self):
+        literal = str(self.exe).replace("'", "''")
+        command = "$p='" + literal + "';@(Get-Process -Name weavelo -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $p} | ForEach-Object {$_.Id}) | ConvertTo-Json -Compress"
+        r = subprocess.run(['powershell.exe', '-NoProfile', '-Command', command],
+                           capture_output=True, text=True, timeout=15)
+        require(r.returncode == 0, 'Cannot enumerate Desktop owners')
+        values = json.loads(r.stdout) if r.stdout.strip() else []
+        values = values if isinstance(values, list) else [values]
+        require(all(type(v) is int and v > 1 for v in values), 'Invalid Desktop owner IDs')
+        return set(values)
+
+    def observe(self, binary, primary_pid):
+        background = self.query('--background-status-json')
+        require(background.get('role') == 'background-service'
+                and background.get('pid') == primary_pid
+                and background.get('executable_sha256') == binary, 'Background owner changed')
+        gui = self.query('--gui-status-json', False)
+        gui_pid = None
+        if gui and gui.get('ok') is True:
+            require(gui.get('executable_sha256') == binary
+                    and gui.get('renderer') == 'restored-original-gpui', 'GUI owner changed')
+            # Older Desktop releases expose the PID in the generation only.
+            gui_pid = gui.get('pid') or int(gui['generation'].split('-', 1)[0])
+            require(type(gui_pid) is int and gui_pid > 1 and gui_pid != primary_pid, 'Invalid GUI owner')
+        ids = {primary_pid} | ({gui_pid} if gui_pid else set())
+        require(self.pids() == ids, 'Unidentified Desktop process; repair before updating')
+        processes = {str(pid): process_metadata(pid) for pid in ids}
+        require(all(v['path'] == os.path.normcase(str(self.exe)) for v in processes.values()), 'Desktop process path changed')
+        return {'background_pid': primary_pid, 'frontend_pid': gui_pid, 'processes': processes}
+
+    def stop(self, before, binary, expected):
+        require(self.pids() == {int(pid) for pid in before['processes']}, 'Desktop owners changed before stop')
+        class Owner:
+            def native(_self, pid, executable, digest, identity):
+                require(process_metadata(pid) == before['processes'][str(pid)], 'Desktop process was replaced')
+                return gate.verify_running_windows(pid, executable, digest, identity)
+        for pid in (before['frontend_pid'], before['background_pid']):
+            if pid:
+                stop_verified(Owner(), pid, self.exe, binary, expected)
+        require(not self.pids(), 'Desktop owner remains; files were not replaced')
+
+    def start_gui(self, binary):
+        child = subprocess.Popen([str(self.exe)], env=runtime_env(self.profile), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline:
+            status = self.query('--gui-status-json', False)
+            if status and status.get('ok') is True and status.get('executable_sha256') == binary:
+                pid = status.get('pid') or int(status['generation'].split('-', 1)[0])
+                require(pid == child.pid and status.get('renderer') == 'restored-original-gpui', 'Updated GUI identity differs')
+                return pid
+            time.sleep(.5)
+        raise RuntimeError('Updated GUI readiness unconfirmed; repair the current update')
 
 
 def start(executable, profile):
@@ -157,7 +238,9 @@ def apply(home, bound, old_binary, old_identity, pid, created, expected_plan,
     require(digest == gate.sha(expected_plan), 'Upgrade plan changed')
     p = transaction_paths(home); native = security or private.NativeSecurity()
     state = {'schema': 1, 'kind': reviewed['kind'], 'plan_sha256': digest, 'plan': reviewed, 'phase': 'verified'}
-    original.atomic_state(p['journal'], state, initial=True)
+    prior = reviewed['previous_upgrade_sha256']
+    require(prior is None or gate.hash_file(p['journal']) == prior, 'Previous upgrade changed')
+    original.atomic_state(p['journal'], state, initial=prior is None)
     def checkpoint(phase, **extra):
         state.update(phase=phase, **extra); original.atomic_state(p['journal'], state)
     native.create_private_directory(p['pending'])
@@ -171,24 +254,44 @@ def apply(home, bound, old_binary, old_identity, pid, created, expected_plan,
         def native(self, actual_pid, executable, binary, expected):
             require(process_metadata(actual_pid) == now['process'], 'Original owner was replaced')
             return gate.verify_running_windows(actual_pid, executable, binary, expected)
-    (stopper or stop_verified)(Owner(), pid, p['app']/'weavelo.exe', old_binary, now['identity'])
+    owners = None if stopper else NativeOwners(p['app']/'weavelo.exe', p['profile'])
+    before = owners.observe(old_binary, pid) if owners else None
+    if owners:
+        owners.stop(before, old_binary, now['identity'])
+    else:
+        stopper(Owner(), pid, p['app']/'weavelo.exe', old_binary, now['identity'])
     checkpoint('stopped')
     require(original.inventory(p['pending'], gate) == bound['files']
             and original.inventory(p['app'], gate) == now['registry']['payload']
             and gate.hash_file(p['state']/'install.json') == now['registry_sha256'],
             'Payload or registry changed during stop; inspect original transaction')
-    install.move_no_replace(p['app'], p['rollback'])
-    checkpoint('old_retained')
-    install.move_no_replace(p['pending'], p['app'])
+    checkpoint('updating_files', owners_before=before, rollback_policy='none_new')
+    for relative in bound['files']:
+        target = p['app']/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        private.ordinary_path(target)
+        os.replace(p['pending']/relative, target)
+    new_names = {name.casefold() for name in bound['files']}
+    for relative, digest in now['registry']['payload'].items():
+        if relative.casefold() not in new_names:
+            target = p['app']/relative
+            require(gate.hash_file(target) == digest, 'Obsolete installed file changed')
+            target.unlink()
+    require(original.inventory(p['app'], gate) == bound['files'], 'Installed payload differs; repair in place')
+    require(not any(member.is_file() or member.is_symlink() for member in p['pending'].rglob('*')), 'Unknown staging content retained')
+    shutil.rmtree(p['pending'])
     checkpoint('installed_not_started')
     child = (starter or start)(p['app']/'weavelo.exe', p['profile'])
     checkpoint('started_unconfirmed', new_pid=child.pid)
     runtime = (reader or ready)(p['app']/'weavelo.exe', p['profile'], child.pid, reviewed['candidate'])
     receipt = gate.read_json(bound['receipt'], bound['receipt_sha256'])
     gate.verify_running_windows(child.pid, p['app']/'weavelo.exe', bound['binary_sha256'], receipt['build_identity'])
+    if owners and before['frontend_pid']:
+        runtime['frontend_pid'] = owners.start_gui(bound['binary_sha256'])
+        gate.verify_running_windows(runtime['frontend_pid'], p['app']/'weavelo.exe', bound['binary_sha256'], receipt['build_identity'])
     require(membership_metadata(p['profile']) == now['membership'], 'Membership files changed; inspect original')
     commit_registry(p['state']/'install.json', now['registry_sha256'], now['registry'], reviewed['candidate'], runtime)
-    checkpoint('completed', actual=runtime, rollback_preserved=True, membership_contents_read=False)
+    checkpoint('completed', actual=runtime, rollback_preserved=False, prior_rollback_untouched=True, membership_contents_read=False)
     return state
 
 
