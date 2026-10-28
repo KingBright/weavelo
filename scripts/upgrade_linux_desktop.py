@@ -357,6 +357,15 @@ class Upgrade:
         require(not self.transaction.exists() and not self.transaction.is_symlink(),'Existing transaction retained; read status, do not replay')
         original,sha=read_record(self.original)
         return {'binary_sha256':original['plan']['binary_sha256'],'journal_sha256':sha}
+    def startup_compatibility(self,key,archive,fixed,configuration):
+        require(key=='service' and configuration.get('canonical_profile_launch') is True
+                and profile_launch.authorize(self.paths),
+                'Candidate changes existing startup/UI entry; separate plan required')
+        with zipfile.ZipFile(archive) as source:
+            stock=source.read('Weavelo/deploy/linux/weavelo-desktop.service')
+        require(gate.digest(stock)==fixed['entries'][key]['sha256'],
+                'Installed unit is not the exact verified package stock template; preserved')
+        return 'retained-stock-template-with-canonical-launcher'
     def plan(self,archive,pins):
         check_mount_layout(self.paths)
         predecessor=self.predecessor()
@@ -370,14 +379,7 @@ class Upgrade:
             if gate.digest(raw)==fixed['entries'][key]['sha256']:
                 compatibility[key]='matching-rendered-template'
                 continue
-            require(key=='service' and configuration.get('canonical_profile_launch') is True
-                    and profile_launch.authorize(self.paths),
-                    'Candidate changes existing startup/UI entry; separate plan required')
-            with zipfile.ZipFile(archive) as source:
-                stock=source.read('Weavelo/deploy/linux/weavelo-desktop.service')
-            require(gate.digest(stock)==fixed['entries'][key]['sha256'],
-                    'Installed unit is not the exact verified package stock template; preserved')
-            compatibility[key]='retained-stock-template-with-canonical-launcher'
+            compatibility[key]=self.startup_compatibility(key,archive,fixed,configuration)
         before=self.control.observe(old_sha)
         opaque=any(row.get('opaque_environment_preserved') for row in configuration['dropins'].values())
         require(not opaque or configuration.get('canonical_profile_launch') is True,
@@ -474,7 +476,7 @@ class Upgrade:
                 'Unknown transaction plan retained')
         compatibility=plan.get('startup_entry_compatibility',{})
         require(set(compatibility)=={'launcher','service','desktop','icon'}
-                and all(value=='matching-rendered-template' or key=='service' and
+                and all(value=='matching-rendered-template' or value=='retained-installed-entry' and plan.get('no_new_rollback') is True or key=='service' and
                     value=='retained-stock-template-with-canonical-launcher' for key,value in compatibility.items()),
                 'Unknown startup compatibility proof retained')
         if compatibility['service']=='retained-stock-template-with-canonical-launcher':
@@ -569,6 +571,14 @@ class CurrentUpgrade(Upgrade):
         self.historical=Upgrade(home,self.control)
         self.transaction=self.work/'current-update'
         self.journal=self.transaction/'state.json';self.slot=self.transaction/'candidate-app'
+
+    def startup_compatibility(self,key,archive,fixed,configuration):
+        # Binary-only updates do not install package startup templates. Current
+        # launchers, UI entries and service policy remain pinned by same().
+        return 'retained-installed-entry'
+
+    def plan(self,archive,pins):
+        return dict(super().plan(archive,pins),no_new_rollback=True)
 
     def historical_pin(self):
         old=self.historical

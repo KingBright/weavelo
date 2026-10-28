@@ -423,6 +423,16 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(up.profile_pin(self.paths['profile']),current_pin)
         self.assertEqual((self.paths['work']/'state.json').read_bytes(),self.original)
 
+    def test_current_binary_update_preserves_current_startup_instead_of_installing_templates(self):
+        self.entries['launcher']=(b'new package launcher template',0o755)
+        self.entries['icon']=(b'new package icon',0o644)
+        before={key:self.paths[key].read_bytes() for key in self.entries}
+        current=up.CurrentUpgrade(self.home,self.control)
+        plan=current.plan(self.archive,self.pins)
+        self.assertEqual(plan['startup_entry_compatibility']['launcher'],'retained-installed-entry')
+        current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+        self.assertEqual({key:self.paths[key].read_bytes() for key in self.entries},before);self.unchanged()
+
     def test_unfinished_historical_update_blocks_before_any_new_stop(self):
         self.fail='start';plan,digest=self.plan()
         with self.assertRaises(TimeoutError):self.up.apply(plan,digest)
