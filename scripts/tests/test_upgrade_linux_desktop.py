@@ -411,6 +411,18 @@ class UpgradeTests(unittest.TestCase):
         self.apply_current(current)
         self.assertFalse(current.slot.exists());self.assertFalse(self.up.transaction.exists());self.unchanged()
 
+    def test_completed_update_does_not_pin_profile_inodes_forever(self):
+        plan,digest=self.plan();self.up.apply(plan,digest)
+        for name in ('mesh.conf','mesh.secret'):
+            path=self.paths['profile']/name;replacement=path.with_suffix('.fixture')
+            replacement.write_bytes(path.read_bytes());replacement.chmod(0o600);os.replace(replacement,path)
+        current_pin=up.profile_pin(self.paths['profile'])
+        self.assertNotEqual(current_pin,self.before_profile)
+        self.next_candidate(b'current after profile reload')
+        self.apply_current(up.CurrentUpgrade(self.home,self.control))
+        self.assertEqual(up.profile_pin(self.paths['profile']),current_pin)
+        self.assertEqual((self.paths['work']/'state.json').read_bytes(),self.original)
+
     def test_unfinished_historical_update_blocks_before_any_new_stop(self):
         self.fail='start';plan,digest=self.plan()
         with self.assertRaises(TimeoutError):self.up.apply(plan,digest)

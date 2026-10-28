@@ -576,7 +576,10 @@ class CurrentUpgrade(Upgrade):
         record,sha,pending=old.observed_record()
         require(pending is None and record['phase']=='completed','Historical update is unfinished; observe its original operation')
         require(image(old.slot)==record['plan']['old_image'],'Historical rollback tuple changed; retained')
-        old.same(record['plan'])
+        # Pairing/reload may legitimately replace protected profile inodes after
+        # a completed update. Pin the current profile in the new plan instead.
+        require(read_record(old.original)[1]==record['plan']['invariants']['original_journal_sha256'],
+                'Original installation evidence changed; retained')
         return {'journal_sha256':sha,'rollback_image':image(old.slot)}
 
     def predecessor(self):
