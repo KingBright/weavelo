@@ -1786,6 +1786,24 @@ fn upgrade_stop_refuses_all_active_owners() {
     }
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn read_only_host_channel_observes_without_stopping() {
+    let config=HostServiceConfig {bind_addr:"127.0.0.1:0".parse().unwrap(),stats:Statistics::new(),
+        enable_clipboard_sync:false,enable_file_transfer:false,enable_talkback:false};
+    let (tx,rx)=mpsc::channel(2);
+    let worker=tokio::spawn(run_host_service_inner(config,None,None,Some(rx),
+        #[cfg(all(unix,any(test,target_os="linux")))] None));
+    for _ in 0..2 {
+        let (reply,result)=tokio::sync::oneshot::channel();
+        tx.send(ReadOnlyIdleRequest{reply}).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(3),result).await.unwrap().unwrap());
+        assert!(!worker.is_finished());
+    }
+    worker.abort();
+    let _=worker.await;
+}
+
 pub struct ShutdownRequest {
     pub idle_only: bool,
     pub reply: tokio::sync::oneshot::Sender<Result<(), String>>,

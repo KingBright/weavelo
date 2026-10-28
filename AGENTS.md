@@ -79,3 +79,20 @@ active public transaction. Debug/native incremental builds do not publish artifa
 Wait for failed producers before cleaning their temporary files; recover interrupted
 transactions before producing again. Preserve unknown historical files and installed
 rollback identity tuples. A packaging signature is never a source-build receipt. Use `python3 scripts/build_identity_gate.py build` for identity builds: it uses the primary `main` checkout, existing `~/rust-target`, fixed temporary identity inputs and the release producer lock. New receipts identify shared incremental storage; historical fresh-target receipts retain their original checks. The acceptance entry verifies the compiler output directly and keeps only its small evidence files. This shared identity producer supports native macOS/Linux; existing Windows receipt verification remains available.
+
+## Fast main-only iteration (2026-10-28, latest user instruction)
+
+Use the primary `main` checkout and its single worktree. Review and validate all
+current task changes, then commit and push them after each code iteration; do
+not leave completed work uncommitted. Use focused checks for the changed behavior
+and the existing release regression entry. Continue device acceptance explicitly;
+a source commit is not a claim of cross-platform physical acceptance.
+
+The user authorizes straightforward compatible updates and retiring legacy
+clients. Reuse the existing build and package entries, automate their identity
+and signing checks, and fix failures in place. Do not add feature branches, merge
+workflows, extra approval layers, release generations or new rollback copies.
+Keep existing identity/credential records and unknown historical files intact.
+Certificate replacement, authentication changes and OS consent still require
+their actual authorization; this workflow adds no repetitive confirmation for
+ordinary fixes or compatible upgrades.

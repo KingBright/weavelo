@@ -19,7 +19,7 @@ const SOCKET: &str = "background.sock";
 pub const ROLE_MARKER: &str = "background-service.enabled";
 const LIMIT: usize = 256 * 1024;
 const SCHEMA: u32 = 2;
-const READ_ONLY_SCHEMA: u32 = 1;
+const READ_ONLY_SCHEMA: u32 = 2;
 const TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -55,6 +55,7 @@ struct ReadOnlyStatus {
     generation: String,
     executable_sha256: String,
     pid: u32,
+    start_ticks: u64,
     idle_now: bool,
 }
 
@@ -208,6 +209,14 @@ async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:
     if schema != READ_ONLY_SCHEMA || mode != OwnerMode::Background {
         return Response::Rejected("Read-only background status version or owner differs".into());
     }
+    #[cfg(not(target_os="linux"))]
+    {let _=(runtime,generation,hash,closing);return Response::Rejected("Read-only status requires Linux process identity".into());}
+    #[cfg(target_os="linux")]
+    {
+    let start_ticks=match linux_process_start_ticks(std::process::id()) {
+        Ok(ticks)=>ticks,
+        Err(_)=>return Response::Rejected("Read-only process identity unavailable".into()),
+    };
     let local_idle = matches!(runtime.owner.runtime().lock().unwrap().role_state(), remote_core::role::RoleState::Idle)
         && !runtime.owner.file_transfer_snapshot().iter().any(|transfer| transfer.is_running())
         && !runtime.owner.delivery.upgrade_busy()
@@ -217,7 +226,9 @@ async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:
         Err(_) => return Response::Rejected("Read-only host state unavailable".into()),
     };
     Response::ReadOnlyStatus(ReadOnlyStatus { schema, role:mode, version:env!("CARGO_PKG_VERSION").into(),
-        generation:generation.into(), executable_sha256:hash.into(), pid:std::process::id(), idle_now:local_idle && host_idle })
+        generation:generation.into(), executable_sha256:hash.into(), pid:std::process::id(), start_ticks,
+        idle_now:local_idle && host_idle })
+    }
 }
 impl Drop for Service {
     fn drop(&mut self) { let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_gui_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
@@ -462,25 +473,67 @@ fn request(profile: &Path, command: &Request, executable_sha256: &str) -> Result
     Ok(snapshot)
 }
 /// Independent observation path. No runtime config, pairing snapshot, credential
-/// store or Client::connect is constructed. The existing private transport checks
-/// same-user endpoints/peers before any frame is exchanged.
+/// store or Client::connect is constructed. Linux also binds the response to the
+/// kernel-reported socket peer and its live executable/start-time tuple.
 pub fn read_only_status(profile:&Path)->Result<serde_json::Value,Error> {
+    #[cfg(not(target_os="linux"))]
+    {let _=profile;return Err("Read-only status requires Linux peer process identity".into());}
+    #[cfg(target_os="linux")]
+    {
     if remote_core::desktop_identity::retained_profile(profile) {
         return Err("Retained client profile is not a Desktop status endpoint".into());
     }
     let hash=executable_hash()?;
-    let response=exchange_response(profile,&Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA})?;
-    let status=validate_read_only_status(response,&hash)?;
+    let mut socket=crate::private_ipc::connect(profile,SOCKET,TIMEOUT)?;
+    let before=linux_peer_identity(&socket)?;
+    if before.executable_sha256!=hash {return Err("Read-only status peer executable differs".into());}
+    socket.write_all(&frame(&serde_json::to_vec(&Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA})?)?)?;
+    let mut header=[0;4];socket.read_exact(&mut header)?;
+    let mut bytes=vec![0;valid_length(header)?];socket.read_exact(&mut bytes)?;
+    let after=linux_peer_identity(&socket)?;
+    if before!=after {return Err("Read-only status peer process changed".into());}
+    let status=validate_read_only_status(serde_json::from_slice(&bytes)?,&hash,before.pid,before.start_ticks)?;
     Ok(serde_json::to_value(status)?)
+    }
 }
-fn validate_read_only_status(response:Response, hash:&str)->Result<ReadOnlyStatus,Error> {
+fn validate_read_only_status(response:Response, hash:&str, peer_pid:u32, peer_start_ticks:u64)->Result<ReadOnlyStatus,Error> {
     let Response::ReadOnlyStatus(status)=response else {return Err("Read-only status endpoint version differs".into());};
     if status.schema!=READ_ONLY_SCHEMA || status.role!=OwnerMode::Background
         || status.version!=env!("CARGO_PKG_VERSION") || status.executable_sha256!=hash
-        || status.pid<=1 || !status.generation.starts_with(&format!("{}-",status.pid)) {
+        || status.pid<=1 || status.pid!=peer_pid || status.start_ticks==0 || status.start_ticks!=peer_start_ticks
+        || !status.generation.starts_with(&format!("{}-",status.pid)) {
         return Err("Read-only status owner/protocol/executable differs".into());
     }
     Ok(status)
+}
+#[cfg(target_os="linux")]
+#[derive(PartialEq,Eq)]
+struct LinuxPeerIdentity {pid:u32,start_ticks:u64,executable_sha256:String}
+#[cfg(target_os="linux")]
+fn linux_process_start_ticks(pid:u32)->Result<u64,Error> {
+    let record=fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let reported=record.split_whitespace().next().ok_or("Process stat has no PID")?.parse::<u32>()?;
+    let end=record.rfind(") ").ok_or("Process stat has no command terminator")?;
+    let ticks=record[end+2..].split_whitespace().nth(19).ok_or("Process stat has no start time")?.parse::<u64>()?;
+    if reported!=pid || ticks==0 {return Err("Process stat identity differs".into());}
+    Ok(ticks)
+}
+#[cfg(target_os="linux")]
+fn linux_peer_identity(socket:&std::os::unix::net::UnixStream)->Result<LinuxPeerIdentity,Error> {
+    use std::os::fd::AsRawFd;
+    let mut peer=std::mem::MaybeUninit::<libc::ucred>::uninit();
+    let mut len=std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let result=unsafe {libc::getsockopt(socket.as_raw_fd(),libc::SOL_SOCKET,libc::SO_PEERCRED,peer.as_mut_ptr().cast(),&mut len)};
+    if result!=0 {return Err(io::Error::last_os_error().into());}
+    if len as usize!=std::mem::size_of::<libc::ucred>() {return Err("Socket peer credential size differs".into());}
+    let peer=unsafe {peer.assume_init()};
+    if peer.pid<=1 || peer.uid!=unsafe {libc::geteuid()} {return Err("Socket peer user or PID differs".into());}
+    let pid=peer.pid as u32;
+    let start_ticks=linux_process_start_ticks(pid)?;
+    let mut executable=fs::File::open(format!("/proc/{pid}/exe"))?;
+    let mut digest=Sha256::new();let mut buffer=[0u8;8192];
+    loop {let n=executable.read(&mut buffer)?;if n==0 {break;}digest.update(&buffer[..n]);}
+    Ok(LinuxPeerIdentity{pid,start_ticks,executable_sha256:format!("{:x}",digest.finalize())})
 }
 fn request_network(profile: &Path, generation: &str, hash: &str) -> Result<ServiceNetworkSnapshot, Error> {
     validate_network_response(exchange_response(profile, &Request::NetworkDiagnostics {
@@ -943,6 +996,7 @@ mod service_contract_tests {
 mod tests {
     use std::os::unix::{fs::{PermissionsExt,MetadataExt}};
     use super::*;
+    #[cfg(target_os="linux")]
     #[tokio::test(flavor="multi_thread",worker_threads=2)]
     async fn read_only_status_does_not_open_or_recover_pending_credentials() {
         let dir=tempfile::tempdir().unwrap();
@@ -962,7 +1016,7 @@ mod tests {
         assert!(matches!(serde_json::from_slice::<Request>(&request).unwrap(),Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA}));
         let response=Response::ReadOnlyStatus(ReadOnlyStatus {schema:READ_ONLY_SCHEMA,role:OwnerMode::Background,
             version:env!("CARGO_PKG_VERSION").into(),generation:format!("{}-fixture",std::process::id()),
-            executable_sha256:hash,pid:std::process::id(),idle_now:false});
+            executable_sha256:hash,pid:std::process::id(),start_ticks:linux_process_start_ticks(std::process::id()).unwrap(),idle_now:false});
         socket.write_all(&frame(&serde_json::to_vec(&response).unwrap()).unwrap()).await.unwrap();
         let result=client.await.unwrap().unwrap();
         assert_eq!(result["idle_now"],false);
@@ -974,23 +1028,47 @@ mod tests {
         assert!(!dir.path().join("mesh.conf").exists());
         assert!(!dir.path().join("mesh.secret").exists());
     }
+    #[cfg(target_os="linux")]
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn read_only_status_rejects_forged_socket_peer_pid() {
+        let dir=tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(),fs::Permissions::from_mode(0o700)).unwrap();
+        let mut listener=crate::private_ipc::Listener::bind(dir.path(),SOCKET).unwrap();
+        let profile=dir.path().to_owned();
+        let client=tokio::task::spawn_blocking(move||read_only_status(&profile));
+        let mut socket=listener.accept().await.unwrap();
+        let mut header=[0;4];socket.read_exact(&mut header).await.unwrap();
+        let mut request=vec![0;valid_length(header).unwrap()];socket.read_exact(&mut request).await.unwrap();
+        assert!(matches!(serde_json::from_slice::<Request>(&request).unwrap(),Request::ReadOnlyStatus{schema:READ_ONLY_SCHEMA}));
+        let forged=Response::ReadOnlyStatus(ReadOnlyStatus {schema:READ_ONLY_SCHEMA,role:OwnerMode::Background,
+            version:env!("CARGO_PKG_VERSION").into(),generation:"999999-fixture".into(),
+            executable_sha256:executable_hash().unwrap(),pid:999999,
+            start_ticks:linux_process_start_ticks(std::process::id()).unwrap(),idle_now:true});
+        socket.write_all(&frame(&serde_json::to_vec(&forged).unwrap()).unwrap()).await.unwrap();
+        assert!(client.await.unwrap().is_err());
+    }
     #[test]
     fn read_only_status_rejects_version_identity_and_extra_fields() {
         let make=||ReadOnlyStatus {schema:READ_ONLY_SCHEMA,role:OwnerMode::Background,
             version:env!("CARGO_PKG_VERSION").into(),generation:"42-fixture".into(),
-            executable_sha256:"exact-image".into(),pid:42,idle_now:true};
-        assert!(validate_read_only_status(Response::ReadOnlyStatus(make()),"exact-image").is_ok());
+            executable_sha256:"exact-image".into(),pid:42,start_ticks:7,idle_now:true};
+        let check=|value|validate_read_only_status(Response::ReadOnlyStatus(value),"exact-image",42,7);
+        assert!(check(make()).is_ok());
         let mut bad=make();bad.schema+=1;
-        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        assert!(check(bad).is_err());
         let mut bad=make();bad.version="older-version".into();
-        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        assert!(check(bad).is_err());
         let mut bad=make();bad.executable_sha256="other-image".into();
-        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        assert!(check(bad).is_err());
         let mut bad=make();bad.generation="other-generation".into();
-        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
+        assert!(check(bad).is_err());
         let mut bad=make();bad.role=OwnerMode::Standalone;
-        assert!(validate_read_only_status(Response::ReadOnlyStatus(bad),"exact-image").is_err());
-        assert!(serde_json::from_str::<Response>(r#"{"ReadOnlyStatus":{"schema":1,"role":"Background","version":"v","generation":"1-x","executable_sha256":"h","pid":1,"idle_now":true,"secret":"leak"}}"#).is_err());
+        assert!(check(bad).is_err());
+        let mut bad=make();bad.pid=43;
+        assert!(check(bad).is_err());
+        let mut bad=make();bad.start_ticks=8;
+        assert!(check(bad).is_err());
+        assert!(serde_json::from_str::<Response>(r#"{"ReadOnlyStatus":{"schema":2,"role":"Background","version":"v","generation":"1-x","executable_sha256":"h","pid":1,"start_ticks":7,"idle_now":true,"secret":"leak"}}"#).is_err());
     }
     #[test]
     fn connection_diagnostic_is_readonly_known_id_and_round_trips(){
@@ -1014,6 +1092,34 @@ mod tests {
         assert!(private_socket(&path).is_err());
         assert!(Client::connect(dir.path()).is_err());
     }
+    #[cfg(target_os="linux")]
+    #[tokio::test(flavor="multi_thread",worker_threads=2)]
+    async fn read_only_status_observes_live_host_channel_without_recovery() {
+        let dir=tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(),fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config=UnifiedRuntimeConfig::app_defaults();config.mesh_dir=dir.path().into();
+        config.enable_discovery=false;config.enable_p2p=false;config.relay_endpoint=None;
+        config.enable_passive_host=true;config.host_bind_addr="127.0.0.1:0".parse().unwrap();
+        config.enable_client_receiver=false;config.enable_viewer_media=false;
+        let guard=crate::desktop::claim_headless_runtime(dir.path()).unwrap().unwrap();
+        let runtime=Arc::new(crate::start_unified_runtime(config).await.unwrap());
+        let service=Service::start(dir.path(),runtime.clone(),guard).unwrap();
+        let pending=dir.path().join("mesh.secret-recovery");
+        let synthetic=b"synthetic-invalid-pending-host-observer-record";
+        fs::write(&pending,synthetic).unwrap();
+        fs::set_permissions(&pending,fs::Permissions::from_mode(0o600)).unwrap();
+        let before=pending.metadata().unwrap();
+        let profile=dir.path().to_owned();
+        let status=tokio::task::spawn_blocking(move||read_only_status(&profile)).await.unwrap().unwrap();
+        assert_eq!(status["idle_now"],true);
+        assert_eq!(status["pid"],std::process::id());
+        assert!(!status.to_string().contains("synthetic-invalid"));
+        let after=pending.metadata().unwrap();
+        assert_eq!((before.ino(),before.len(),before.mtime(),before.mtime_nsec(),before.atime(),before.atime_nsec(),before.permissions().mode()),
+            (after.ino(),after.len(),after.mtime(),after.mtime_nsec(),after.atime(),after.atime_nsec(),after.permissions().mode()));
+        assert_eq!(fs::read(&pending).unwrap(),synthetic);
+        drop(service);drop(runtime);
+    }
     #[tokio::test(flavor="multi_thread", worker_threads=2)]
     async fn frontend_is_not_a_second_network_owner_and_outlives_only_its_windows() {
         let dir = tempfile::tempdir().unwrap();
@@ -1028,6 +1134,8 @@ mod tests {
         let client = tokio::task::spawn_blocking(move || Client::connect(&profile)).await.unwrap().unwrap();
         assert_eq!(client.status()["service_contract"]["version"]["major"], 1);
         assert!(client.contract.lock().unwrap().is_some());
+        #[cfg(target_os="linux")]
+        {
         let pending=dir.path().join("mesh.secret-recovery");
         fs::write(&pending,b"synthetic-private-recovery-not-a-valid-record").unwrap();
         fs::set_permissions(&pending,fs::Permissions::from_mode(0o600)).unwrap();
@@ -1042,6 +1150,7 @@ mod tests {
             (after.ino(),after.len(),after.mtime(),after.mtime_nsec(),after.atime(),after.atime_nsec(),after.permissions().mode()));
         assert_eq!(fs::read(&pending).unwrap(),b"synthetic-private-recovery-not-a-valid-record");
         fs::remove_file(&pending).unwrap();
+        }
         let original = ["mesh.conf", "mesh.secret"].map(|name| {
             let meta = dir.path().join(name).metadata().unwrap(); (meta.ino(), meta.len(), meta.mtime(), meta.mtime_nsec())
         });

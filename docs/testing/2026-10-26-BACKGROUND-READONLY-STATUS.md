@@ -12,7 +12,13 @@ loads the mesh store, opens a recovery file, initializes preferences, or prints 
 pairing snapshot. A retained-client profile is rejected.
 
 The background owner returns only schema, role, version, generation, PID,
-executable SHA-256, and an advisory `idle_now` boolean. It reads role, transfers,
+Linux process start ticks, executable SHA-256, and an advisory `idle_now` boolean.
+The CLI is now Linux-only. It checks kernel `SO_PEERCRED` PID/UID and reads the
+peer's `/proc/<pid>/stat` start ticks and `/proc/<pid>/exe` running image before
+and after the IPC exchange. The response must match that OS tuple and the
+caller's exact executable hash. A missing `/proc` observation fails closed;
+macOS and Windows return unsupported rather than relying on socket pathname
+metadata as process attestation. The owner reads role, transfers,
 delivery tickets, and host connection/handshake state. It neither expires
 handshakes nor requests a stop. Missing host state, protocol/version mismatch,
 wrong role, or executable mismatch fails closed. The later idle-only stop still
@@ -23,10 +29,13 @@ still authenticates the same local user and checks the protected endpoint. Tests
 use only synthetic recovery bytes to assert that a query preserves content,
 inode, timestamps and permissions, and that the response omits those bytes. They
 also reject alternate protocol versions, roles, generations, hashes and extra
-response fields. Real HO5 execution, deployment, group backup, invitation
+response fields. A same-user process with control over another process remains
+outside this operational identity check's threat model. Real HO5 execution,
+deployment, group backup, invitation
 transfer, and cross-device acceptance remain separate gates.
 
-Studio main-checkout targeted readback on the shared `~/rust-target` cache:
+The following Studio main-checkout targeted readback was for the initial
+`1116080` implementation, before Linux peer/start-time binding was added:
 
 - `cargo test -p weavelo_app --lib background_service::tests::read_only_status`:
   2 passed, 0 failed. This includes a private IPC fixture with an invalid
@@ -40,5 +49,14 @@ Studio main-checkout targeted readback on the shared `~/rust-target` cache:
   1 passed, 0 failed. A preceding `--exact` invocation matched 0 tests and
   is not counted as validation.
 
-The shared Cargo lock was observed released after these tests. These checks
-do not establish Windows/Linux native behavior or authorize production use.
+The shared Cargo lock was observed released after those tests. The tightened
+Linux-only implementation and its new CLI, live host-observer channel, and
+forged-peer tests are source-prepared. After the tightening, Studio ran the
+platform-neutral version/identity rejection test (**1 passed**) and the new
+synthetic host-observer channel test (**1 passed**). The Linux-only peer,
+pending-recovery, live-host and CLI subprocess tests were conditionally absent
+on Studio and are **not** counted. An `x86_64-unknown-linux-gnu` Cargo check
+remained in dependency fetching without creating target build output; its
+original process was ended, exit 130, and the shared lock was observed free.
+The tightened Linux implementation therefore has no native compile or runtime
+acceptance yet and is not authorized for production use.

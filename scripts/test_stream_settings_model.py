@@ -30,6 +30,8 @@ SESSION_CLOCK_TESTS = {
     "lifecycle-capability": ("weavelo_app", "gui_backend::tests"),
     "lifecycle-ownership": ("weavelo_app", "desktop::instance::tests"),
     "lifecycle-service-contract": ("weavelo_app", "background_service::service_contract_tests"),
+    "background-service": ("weavelo_app", "background_service::"),
+    "background-readonly-host": ("host", "service::read_only_host_channel_observes_without_stopping"),
     "session-security": ("remote_core", "session_"),
     "clock-measurement": ("remote_core", "clock_sync::tests"),
     "clock-timing": ("remote_core", "timing::tests"),
@@ -118,6 +120,7 @@ def validation_command(cargo, target, mode):
     if mode in SESSION_CLOCK_TESTS:
         package, test_filter = SESSION_CLOCK_TESTS[mode]
         features = {"native-file-cli": ["--no-default-features", "--features", "gpui-restoration"],
+                    "background-service": ["--no-default-features", "--features", "gpui-restoration"],
                     "shared-file-publication": ["--no-default-features", "--features", "gpui-restoration"],
                     "pairing-image": ["--features", "pairing-image"],
                     "bridge-invitation": ["--features", "android"], "bridge-network": ["--features", "android"],
