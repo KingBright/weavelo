@@ -387,6 +387,60 @@ def profile_directory(home: Path) -> Path:
     return home / 'Library/Application Support/Weavelo/NativeMesh'
 
 
+def renew_octendra_gui_approval(profile: Path, previous_sha256: str, installed_sha256: str) -> dict:
+    """Called only after the compatible app's pinned signing identity is verified."""
+    locators = [path for path in (profile / 'octendra-authority.json',
+                                  profile / 'gui-state/octendra-authority.json')
+                if path.exists() or path.is_symlink()]
+    if not locators:
+        return {'state': 'not_configured'}
+    try:
+        if len(locators) != 1:
+            raise ValueError('authority_locator_ambiguous')
+        def private_bytes(path):
+            parent = path.parent.lstat()
+            if (not stat.S_ISDIR(parent.st_mode) or path.parent.is_symlink()
+                    or parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) != 0o700):
+                raise ValueError('authority_directory_not_private')
+            private_regular_file(path)
+            if path.stat().st_size > 16384:
+                raise ValueError('authority_file_too_large')
+            return path.read_bytes()
+        locator = json.loads(private_bytes(locators[0]))
+        if set(locator) != {'desktop_launch'}:
+            raise ValueError('authority_locator_invalid')
+        path = Path(locator['desktop_launch'])
+        if not path.is_absolute() or path.name != 'desktop-launch.json':
+            raise ValueError('authority_locator_invalid')
+        original = private_bytes(path)
+        authority = json.loads(original)
+        if authority.get('enabled') is not True or authority.get('observe') is not True:
+            return {'state': 'disabled_preserved'}
+        route = authority['weavelo']
+        if route.get('profile') != str(profile):
+            raise ValueError('authority_profile_mismatch')
+        version = authority['capability_version']
+        if type(version) is not int or not 0 < version < 2**64 - 1:
+            raise ValueError('authority_version_invalid')
+        if route.get('gui_executable_sha256') == installed_sha256:
+            return {'state': 'already_current'}
+        if route.get('gui_executable_sha256') != previous_sha256:
+            raise ValueError('authority_previous_gui_mismatch')
+        if not all(re.fullmatch(r'[0-9a-f]{64}', value) for value in (previous_sha256, installed_sha256)):
+            raise ValueError('authority_executable_hash_invalid')
+        route['gui_executable_sha256'] = installed_sha256
+        authority['capability_version'] = version + 1
+        if len(json.dumps(authority, indent=2).encode()) + 1 > 16384:
+            raise ValueError('authority_file_too_large')
+        if private_bytes(path) != original:
+            raise ValueError('authority_file_changed')
+        atomic_json(path, authority)
+        return {'state': 'renewed', 'capability_version': version + 1}
+    except (OSError, ValueError, TypeError, KeyError, ReleaseRejected) as error:
+        reason = str(error) if isinstance(error, ValueError) and str(error).startswith('authority_') else 'authority_unavailable'
+        return {'state': 'requires_reapproval', 'reason': reason}
+
+
 def product_capabilities(executable: Path, version: str, deadline: Deadline) -> dict:
     # The caller must verify the app under the pinned signing policy first.
     before = sha256(executable, check=deadline.check)
@@ -697,6 +751,8 @@ def rollback_locked(document: dict, journal: Path, target: Path, plist: Path,
             checkpoint(journal, document, 'service_stopped')
         if identity(verify_with_budget(target, policy, deadline)) != old:
             raise ReleaseRejected('Restored app does not match pinned previous app')
+        document['octendra_authority_recovery'] = renew_octendra_gui_approval(
+            profile_directory(plist.parents[2]), new['executable_sha256'], old['executable_sha256'])
         previous_release = release_identity.read_state(release_state_path(target)) if 'release_identity' in document else None
         if previous_release is not None:
             release_identity.verify_app_contract(target, previous_release, verify_with_budget(target, policy, deadline))
@@ -874,6 +930,8 @@ def install(archive: Path, apply: bool = False, *, deadline_seconds: float = 300
                         raise ReleaseRejected('Installed candidate changed')
                     if candidate_release is not None: release_identity.verify_app_contract(target, candidate_release, candidate_info)
                     checkpoint(journal, document, 'new_verified')
+                    plan['octendra_authority'] = renew_octendra_gui_approval(
+                        profile_directory(home), previous['executable_sha256'], candidate_info['executable_sha256'])
                     if migration is not None:
                         checkpoint(journal, document, 'lifecycle_write_requested')
                         atomic_plist(plist, migration['after_bytes'], lifecycle['before_sha256'], lifecycle['mode'], lifecycle['gid'])

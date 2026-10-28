@@ -63,6 +63,115 @@ fn existing_authority_requires_exact_owner_task_executor_remote_source_and_versi
     other["identity"]["device_id"] = json!("synthetic-remote-peer");
     assert!(check(&other, &worker, &actor, &call).is_err());
 }
+
+#[test]
+fn authorization_failures_identify_the_changed_boundary_without_values() {
+    let (root, worker, actor, call) = fixture();
+    for (pointer, value, expected) in [
+        ("/enabled", json!(false), "octendra_authority_disabled"),
+        (
+            "/identity/owner",
+            json!("private-owner"),
+            "octendra_authority_owner_mismatch",
+        ),
+        (
+            "/weavelo/gui_executable_sha256",
+            json!("old-hash"),
+            "octendra_authority_gui_executable_changed",
+        ),
+    ] {
+        let mut changed = root.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert_eq!(check(&changed, &worker, &actor, &call), Err(expected));
+        assert!(!expected.contains("private-owner"));
+    }
+    for (pointer, value, expected) in [
+        (
+            "/weavelo/generation",
+            json!("old-generation"),
+            "octendra_task_gui_generation_mismatch",
+        ),
+        (
+            "/identity/task_id",
+            json!("other-task"),
+            "octendra_task_id_mismatch",
+        ),
+        (
+            "/capability_version",
+            json!(0),
+            "octendra_task_capability_version_mismatch",
+        ),
+        (
+            "/agent_sha256",
+            json!("old-agent"),
+            "octendra_task_agent_changed",
+        ),
+        (
+            "/worker_sha256",
+            json!("old-worker"),
+            "octendra_task_worker_changed",
+        ),
+        (
+            "/expires_at_ms",
+            json!(0),
+            "octendra_task_authority_expired",
+        ),
+        (
+            "/expires_at_ms",
+            json!("invalid"),
+            "octendra_task_expiry_invalid",
+        ),
+        (
+            "/expires_at_ms",
+            json!(crate::unix_now_ms() + 60_000),
+            "octendra_task_expiry_out_of_bounds",
+        ),
+    ] {
+        let mut changed = worker.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert_eq!(check(&root, &changed, &actor, &call), Err(expected));
+    }
+    let mut root = root;
+    let mut worker = worker;
+    root["input"] = json!(true);
+    worker["allow_input"] = json!(true);
+    assert_eq!(
+        check(&root, &worker, &actor, &call),
+        Err("octendra_authority_input_platform_mismatch")
+    );
+}
+
+#[test]
+fn approved_target_reopens_in_a_new_gui_but_old_workers_and_other_apps_do_not() {
+    let (mut root, mut worker, actor, call) = fixture();
+    root["weavelo"]["generation"] = json!("previous-generation");
+    assert!(check(&root, &worker, &actor, &call).is_ok());
+    worker["weavelo"]["generation"] = json!("previous-generation");
+    assert_eq!(
+        check(&root, &worker, &actor, &call),
+        Err("octendra_task_gui_generation_mismatch")
+    );
+    worker["weavelo"]["generation"] = json!("1-2");
+    root["weavelo"]["gui_executable_sha256"] = json!("different-app");
+    assert_eq!(
+        check(&root, &worker, &actor, &call),
+        Err("octendra_authority_gui_executable_changed")
+    );
+}
+
+#[test]
+fn insecure_locator_parent_keeps_its_specific_failure_and_never_configures_authority() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    private_locator(dir.path(), &dir.path().join("desktop-launch.json"));
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let authority = Authority::new(dir.path(), "1-2", &"c".repeat(64));
+    assert_eq!(
+        authority.launch().unwrap_err(),
+        "authority_directory_not_private"
+    );
+    assert!(!authority.configured());
+}
 #[test]
 fn old_local_desktop_grant_and_input_enabled_grants_do_not_authorize_remote_observation() {
     let (root, worker, actor, call) = fixture();
@@ -128,15 +237,26 @@ fn authority_fingerprint_pins_locator_and_both_exact_existing_records() {
         authority_digest(b"locator", b"root", b"worker"),
         authority_digest(b"locator", b"root", b"worker2")
     );
-    assert_ne!(authority_digest(b"one", b"root", b"worker"), authority_digest(b"two", b"root", b"worker"));
-    assert_ne!(authority_digest(b"a", b"b", b"cd"), authority_digest(b"a", b"bc", b"d"));
+    assert_ne!(
+        authority_digest(b"one", b"root", b"worker"),
+        authority_digest(b"two", b"root", b"worker")
+    );
+    assert_ne!(
+        authority_digest(b"a", b"b", b"cd"),
+        authority_digest(b"a", b"bc", b"d")
+    );
 }
 
 fn private_locator(directory: &Path, path: &Path) {
     use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     let file = directory.join("octendra-authority.json");
-    std::fs::write(&file, serde_json::to_vec(&json!({"desktop_launch":path})).unwrap()).unwrap();
-    std::fs::set_permissions(file,std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({"desktop_launch":path})).unwrap(),
+    )
+    .unwrap();
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 #[test]
@@ -146,11 +266,11 @@ fn locator_approved_after_gui_start_is_seen_without_restarting_the_generation() 
     assert!(authority.launch().is_err());
     let target = dir.path().join("desktop-launch.json");
     private_locator(dir.path(), &target);
-    assert_eq!(authority.launch().unwrap().0,target);
-    assert_eq!(authority.configured(),cfg!(target_os="macos"));
+    assert_eq!(authority.launch().unwrap().0, target);
+    assert_eq!(authority.configured(), cfg!(target_os = "macos"));
     // A locator selects existing authority, but never grants it: no launch
     // approval/worker/process proof exists in this private filesystem fixture.
-    assert!(authority.verify(&fixture().3,None,None).is_err());
+    assert!(authority.verify(&fixture().3, None, None).is_err());
     std::fs::remove_file(dir.path().join("octendra-authority.json")).unwrap();
     assert!(authority.launch().is_err());
     assert!(!authority.configured());
@@ -162,14 +282,14 @@ fn locator_retargeting_changes_a_live_authority_fingerprint_even_for_identical_g
     let authority = Authority::new(dir.path(), "unchanged-generation", &"c".repeat(64));
     let first = dir.path().join("first/desktop-launch.json");
     private_locator(dir.path(), &first);
-    let (path,bytes) = authority.launch().unwrap();
-    assert_eq!(path,first);
-    let old = authority_digest(&bytes,b"same-root",b"same-worker");
+    let (path, bytes) = authority.launch().unwrap();
+    assert_eq!(path, first);
+    let old = authority_digest(&bytes, b"same-root", b"same-worker");
     let second = dir.path().join("second/desktop-launch.json");
     private_locator(dir.path(), &second);
-    let (path,bytes) = authority.launch().unwrap();
-    assert_eq!(path,second);
-    assert_ne!(old,authority_digest(&bytes,b"same-root",b"same-worker"));
+    let (path, bytes) = authority.launch().unwrap();
+    assert_eq!(path, second);
+    assert_ne!(old, authority_digest(&bytes, b"same-root", b"same-worker"));
 }
 
 #[test]
@@ -179,12 +299,12 @@ fn late_locator_keeps_private_file_schema_and_no_follow_checks() {
     let authority = Authority::new(dir.path(), "1-2", &"c".repeat(64));
     let path = dir.path().join("octendra-authority.json");
     private_locator(dir.path(), &dir.path().join("desktop-launch.json"));
-    std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(authority.launch().is_err());
     std::fs::remove_file(&path).unwrap();
     let elsewhere = dir.path().join("fixture-target");
-    std::fs::write(&elsewhere,b"{}").unwrap();
-    std::os::unix::fs::symlink(&elsewhere,&path).unwrap();
+    std::fs::write(&elsewhere, b"{}").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
     assert!(authority.launch().is_err());
     std::fs::remove_file(&path).unwrap();
     private_locator(dir.path(), Path::new("relative/desktop-launch.json"));

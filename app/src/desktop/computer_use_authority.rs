@@ -178,10 +178,16 @@ impl Authority {
         // Approval normally follows GUI/source selection. Re-read only this
         // existing private locator, never a path supplied by an IPC request.
         // Its bytes also fence the lease, so retargeting cannot reuse a frame.
-        let bytes = owned(&self.directory.join("octendra-authority.json"), 4096)
-            .map_err(|_| "octendra_authority_not_configured")?;
-        let locator: Locator = serde_json::from_slice(&bytes)
-            .map_err(|_| "octendra_authority_not_configured")?;
+        let bytes =
+            owned(&self.directory.join("octendra-authority.json"), 4096).map_err(|error| {
+                if error == "authority_file_unavailable" {
+                    "octendra_authority_not_configured"
+                } else {
+                    error
+                }
+            })?;
+        let locator: Locator =
+            serde_json::from_slice(&bytes).map_err(|_| "octendra_authority_not_configured")?;
         let path = locator.desktop_launch;
         if !path.is_absolute() || !path.file_name().is_some_and(|n| n == "desktop-launch.json") {
             return Err("octendra_authority_not_configured");
@@ -287,37 +293,123 @@ fn authorize(
     let version = root["capability_version"]
         .as_u64()
         .ok_or("authority_version_missing")?;
-    if version == 0
-        || root["enabled"] != true
-        || root["observe"] != true
-        || !root["input"].is_boolean()
-        || worker["allow_input"] != root["input"]
-        || (root["input"] == true && root["weavelo"]["input_platform"] != "macos")
-        || root["identity"]["owner"] != actor.owner
-        || root["identity"]["device_id"] != actor.executor_device_id
-        || root["identity"]["desktop_id"] != target.desktop_id()
-        || root["weavelo"]["generation"] != generation
-        || root["weavelo"]["gui_executable_sha256"] != gui_hash
-        || (directory != profile && directory != profile.join("gui-state"))
-        || worker["weavelo"] != root["weavelo"]
-        || worker["enabled"] != true
-        || worker["app_id"] != "fun.hackerlife.octendra.desktop-worker"
-        || worker["desktop_session"] != "weavelo"
-        || root["desktop_session"] != "weavelo"
-        || root["desktop_uid"] != worker["desktop_uid"]
-        || worker["identity"]["owner"] != actor.owner
-        || worker["identity"]["task_id"] != actor.task_id
-        || worker["identity"]["device_id"] != actor.executor_device_id
-        || worker["identity"]["desktop_id"] != target.desktop_id()
-        || worker["capability_version"] != version
-        || worker["worker_sha256"] != root["worker_sha256"]
-        || worker["agent_sha256"] != root["agent_sha256"]
-        || (!closing
-            && worker["expires_at_ms"]
-                .as_u64()
-                .is_none_or(|n| n <= now || n > now + 55_000))
-    {
-        return Err("octendra_task_authority_mismatch");
+    // The persistent grant pins the app and selected target. Each new worker
+    // must bind the current GUI generation; an earlier worker/frame cannot move
+    // into a restarted GUI, even when the approved app bytes are unchanged.
+    let mut current_route = root["weavelo"].clone();
+    current_route["generation"] = Value::String(generation.into());
+    let checks = [
+        (version > 0, "octendra_authority_version_invalid"),
+        (
+            root["enabled"] == true && root["observe"] == true,
+            "octendra_authority_disabled",
+        ),
+        (
+            root["input"].is_boolean() && worker["allow_input"] == root["input"],
+            "octendra_authority_input_mismatch",
+        ),
+        (
+            root["input"] != true || root["weavelo"]["input_platform"] == "macos",
+            "octendra_authority_input_platform_mismatch",
+        ),
+        (
+            root["identity"]["owner"] == actor.owner,
+            "octendra_authority_owner_mismatch",
+        ),
+        (
+            root["identity"]["device_id"] == actor.executor_device_id,
+            "octendra_authority_device_mismatch",
+        ),
+        (
+            root["identity"]["desktop_id"] == target.desktop_id(),
+            "octendra_authority_target_mismatch",
+        ),
+        (
+            root["weavelo"]["generation"].as_str().is_some_and(|value| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            }),
+            "octendra_authority_gui_generation_invalid",
+        ),
+        (
+            root["weavelo"]["gui_executable_sha256"] == gui_hash,
+            "octendra_authority_gui_executable_changed",
+        ),
+        (
+            directory == profile || directory == profile.join("gui-state"),
+            "octendra_authority_profile_mismatch",
+        ),
+        (
+            worker["weavelo"]["generation"] == generation,
+            "octendra_task_gui_generation_mismatch",
+        ),
+        (
+            worker["weavelo"] == current_route,
+            "octendra_task_route_mismatch",
+        ),
+        (
+            worker["enabled"] == true,
+            "octendra_task_authority_disabled",
+        ),
+        (
+            worker["app_id"] == "fun.hackerlife.octendra.desktop-worker",
+            "octendra_task_app_mismatch",
+        ),
+        (
+            worker["desktop_session"] == "weavelo" && root["desktop_session"] == "weavelo",
+            "octendra_task_session_mismatch",
+        ),
+        (
+            root["desktop_uid"] == worker["desktop_uid"],
+            "octendra_task_user_mismatch",
+        ),
+        (
+            worker["identity"]["owner"] == actor.owner,
+            "octendra_task_owner_mismatch",
+        ),
+        (
+            worker["identity"]["task_id"] == actor.task_id,
+            "octendra_task_id_mismatch",
+        ),
+        (
+            worker["identity"]["device_id"] == actor.executor_device_id,
+            "octendra_task_device_mismatch",
+        ),
+        (
+            worker["identity"]["desktop_id"] == target.desktop_id(),
+            "octendra_task_target_mismatch",
+        ),
+        (
+            worker["capability_version"] == version,
+            "octendra_task_capability_version_mismatch",
+        ),
+        (
+            worker["worker_sha256"] == root["worker_sha256"],
+            "octendra_task_worker_changed",
+        ),
+        (
+            worker["agent_sha256"] == root["agent_sha256"],
+            "octendra_task_agent_changed",
+        ),
+    ];
+    for (valid, error) in checks {
+        if !valid {
+            return Err(error);
+        }
+    }
+    if !closing {
+        let expires = worker["expires_at_ms"]
+            .as_u64()
+            .ok_or("octendra_task_expiry_invalid")?;
+        if expires <= now {
+            return Err("octendra_task_authority_expired");
+        }
+        if expires > now.saturating_add(55_000) {
+            return Err("octendra_task_expiry_out_of_bounds");
+        }
     }
     #[cfg(unix)]
     if root["desktop_uid"] != unsafe { libc::geteuid() } {
