@@ -65,9 +65,16 @@ class ParallelDesktopTests(unittest.TestCase):
         self.assertNotEqual(old.bundle_id,new.bundle_id)
         self.assertEqual(new.bundle_id,desktop.identity()['application_id'])
         self.assertEqual(installer.gate.macos_policy_for_product({}).bundle_id,old.bundle_id)
-        self.assertEqual(installer.gate.macos_policy_for_product({'desktop_identity':desktop.identity()}).bundle_id,new.bundle_id)
+        with patch.object(guard, 'desktop_policy', return_value=new):
+            self.assertEqual(installer.gate.macos_policy_for_product({'desktop_identity':desktop.identity()}).bundle_id,new.bundle_id)
         with self.assertRaises(installer.gate.IdentityRejected):
             installer.gate.macos_policy_for_product({'desktop_identity':{'application_id':'unknown'}})
+
+    def test_desktop_manifest_uses_the_same_installed_signer_as_packaging(self):
+        for path in (guard.DESKTOP_POLICY_FILE, guard.BOOK_DESKTOP_POLICY_FILE):
+            policy = guard.load_policy(path)
+            with patch.object(guard, 'desktop_policy', return_value=policy):
+                self.assertEqual(installer.gate.macos_policy_for_product({'desktop_identity':desktop.identity()}), policy)
 
     def test_existing_independent_destinations_or_journal_block_replay(self):
         for key in ('app','profile','plist','state'):

@@ -355,12 +355,12 @@ def verify_candidate(repo: Path, binary: Path, expected: dict, expected_binary_s
 
 
 def macos_policy_for_product(info: dict):
-    from macos_release_guard import load_policy, DESKTOP_POLICY_FILE
+    from macos_release_guard import load_policy, desktop_policy
     if info.get('desktop_identity') is None:
         return load_policy()  # Retained manifests keep their original identity.
     from desktop_identity import identity as desktop_identity
     require(info['desktop_identity'] == desktop_identity(), 'Unreviewed desktop application namespace')
-    return load_policy(DESKTOP_POLICY_FILE)
+    return desktop_policy()
 
 
 def authorized_mac_app(app: Path, product: dict | None = None) -> dict:
