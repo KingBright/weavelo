@@ -1461,6 +1461,7 @@ pub struct UnifiedServiceOwner {
     client_active_session_id: Option<Arc<AtomicU32>>,
     client_host_stats: Option<Arc<SharedHostStats>>,
     side_services: UnifiedSideServiceControls,
+    passive_file_transfer_enabled: bool,
     #[cfg(target_os = "linux")]
     local_portal_shares: Option<mpsc::Sender<host::service::LocalPortalShareCommand>>,
     host_shutdown: Option<mpsc::Sender<host::service::ShutdownRequest>>,
@@ -1474,6 +1475,8 @@ impl UnifiedServiceOwner {
     pub async fn start(
         config: UnifiedServiceOwnerConfig,
     ) -> Result<Self, UnifiedServiceOwnerError> {
+        let passive_file_transfer_enabled = config.passive_host.as_ref()
+            .is_some_and(|host| host.enable_file_transfer);
         let runtime = Arc::new(Mutex::new(UnifiedAppRuntime::new(config.app)));
         let network_diagnostics = Arc::new(network_diagnostics::NetworkDiagnostics::default());
         let mut tasks = Vec::new();
@@ -1648,6 +1651,7 @@ impl UnifiedServiceOwner {
             client_active_session_id,
             client_host_stats,
             side_services: config.side_services,
+            passive_file_transfer_enabled,
             #[cfg(target_os = "linux")]
             local_portal_shares,
             host_shutdown, host_read_only_idle, delivery, delivery_incoming: Mutex::new(Some(delivery_incoming)),
@@ -2042,6 +2046,11 @@ impl UnifiedServiceOwner {
 
     pub fn file_transfer_enabled(&self) -> bool {
         self.side_services.file_transfer_enabled()
+    }
+
+    /// Incoming shares are served by the passive host, independently of a viewer.
+    pub(crate) fn receiving_files_enabled(&self) -> bool {
+        self.passive_file_transfer_enabled
     }
 
     pub fn talkback_enabled(&self) -> bool {

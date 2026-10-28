@@ -31,8 +31,8 @@ pub(super) async fn answer(
 ) -> Response {
     let valid = || expected == generation && hash == executable_sha256
         && scope.is_some() && scope == current_share_scope()
-        && owner.file_transfer_enabled() && !*closed.lock().unwrap();
-    let file = match publish_current(&publication, scope, &shared_file_catalog(), valid).await {
+        && !*closed.lock().unwrap();
+    let file = match publish_current(&publication, scope, &shared_file_catalog(), owner, valid).await {
         Ok(file) => file,
         Err(error) => return Response::Rejected(error),
     };
@@ -42,8 +42,10 @@ pub(super) async fn answer(
 
 async fn publish_current(
     publication: &Publication, scope: ShareScope,
-    catalog: &remote_core::shared_files::SharedFileCatalog, valid: impl Fn() -> bool,
+    catalog: &remote_core::shared_files::SharedFileCatalog,
+    owner: &crate::UnifiedServiceOwner, current: impl Fn() -> bool,
 ) -> Result<SharedFileInfo, String> {
+    let valid = || owner.receiving_files_enabled() && current();
     if !valid() { return Err("Publication owner, group or file setting changed".into()); }
     if !publication.path.is_absolute() { return Err("Select an absolute file path".into()); }
     let file = catalog.publish_verified(&publication.path, scope, &publication.request_id, &publication.sha256).await?;
@@ -116,8 +118,22 @@ pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn passive_owner(enabled: bool) -> crate::UnifiedServiceOwner {
+        crate::UnifiedServiceOwner::start(crate::UnifiedServiceOwnerConfig {
+            passive_host: Some(host::service::HostServiceConfig {
+                bind_addr: "127.0.0.1:0".parse().unwrap(),
+                stats: remote_core::stats::Statistics::new(),
+                enable_file_transfer: enabled,
+                enable_clipboard_sync: false,
+                enable_talkback: false,
+            }),
+            ..Default::default()
+        }).await.unwrap()
+    }
     #[tokio::test]
     async fn serving_catalog_only_admits_confirmed_bytes_for_the_current_owner() {
+        let owner = passive_owner(true).await;
+        assert!(!owner.file_transfer_enabled(), "Background has no client receiver");
         let directory = std::env::temp_dir().join(format!("weavelo-publication-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("selected.txt");
@@ -125,19 +141,26 @@ mod tests {
         let scope = Some([61; 32]);
         let publication = Publication { request_id: "selected-1".into(), path: path.clone(),
             sha256: format!("{:x}", Sha256::digest(b"selected")) };
-        assert!(publish_current(&publication, scope, &catalog, || false).await.is_err());
+        assert!(publish_current(&publication, scope, &catalog, &owner, || false).await.is_err());
         assert!(catalog.page(scope, 0).0.is_empty());
         std::fs::write(&path, b"selected").unwrap();
         let calls = std::cell::Cell::new(0);
-        assert!(publish_current(&publication, scope, &catalog, || {
+        assert!(publish_current(&publication, scope, &catalog, &owner, || {
             calls.set(calls.get() + 1); calls.get() == 1
         }).await.is_err());
         assert!(catalog.page(scope, 0).0.is_empty());
-        let file = publish_current(&publication, scope, &catalog, || true).await.unwrap();
-        let replay = publish_current(&publication, scope, &catalog, || true).await.unwrap();
+        let file = publish_current(&publication, scope, &catalog, &owner, || true).await.unwrap();
+        let replay = publish_current(&publication, scope, &catalog, &owner, || true).await.unwrap();
         assert_eq!(file.id, replay.id);
         assert_eq!(file.size_bytes, 8);
         assert_eq!(catalog.page(scope, 0).0.len(), 1);
+        let disabled = passive_owner(false).await;
+        let frontend = crate::UnifiedServiceOwner::start(Default::default()).await.unwrap();
+        let denied = remote_core::shared_files::SharedFileCatalog::default();
+        for owner in [&disabled, &frontend] {
+            assert!(publish_current(&publication, scope, &denied, owner, || true).await.is_err());
+            assert!(denied.page(scope, 0).0.is_empty());
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
