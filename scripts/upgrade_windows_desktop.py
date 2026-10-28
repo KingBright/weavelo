@@ -75,7 +75,7 @@ def current(home, old_binary, old_identity, pid, created):
             'Current installation pins changed')
     require(original.inventory(p['app'], gate) == record['payload'], 'Installed payload changed')
     executable = p['app']/'weavelo.exe'
-    info = json.loads(subprocess.check_output([str(executable), '--product-info-json'], text=True, timeout=15))
+    info = json.loads(subprocess.check_output([str(executable), '--product-info-json'], text=True, encoding='utf-8', errors='replace', timeout=15))
     expected = gate.validate_identity(info['build_identity'], record['runtime_commit'], old_identity)
     require(gate.product_info(executable, expected, old_binary) == info, 'Installed executable changed')
     process = process_metadata(pid)
@@ -145,7 +145,7 @@ class NativeOwners:
 
     def query(self, flag, required=True):
         r = subprocess.run([str(self.exe), flag], env=runtime_env(self.profile),
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
         if r.returncode and not required:
             return None
         require(r.returncode == 0, 'Desktop owner query failed: ' + flag)
@@ -155,7 +155,7 @@ class NativeOwners:
         literal = str(self.exe).replace("'", "''")
         command = "$p='" + literal + "';@(Get-Process -Name weavelo -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $p} | ForEach-Object {$_.Id}) | ConvertTo-Json -Compress"
         r = subprocess.run(['powershell.exe', '-NoProfile', '-Command', command],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
         require(r.returncode == 0, 'Cannot enumerate Desktop owners')
         values = json.loads(r.stdout) if r.stdout.strip() else []
         values = values if isinstance(values, list) else [values]
@@ -217,14 +217,14 @@ def ready(executable, profile, pid, candidate):
     env = runtime_env(profile)
     for _ in range(12):
         call = subprocess.run([str(executable), '--background-status-json'], env=env,
-                              capture_output=True, text=True, timeout=6)
+                              capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=6)
         if call.returncode == 0:
             value = json.loads(call.stdout)
             require(value['pid'] == pid and value['executable_sha256'] == candidate['binary_sha256']
                     and value['network_diagnostics']['build_identity']['source']['commit'] == candidate['commit'],
                     'Actual runtime differs from the verified package')
             pair = subprocess.run([str(executable), '--pairing-status-json'], env=env,
-                                  capture_output=True, text=True, timeout=6)
+                                  capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=6)
             require(pair.returncode == 0, 'Installed pairing status still unavailable')
             return {'pid': pid, 'status': value, 'pairing': json.loads(pair.stdout)}
         time.sleep(.5)
