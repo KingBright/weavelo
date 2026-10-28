@@ -50,6 +50,7 @@ pub struct SessionState<Texture, Pan: Default> {
     pub file_pending: bool,
     pub transfers: Arc<Mutex<TransferCenterState>>,
     file_notices: tokio::sync::mpsc::Receiver<FileTransferEvent>,
+    file_observers: tokio::sync::broadcast::Sender<FileTransferEvent>,
     file_task: Option<JoinHandle<()>>,
     pub volume: u8,
     pub muted: bool,
@@ -106,6 +107,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         let (_unused, empty) = tokio::sync::mpsc::unbounded_channel();
         let mut incoming = std::mem::replace(&mut events.files, empty);
         let (notice_tx, file_notices) = tokio::sync::mpsc::channel(64);
+        let (file_observers, _) = tokio::sync::broadcast::channel(64);
+        let observers = file_observers.clone();
         let file_task = tokio::spawn(async move {
             while let Some(event) = incoming.recv().await {
                 {
@@ -113,6 +116,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     state.apply_event(&event);
                     state.compact_history(128);
                 }
+                if observers.receiver_count() > 0 { let _ = observers.send(event.clone()); }
                 if matches!(
                     event,
                     FileTransferEvent::SharedResponse { .. }
@@ -158,6 +162,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             file_pending: false,
             transfers,
             file_notices,
+            file_observers,
             file_task: Some(file_task),
             volume: 100,
             muted: false,
@@ -553,25 +558,33 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         }
         true
     }
-    fn shared_request(&mut self, kind: RequestKind, request: SharedFileRequest) {
+    fn issue_shared_request(&mut self, kind: RequestKind, request: SharedFileRequest) -> Result<u64, String> {
         if !self.connected || !self.conn.files_available {
-            self.error = "This connection cannot transfer files".into();
-            return;
+            return Err("This connection cannot transfer files".into());
         }
-        let id = match self.file_requests.begin(kind, Instant::now()) {
-            Ok(id) => id,
-            Err(reason) => {
-                self.error = reason.into();
-                return;
-            }
-        };
+        let id = self.file_requests.begin(kind, Instant::now()).map_err(str::to_owned)?;
         if !self.files_command(FileTransferCommand::SharedRequest {
             request_id: id,
             request,
         }) {
             self.file_requests.cancel(id);
+            return Err(self.error.clone());
         }
         self.file_pending = self.file_requests.list_pending();
+        Ok(id)
+    }
+    fn shared_request(&mut self, kind: RequestKind, request: SharedFileRequest) {
+        if let Err(reason) = self.issue_shared_request(kind, request) { self.error = reason; }
+    }
+    pub(crate) fn cli_shared_request(&mut self, request: SharedFileRequest)
+        -> Result<(u64, tokio::sync::broadcast::Receiver<FileTransferEvent>), String> {
+        let kind = match request {
+            SharedFileRequest::List { after_id } => RequestKind::List { after: after_id },
+            SharedFileRequest::Fetch { file_id } => RequestKind::Fetch { file: file_id },
+        };
+        // Subscribe before admission so a fast response/completion cannot be lost.
+        let events = self.file_observers.subscribe();
+        Ok((self.issue_shared_request(kind, request)?, events))
     }
     pub fn list_files(&mut self, after: u64) {
         self.shared_request(

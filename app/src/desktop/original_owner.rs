@@ -1429,6 +1429,21 @@ impl OriginalOwner {
         Ok((Arc::downgrade(&session.conn), session.transfers.clone()))
     }
 
+    pub(crate) fn cli_shared_request(
+        &self, target: &Weak<WorkspaceConnection>, scope: ShareScope,
+        request: protocol::shared_files::SharedFileRequest,
+    ) -> Result<(u64, tokio::sync::broadcast::Receiver<remote_core::file_transfer_runtime::FileTransferEvent>), Error> {
+        if scope.is_none() || scope != remote_core::shared_files::current_share_scope()
+            || !self.native_file_transfer_enabled(&crate::UnifiedRuntimeConfig::from_env()?) {
+            return Err("Files require the existing enabled setting and paired device group".into());
+        }
+        let mut pool = self.pool.lock().unwrap();
+        let session = &mut pool.sessions.iter_mut()
+            .find(|e| e.session.connected && super::same_connection(target, &e.session.conn))
+            .ok_or("Original file connection changed")?.session;
+        Ok(session.cli_shared_request(request)?)
+    }
+
     pub fn send_files_to(
         &self,
         target: &Weak<WorkspaceConnection>,
