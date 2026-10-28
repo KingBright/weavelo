@@ -237,6 +237,7 @@ impl Pool {
 }
 
 pub(crate) struct OriginalOwner {
+    publication_status: Mutex<String>,
     backend: Arc<UnifiedServiceOwner>,
     #[cfg(any(unix, windows))]
     observed_service_epoch: std::sync::atomic::AtomicU64,
@@ -271,6 +272,7 @@ impl OriginalOwner {
         let prefs = super::Preferences::default();
         let (updates, _) = tokio::sync::watch::channel(0);
         Arc::new(Self {
+            publication_status: Mutex::new(String::new()),
             #[cfg(any(unix, windows))]
             observed_service_epoch: std::sync::atomic::AtomicU64::new(backend.frontend_epoch().map(|e| e.load(std::sync::atomic::Ordering::Acquire)).unwrap_or(0)),
             backend,
@@ -291,6 +293,11 @@ impl OriginalOwner {
                 directed_receive: None,
             }),
         })
+    }
+    pub fn publication_status(&self) -> String { self.publication_status.lock().unwrap().clone() }
+    pub fn set_publication_status(&self, status: String) {
+        *self.publication_status.lock().unwrap() = status;
+        self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
     }
     pub fn subscribe_updates(&self) -> tokio::sync::watch::Receiver<u64> {
         self.updates.subscribe()

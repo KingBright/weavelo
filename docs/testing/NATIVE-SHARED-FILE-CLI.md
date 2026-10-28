@@ -45,3 +45,23 @@ requests. A queued response alone is not delivery or hash acceptance. For physic
 acceptance, fetch only an explicitly identified test entry; do not pull user files
 when no suitable test entry is listed. The peer must explicitly share a harmless
 test file using its existing local file-sharing UI before such a pull is possible.
+
+## Local publication in the separated Desktop instance
+
+The Files panel publishes into the background process that serves incoming
+file connections. The GUI reports either the published filename/size or the
+actual refusal. Its own process-local catalog is not the background catalog.
+A single known test file can also be explicitly published without a GUI:
+
+```sh
+weavelo --file-publish /absolute/test-file --sha256 EXPECTED_SHA256 \
+  --request-id publish-1 --confirm-publish
+```
+
+The background checks its generation, executable, paired group and file setting,
+opens the selected file, and verifies that same open handle before listing it.
+Repeating an identical request ID returns the same publication; changing its
+file, hash or group is rejected. A group/owner change during verification revokes
+the entry. Publications last only for that background process and group; a
+restart never republishes files automatically. Published is not fetched: use
+the separate List/Fetch receipt and verify the receiver file.

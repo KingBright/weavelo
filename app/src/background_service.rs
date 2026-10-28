@@ -12,6 +12,7 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{watch, Semaphore}};
 
 pub(crate) mod exit_observer;
 mod stop_policy;
+pub(crate) mod shared_publication;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 const SOCKET: &str = "background.sock";
@@ -24,7 +25,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Request { ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
+enum Request { PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -43,7 +44,7 @@ struct Snapshot {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Response { ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
+enum Response { Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,12 +138,22 @@ impl Service {
                 children.spawn(async move {
                     let _guard = guard;
                     let _permit = permit;
-                    let _ = tokio::time::timeout(STOP_TIMEOUT, async {
-                        let request: Request = tokio::time::timeout(TIMEOUT, async {
-                            let mut header = [0; 4]; socket.read_exact(&mut header).await?;
-                            let mut bytes = vec![0; valid_length(header)?]; socket.read_exact(&mut bytes).await?;
-                            Ok::<Request, Error>(serde_json::from_slice(&bytes)?)
-                        }).await??;
+                    let request = match tokio::time::timeout(TIMEOUT, async {
+                        let mut header = [0; 4]; socket.read_exact(&mut header).await?;
+                        let mut bytes = vec![0; valid_length(header)?]; socket.read_exact(&mut bytes).await?;
+                        Ok::<Request, Error>(serde_json::from_slice(&bytes)?)
+                    }).await {
+                        Ok(Ok(request)) => request,
+                        _ => return,
+                    };
+                    let timeout = if matches!(&request, Request::PublishShared {..}) { Duration::from_secs(60) } else { STOP_TIMEOUT };
+                    let _ = tokio::time::timeout(timeout, async {
+                        if let Request::PublishShared { generation: expected, executable_sha256: hash, scope, publication } = request {
+                            let response = shared_publication::answer(publication, scope, expected, hash,
+                                generation, executable_sha256, &runtime.owner, closed).await;
+                            socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await?;
+                            return Ok::<(), Error>(());
+                        }
                         if let Request::Shutdown { generation: expected, executable_sha256: hash } | Request::ShutdownIdle { generation: expected, executable_sha256: hash } = &request {
                             let idle_only = matches!(&request, Request::ShutdownIdle {..});
                             if idle_only && { let state = runtime.owner.runtime(); let state = state.lock().unwrap(); !matches!(state.role_state(), remote_core::role::RoleState::Idle) } || idle_only && runtime.owner.file_transfer_snapshot().iter().any(|t|t.is_running()) {
@@ -265,7 +276,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::JoinGroup(code) => pairing.join_from_invite_code(&code),
         Request::RenameDevice { expected_name, name } => pairing.rename_device(&expected_name, &name),
         Request::Reload(message) => pairing.request_runtime_reload(message),
-        Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
+        Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
     Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing })
@@ -445,7 +456,7 @@ fn request(profile: &Path, command: &Request, executable_sha256: &str) -> Result
     let snapshot = match exchange_response(profile, command)? {
         Response::Snapshot(snapshot) => snapshot,
         Response::Rejected(_) => return Err("Background service rejected the operation".into()),
-        Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
+        Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
     };
     validate_snapshot(&snapshot, profile, executable_sha256)?;
     Ok(snapshot)

@@ -53,6 +53,8 @@ class ServiceContractEntryTests(unittest.TestCase):
         'discovery-observation': ('remote_core', 'discovery::tests'),
         'desktop-network': ('weavelo_app', 'network_diagnostics::tests'),
         'native-file-cli': ('weavelo_app', 'desktop::file_cli::tests'),
+        'shared-file-catalog': ('remote_core', 'shared_files::tests'),
+        'shared-file-publication': ('weavelo_app', 'background_service::shared_publication::tests'),
         'native-file-identities': ('client', 'transfer_center::tests'),
         'computer-use': ('weavelo_app', 'computer_use'),
         'computer-use-process': ('weavelo_app', 'computer_use_process_'),
@@ -141,6 +143,7 @@ class ServiceContractEntryTests(unittest.TestCase):
                 continue  # Explicit reviewed-identity producer, checked separately below.
             with self.subTest(mode=mode):
                 features = {'native-file-cli': ['--no-default-features', '--features', 'gpui-restoration'],
+                            'shared-file-publication': ['--no-default-features', '--features', 'gpui-restoration'],
                             'pairing-image': ['--features', 'pairing-image'],
                             'bridge-invitation': ['--features', 'android'], 'bridge-network': ['--features', 'android'],
                             'bridge-discovery': ['--features', 'android']}.get(mode, [])

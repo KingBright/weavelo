@@ -700,6 +700,9 @@ async fn send(
     }
 }
 pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Value, Error> {
+    if args.first().is_some_and(|a| a == "--file-publish") {
+        return crate::background_service::shared_publication::command(profile, args);
+    }
     use super::directed_receive::{Request, exchange};
     let directory = crate::private_ipc::gui_directory(profile)?;
     let status = exchange(&directory, &Request::Status)?;

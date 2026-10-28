@@ -59,6 +59,8 @@ SESSION_CLOCK_TESTS = {
     "discovery-observation": ("remote_core", "discovery::tests"),
     "desktop-network": ("weavelo_app", "network_diagnostics::tests"),
     "native-file-cli": ("weavelo_app", "desktop::file_cli::tests"),
+    "shared-file-catalog": ("remote_core", "shared_files::tests"),
+    "shared-file-publication": ("weavelo_app", "background_service::shared_publication::tests"),
     "native-file-identities": ("client", "transfer_center::tests"),
     "computer-use": ("weavelo_app", "computer_use"),
     "computer-use-process": ("weavelo_app", "computer_use_process_"),
@@ -116,6 +118,7 @@ def validation_command(cargo, target, mode):
     if mode in SESSION_CLOCK_TESTS:
         package, test_filter = SESSION_CLOCK_TESTS[mode]
         features = {"native-file-cli": ["--no-default-features", "--features", "gpui-restoration"],
+                    "shared-file-publication": ["--no-default-features", "--features", "gpui-restoration"],
                     "pairing-image": ["--features", "pairing-image"],
                     "bridge-invitation": ["--features", "android"], "bridge-network": ["--features", "android"],
                     "bridge-discovery": ["--features", "android"]}.get(mode, [])

@@ -3908,6 +3908,10 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
             .text_color(theme.content.tertiary)
             .child(format!("Receive: {}", owner.receive_dir().display())),
     );
+    let publication_status = owner.publication_status();
+    if !publication_status.is_empty() {
+        panel = panel.child(div().text_size(px(11.)).child(publication_status));
+    }
     let binding = owner.file_view_binding();
     let refresh_binding = binding.clone();
     let refresh = owner.clone();
@@ -4043,9 +4047,12 @@ fn pick_session_files(owner: Arc<OriginalOwner>, share: bool) {
                 if scope != remote_core::shared_files::current_share_scope() {
                     break;
                 }
-                let _ = remote_core::shared_files::shared_file_catalog()
-                    .publish(&path, scope)
-                    .await;
+                owner.set_publication_status("Verifying selected file…".into());
+                let status = match crate::background_service::shared_publication::publish_selected(path, scope).await {
+                    Ok(file) => format!("Published {} · {} bytes", file.name, file.size_bytes),
+                    Err(error) => format!("Cannot publish file: {error}"),
+                };
+                owner.set_publication_status(status);
             }
         } else if let Some(target) = target {
             owner.send_files_to(&target, scope, paths);
