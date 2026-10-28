@@ -97,6 +97,15 @@ class ReleaseHookTests(unittest.TestCase):
             with hook.producer('android-native'):
                 self.fail('invalid binding admitted')
         self.assertEqual(self.public.call_args.args[0], 'release-preflight')
+
+    def test_binding_cannot_redirect_production_to_another_project(self):
+        state = self.root / '.rust-storage'; state.mkdir()
+        other = self.root / 'other-project'; other.mkdir()
+        (state / 'release-binding.json').write_text(json.dumps({'declaration':{'project_root':str(other)}}))
+        with self.assertRaisesRegex(hook.Refusal, 'Wrong release binding project'):
+            with hook.producer('android-native'):
+                self.fail('foreign project admitted')
+        self.assertEqual(self.calls, [])
         self.target.assert_not_called()
 
     def test_release_finally_calls_abort_after_child_wait(self):

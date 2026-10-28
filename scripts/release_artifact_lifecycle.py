@@ -233,10 +233,21 @@ def producer(kind):
 
 @contextmanager
 def _producer(kind):
+    global ROOT
     gate.require_admitted()
     if LOCK_ENV in os.environ:
         yield check_lock(kind)
         return
+    binding = ROOT / '.rust-storage/release-binding.json'
+    if binding.exists() or binding.is_symlink():
+        record, _ = document(binding)
+        recorded = record.get('declaration', {}).get('project_root')
+        if recorded is not None:
+            bound_root = Path(recorded)
+            require(bound_root.is_absolute() and bound_root == bound_root.resolve(strict=True)
+                    and str(bound_root).casefold() == str(ROOT).casefold()
+                    and bound_root.samefile(ROOT), 'Wrong release binding project')
+            ROOT = bound_root  # Preserve the sole authority's APFS path spelling.
     transition = transition_config(kind)  # Reject incomplete intent before any lifecycle mutation.
     state_dir = ROOT / '.rust-storage'
     require(ROOT == ROOT.resolve(strict=True) and not state_dir.is_symlink(), 'Unsafe producer metadata path')
