@@ -104,10 +104,9 @@ async fn run_sequence(run: &str, report: &mut serde_json::Value) -> Result<(), E
         }
         last_connection = Some(conn.id);
         let snapshot = owner.snapshot();
-        if snapshot
-            .role
-            .session()
-            .is_none_or(|s| s.peer.device_id != *key)
+        if snapshot.connection_id != Some(conn.id)
+            || !owner.diagnostic_snapshot()["sessions"].as_array().unwrap().iter()
+                .any(|s|s["device_id"]==*key && s["connection_id"]==conn.id)
         {
             return Err("Wrong selected device after reconnection".into());
         }

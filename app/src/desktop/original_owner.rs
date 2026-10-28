@@ -415,7 +415,12 @@ impl OriginalOwner {
             let s = &e.session;
             let role_session =
                 RoleSession::new(RolePeer::new(&s.key, &s.name, s.conn.target), s.conn.id, 0);
-            let role = if s.confirmed && s.media.is_some() {
+            let role = if s.media.is_none() && s.pending.is_none()
+                && s.video_error.is_none() && s.uploaded_at.is_none() {
+                // A healthy file connection is reusable, but it is not a video
+                // connection in progress. Keep Connect Stream available.
+                RoleState::Idle
+            } else if s.confirmed && s.media.is_some() {
                 RoleState::Viewing(role_session)
             } else {
                 RoleState::Connecting(role_session)
@@ -1594,6 +1599,42 @@ impl Drop for OriginalOwner {
 #[cfg(test)]
 mod restoration_regression_tests {
     use super::*;
+    #[tokio::test]
+    async fn file_connection_keeps_stream_action_available_and_preserves_connection_binding() {
+        use remote_core::net::{UdpMultiplexer,MultiplexedPacket};
+        use protocol::{ControlMessage,session::SessionCommand};
+        remote_core::init_crypto_provider();
+        assert!(remote_core::session_crypto::load_session_psk().is_none());
+        let mux=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let address=mux.local_addr().unwrap();let (sender,receiver)=mux.split();
+        let server=tokio::spawn(async move {
+            while let Ok(packet)=receiver.recv().await {
+                if let MultiplexedPacket::Control(ControlMessage::Session(command),from)=packet
+                    && let SessionCommand::Open{connection_id,..}=*command {
+                    sender.send_control(&ControlMessage::Session(Box::new(SessionCommand::Opened{
+                        connection_id,version:protocol::session::SESSION_VERSION,max_subscriptions:1,
+                        files:false,clipboard:false,window_capture:false})),from).await.unwrap();
+                }
+            }
+        });
+        let (_,peers)=tokio::sync::watch::channel(remote_core::discovery::DiscoveryPeerSnapshot::default());
+        let backend=Arc::new(crate::UnifiedServiceOwner::from_background_snapshot(peers).await.unwrap());
+        let owner=OriginalOwner::new(backend);
+        let (conn,events)=WorkspaceConnection::connect_media(address).await.unwrap();let id=conn.id;
+        owner.attach_recorder_session(OriginalGuiSession::new("file-peer".into(),"Files".into(),"Loopback".into(),conn,events));
+        owner.pool.lock().unwrap().active_mut().unwrap().session.uploaded_at=None;
+        let snapshot=owner.snapshot();assert!(matches!(snapshot.role,RoleState::Idle));
+        assert_eq!(snapshot.connection_id,Some(id));assert_eq!(owner.active_connection().unwrap().id,id);
+        let devices=[crate::AppDevice{device_id:"file-peer".into(),display_name:"Files".into(),
+            endpoint:address,scope:remote_core::discovery::DiscoveryScope::Lan,
+            can_stream:true,can_view:true,online:true,last_seen_ms:0}];
+        let rows=super::super::device_list::DeviceListViewModel::project(&devices,&snapshot.role,
+            super::super::device_list::DeviceFilterKind::All);
+        assert!(rows.rows[0].can_connect,"a completed file transfer must not disable Connect Stream");
+        owner.pool.lock().unwrap().active_mut().unwrap().session.pending=Some((1,Instant::now()));
+        assert!(matches!(owner.snapshot().role,RoleState::Connecting(_)),"an actual video request still shows connecting");
+        server.abort();let _=server.await;
+    }
     fn pending_pool() -> Pool {
         Pool {
             sessions: Vec::new(), tabs: SessionTabsState::default(),
