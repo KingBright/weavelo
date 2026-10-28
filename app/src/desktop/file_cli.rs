@@ -795,6 +795,47 @@ mod tests {
         });
         record
     }
+    #[tokio::test]
+    async fn silent_connection_leaves_first_list_to_the_explicit_command() {
+        let (mut session, _input, recorder, _temp) =
+            super::super::model::static_input_tests::recorder_session().await;
+        session.poll();
+        let (sender, mut queued) = tokio::sync::mpsc::channel(8);
+        let connection = Arc::get_mut(&mut session.conn).expect("fixture owns its connection");
+        // The loopback fixture has no real file worker. Record only commands;
+        // never inherit a paired group, start capture or grant file access.
+        connection.files_available = true;
+        connection.file_commands = sender;
+        session.list_files_on_connect(false);
+        assert!(queued.try_recv().is_err());
+        let (id, _events) = session.cli_shared_request(SharedFileRequest::List { after_id: 0 }).unwrap();
+        assert!(matches!(queued.try_recv().unwrap(),
+            remote_core::file_transfer_runtime::FileTransferCommand::SharedRequest {
+                request_id, request: SharedFileRequest::List { after_id: 0 }
+            } if request_id == id));
+        session.list_files_on_connect(false); // Reusing the connection does not add another request.
+        assert!(queued.try_recv().is_err());
+        assert!(session.cli_shared_request(SharedFileRequest::List { after_id: 0 }).is_err());
+        recorder.abort();
+    }
+    #[tokio::test]
+    async fn gui_file_connection_still_lists_automatically_and_deduplicates_commands() {
+        let (mut session, _input, recorder, _temp) =
+            super::super::model::static_input_tests::recorder_session().await;
+        session.poll();
+        let (sender, mut queued) = tokio::sync::mpsc::channel(8);
+        let connection = Arc::get_mut(&mut session.conn).expect("fixture owns its connection");
+        connection.files_available = true;
+        connection.file_commands = sender;
+        session.list_files_on_connect(true);
+        assert!(matches!(queued.try_recv().unwrap(),
+            remote_core::file_transfer_runtime::FileTransferCommand::SharedRequest {
+                request: SharedFileRequest::List { after_id: 0 }, ..
+            }));
+        assert!(session.cli_shared_request(SharedFileRequest::List { after_id: 0 }).is_err());
+        assert!(queued.try_recv().is_err());
+        recorder.abort();
+    }
     #[test]
     fn shared_cli_requires_opaque_id_completed_list_hash_and_confirmation() {
         let args = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();

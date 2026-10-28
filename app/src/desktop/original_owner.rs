@@ -32,6 +32,7 @@ struct RetryBinding {
     scope: ShareScope,
     video: bool,
     audio: bool,
+    auto_list: bool,
 }
 #[derive(Debug)]
 struct ConnectionFailure {
@@ -570,7 +571,7 @@ impl OriginalOwner {
         self.pool.lock().unwrap().directed_receive.as_ref().is_some_and(|b| b.request_id == request && Instant::now() < b.expires)
     }
     pub(crate) async fn connect_received_device(&self, key: &str, options: StreamStartOptions, request: &str) -> Result<(), Error> {
-        self.connect_mode(key, options, true, true, None, Some(request)).await
+        self.connect_mode(key, options, true, true, None, Some(request), true).await
     }
 
     pub async fn connect_device(
@@ -579,15 +580,16 @@ impl OriginalOwner {
         options: StreamStartOptions,
         _now: u64,
     ) -> Result<(), Error> {
-        self.connect_mode(key, options, true, true, None, None).await
+        self.connect_mode(key, options, true, true, None, None, true).await
     }
     pub async fn connect_files(&self, key: &str) -> Result<(), Error> {
-        self.connect_mode(key, StreamStartOptions::default(), false, true, None, None)
+        self.connect_mode(key, StreamStartOptions::default(), false, true, None, None, true)
             .await
     }
 
     pub async fn connect_silent_files(&self, key: &str) -> Result<(), Error> {
-        self.connect_mode(key, StreamStartOptions::default(), false, false, None, None)
+        // Command callers admit their own correlated List/Fetch after connecting.
+        self.connect_mode(key, StreamStartOptions::default(), false, false, None, None, false)
             .await
     }
     async fn connect_mode(
@@ -598,6 +600,7 @@ impl OriginalOwner {
         audio: bool,
         expected_scope: Option<ShareScope>,
         receive: Option<&str>,
+        auto_list: bool,
     ) -> Result<(), Error> {
         protocol::validate_video_settings(
             options.width,
@@ -648,7 +651,7 @@ impl OriginalOwner {
             let name = device.as_ref().map(|d| d.display_name.as_str()).unwrap_or(key);
             let attempt = p.tabs.reject_open(key, name, count).ok_or("Connection generation exhausted")?;
             if let Some(binding) = p.directed_receive.as_mut() { binding.attempt = Some(attempt); }
-            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio });
+            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list });
             p.message = message.into();
             return Err(connection_failure(key, attempt, scope, message.into()));
         }
@@ -691,14 +694,14 @@ impl OriginalOwner {
                         session.start_video();
                     }
                     if !video {
-                        p.sessions[index].session.list_files(0);
+                        p.sessions[index].session.list_files_on_connect(auto_list);
                     }
                     return Ok(());
                 }
                 OpenDecision::AlreadyPending => {
                     if let Some(connecting) = p.tabs.connecting().cloned() {
                         p.pending_settings.update(key, connecting.attempt, initial_settings);
-                        p.retry_binding = Some(RetryBinding { attempt: connecting.attempt, scope, video, audio });
+                        p.retry_binding = Some(RetryBinding { attempt: connecting.attempt, scope, video, audio, auto_list });
                     }
                     let previous = p.tabs.selected_index();
                     if let Some(e) = p.sessions.get_mut(previous) {
@@ -713,7 +716,7 @@ impl OriginalOwner {
                 OpenDecision::Start(attempt) => attempt,
             };
             if let Some(binding) = p.directed_receive.as_mut() { binding.attempt = Some(attempt); }
-            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio });
+            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list });
             p.pending_settings.begin(key, attempt, initial_settings);
             let previous = p.tabs.selected_index();
             if let Some(e) = p.sessions.get_mut(previous) {
@@ -809,7 +812,7 @@ impl OriginalOwner {
         if video {
             session.start_video();
         } else {
-            session.list_files(0);
+            session.list_files_on_connect(auto_list);
         }
         let previous = p.tabs.selected_index();
         if selected && let Some(e) = p.sessions.get_mut(previous) {
@@ -850,7 +853,7 @@ impl OriginalOwner {
             p.reconnect_target(remote_core::shared_files::current_share_scope()).ok_or("No selected device")?
         };
         if let Some(mode) = mode {
-            return self.connect_mode(&key, options, mode.video, mode.audio, Some(mode.scope), None).await;
+            return self.connect_mode(&key, options, mode.video, mode.audio, Some(mode.scope), None, mode.auto_list).await;
         }
         self.disconnect_active().await?;
         self.connect_device(&key, options, 0).await
@@ -1690,21 +1693,22 @@ mod restoration_regression_tests {
         let mut pool = pending_pool();
         let scope = Some([7; 32]);
         let first = pool.tabs.reject_open("a", "A", 0).unwrap();
-        pool.retry_binding = Some(RetryBinding { attempt: first, scope, video: false, audio: false });
+        pool.retry_binding = Some(RetryBinding { attempt: first, scope, video: false, audio: false, auto_list: false });
         let (failed, mode) = pool.retry(scope).unwrap();
         assert_eq!(failed.device_id, "a");
         assert!(!mode.video && !mode.audio);
+        assert!(!mode.auto_list);
         let next = pool.tabs.reject_open("a", "A", 0).unwrap();
         assert!(next > first);
         assert!(pool.retry(scope).is_none());
-        pool.retry_binding = Some(RetryBinding { attempt: next, scope, video: true, audio: true });
+        pool.retry_binding = Some(RetryBinding { attempt: next, scope, video: true, audio: true, auto_list: true });
         assert!(pool.retry(scope).is_some());
         pool.expire_retry(Some([8; 32]));
         assert!(pool.tabs.failed().is_none());
         assert!(pool.retry_binding.is_none());
         assert_eq!(pool.message, "Ready");
         let pending = begin(&mut pool, "b", values());
-        pool.retry_binding = Some(RetryBinding { attempt: pending, scope, video: false, audio: true });
+        pool.retry_binding = Some(RetryBinding { attempt: pending, scope, video: false, audio: true, auto_list: true });
         let (key, mode) = pool.reconnect_target(scope).unwrap();
         assert_eq!(key, "b");
         assert_eq!(mode.unwrap().attempt, pending);

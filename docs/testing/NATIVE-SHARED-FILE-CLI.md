@@ -3,6 +3,9 @@
 The CLI uses the existing original GUI's authenticated file connection. Both the
 CLI and running GUI must be the same executable. It does not open a window,
 subscribe to media, grant permissions, publish local files or change preferences.
+Silent command connections leave List/Fetch admission to the explicit command;
+they do not enqueue a competing automatic list when opening or reusing a connection.
+The GUI file panel retains its automatic listing behavior.
 
 List one page of files the peer has explicitly shared:
 

@@ -592,6 +592,9 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             SharedFileRequest::List { after_id: after },
         );
     }
+    pub(crate) fn list_files_on_connect(&mut self, automatic: bool) {
+        if automatic { self.list_files(0); }
+    }
     pub fn fetch_file(&mut self, file: u64) {
         if !self.files.iter().any(|f| f.id == file) {
             self.error = "Refresh the shared list before pulling this file".into();
@@ -966,7 +969,7 @@ fn current_input_frame(frame: Option<Instant>, source_started: Instant, responsi
     responsive && frame.is_some_and(|decoded| decoded >= source_started)
 }
 #[cfg(test)]
-mod static_input_tests {
+pub(crate) mod static_input_tests {
     use super::*;
     use protocol::ControlMessage;
     use remote_core::{
@@ -976,7 +979,7 @@ mod static_input_tests {
 
     // Real session commands and wire encoding, with only a loopback recorder.
     // No GUI, capture, permission request, clipboard start or OS input injection.
-    async fn recorder_session() -> (
+    pub(crate) async fn recorder_session() -> (
         SessionState<(), ()>,
         tokio::sync::mpsc::UnboundedReceiver<protocol::realtime_input::RealtimeInput>,
         JoinHandle<()>,
