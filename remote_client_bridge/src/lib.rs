@@ -46,7 +46,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use touch_mapper::{TouchMode, TouchStateTracker};
 
 const DEFAULT_P2P_RENDEZVOUS: &str = "p.hackerlife.fun:3478";
-const DEFAULT_RELAY_URL: &str = "wss://relay.hackerlife.fun:8443/v1/relay";
+const DEFAULT_RELAY_URL: &str = "wss://weavelo.hackerlife.fun:8443/v1/relay";
 static BRIDGE_DEVICE_GROUP_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static PUBLISHING_PORT: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);

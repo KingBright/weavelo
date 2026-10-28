@@ -39,7 +39,7 @@ data class PlatformRelayProbeResult(val phase: String = "idle", val error: Strin
 
 /** Independent Android-UID control. Sends no group registration, cookie or credential. */
 enum class ProbeDestination(val host: String, val port: Int, val websocket: Boolean) {
-    RELAY("relay.hackerlife.fun", 8443, true), HTTPS_CONTROL("example.com", 443, false)
+    RELAY("weavelo.hackerlife.fun", 8443, true), HTTPS_CONTROL("example.com", 443, false)
 }
 
 class PlatformRelayProbe(private val destination: ProbeDestination = ProbeDestination.RELAY) {

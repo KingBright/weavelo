@@ -545,7 +545,7 @@ pub const WEAVELO_RELAY_SERVER_ADDR_ENV: &str = "WEAVELO_RELAY_SERVER_ADDR";
 pub const WEAVELO_RELAY_CONTROL_BIND_ADDR_ENV: &str = "WEAVELO_RELAY_CONTROL_BIND_ADDR";
 pub const WEAVELO_RELAY_DISCOVERY_BIND_ADDR_ENV: &str = "WEAVELO_RELAY_DISCOVERY_BIND_ADDR";
 pub const WEAVELO_RELAY_LOG_ENV: &str = "WEAVELO_RELAY_LOG";
-pub const DEFAULT_RELAY_SERVER_URL: &str = "wss://relay.hackerlife.fun:8443/v1/relay";
+pub const DEFAULT_RELAY_SERVER_URL: &str = "wss://weavelo.hackerlife.fun:8443/v1/relay";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnifiedSessionTimeoutMonitorConfig {
