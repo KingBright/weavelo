@@ -7,6 +7,17 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
 pub const DEFAULT_CONTROL_PORT: u16 = 39271;
+const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+
+/// Relay adapters carry the same fragmented frames as the application socket.
+/// Small OS defaults can discard encoded references on these local UDP hops
+/// before the reliable relay transport sees them. Keep the existing bounded
+/// application buffer policy on every adapter socket as well.
+pub(crate) fn configure_udp_buffers(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    let _ = socket.set_recv_buffer_size(UDP_BUFFER_BYTES);
+    let _ = socket.set_send_buffer_size(UDP_BUFFER_BYTES);
+}
 
 pub struct UdpMultiplexer {
     socket: Arc<UdpSocket>,
@@ -25,8 +36,8 @@ impl UdpMultiplexer {
             None,
         )?;
 
-        let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
-        let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
+        let _ = socket2_sock.set_recv_buffer_size(UDP_BUFFER_BYTES);
+        let _ = socket2_sock.set_send_buffer_size(UDP_BUFFER_BYTES);
         #[cfg(target_os = "macos")]
         {
             let _ = socket2_sock.set_tos_v4(0xB8);

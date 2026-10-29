@@ -466,6 +466,7 @@ pub struct BoundWebSocketRelayTunnel {
 impl BoundTcpRelayTunnel {
     pub async fn bind(config: TcpRelayTunnelConfig) -> io::Result<Self> {
         let socket = UdpSocket::bind(config.bind_addr).await?;
+        crate::net::configure_udp_buffers(&socket);
         Ok(Self { socket, config })
     }
 
@@ -645,6 +646,7 @@ impl BoundWebSocketRelayTunnel {
             crate::init_crypto_provider();
         }
         let socket = UdpSocket::bind(config.bind_addr).await?;
+        crate::net::configure_udp_buffers(&socket);
         Ok(Self { socket, config, diagnostics: Arc::new(RelayTunnelDiagnostics::default()) })
     }
 
@@ -782,6 +784,7 @@ impl BoundWebSocketRelayTunnel {
 impl BoundUdpRelayTunnel {
     pub async fn bind(config: UdpRelayTunnelConfig) -> io::Result<Self> {
         let socket = UdpSocket::bind(config.bind_addr).await?;
+        crate::net::configure_udp_buffers(&socket);
         Ok(Self { socket, config })
     }
 

@@ -371,11 +371,13 @@ impl RoutedRelay {
             ));
         }
         let (tx, rx) = mpsc::channel(128);
+        let hub = UdpSocket::bind("127.0.0.1:0").await?;
+        crate::net::configure_udp_buffers(&hub);
         Ok(Self {
             local_id,
             key,
             host,
-            hub: UdpSocket::bind("127.0.0.1:0").await?,
+            hub,
             tx,
             rx,
             peers: HashMap::new(),
@@ -409,6 +411,7 @@ impl RoutedRelay {
             return Err(io::Error::other("relay peer limit reached"));
         }
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+        crate::net::configure_udp_buffers(socket.as_ref());
         let addr = socket.local_addr()?;
         let listener = Listener::new(
             socket,
@@ -474,6 +477,7 @@ impl RoutedRelay {
                 else {
                     return;
                 };
+                crate::net::configure_udp_buffers(&socket);
                 let socket = Arc::new(socket);
                 let kind = ListenerKind::Host {
                     peer: envelope.source.clone(),
