@@ -415,10 +415,10 @@ impl OriginalOwner {
             let s = &e.session;
             let role_session =
                 RoleSession::new(RolePeer::new(&s.key, &s.name, s.conn.target), s.conn.id, 0);
-            let role = if s.media.is_none() && s.pending.is_none()
-                && s.video_error.is_none() && s.uploaded_at.is_none() {
-                // A healthy file connection is reusable, but it is not a video
-                // connection in progress. Keep Connect Stream available.
+            let role = if !s.connected || (s.media.is_none() && s.pending.is_none()
+                && s.video_error.is_none() && s.uploaded_at.is_none()) {
+                // File-only and closed connections keep Connect Stream
+                // available; a new attempt still uses current route/identity checks.
                 RoleState::Idle
             } else if s.confirmed && s.media.is_some() {
                 RoleState::Viewing(role_session)
@@ -1633,6 +1633,11 @@ mod restoration_regression_tests {
         assert!(rows.rows[0].can_connect,"a completed file transfer must not disable Connect Stream");
         owner.pool.lock().unwrap().active_mut().unwrap().session.pending=Some((1,Instant::now()));
         assert!(matches!(owner.snapshot().role,RoleState::Connecting(_)),"an actual video request still shows connecting");
+        owner.pool.lock().unwrap().active_mut().unwrap().session.connected=false;
+        let closed=owner.snapshot();assert!(matches!(closed.role,RoleState::Idle));
+        let rows=super::super::device_list::DeviceListViewModel::project(&devices,&closed.role,
+            super::super::device_list::DeviceFilterKind::All);
+        assert!(rows.rows[0].can_connect,"a stopped peer must remain reconnectable after an upgrade");
         server.abort();let _=server.await;
     }
     fn pending_pool() -> Pool {
