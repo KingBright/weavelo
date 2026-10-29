@@ -194,7 +194,7 @@ async fn run_sender_worker(
         // packet. This keeps bulk backpressure completely off the hot path.
         drain_realtime_ingress(&mut realtime_rx, &mut scheduler, &counters);
 
-        if let Some(envelope) = scheduler.pop_next(now_ms()) {
+        if let Some(envelope) = pop_next_observed(&mut scheduler, now_ms(), &counters) {
             send_scheduled_envelope(&udp_sender, target, envelope, &counters).await?;
             continue;
         }
@@ -225,6 +225,18 @@ async fn run_sender_worker(
             }
         }
     }
+}
+
+fn pop_next_observed(
+    scheduler: &mut LaneScheduler,
+    now_ms: u64,
+    counters: &ScheduledDataSenderCounters,
+) -> Option<DataEnvelope> {
+    let before = scheduler.stats().dropped_stale_realtime;
+    let next = scheduler.pop_next(now_ms);
+    let expired = scheduler.stats().dropped_stale_realtime - before;
+    counters.scheduler_dropped_stale_realtime.fetch_add(expired, Relaxed);
+    next
 }
 
 fn drain_realtime_ingress(
@@ -338,6 +350,24 @@ mod tests {
             },
             payload: vec![sequence_number as u8; 16],
         }
+    }
+
+    #[test]
+    fn queued_expiration_is_observed_once_and_preserves_ingress_drop_counts() {
+        let mut scheduler = LaneScheduler::new();
+        let counters = ScheduledDataSenderCounters::default();
+        let video = || make_realtime_envelope(
+            RealtimePacketSpec::video(1, 1, 1, 10), vec![1],
+        );
+        record_push_result(&counters, scheduler.push(video(), 11));
+        record_push_result(&counters, scheduler.push(video(), 1));
+        assert_eq!(counters.scheduler_dropped_stale_realtime.load(Relaxed), 1);
+        scheduler.push(bulk(2), 1);
+        let next = pop_next_observed(&mut scheduler, 11, &counters).unwrap();
+        assert!(!next.header.lane.is_realtime());
+        assert_eq!(counters.scheduler_dropped_stale_realtime.load(Relaxed), 2);
+        assert!(pop_next_observed(&mut scheduler, 12, &counters).is_none());
+        assert_eq!(counters.scheduler_dropped_stale_realtime.load(Relaxed), 2);
     }
 
     #[tokio::test]

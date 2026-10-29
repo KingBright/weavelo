@@ -48,6 +48,7 @@ SESSION_CLOCK_TESTS = {
     "clock-host-auth": ("host", "service::failure_admission_tests::finish_rechecks_native_owner_and_retired_finish_cannot_replace_new_session"),
     "clock-host-rotation": ("host", "service::failure_admission_tests::key_rotation_same_address_hello_keeps_pending_native_budget_until_release"),
     "transport-replay": ("remote_core", "net::tests"),
+    "scheduled-sender": ("remote_core", "scheduled_sender::tests"),
     "routed-auth": ("remote_core", "p2p::routed_p2p_tests"),
     "clock-display": ("weavelo_app", "telemetry_display::tests"),
     "clock-renderer": ("client", "render_timing::tests"),

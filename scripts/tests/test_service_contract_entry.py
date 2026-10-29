@@ -42,6 +42,7 @@ class ServiceContractEntryTests(unittest.TestCase):
         'host-lifecycle-observation': ('host', 'lifecycle::tests'),
         'hevc-access-units': ('host', 'ffmpeg_hevc::tests'),
         'transport-replay': ('remote_core', 'net::tests'),
+        'scheduled-sender': ('remote_core', 'scheduled_sender::tests'),
         'routed-auth': ('remote_core', 'p2p::routed_p2p_tests'),
         'clock-display': ('weavelo_app', 'telemetry_display::tests'),
         'clock-renderer': ('client', 'render_timing::tests'),
