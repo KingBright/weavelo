@@ -2,7 +2,6 @@ package `fun`.hackerlife.weavelo.ui
 
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -15,11 +14,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import `fun`.hackerlife.weavelo.*
@@ -196,7 +193,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 text = { Column { OutlinedTextField(fps, { fps = it }, label = { Text("Frames per second") }); OutlinedTextField(kbps, { kbps = it }, label = { Text("Bitrate (kbps)") }) } },
                 confirmButton = { TextButton(onClick = {
                     val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
-                    if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, fps = f, kbps = k); selectedSettings = null }
+                    if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, state.sessionKey, state.connectionGeneration, fps = f, kbps = k); selectedSettings = null }
                 }) { Text("Apply") } })
         }
         if (sharedFilesOpen) AlertDialog(onDismissRequest = { sharedFilesOpen = false }, title = { Text("Remote shared files") },
@@ -235,29 +232,59 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
 
 @Composable
 private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long, onError: (String) -> Unit) {
-    var ratio by remember(pane.id) { mutableFloatStateOf(if (pane.source.height > 0) pane.source.width.toFloat() / pane.source.height else 16f / 9f) }
+    var dimensions by remember(pane.id, sessionKey, generation) {
+        mutableStateOf(VideoDimensions(pane.source.width.coerceAtLeast(1), pane.source.height.coerceAtLeast(1)))
+    }
+    val transform = remember(pane.id, sessionKey, generation) { mutableStateOf(ViewportTransform()) }
     var measured by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var surfaceToken by remember { mutableLongStateOf(0L) }
+    val pointers = remember { mutableSetOf<Int>() }
+    var touching by remember { mutableStateOf(false) }
     val currentError by rememberUpdatedState(onError)
-    val supportsInput by rememberUpdatedState(pane.input)
     LaunchedEffect(measured) {
         delay(250)
-        if (measured.width > 1 && measured.height > 1) WorkspaceClient.settings(pane.id,
-            width = ((measured.width + 31) / 32 * 32).coerceIn(32, 4096), height = ((measured.height + 31) / 32 * 32).coerceIn(32, 4096))
+        // Negotiate only visible video pixels. Letterboxing/IME/toolbars are not video.
+        VideoDimensions.fitEncoder(pane.source.width, pane.source.height,
+            measured.width.coerceAtMost(4096), measured.height.coerceAtMost(4096), 2, 2)
+            ?.takeIf { it.width >= 32 && it.height >= 32 }?.let {
+                WorkspaceClient.settings(pane.id, sessionKey, generation, width = it.width, height = it.height)
+            }
     }
-    BoxWithConstraints(Modifier.fillMaxSize().onSizeChanged { measured = it }, contentAlignment = Alignment.Center) {
-        val fit = if (maxWidth / maxHeight > ratio) Modifier.fillMaxHeight().aspectRatio(ratio, true) else Modifier.fillMaxWidth().aspectRatio(ratio)
-        AndroidView(modifier = fit, factory = { context ->
-            SurfaceView(context).apply {
-                var surfaceToken = 0L
-                val touchedPointers = mutableSetOf<Int>()
-                val inputAlive = object : Runnable {
-                    override fun run() {
-                        if (surfaceToken == 0L || touchedPointers.isEmpty()) return
-                        WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "alive")
-                        postDelayed(this, 100)
-                    }
+    LaunchedEffect(touching, surfaceToken) {
+        val token = surfaceToken
+        if (touching && token != 0L) while (isActive) {
+            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "alive")
+            delay(100)
+        }
+    }
+    val token = surfaceToken
+    RemoteViewport(
+        dimensions = dimensions, transformState = transform,
+        enabled = pane.input && token != 0L,
+        contentKey = token to dimensions,
+        modifier = Modifier.fillMaxSize(),
+        onViewportSizeChanged = { measured = it },
+        sendTouch = { action, id, x, y, pressure, eventTime ->
+            when (action) {
+                0 -> pointers.add(id)
+                2 -> pointers.remove(id)
+                3 -> pointers.clear()
+            }
+            touching = pointers.isNotEmpty()
+            WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
+                JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
+                    .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
+        },
+        overlay = {
+            if (transform.value.scale > 1.05f) {
+                TextButton(onClick = { transform.value = transform.value.reset() }, modifier = Modifier.align(Alignment.TopEnd)) {
+                    Text("Reset zoom")
                 }
-                fun clearTouches() { touchedPointers.clear(); removeCallbacks(inputAlive) }
+            }
+        },
+        factory = { context ->
+            SurfaceView(context).apply {
+                fun clearTouches() { pointers.clear(); touching = false }
                 holder.addCallback(object : SurfaceHolder.Callback {
                     private var active = AtomicBoolean(false)
                     private var worker: Thread? = null
@@ -269,7 +296,9 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                         val running = AtomicBoolean(true)
                         active = running
                         worker = Thread({
-                            val codec = MediaCodecPlayer(holder.surface) { dimensions -> post { ratio = dimensions.width.toFloat() / dimensions.height } }
+                            val codec = MediaCodecPlayer(holder.surface) { decoded -> post {
+                                if (running.get() && surfaceToken == token) dimensions = decoded
+                            } }
                             try {
                                 codec.start(pane.width, pane.height)
                                 WorkspaceClient.keyframe(pane.id)
@@ -316,7 +345,10 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             }
                         }, "workspace-video-${pane.id}").apply { start() }
                     }
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                        clearTouches()
+                        WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "cancel")
+                    }
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
                         val token = surfaceToken
                         surfaceToken = 0L
@@ -325,41 +357,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                         active.set(false); worker?.interrupt(); worker?.join(500); worker = null
                     }
                 })
-                setOnTouchListener { view, event ->
-                    if (!supportsInput || surfaceToken == 0L || view.width == 0 || view.height == 0) {
-                        clearTouches()
-                        WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "cancel")
-                        false
-                    } else {
-                        fun send(action: String, index: Int) {
-                            WorkspaceClient.touch(pane.id, sessionKey, generation, surfaceToken, event.eventTime,
-                                JSONObject().put("action", action).put("pointer_id", event.getPointerId(index))
-                                    .put("normalized_x", (event.getX(index) / view.width).coerceIn(0f, 1f))
-                                    .put("normalized_y", (event.getY(index) / view.height).coerceIn(0f, 1f))
-                                    .put("pressure", event.getPressure(index)))
-                        }
-                        when (event.actionMasked) {
-                            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                                send("Down", event.actionIndex)
-                                if (touchedPointers.isEmpty()) post(inputAlive)
-                                touchedPointers.add(event.getPointerId(event.actionIndex))
-                            }
-                            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
-                                send("Up", event.actionIndex)
-                                touchedPointers.remove(event.getPointerId(event.actionIndex))
-                                if (touchedPointers.isEmpty()) removeCallbacks(inputAlive)
-                            }
-                            MotionEvent.ACTION_MOVE -> for (index in 0 until event.pointerCount) send("Move", index)
-                            MotionEvent.ACTION_CANCEL -> {
-                                clearTouches()
-                                WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "cancel")
-                            }
-                        }
-                        if (event.actionMasked == MotionEvent.ACTION_UP) view.performClick()
-                        true
-                    }
-                }
             }
-        })
-    }
+        }
+    )
 }

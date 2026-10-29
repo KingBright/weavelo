@@ -105,3 +105,16 @@ manual patch-hash approvals and artificial release/version gates. Known reposito
 Windows packaging scripts may always use RemoteSigned for their subprocess only.
 Keep machine/user policy unchanged. Diagnose and fix failed steps in place while
 continuing independent work; do not leave the task waiting on routine delivery approval.
+
+## Native interaction and performance (2026-10-29 continuation)
+
+The user requires measured platform-native performance throughout iteration.
+Share session, geometry and gesture logic; keep efficient platform-specific
+capture, codec, presentation and OS-input adapters. Prefer a uniform current
+product over accumulating legacy compatibility paths or release machinery.
+
+Remote windows must identify the current device and application/window, with
+obvious local fullscreen/restore/minimize controls. Video and pointer input
+must use the same visible rectangle and inverse transform. Verify keyboard
+insets, rotation, zoom, crop, DPI changes and cancellation of gestures during
+geometry/source changes. Decoder submission is not physical presentation.

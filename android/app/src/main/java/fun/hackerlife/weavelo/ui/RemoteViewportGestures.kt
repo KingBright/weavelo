@@ -20,7 +20,7 @@ internal fun Modifier.remoteViewportGestures(
     viewportSize: IntSize,
     enabled: Boolean,
     contentKey: Any? = null,
-    sendTouch: (Int, Int, Float, Float, Float) -> Unit
+    sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit
 ): Modifier = composed {
     val currentSink by rememberUpdatedState(sendTouch)
     pointerInput(touchMode, viewportSize, enabled, contentKey) {
@@ -28,6 +28,9 @@ internal fun Modifier.remoteViewportGestures(
         // At 1x, two-finger drag/tap remains a remote scroll/right-click.
         // A real pinch takes ownership locally and cancels remote pointers.
         awaitEachGesture {
+            // Cleanup belongs to the callback that started this gesture. A
+            // replacement surface/session must never receive the old cancel.
+            val gestureSink = currentSink
             val activePointers = mutableSetOf<Int>()
             var twoFingerMode = TwoFingerGestureMode.UNDECIDED
             var twoFingerStarted = false
@@ -63,20 +66,20 @@ internal fun Modifier.remoteViewportGestures(
                     when {
                         !change.previousPressed && change.pressed -> {
                             activePointers.add(pointerId)
-                            currentSink(
-                                0, pointerId, normX, normY, pressure
+                            gestureSink(
+                                0, pointerId, normX, normY, pressure, change.uptimeMillis
                             )
                         }
                         change.previousPressed && !change.pressed && activePointers.contains(pointerId) -> {
                             activePointers.remove(pointerId)
-                            currentSink(
-                                2, pointerId, normX, normY, pressure
+                            gestureSink(
+                                2, pointerId, normX, normY, pressure, change.uptimeMillis
                             )
                         }
                         change.pressed && change.positionChanged() && activePointers.contains(pointerId) -> {
                             activePointers.add(pointerId)
-                            currentSink(
-                                1, pointerId, normX, normY, pressure
+                            gestureSink(
+                                1, pointerId, normX, normY, pressure, change.uptimeMillis
                             )
                         }
                     }
@@ -86,7 +89,7 @@ internal fun Modifier.remoteViewportGestures(
 
             fun cancelRemotePointers() {
                 for (id in activePointers) {
-                    currentSink(3, id, 0f, 0f, 0f)
+                    gestureSink(3, id, 0f, 0f, 0f, android.os.SystemClock.uptimeMillis())
                 }
                 activePointers.clear()
             }

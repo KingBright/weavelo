@@ -37,6 +37,7 @@ class RemoteViewportInteractionTest {
     @get:Rule val compose = createComposeRule()
     private data class Touch(val action: Int, val id: Int, val x: Float, val y: Float)
     private val touches = CopyOnWriteArrayList<Touch>()
+    private val callbackOwners = CopyOnWriteArrayList<Pair<Int, Int>>()
     private val transform = mutableStateOf(ViewportTransform())
     private val enabled = mutableStateOf(true)
     private val mode = mutableStateOf(TouchMode.DIRECT)
@@ -49,22 +50,23 @@ class RemoteViewportInteractionTest {
     private fun showViewport() {
         compose.setContent {
             MaterialTheme {
-                BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black).testTag("root")) {
-                    val viewportWidth = minOf(maxWidth, maxHeight * aspect.value)
-                    Box(
-                        Modifier.align(Alignment.Center).width(viewportWidth)
-                            .aspectRatio(aspect.value).clipToBounds()
-                            .onGloballyPositioned { bounds = it.boundsInWindow() }
-                            .onSizeChanged {
-                                val previousSize = size.value
-                                size.value = it
-                                transform.value = transform.value.resized(previousSize.width.toFloat(), previousSize.height.toFloat(), it.width.toFloat(), it.height.toFloat())
-                            }
-                            .remoteViewportGestures(transform, mode.value, size.value, enabled.value, contentKey = contentRevision.value) {
-                                action, id, x, y, _ -> touches.add(Touch(action, id, x, y))
-                            }.testTag("viewport")
-                    ) {
-                        RemoteVideoSurface(transform.value, Modifier.fillMaxSize()) { context ->
+                val owner = contentRevision.value
+                RemoteViewport(
+                    dimensions = `fun`.hackerlife.weavelo.VideoDimensions((aspect.value * 1000).toInt(), 1000),
+                    transformState = transform, enabled = enabled.value, contentKey = owner,
+                    modifier = Modifier.fillMaxSize().background(Color.Black).testTag("root"),
+                    viewportModifier = Modifier.onGloballyPositioned { bounds = it.boundsInWindow() }.testTag("viewport"),
+                    touchMode = mode.value, onViewportSizeChanged = { size.value = it },
+                    sendTouch = { action, id, x, y, _, _ ->
+                        touches.add(Touch(action, id, x, y))
+                        callbackOwners.add(owner to action)
+                    },
+                    overlay = {
+                        Text("RESET", Modifier.align(Alignment.BottomEnd)
+                            .background(Color.DarkGray).clickable { transform.value = transform.value.reset() }
+                            .padding(12.dp).testTag("reset"), color = Color.White)
+                    },
+                    factory = { context ->
                             SurfaceView(context).apply {
                                 holder.addCallback(object : SurfaceHolder.Callback {
                                     override fun surfaceCreated(holder: SurfaceHolder) = drawFixture(holder)
@@ -72,12 +74,9 @@ class RemoteViewportInteractionTest {
                                     override fun surfaceDestroyed(holder: SurfaceHolder) { surfaceDrawn = false }
                                 })
                             }
-                        }
-                        Text("RESET", Modifier.align(Alignment.BottomEnd)
-                            .background(Color.DarkGray).clickable { transform.value = transform.value.reset() }
-                            .padding(12.dp).testTag("reset"), color = Color.White)
+
                     }
-                }
+                )
             }
         }
         compose.waitUntil(20_000) { size.value.width > 0 && surfaceDrawn }
@@ -178,6 +177,20 @@ class RemoteViewportInteractionTest {
             up(0); up(1)
         }
         compose.runOnIdle { assertEquals(1f, transform.value.scale, .001f); assertTrue(touches.any { it.action == 1 }) }
+    }
+
+    @Test fun replacement_surface_receives_no_cancel_from_the_previous_gesture() {
+        showViewport()
+        viewport().performTouchInput { down(center) }
+        compose.runOnIdle { contentRevision.value = 1 }
+        compose.waitForIdle()
+        viewport().performTouchInput { up() }
+        compose.runOnIdle {
+            assertTrue(callbackOwners.any { it.first == 0 && it.second == 3 })
+            assertFalse(callbackOwners.any { it.first == 1 && it.second == 3 })
+        }
+        viewport().performTouchInput { click(center) }
+        compose.runOnIdle { assertTrue(callbackOwners.any { it.first == 1 && it.second == 2 }) }
     }
 
     @Test fun paused_or_modal_viewport_does_not_forward_remote_touches() {

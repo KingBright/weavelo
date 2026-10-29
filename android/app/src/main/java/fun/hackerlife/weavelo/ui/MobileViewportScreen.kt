@@ -44,9 +44,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.unit.IntSize
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -62,7 +59,6 @@ fun MobileViewportScreen(
     var keyboardInput by remember { mutableStateOf(TextFieldValue("  ", selection = TextRange(2))) }
     val viewportTransform = remember { mutableStateOf(ViewportTransform()) }
     var transform by viewportTransform
-    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
     val sessionState by WeaveloClient.sessionState.collectAsState()
@@ -163,46 +159,49 @@ fun MobileViewportScreen(
             dismissButton = { TextButton(onClick = { showStreamSettings = false }) { Text("Cancel") } })
     }
 
-    BoxWithConstraints(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .safeDrawingPadding()
     ) {
-        // Video and input share the actual visible decoded rectangle, excluding padding.
-        val viewportWidth = minOf(maxWidth, maxHeight * videoDimensions.aspectRatio)
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .width(viewportWidth)
-                .aspectRatio(videoDimensions.aspectRatio)
-                .clipToBounds()
-                .onSizeChanged { newSize ->
-                    if (newSize != viewportSize) {
-                        val previousSize = viewportSize
-                        viewportSize = newSize
-                        if (newSize.width > 0 && newSize.height > 0) {
-                            transform = transform.resized(
-                                previousSize.width.toFloat(),
-                                previousSize.height.toFloat(),
-                                newSize.width.toFloat(),
-                                newSize.height.toFloat()
-                            )
-                        }
-                    }
+        val gestureOwner = inputSessionToken
+        RemoteViewport(
+            dimensions = videoDimensions,
+            transformState = viewportTransform,
+            enabled = inputEnabled,
+            contentKey = videoDimensions to inputSessionToken,
+            modifier = Modifier.fillMaxSize(),
+            touchMode = touchMode,
+            sendTouch = { action, id, x, y, pressure, eventTime ->
+                if (gestureOwner != null) {
+                    WeaveloClient.sendTouchEvent(gestureOwner, action, id, x, y, pressure, eventTime)
                 }
-                .remoteViewportGestures(
-                    transformState = viewportTransform,
-                    touchMode = touchMode,
-                    viewportSize = viewportSize,
-                    contentKey = videoDimensions to inputSessionToken,
-                    enabled = inputEnabled,
-                    sendTouch = WeaveloClient::sendTouchEvent
-                )
-        ) {
-            RemoteVideoSurface(
-                transform = transform,
-                modifier = Modifier.fillMaxSize(),
+            },
+            overlay = {
+            // 局部放大状态下右上角浮现的复位药丸按钮 (Tap to Reset)
+            if (transform.scale > 1.05f) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.75f))
+                        .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
+                        .clickable {
+                            transform = transform.reset()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "${String.format(java.util.Locale.US, "%.1f", transform.scale)}x · ⟲ RESET",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            },
                 factory = { context ->
                     SurfaceView(context).apply {
                         holder.addCallback(object : android.view.SurfaceHolder.Callback {
@@ -320,31 +319,7 @@ fun MobileViewportScreen(
                         })
                     }
                 }
-            )
-
-            // 局部放大状态下右上角浮现的复位药丸按钮 (Tap to Reset)
-            if (transform.scale > 1.05f) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(16.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.75f))
-                        .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-                        .clickable {
-                            transform = transform.reset()
-                        }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = "${String.format(java.util.Locale.US, "%.1f", transform.scale)}x · ⟲ RESET",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        }
+        )
 
         // 隐形软键盘输入代理捕获
         BasicTextField(

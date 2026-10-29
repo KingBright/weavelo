@@ -184,7 +184,8 @@ object WorkspaceClient {
             command("SetActivity", JSONObject().put("id", pane.id).put("revision", ++revision).put("video", visible).put("audio", visible))
         }
     }
-    fun settings(id: Int, width: Int? = null, height: Int? = null, fps: Int? = null, kbps: Int? = null) = guarded {
+    fun settings(id: Int, sessionKey: String, generation: Long, width: Int? = null, height: Int? = null, fps: Int? = null, kbps: Int? = null) = guarded {
+        if (!currentView(id, sessionKey, generation, false)) return@guarded
         val pane = mutable.value.panes.find { it.id == id } ?: return@guarded
         val updated = pane.copy(width = width ?: pane.width, height = height ?: pane.height, fps = fps ?: pane.fps, kbps = kbps ?: pane.kbps)
         require(updated.fps > 0 && updated.kbps > 0) { "Frame rate and bitrate must be positive" }

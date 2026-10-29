@@ -296,9 +296,11 @@ object WeaveloClient {
         isNativeLoaded && !backgrounded && !_mediaPaused.value && !_mediaPausePending.value &&
             token.generation == connectionGeneration && nativeRefreshInputIntent(token.session)
 
-    fun sendTouchEvent(actionCode: Int, pointerId: Int, normX: Float, normY: Float, pressure: Float) {
-        if (isNativeLoaded) {
-            nativeSendTouch(actionCode, pointerId, normX, normY, pressure)
+    @Synchronized fun sendTouchEvent(token: InputIntentToken, actionCode: Int, pointerId: Int,
+                                   normX: Float, normY: Float, pressure: Float, eventTime: Long) {
+        if (isNativeLoaded && token.generation == connectionGeneration) {
+            val fresh = android.os.SystemClock.uptimeMillis() - eventTime in 0L..250L
+            nativeSendTouch(token.session, if (fresh) actionCode else 3, pointerId, normX, normY, pressure)
         }
     }
 
@@ -450,7 +452,7 @@ object WeaveloClient {
     private external fun nativeUpdateStreamRates(fps: Int, bitrateKbps: Int): String?
     private external fun nativeInputIntentToken(): Long
     private external fun nativeRefreshInputIntent(token: Long): Boolean
-    private external fun nativeSendTouch(actionCode: Int, pointerId: Int, normX: Float, normY: Float, pressure: Float)
+    private external fun nativeSendTouch(token: Long, actionCode: Int, pointerId: Int, normX: Float, normY: Float, pressure: Float)
     private external fun nativeSendVirtualKey(keyName: String, pressed: Boolean)
     private external fun nativeSetTouchMode(modeCode: Int)
     private external fun nativeSetScreenBounds(width: Int, height: Int)

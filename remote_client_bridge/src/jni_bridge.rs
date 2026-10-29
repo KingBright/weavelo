@@ -481,6 +481,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeRefreshIn
 pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendTouch(
     _env: JNIEnv,
     _class: JClass,
+    token: jni::sys::jlong,
     action_code: jint,
     pointer_id: jint,
     norm_x: jfloat,
@@ -493,7 +494,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendTouch
         2 => TouchAction::Up,
         _ => TouchAction::Cancel,
     };
-    client().handle_touch_input(action, pointer_id as u32, norm_x, norm_y, pressure);
+    client().handle_bound_touch_input(token as u64, action, pointer_id as u32, norm_x, norm_y, pressure);
 }
 
 #[cfg(feature = "android")]

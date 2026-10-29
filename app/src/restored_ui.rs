@@ -360,6 +360,7 @@ impl FrontendExitGroup {
 }
 
 struct RestoredDashboard {
+    native_window_title: String,
     runtime: Arc<UnifiedRuntimeHandle>,
     owner: Arc<OriginalOwner>,
     _instance: Option<Instance>,
@@ -447,6 +448,10 @@ impl RestoredDashboard {
             cx.notify();
         })
         .detach();
+        cx.observe_window_bounds(window, |this, _window, _cx| {
+            this.owner.release_input();
+            this.pointer_input = PointerInputTracker::default();
+        }).detach();
         let owner = OriginalOwner::new(runtime.owner.clone());
         exit_group.owners.lock().unwrap().push(Arc::downgrade(&owner));
         let mesh_pairing = runtime.mesh_pairing.clone();
@@ -472,6 +477,7 @@ impl RestoredDashboard {
             }
         });
         Self {
+            native_window_title: "Weavelo".into(),
             runtime,
             owner,
             _instance: instance,
@@ -949,8 +955,11 @@ impl RestoredDashboard {
         };
 
         let scale_mode = self.scale_mode;
+        let owner = self.owner.clone();
         let result = cx.open_window(window_options, move |_window, cx| {
             let view = cx.new(|_cx| PopoutStreamView {
+                owner,
+                native_window_title: String::new(),
                 presentation_frame,
                 host_stats,
                 scale_mode,
@@ -1892,6 +1901,8 @@ fn stream_video_canvas_surface(
 }
 
 struct PopoutStreamView {
+    owner: Arc<OriginalOwner>,
+    native_window_title: String,
     presentation_frame: FrameSlot,
     host_stats: Option<Arc<SharedHostStats>>,
     scale_mode: ViewportScaleMode,
@@ -1899,9 +1910,17 @@ struct PopoutStreamView {
 }
 
 impl Render for PopoutStreamView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let view = cx.weak_entity();
+        let snapshot = self.owner.snapshot();
+        let source = confirmed_source(&snapshot.sources, snapshot.active_source);
+        let peer = snapshot.role.session().map(|s| s.peer.display_name.as_str());
+        let title = remote_window_title(peer, source);
+        if title != self.native_window_title {
+            window.set_window_title(&format!("PiP · {title}"));
+            self.native_window_title = title.clone();
+        }
         let current_frame = self
             .presentation_frame
             .lock()
@@ -1958,6 +1977,20 @@ impl Render for PopoutStreamView {
                 ViewportScaleMode::Fill => icon(IconName::Maximize(true)).size(px(12.0)),
             })
             .into_any_element();
+        let fullscreen = window.is_fullscreen();
+        let controls = div().flex().items_center().gap_1()
+            .when_some(source, |this, source| this.child(capture_source_badge(source, &theme)))
+            .child(scale_btn)
+            .child(command_button("pip_fullscreen", ActionVariantKind::Neutral, cx)
+                .h(px(24.0)).px_2()
+                .tooltip(tooltip(if fullscreen { "Exit fullscreen" } else { "Fullscreen" }).build())
+                .on_click(|_, window, cx| { window.toggle_fullscreen(); cx.refresh_windows(); })
+                .child(icon(IconName::Maximize(fullscreen)).size(px(12.0))))
+            .child(command_button("pip_minimize", ActionVariantKind::Neutral, cx)
+                .h(px(24.0)).px_2().tooltip(tooltip("Minimize this PiP window").build())
+                .on_click(|_, window, _| window.minimize_window())
+                .child(icon(IconName::Minimize).size(px(12.0))))
+            .into_any_element();
 
         div()
             .relative()
@@ -1979,12 +2012,12 @@ impl Render for PopoutStreamView {
                         cx.stop_propagation();
                     }))
                     .child(stream_status_capsule_card(
-                        "Weavelo PiP".to_string(),
+                        title,
                         current_frame.is_some(),
                         compact_telemetry_label(stats.as_ref()),
                         true,
                         &theme,
-                        Some(scale_btn),
+                        Some(controls),
                     )),
             )
             .child(if self.telemetry_hud_collapsed {
@@ -2114,6 +2147,12 @@ impl Render for RestoredDashboard {
         owned_gui_stage(8);
         self.sync_input_session(&role, cx);
         let active_session = role.session().cloned();
+        let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
+        let title = remote_window_title(active_session.as_ref().map(|s| s.peer.display_name.as_str()), source);
+        if title != self.native_window_title {
+            window.set_window_title(&title);
+            self.native_window_title = title;
+        }
         let theme = cx.theme().clone();
         let show_drawer = self.drawer_open;
         let input_hint = matches!(role, RoleState::Viewing(_)).then(|| {
@@ -2156,6 +2195,8 @@ impl Render for RestoredDashboard {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let Some(keystroke) = fresh_key_down(event) else { return; };
                 if keystroke.key == "f11" {
+                    this.owner.release_input();
+                    this.pointer_input = PointerInputTracker::default();
                     window.toggle_fullscreen();
                     cx.stop_propagation();
                     cx.notify();
@@ -2531,6 +2572,7 @@ fn floating_control_island(
     let clipboard_sync_enabled = side_services.clipboard_sync.enabled;
     let talkback_available = side_services.talkback.available;
     let clipboard_sync_available = side_services.clipboard_sync.available;
+    let source = confirmed_source(capture_sources, active_capture_source);
     let title = session
         .map(|s| s.peer.display_name.clone())
         .unwrap_or_else(|| {
@@ -2540,6 +2582,7 @@ fn floating_control_island(
                 status.to_string()
             }
         });
+    let title = source.map(|source| format!("{} · {title}", capture_source_label(source))).unwrap_or(title);
 
     div()
         .id("floating_auto_hide_toolbar_container")
@@ -2582,6 +2625,7 @@ fn floating_control_island(
                         .items_center()
                         .gap_2()
                         .px_1()
+                        .when_some(source, |this, source| this.child(capture_source_badge(source, &theme)))
                         .child(
                             div()
                                 .size(px(8.0))
@@ -2595,11 +2639,13 @@ fn floating_control_island(
                         )
                         .child(
                             div()
+                                .id("remote_window_title")
                                 .text_size(px(12.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.content.primary)
                                 .whitespace_nowrap()
                                 .max_w(if compact { px(120.0) } else { px(220.0) })
+                                .tooltip(tooltip(title.clone()).build())
                                 .truncate()
                                 .child(title),
                         ),
@@ -2751,14 +2797,29 @@ fn floating_control_island(
                                 .child(if compact { "PiP" } else { "Pop-out PiP" })
                         }))
                         .child({
+                            let owner = owner.clone();
+                            command_button("island_minimize_window", ActionVariantKind::Neutral, cx)
+                                .h(px(26.0)).px_2()
+                                .tooltip(tooltip("Minimize this viewer window").build())
+                                .on_click(move |_, window, _| {
+                                    owner.release_input();
+                                    window.minimize_window();
+                                })
+                                .child(icon(IconName::Minimize).size(px(12.0)))
+                        })
+                        .child({
+                            let owner = owner.clone();
                             command_button("island_toggle_fullscreen", ActionVariantKind::Neutral, cx)
                                 .h(px(26.0))
                                 .px_2()
                                 .text_size(px(10.0))
+                                .tooltip(tooltip("Toggle fullscreen · F11").build())
                                 .on_click(move |_event, window, cx| {
+                                    owner.release_input();
                                     window.toggle_fullscreen();
                                     cx.refresh_windows();
                                 })
+                                .child(icon(IconName::Maximize(is_fullscreen)).size(px(12.0)))
                                 .child(if compact {
                                     if is_fullscreen { "Exit Full" } else { "Full" }
                                 } else if is_fullscreen {
@@ -2929,6 +2990,56 @@ fn display_switcher_control(
     )
 }
 
+fn confirmed_source(
+    sources: &[protocol::session::CaptureSourceInfo],
+    selected: protocol::session::CaptureSource,
+) -> Option<&protocol::session::CaptureSourceInfo> {
+    sources.iter().find(|source| source.source == selected).or_else(|| {
+        if selected != protocol::session::CaptureSource::MainDisplay { return None; }
+        sources.iter().filter(|source| matches!(source.source,
+            protocol::session::CaptureSource::MainDisplay | protocol::session::CaptureSource::Display(_)))
+            .min_by_key(|source| (!source.supports_input, match source.source {
+                protocol::session::CaptureSource::Display(id) => id, _ => 0,
+            }))
+    })
+}
+
+fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String {
+    let app = source.application.trim();
+    let title = source.title.trim();
+    if title.is_empty() {
+        if !app.is_empty() { app.into() }
+        else if matches!(source.source, protocol::session::CaptureSource::Window(_)) { "Application window".into() }
+        else { "Display".into() }
+    } else if app.is_empty() || app == title {
+        title.into()
+    } else {
+        format!("{app} · {title}")
+    }
+}
+
+fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::CaptureSourceInfo>) -> String {
+    match peer {
+        Some(peer) => match source {
+            Some(source) => format!("{} · {peer} — Weavelo", capture_source_label(source)),
+            None => format!("{peer} — Weavelo"),
+        },
+        None => "Weavelo".into(),
+    }
+}
+
+fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, theme: &Theme) -> AnyElement {
+    let window = matches!(source.source, protocol::session::CaptureSource::Window(_));
+    let initial = window.then(|| source.application.trim().chars().next()).flatten();
+    div().size(px(20.0)).flex_none().flex().items_center().justify_center()
+        .rounded(px(4.0)).bg(theme.surface.sunken)
+        .text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(color_accent_cyan())
+        .child(match initial {
+            Some(letter) => div().child(letter.to_uppercase().collect::<String>()).into_any_element(),
+            None => icon(if window { IconName::Window } else { IconName::Display }).size(px(14.0)).into_any_element(),
+        }).into_any_element()
+}
+
 fn capture_source_menu(
     sources: &[protocol::session::CaptureSourceInfo],
     source_binding: Option<&SourceViewBinding>,
@@ -3004,6 +3115,7 @@ fn capture_source_menu(
             format!("Display {} · view only", index + 1)
         };
         let detail = source.title.clone();
+        let badge = capture_source_badge(&source, &theme);
         let action_label = label.clone();
         let selected = capture_source_is_selected(selected, &source, index);
         menu = menu.child(
@@ -3027,6 +3139,7 @@ fn capture_source_menu(
                     cx.notify();
                 });
             })
+            .child(badge)
             .child(format!("{label} · {detail}")),
         );
     }
@@ -3046,6 +3159,7 @@ fn capture_source_menu(
             let source_id = source.source;
             let title = source.title.clone();
             let app = source.application.clone();
+            let badge = capture_source_badge(&source, &theme);
             let action_label = if app.is_empty() {
                 title.clone()
             } else {
@@ -3074,6 +3188,7 @@ fn capture_source_menu(
                         cx.notify();
                     });
                 })
+                .child(badge)
                 .child(button_label),
             );
         }

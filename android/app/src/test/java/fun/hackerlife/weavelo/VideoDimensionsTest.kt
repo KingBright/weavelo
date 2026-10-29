@@ -10,6 +10,14 @@ class VideoDimensionsTest {
         assertEquals(VideoDimensions(853, 479), VideoDimensions.fitEncoder(853, 479, 1280, 720, 1, 1))
         assertNull(VideoDimensions.fitEncoder(100, 200, 1, 1, 16, 16))
     }
+    @Test fun landscapeDesktopUsesOnlyTheVideoRectangleOnAPortraitPhone() {
+        val fitted = VideoDimensions.fitEncoder(1920, 1080, 1216, 684, 2, 2)!!
+        assertEquals(VideoDimensions(1216, 684), fitted)
+        assertEquals(16f / 9f, fitted.aspectRatio, .0001f)
+        assertTrue(fitted.height < 2688)
+        assertEquals(VideoDimensions(684, 1216), VideoDimensions.fitEncoder(1080, 1920, 684, 1216, 2, 2))
+    }
+
     @Test fun supportsPortraitSquareAndUltrawideFramesWithoutForcingSixteenByNine() {
         for ((width, height) in listOf(1080 to 1920, 913 to 913, 3440 to 1440, 853 to 479)) {
             val dimensions = VideoDimensions.fromDecodedFrame(width, height)!!

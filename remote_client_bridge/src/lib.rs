@@ -448,15 +448,28 @@ impl RemoteBridgeClient {
     pub fn handle_touch_input(
         &self, action: TouchAction, pointer_id: u32, norm_x: f32, norm_y: f32, pressure: f32,
     ) {
-        let Ok(_lifecycle) = self.lifecycle.try_lock() else { self.revoke_manual_token(self.manual_input_owner.load(Relaxed)); return; };
-        let Ok(live) = self.live.try_lock() else { self.revoke_manual_token(self.manual_input_owner.load(Relaxed)); return; };
+        self.touch_input(None, action, pointer_id, norm_x, norm_y, pressure);
+    }
+    pub fn handle_bound_touch_input(
+        &self, token: u64, action: TouchAction, pointer_id: u32, norm_x: f32, norm_y: f32, pressure: f32,
+    ) {
+        if token != 0 { self.touch_input(Some(token), action, pointer_id, norm_x, norm_y, pressure); }
+    }
+    fn touch_input(
+        &self, token: Option<u64>, action: TouchAction, pointer_id: u32, norm_x: f32, norm_y: f32, pressure: f32,
+    ) {
+        let owner = token.unwrap_or_else(|| self.manual_input_owner.load(Relaxed));
+        let Ok(_lifecycle) = self.lifecycle.try_lock() else { self.revoke_manual_token(owner); return; };
+        let Ok(live) = self.live.try_lock() else { self.revoke_manual_token(owner); return; };
         let Some(live) = live.as_ref().filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready()) else {
+            if token.is_some() { self.revoke_manual_token(owner); return; }
             self.touch_tracker.lock().unwrap().cancel_all();
             *self.manual_input_intent.lock().unwrap() = None;
             self.manual_input_owner.store(0, Relaxed);
             return;
         };
         let Some(binding) = live.connection.input_binding(live.session_id, 0) else { return; };
+        if token.is_some_and(|token| token != self.manual_token(binding)) { return; }
         let now = Instant::now();
         self.expire_manual_input(live, binding, now);
         {
@@ -2235,7 +2248,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_busy_heartbeat_cannot_revoke_a_new_session_or_epoch() {
+    fn manual_stale_busy_heartbeat_cannot_revoke_a_new_session_or_epoch() {
         let client = RemoteBridgeClient::new();
         let (sender, mut rx, address) = test_host(&client);
         client.connect("scope".into(), address.to_string());
@@ -2257,10 +2270,13 @@ mod tests {
             client.handle_touch_input(TouchAction::Down, 1, 0.1, 0.1, 1.0);
             let current = client.input_intent_token();
             assert_ne!(current, old);
+            client.handle_bound_touch_input(old, TouchAction::Cancel, 1, 0.0, 0.0, 0.0);
+            assert!(client.touch_tracker.lock().unwrap().has_active_pointers());
             {
                 let _busy = client.lifecycle.lock().unwrap();
                 assert_eq!(client.input_intent_token(), 0); // query is read-only
                 assert!(!client.refresh_input_intent(old));
+                client.handle_bound_touch_input(old, TouchAction::Cancel, 1, 0.0, 0.0, 0.0);
             }
             assert!(client.refresh_input_intent(current));
             assert!(client.touch_tracker.lock().unwrap().has_active_pointers());

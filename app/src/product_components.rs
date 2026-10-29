@@ -24,6 +24,8 @@ pub mod assets {
                 "weavelo-icons/server.svg" => {
                     Some(include_bytes!("product_components/icons/server.svg"))
                 }
+                "weavelo-icons/display.svg" => Some(include_bytes!("product_components/icons/display.svg")),
+                "weavelo-icons/window.svg" => Some(include_bytes!("product_components/icons/window.svg")),
                 "weavelo-icons/maximize-off.svg" => {
                     Some(include_bytes!("product_components/icons/maximize-off.svg"))
                 }
@@ -62,6 +64,8 @@ pub mod assets {
             let mut names = ely_gpui_component::Assets.list(path)?;
             for icon in [
                 "server.svg",
+                "display.svg",
+                "window.svg",
                 "maximize-off.svg",
                 "maximize-on.svg",
                 "minimize.svg",
@@ -112,6 +116,8 @@ pub fn button(id: impl Into<ElementId>) -> Button {
 
 pub enum IconName {
     Server,
+    Display,
+    Window,
     Maximize(bool),
     Minimize,
     PingIndicator(u8),
@@ -125,6 +131,8 @@ pub struct ProductIcon {
 pub fn icon(name: IconName) -> ProductIcon {
     let file = match name {
         IconName::Server => "server.svg",
+        IconName::Display => "display.svg",
+        IconName::Window => "window.svg",
         IconName::Maximize(false) => "maximize-off.svg",
         IconName::Maximize(true) => "maximize-on.svg",
         IconName::Minimize => "minimize.svg",
