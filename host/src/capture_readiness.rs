@@ -18,6 +18,7 @@ pub(crate) struct WindowsCaptureRect {
     pub width: u32,
     pub height: u32,
     pub adapter: String,
+    pub device_name: String,
 }
 
 #[derive(Debug)]
@@ -30,9 +31,8 @@ struct DisplayCandidate {
 pub(crate) fn capture_display_rect() -> Result<WindowsCaptureRect, String> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Graphics::Gdi::{
-        DEVMODEW, DISPLAY_DEVICEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP,
-        DISPLAY_DEVICE_PRIMARY_DEVICE, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW,
-        EnumDisplaySettingsExW,
+        DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE,
+        DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW, EnumDisplaySettingsExW,
     };
 
     let mut candidates = Vec::new();
@@ -72,6 +72,7 @@ pub(crate) fn capture_display_rect() -> Result<WindowsCaptureRect, String> {
                 width: mode.dmPelsWidth,
                 height: mode.dmPelsHeight,
                 adapter: description.clone(),
+                device_name: fixed_wide(&device.DeviceName),
             },
             primary: device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE != 0,
             virtual_display: looks_like_virtual_display(&description, &device_id),
@@ -88,8 +89,87 @@ pub(crate) fn capture_display_rect() -> Result<WindowsCaptureRect, String> {
         })
 }
 
+/// The GDI capture surface must have the actual registered sRGB profile before
+/// the encoder can describe its RGB samples as sRGB. Never infer this from size.
+pub(crate) fn require_srgb_capture_profile(display: &WindowsCaptureRect) -> Result<(), String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Graphics::Gdi::{CreateDCW, DeleteDC, HDC};
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        #[link_name = "GetICMProfileW"]
+        fn current_profile(dc: HDC, size: *mut u32, path: *mut u16) -> i32;
+    }
+    #[link(name = "mscms")]
+    unsafe extern "system" {
+        #[link_name = "GetStandardColorSpaceProfileW"]
+        fn standard_profile(machine: *const u16, space: u32, path: *mut u16, size: *mut u32)
+        -> i32;
+    }
+    struct DisplayDc(HDC);
+    impl Drop for DisplayDc {
+        fn drop(&mut self) {
+            unsafe {
+                DeleteDC(self.0);
+            }
+        }
+    }
+    fn path_from(mut query: impl FnMut(*mut u16, *mut u32) -> i32) -> Result<PathBuf, String> {
+        let mut size = 0;
+        query(std::ptr::null_mut(), &mut size);
+        if size == 0 || size > 65_536 {
+            return Err("Windows capture color profile is unavailable".into());
+        }
+        // GetICMProfileW counts WCHARs; GetStandardColorSpaceProfileW counts bytes.
+        // Allocating this many WCHARs safely accommodates either API's result.
+        let mut buffer = vec![0u16; size as usize];
+        if query(buffer.as_mut_ptr(), &mut size) == 0 {
+            return Err(format!(
+                "Windows capture color profile query failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let end = buffer
+            .iter()
+            .position(|v| *v == 0)
+            .ok_or("Invalid Windows color profile path")?;
+        Ok(PathBuf::from(OsString::from_wide(&buffer[..end])))
+    }
+    fn profile_bytes(path: &Path) -> Result<Vec<u8>, String> {
+        let metadata =
+            std::fs::metadata(path).map_err(|_| "Windows color profile cannot be read")?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+            return Err("Invalid Windows color profile size".into());
+        }
+        std::fs::read(path).map_err(|_| "Windows color profile cannot be read".into())
+    }
+    let driver: Vec<u16> = "DISPLAY".encode_utf16().chain(Some(0)).collect();
+    let name: Vec<u16> = display.device_name.encode_utf16().chain(Some(0)).collect();
+    let dc = DisplayDc(unsafe {
+        CreateDCW(
+            driver.as_ptr(),
+            name.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    });
+    if dc.0.is_null() {
+        return Err("Windows capture display color context is unavailable".into());
+    }
+    let current = path_from(|path, size| unsafe { current_profile(dc.0, size, path) })?;
+    let standard = path_from(|path, size| unsafe {
+        standard_profile(std::ptr::null(), 0x7352_4742, path, size)
+    })?;
+    if profile_bytes(&current)? != profile_bytes(&standard)? {
+        return Err("Windows capture color profile is not the registered sRGB profile; unknown source colors were not relabeled".into());
+    }
+    Ok(())
+}
+
 fn fixed_wide(value: &[u16]) -> String {
-    let len = value.iter().position(|unit| *unit == 0).unwrap_or(value.len());
+    let len = value
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(value.len());
     String::from_utf16_lossy(&value[..len])
 }
 

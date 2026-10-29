@@ -88,16 +88,15 @@ fn drain_hevc_reader<R: Read>(
     mut stdout: R,
     access_tx: mpsc::Sender<Result<(Vec<u8>, bool), String>>,
 ) {
-    use tokio::sync::mpsc::error::TrySendError;
-
     let mut leftover = Vec::new();
     let mut buf = [0u8; 32_768];
     loop {
         while let Some(au) = take_access_unit(&mut leftover) {
-            let packet = Ok((au.clone(), is_hevc_keyframe(&au)));
-            match access_tx.try_send(packet) {
-                Ok(()) | Err(TrySendError::Full(_)) => {}
-                Err(TrySendError::Closed(_)) => return,
+            let is_keyframe = is_hevc_keyframe(&au);
+            // These are already encoded references. Apply bounded backpressure
+            // on this dedicated reader instead of silently corrupting the GOP.
+            if access_tx.blocking_send(Ok((au, is_keyframe))).is_err() {
+                return;
             }
         }
 
@@ -117,6 +116,8 @@ fn drain_hevc_reader<R: Read>(
 
 impl Drop for FfmpegHevcSource {
     fn drop(&mut self) {
+        // Wake a reader blocked on the bounded channel before joining it.
+        self.access_units.get_mut().close();
         if let Ok(mut child) = self.child.lock()
             && let Some(mut child) = child.take()
         {
@@ -155,6 +156,8 @@ fn capture_command_using(
     cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]);
     #[cfg(target_os = "windows")]
     let capture_rect = crate::capture_readiness::capture_display_rect()?;
+    #[cfg(target_os = "windows")]
+    crate::capture_readiness::require_srgb_capture_profile(&capture_rect)?;
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -222,12 +225,24 @@ fn capture_command_using(
         cmd.args([
             "-vf",
             &format!(
-                "scale=w={target_width}:h={target_height}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+                "scale=w={target_width}:h={target_height}:force_original_aspect_ratio=decrease:force_divisible_by=2:in_range=pc:out_range=tv:out_color_matrix=bt709"
             ),
             "-filter_threads",
             "1",
             "-threads",
             "2",
+        ]);
+        // The source ICC was verified above. Convert its full-range RGB samples
+        // to limited BT.709 YUV, then declare the same matrix and sRGB transfer.
+        cmd.args([
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "iec61966-2-1",
         ]);
     }
     let bitrate = format!("{bitrate_kbps}k");
@@ -235,7 +250,7 @@ fn capture_command_using(
     let mut encoder_options =
         format!("keyint={keyint}:min-keyint={keyint}:repeat-headers=1:bframes=0");
     #[cfg(target_os = "windows")]
-    encoder_options.push_str(":pools=2:frame-threads=1");
+    encoder_options.push_str(":pools=2:frame-threads=1:colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=limited");
     cmd.args([
         "-pix_fmt",
         "yuv420p",
@@ -447,7 +462,15 @@ mod tests {
                 .any(|pair| pair == ["-offset_y", offset_y.as_str()])
         );
         assert!(args.iter().any(|value| value
-            == "scale=w=1280:h=720:force_original_aspect_ratio=decrease:force_divisible_by=2"));
+            == "scale=w=1280:h=720:force_original_aspect_ratio=decrease:force_divisible_by=2:in_range=pc:out_range=tv:out_color_matrix=bt709"));
+        assert!(args.windows(2).any(|pair| pair == ["-colorspace", "bt709"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-color_trc", "iec61966-2-1"])
+        );
+        assert!(args.iter().any(|value| {
+            value.contains(":colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=limited")
+        }));
         assert!(args.windows(2).any(|pair| pair == ["-threads", "2"]));
         assert!(
             args.iter()
@@ -457,24 +480,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_reader_drops_overload_without_blocking() {
+    async fn bounded_reader_preserves_encoded_references_under_backpressure() {
         let mut input = Vec::new();
         for byte in 0u8..20 {
             input.extend_from_slice(&[0, 0, 0, 1, 0x02, byte]);
         }
         input.extend_from_slice(&[0, 0, 0, 1, 0x02, 0xff]);
+        input.extend_from_slice(&[0, 0, 0, 1, 0x02, 0xfe]);
         let (tx, mut rx) = mpsc::channel(2);
         let reader = std::thread::spawn(move || {
             drain_hevc_reader(std::io::Cursor::new(input), tx);
         });
-        reader.join().unwrap();
-
-        let mut delivered = 0;
+        let mut delivered = Vec::new();
         while let Some(packet) = rx.recv().await {
-            assert!(packet.is_ok());
-            delivered += 1;
+            let Ok((bytes, _)) = packet else {
+                break;
+            };
+            delivered.push(*bytes.last().unwrap());
         }
-        assert_eq!(delivered, 2);
+        reader.join().unwrap();
+        assert_eq!(delivered, (0u8..20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn closing_receiver_releases_a_backpressured_reader() {
+        let mut input = Vec::new();
+        for byte in 0u8..20 {
+            input.extend_from_slice(&[0, 0, 0, 1, 0x02, byte]);
+        }
+        let (tx, mut rx) = mpsc::channel(1);
+        let (finished, observed) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            drain_hevc_reader(std::io::Cursor::new(input), tx);
+            finished.send(()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while rx.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!rx.is_empty(), "reader did not fill its bounded output");
+        rx.close();
+        observed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        reader.join().unwrap();
     }
 
     #[test]
@@ -491,23 +540,40 @@ mod tests {
 
     #[test]
     fn repeated_parameter_sets_stay_with_following_keyframe() {
-        fn nal(kind:u8)->Vec<u8>{vec![0,0,0,1,kind<<1,1,0x80]}
-        let mut buffer=Vec::new();
-        for kind in [1,32,33,34,39,21,1,1]{buffer.extend(nal(kind));}
-        assert_eq!(take_access_unit(&mut buffer).unwrap(),nal(1));
-        let mut expected=Vec::new();for kind in [32,33,34,39,21]{expected.extend(nal(kind));}
-        let keyframe=take_access_unit(&mut buffer).unwrap();
-        assert_eq!(keyframe,expected);assert!(is_hevc_keyframe(&keyframe));
+        fn nal(kind: u8) -> Vec<u8> {
+            vec![0, 0, 0, 1, kind << 1, 1, 0x80]
+        }
+        let mut buffer = Vec::new();
+        for kind in [1, 32, 33, 34, 39, 21, 1, 1] {
+            buffer.extend(nal(kind));
+        }
+        assert_eq!(take_access_unit(&mut buffer).unwrap(), nal(1));
+        let mut expected = Vec::new();
+        for kind in [32, 33, 34, 39, 21] {
+            expected.extend(nal(kind));
+        }
+        let keyframe = take_access_unit(&mut buffer).unwrap();
+        assert_eq!(keyframe, expected);
+        assert!(is_hevc_keyframe(&keyframe));
     }
 
     #[test]
     fn suffix_sei_remains_on_previous_picture_and_aud_starts_next() {
-        fn nal(kind:u8)->Vec<u8>{vec![0,0,1,kind<<1,1,0x80]}
-        let mut buffer=Vec::new();for kind in [1,40,35,32,33,34,20,1,1]{buffer.extend(nal(kind));}
-        let mut first=nal(1);first.extend(nal(40));
-        assert_eq!(take_access_unit(&mut buffer).unwrap(),first);
-        let mut next=Vec::new();for kind in [35,32,33,34,20]{next.extend(nal(kind));}
-        assert_eq!(take_access_unit(&mut buffer).unwrap(),next);
+        fn nal(kind: u8) -> Vec<u8> {
+            vec![0, 0, 1, kind << 1, 1, 0x80]
+        }
+        let mut buffer = Vec::new();
+        for kind in [1, 40, 35, 32, 33, 34, 20, 1, 1] {
+            buffer.extend(nal(kind));
+        }
+        let mut first = nal(1);
+        first.extend(nal(40));
+        assert_eq!(take_access_unit(&mut buffer).unwrap(), first);
+        let mut next = Vec::new();
+        for kind in [35, 32, 33, 34, 20] {
+            next.extend(nal(kind));
+        }
+        assert_eq!(take_access_unit(&mut buffer).unwrap(), next);
     }
 
     #[test]
