@@ -1,4 +1,4 @@
-relay.hackerlife.fun {
+https://weavelo.hackerlife.fun:8443 {
 	import cloudflare_dns
 	encode zstd gzip
 
@@ -12,7 +12,7 @@ relay.hackerlife.fun {
 	@download_without_slash path /download
 	redir @download_without_slash /download/ 308
 
-	@release_metadata path /download/ /download/index.html /download/release.json /download/versions.json
+	@release_metadata path /download/ /download/index.html /download/release.json /download/versions.json /download/desktop-releases.json
 	header @release_metadata {
 		>Cache-Control "no-store, max-age=0"
 		>Pragma no-cache
@@ -41,7 +41,7 @@ relay.hackerlife.fun {
 	}
 
 	handle /v1/relay {
-		reverse_proxy 127.0.0.1:39491
+		reverse_proxy 127.0.0.1:39493
 	}
 
 	handle {

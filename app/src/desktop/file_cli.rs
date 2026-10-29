@@ -180,12 +180,16 @@ fn verify_received(path: &Path, receive_dir: &Path, expected: &str, bytes: u64) 
     // Only the actual completion event's file, inside the configured receive folder.
     // Remote callers never supply a destination path and existing files are retained.
     // Windows completion events use C:\... while canonicalize adds \\?\.
-    // Compare the directories in the same representation, then retain digest's
-    // independent rejection of linked files and user-controlled ancestors.
+    // Compare the directories in the same representation. Profile storage permits
+    // root-owned OS aliases (/home on Bazzite, /var on macOS), while rejecting
+    // linked files and user-controlled ancestors before and after opening.
     if fs::canonicalize(path.parent().ok_or("Received file has no parent")?)? != fs::canonicalize(receive_dir)? {
         return Err("Received file is outside the original receive folder".into());
     }
-    if digest(path)? != (expected.to_owned(), bytes) {
+    let input = remote_core::desktop_storage::open_regular(path, false)?
+        .ok_or("Received file disappeared before verification")?;
+    let length = input.metadata()?.len();
+    if digest_opened(input, length)? != (expected.to_owned(), bytes) {
         return Err("Received file differs from the expected SHA-256 or size".into());
     }
     Ok(())
@@ -209,10 +213,12 @@ fn digest(path: &Path) -> Result<(String, u64), Error> {
             return Err("Source must be an owned, unaliased regular file".into());
         }
     }
-    if meta.len() > remote_core::file_transfer::FileTransferPolicy::default().max_file_bytes {
+    digest_opened(fs::File::open(path)?, meta.len())
+}
+fn digest_opened(mut input: fs::File, length: u64) -> Result<(String, u64), Error> {
+    if length > remote_core::file_transfer::FileTransferPolicy::default().max_file_bytes {
         return Err("Source exceeds the existing file transfer limit".into());
     }
-    let mut input = fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
     loop {
@@ -222,10 +228,10 @@ fn digest(path: &Path) -> Result<(String, u64), Error> {
         }
         hash.update(&buffer[..count]);
     }
-    if input.metadata()?.len() != meta.len() {
+    if input.metadata()?.len() != length {
         return Err("Source changed during verification".into());
     }
-    Ok((format!("{:x}", hash.finalize()), meta.len()))
+    Ok((format!("{:x}", hash.finalize()), length))
 }
 fn read(path: &Path) -> Result<Record, Error> {
     let meta = fs::symlink_metadata(path)?;
@@ -914,6 +920,23 @@ mod tests {
             let ordinary=PathBuf::from(root.to_string_lossy().strip_prefix(r"\\?\").unwrap().to_owned());
             assert!(verify_received(&ordinary.join(received.file_name().unwrap()), &root, &sha, 4).is_ok());
         }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pulled_content_accepts_system_owned_profile_aliases_without_relaxing_send_paths() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        assert!(root.ancestors().any(|part| fs::symlink_metadata(part)
+            .is_ok_and(|meta| meta.file_type().is_symlink() && meta.uid() == 0)));
+        let received = root.join("received.bin"); fs::write(&received, b"received").unwrap();
+        let sha = format!("{:x}", Sha256::digest(b"received"));
+        assert!(verify_received(&received, root, &sha, 8).is_ok());
+        assert!(digest(&received).is_err());
+        let linked = root.join("user-alias"); std::os::unix::fs::symlink(root, &linked).unwrap();
+        assert!(verify_received(&linked.join("received.bin"), &linked, &sha, 8).is_err());
+        let hardlink = root.join("hardlink.bin"); fs::hard_link(&received, &hardlink).unwrap();
+        assert!(verify_received(&received, root, &sha, 8).is_err());
     }
     #[test]
     fn request_reservation_survives_restart_and_rejects_rebinding() {

@@ -6,7 +6,7 @@ APK="${1:-$ROOT/android/app/build/outputs/apk/release/app-release.apk}"
 NAS_HOST="${WEAVELO_NAS_HOST:-root@hackerlife.fun}"
 NAS_PORT="${WEAVELO_NAS_PORT:-222}"
 REMOTE_DIR="${WEAVELO_NAS_DOWNLOAD_DIR:-/opt/weavelo/downloads}"
-PUBLIC_BASE_URL="${WEAVELO_DOWNLOAD_BASE_URL:-https://relay.hackerlife.fun:8443/download}"
+PUBLIC_BASE_URL="${WEAVELO_DOWNLOAD_BASE_URL:-https://weavelo.hackerlife.fun:8443/download}"
 CHANNEL="${WEAVELO_RELEASE_CHANNEL:-release}"
 RELEASE_NOTES="${WEAVELO_RELEASE_NOTES:-Weavelo Android release}"
 INDEX_TEMPLATE="$ROOT/deploy/nas/download/index.html"
@@ -30,7 +30,19 @@ MIN_SDK="$(sed -n 's/^[[:space:]]*minSdk = \([0-9][0-9]*\)/\1/p' "$GRADLE" | hea
 [ -n "$VERSION_CODE" ] || fail "versionCode missing from $GRADLE"
 [ -n "$MIN_SDK" ] || fail "minSdk missing from $GRADLE"
 
-COMMIT="$(git -C "$ROOT" rev-parse --short=7 HEAD)"
+COMMIT="$(python3 - "$APK" <<'SOURCE_COMMIT'
+import hashlib, json, re, sys
+from pathlib import Path
+apk = Path(sys.argv[1])
+receipt = json.loads(apk.with_suffix('.verification.json').read_text())
+commit = receipt.get('source_commit_observed')
+if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit) or receipt.get('source_inputs', {}).get('product_commit') != commit:
+    raise SystemExit('APK compiler source receipt is missing or inconsistent')
+if receipt.get('sha256') != hashlib.sha256(apk.read_bytes()).hexdigest():
+    raise SystemExit('APK bytes differ from its compiler source receipt')
+print(commit[:7])
+SOURCE_COMMIT
+)"
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 APK_NAME="Weavelo-Android-${VERSION}-${COMMIT}-${CHANNEL}.apk"
 SHA256="$(shasum -a 256 "$APK" | awk '{print $1}')"

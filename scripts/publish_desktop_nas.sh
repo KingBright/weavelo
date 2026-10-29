@@ -44,7 +44,7 @@ PREFLIGHT
 NAS_HOST="${WEAVELO_NAS_HOST:-root@hackerlife.fun}"
 NAS_PORT="${WEAVELO_NAS_PORT:-222}"
 REMOTE_DIR="${WEAVELO_NAS_DOWNLOAD_DIR:-/opt/weavelo/downloads}"
-BASE="${WEAVELO_DOWNLOAD_BASE_URL:-https://relay.hackerlife.fun:8443/download}"
+BASE="${WEAVELO_DOWNLOAD_BASE_URL:-https://weavelo.hackerlife.fun:8443/download}"
 if [[ "$MODE" == --dry-run ]]; then
   python3 - "$STAGE" "$SCOPE" <<'PLAN'
 import hashlib,json,sys
