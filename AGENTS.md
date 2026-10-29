@@ -118,3 +118,13 @@ obvious local fullscreen/restore/minimize controls. Video and pointer input
 must use the same visible rectangle and inverse transform. Verify keyboard
 insets, rotation, zoom, crop, DPI changes and cancellation of gestures during
 geometry/source changes. Decoder submission is not physical presentation.
+
+## Approved application icons and committed text (2026-10-30)
+
+The user explicitly approved the concrete protocol extension: source catalogs
+carry real application PNG icons bounded to 64 × 64 pixels and 16 KiB each;
+the input channel carries committed UTF-8 text bounded to 1 KiB per event.
+Keep the current authenticated sessions and native media paths. Upgrade all
+owned devices together; do not retain an old-protocol compatibility branch.
+Share validation, ownership and input logic; use native platform icon/text APIs.
+Actual OS consent and stable signing identities remain required.
