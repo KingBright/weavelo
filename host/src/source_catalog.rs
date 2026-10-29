@@ -1,12 +1,12 @@
 //! Source enumeration is slow native work, never a control-loop wait.
-use protocol::session::CaptureSourceInfo;
+use crate::source_artwork::Directory;
 use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::{sync::Semaphore, task::JoinHandle, time::Instant};
 
-pub(crate) type CatalogResult = Result<Vec<CaptureSourceInfo>, String>;
+pub(crate) type CatalogResult = Result<Directory, String>;
 #[derive(Default)]
 pub(crate) struct SourceCatalog {
     pending: Option<(u32, JoinHandle<CatalogResult>)>,
@@ -15,9 +15,14 @@ pub(crate) struct SourceCatalog {
 impl SourceCatalog {
     // A retry of the same request joins the existing query. Different requests
     // get an explicit busy response; the queue cannot grow with UDP retries.
-    pub(crate) fn request(&mut self, id: u32) -> Option<CatalogResult> {
-        self.request_with(id, || {
-            crate::capture_sources::list().map_err(|e| e.to_string())
+    pub(crate) fn request(&mut self, id: u32, known_icons: Vec<[u8; 32]>) -> Option<CatalogResult> {
+        if known_icons.len() > protocol::interaction::MAX_APPLICATION_ICONS {
+            return Some(Err("too many cached application icons".into()));
+        }
+        self.request_with(id, move || {
+            crate::capture_sources::list()
+                .map(|sources| Directory::new(sources, &known_icons))
+                .map_err(|e| e.to_string())
         })
     }
     fn request_with(
@@ -43,8 +48,8 @@ impl SourceCatalog {
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 let mut result = enumerate();
-                if let Ok(sources) = &mut result {
-                    sources.truncate(256);
+                if let Ok(directory) = &mut result {
+                    directory.sources.truncate(256);
                 }
                 result
             })
@@ -93,7 +98,7 @@ mod tests {
                     count.fetch_add(1, SeqCst);
                     let _ = started.send(());
                     blocked.recv_timeout(Duration::from_secs(5)).unwrap();
-                    Ok(Vec::new())
+                    Ok(Directory::default())
                 })
                 .is_none()
         );
@@ -138,14 +143,14 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            query.request_with(8, || Ok(Vec::new())).is_none(),
+            query.request_with(8, || Ok(Directory::default())).is_none(),
             "new request must refresh"
         );
     }
     #[tokio::test]
     async fn closed_connection_cannot_receive_or_rebind_old_catalog_result() {
         let mut old = SourceCatalog::default();
-        assert!(old.request_with(7, || Ok(Vec::new())).is_none());
+        assert!(old.request_with(7, || Ok(Directory::default())).is_none());
         drop(old);
         let mut replacement = SourceCatalog::default();
         assert!(replacement.take_ready().await.is_none());

@@ -36,6 +36,7 @@ name = "weavelo"
 path = "src/main.rs"
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
+image = { version = "0.25", default-features = false }
 gpui-ce = { version = "0.3.3", features = ["runtime_shaders"] }
 rfd = "0.15"
 remote_client_bridge = { path = "../remote_client_bridge" }

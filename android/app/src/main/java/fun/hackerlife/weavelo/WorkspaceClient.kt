@@ -12,7 +12,7 @@ import java.io.File
 import java.util.concurrent.Executors
 
 // Each source has its own subscription; audio owners may be shared by same-app windows.
-data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int)
+data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null)
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false)
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
@@ -29,6 +29,7 @@ object WorkspaceClient {
     private val pendingStarts = java.util.concurrent.atomic.AtomicInteger()
     val starting: Boolean get() = pendingStarts.get() > 0
     private val mutable = MutableStateFlow(WorkspaceState())
+    private val applicationIcons = HashMap<String, android.graphics.Bitmap>()
     val state = mutable.asStateFlow()
     @Volatile var active = false
         private set
@@ -88,7 +89,7 @@ object WorkspaceClient {
                     this.context = context.applicationContext
                     endpoint = request.endpoint; deviceId = request.deviceId
                     mutable.value = if (sameSession) mutable.value.copy(connected = false, status = "Connecting…")
-                        else WorkspaceState(sessionKey = request.sessionKey)
+                        else WorkspaceState(sessionKey = request.sessionKey).also { applicationIcons.clear() }
                     if (!sameSession) nextId = 256
                     revision = 0; asleep = false
                     background = WeaveloClient.backgrounded; transfersActive = false
@@ -125,6 +126,7 @@ object WorkspaceClient {
     fun disconnectSession(sessionKey: String) = guarded {
         if (!ownership.disconnect(sessionKey)) return@guarded
         closeNative()
+        applicationIcons.clear()
         mutable.value = WorkspaceState(status = "Disconnected")
     }
 
@@ -161,9 +163,12 @@ object WorkspaceClient {
     fun refreshSources(sessionKey: String, generation: Long) = guarded {
         val current = mutable.value
         if (!active || !current.connected || current.sessionKey != sessionKey || current.connectionGeneration != generation) return@guarded
-        command("ListSources", JSONObject().put("request_id", 1))
+        command("ListSources", JSONObject().put("request_id", 1).put("known_icons", JSONArray()))
     }
-    fun add(source: WorkspaceSource) = guarded {
+    fun add(source: WorkspaceSource, sessionKey: String, generation: Long) = guarded {
+        val current = mutable.value
+        if (!active || !current.connected || current.sessionKey != sessionKey || current.connectionGeneration != generation) return@guarded
+        if (source !in current.sources) { mutable.value = current.copy(status = "Source list changed; choose the window again"); return@guarded }
         // Conservative default for mobile hardware; source count is distinct from visible decoder count.
         if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)"); return@guarded }
         val prefs = checkNotNull(context).getSharedPreferences("stream", Context.MODE_PRIVATE)
@@ -291,10 +296,37 @@ object WorkspaceClient {
             event.optJSONObject("clipboard")?.let { applyClipboard(it) }
             event.optJSONObject("detail")?.takeIf { it.has("clipboard_files") }?.let { applyClipboard(it) }
             control?.optJSONObject("Sources")?.let { response ->
+                val assets = response.getJSONArray("icons")
+                for (index in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(index)
+                    val id = asset.getJSONArray("id").toString()
+                    if (applicationIcons.containsKey(id)) continue
+                    val png = asset.getJSONArray("png")
+                    // The native connection has already authenticated, hashed and decoded these bounds.
+                    if (png.length() !in 1..16384) continue
+                    val bytes = ByteArray(png.length()) { png.getInt(it).toByte() }
+                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
+                    if (bitmap.width !in 1..64 || bitmap.height !in 1..64) { bitmap.recycle(); continue }
+                    applicationIcons[id] = bitmap
+                }
+                val bindings = response.getJSONArray("source_icons")
+                val artwork = HashMap<String, android.graphics.Bitmap?>()
+                val referenced = HashSet<String>()
+                for (index in 0 until bindings.length()) {
+                    val binding = bindings.getJSONObject(index)
+                    val id = binding.getJSONArray("icon_id").toString()
+                    referenced.add(id)
+                    artwork[binding.get("source").toString()] = applicationIcons[id]
+                }
+                applicationIcons.keys.retainAll(referenced)
                 val sources = response.getJSONArray("sources")
-                mutable.value = mutable.value.copy(sources = (0 until sources.length()).map { index ->
-                    val s = sources.getJSONObject(index)
-                    WorkspaceSource(s.get("source"), s.getString("title"), s.getInt("width"), s.getInt("height"))
+                val directory = (0 until sources.length()).map { index ->
+                    val source = sources.getJSONObject(index)
+                    WorkspaceSource(source.get("source"), source.getString("title"), source.getInt("width"), source.getInt("height"),
+                        source.getString("application"), artwork[source.get("source").toString()])
+                }
+                mutable.value = mutable.value.copy(sources = directory, panes = mutable.value.panes.map { pane ->
+                    directory.firstOrNull { it.source.toString() == pane.source.source.toString() }?.let { pane.copy(source = it) } ?: pane
                 })
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->

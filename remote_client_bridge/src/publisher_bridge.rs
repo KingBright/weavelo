@@ -184,7 +184,7 @@ impl MobilePublisher {
                             }
                             let (width, height) = *geometry.lock().unwrap();
                             let supports_input = shared_input.lock().unwrap().ready();
-                            reply(&sender, p.addr, SessionCommand::Sources {
+                            reply(&sender, p.addr, SessionCommand::Sources { source_icons: Vec::new(), icons: Vec::new(),
                                 request_id: 0,
                                 sources: available_sources(permission, width, height, supports_input),
                             }).await;
@@ -283,11 +283,11 @@ impl MobilePublisher {
                                             peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone()));
                                             reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:1, files:true, clipboard:false, window_capture:false }).await;
                                         }
-                                        SessionCommand::ListSources { request_id } if peers.contains_key(&addr) => {
+                                        SessionCommand::ListSources { request_id, .. } if peers.contains_key(&addr) => {
                                             let (width, height) = *geometry.lock().unwrap();
                                             let permission = *permission_rx.borrow();
                                             let supports_input = shared_input.lock().unwrap().ready();
-                                            reply(&sender, addr, SessionCommand::Sources { request_id, sources:available_sources(permission, width, height, supports_input) }).await;
+                                            reply(&sender, addr, SessionCommand::Sources { source_icons: Vec::new(), icons: Vec::new(),  request_id, sources:available_sources(permission, width, height, supports_input) }).await;
                                         }
                                         SessionCommand::Subscribe(request) if peers.contains_key(&addr) => {
                                             let permission = *permission_rx.borrow();
@@ -906,7 +906,7 @@ mod tests {
         command(
             &sender,
             publisher.address,
-            SessionCommand::ListSources { request_id: 3 },
+            SessionCommand::ListSources { request_id: 3, known_icons: Vec::new() },
         )
         .await;
         assert!(
@@ -1007,8 +1007,8 @@ mod tests {
         let error = remote_core::session_auth::authenticate_with_key(&sender,&receiver,publisher.address,&key).await;
         assert_eq!(error.unwrap_err(), "session authentication rejected: Busy");
         for (sender,receiver) in &clients {
-            command(sender,publisher.address,SessionCommand::ListSources {request_id:3}).await;
-            assert!(matches!(reply(receiver).await,SessionCommand::Sources {request_id:3,sources} if sources.is_empty()));
+            command(sender,publisher.address,SessionCommand::ListSources { request_id:3, known_icons: Vec::new() }).await;
+            assert!(matches!(reply(receiver).await,SessionCommand::Sources {request_id:3,sources, ..} if sources.is_empty()));
         }
     }
 

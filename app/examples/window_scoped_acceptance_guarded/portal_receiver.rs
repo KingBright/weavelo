@@ -43,7 +43,7 @@ async fn operate<L:Link>(link:&mut L,output:&Path,nonce:&str,b:Budgets,owned:&mu
     phase_receipt(output,"waiting",report)?;
     let mut request=900_220;
     let selected=loop {
-        link.send(SessionCommand::ListSources{request_id:request}).await?;
+        link.send(SessionCommand::ListSources { request_id:request, known_icons: Vec::new() }).await?;
         let reply=normal_ack(link,b.acknowledgement,|c|matches!(c,SessionCommand::Sources{request_id,..} if *request_id==request)).await?;
         let SessionCommand::Sources{sources,..}=reply else{unreachable!()};
         if let Some(source)=shared_display(&sources)?{break source;}
@@ -184,7 +184,7 @@ mod tests {
         async fn send(&mut self,c:SessionCommand)->Result<()>{
             self.sent.push(c.clone());match c{
                 SessionCommand::SetActivity{id,revision,video,audio}=>{self.resumed=video;self.replies.push_back(SessionCommand::Activity{id,revision,video,audio});},
-                SessionCommand::ListSources{request_id}=>self.replies.push_back(SessionCommand::Sources{request_id,sources:self.catalog.clone()}),
+                SessionCommand::ListSources { request_id, .. }=>self.replies.push_back(SessionCommand::Sources{ source_icons: Vec::new(), icons: Vec::new(), request_id,sources:self.catalog.clone()}),
                 SessionCommand::SwitchSource{id,request_id,source}=>self.replies.push_back(SessionCommand::SourceSwitched{id,request_id:request_id+u32::from(self.bad_switch),source,supports_input:true}),
                 SessionCommand::ReleaseInput{id}=>if self.release_ack{self.replies.push_back(SessionCommand::InputReleased{id})}else{return Err("input binding unavailable".into())},
                 SessionCommand::Unsubscribe{id}=>self.replies.push_back(SessionCommand::Unsubscribed{id}),

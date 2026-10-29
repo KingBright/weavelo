@@ -4,6 +4,10 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -30,6 +34,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, deviceId: String = "", onClose: () -> Unit) {
     val context = LocalContext.current
+    var sourcePicker by remember { mutableStateOf(false) }
+    var pickerGeneration by remember { mutableStateOf(0L) }
     val sessionKey = rememberSaveable(endpoint, deviceId) { WorkspaceClient.sessionKeyFor(endpoint, deviceId) }
     var requestedFilePicker by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -48,6 +54,14 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val scope = rememberCoroutineScope()
     var selectedSettings by remember { mutableStateOf<WorkspacePane?>(null) }
     val volumes = remember { mutableStateMapOf<Int, Float>() }
+    if (sourcePicker) {
+        if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
+            LaunchedEffect(Unit) { sourcePicker = false }
+        } else SourcePicker(state.sources, onClose = { sourcePicker = false }) { source ->
+            WorkspaceClient.add(source, sessionKey, pickerGeneration)
+            sourcePicker = false
+        }
+    }
     if (backgroundSettings) AlertDialog(onDismissRequest = { backgroundSettings = false }, title = { Text("Background connection") },
         text = { Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -151,11 +165,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }
             Text(localError ?: state.status, color = Color.LightGray, maxLines = 2)
             TextButton(onClick = { WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) }, enabled = state.connected) { Text("Refresh screens / windows") }
-            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                state.sources.forEach { source -> TextButton(onClick = { WorkspaceClient.add(source) }, enabled = state.connected) { Text("+ ${source.title}", maxLines = 1) } }
+            TextButton(onClick = { pickerGeneration = state.connectionGeneration; sourcePicker = true }, enabled = state.connected) {
+                Text("Choose screen or app window (${state.sources.size})")
             }
             if (!state.grid) Row(Modifier.horizontalScroll(rememberScrollState())) {
-                state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { Text(pane.source.title) } }
+                state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
             }
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
             val rows = visible.chunked(if (state.grid && visible.size > 1) 2 else 1)
@@ -361,4 +375,36 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             }
         }
     )
+}
+
+@Composable
+private fun SourceIcon(source: WorkspaceSource) {
+    source.icon?.let { bitmap ->
+        Image(bitmap = remember(bitmap) { bitmap.asImageBitmap() }, contentDescription = source.application.ifBlank { source.title }, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(4.dp))
+    }
+}
+
+@Composable
+private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val matches = remember(sources, query) { sources.filter { it.title.contains(query, true) || it.application.contains(query, true) } }
+    AlertDialog(onDismissRequest = onClose, title = { Text("Screens and app windows") }, text = {
+        Column(Modifier.fillMaxWidth()) {
+            OutlinedTextField(query, { query = it }, label = { Text("Search apps and windows") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                items(matches, key = { it.source.toString() }) { source ->
+                    TextButton(onClick = { onSelect(source) }, modifier = Modifier.fillMaxWidth()) {
+                        SourceIcon(source)
+                        Column(Modifier.weight(1f)) {
+                            Text(source.title, maxLines = 2)
+                            if (source.application.isNotBlank()) Text(source.application, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                if (matches.isEmpty()) item { Text("No matching screen or app window") }
+            }
+        }
+    }, confirmButton = { TextButton(onClick = onClose) { Text("Close") } })
 }

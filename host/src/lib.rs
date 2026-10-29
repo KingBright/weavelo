@@ -9,6 +9,7 @@ mod capture;
 mod capture_readiness;
 pub mod capture_sources;
 mod source_catalog;
+mod source_artwork;
 mod connection_services;
 #[cfg(target_os = "macos")]
 mod display_power;

@@ -112,7 +112,7 @@ async fn settle<L:Link>(link:&mut L, duration:Duration) -> Result<()> {
 }
 
 async fn prepare_input<L:Link>(link:&mut L, target:Target, budgets:Budgets, owned:&mut bool, report:&mut Value) -> Result<()> {
-    link.send(SessionCommand::ListSources{request_id:LIST}).await?;
+    link.send(SessionCommand::ListSources { request_id:LIST, known_icons: Vec::new() }).await?;
     let sources=normal_ack(link,budgets.acknowledgement,|c| matches!(c,SessionCommand::Sources{request_id:LIST,..})).await?;
     let SessionCommand::Sources{sources,..}=sources else { unreachable!() };
     let source=target.select(&sources)?;
@@ -409,7 +409,7 @@ mod tests {
         async fn send(&mut self,c:SessionCommand)->Result<()> {
             self.sent.push(c.clone());
             match c {
-                SessionCommand::ListSources{request_id}=>self.replies.push_back(SessionCommand::Sources{request_id,sources:vec![CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {}",self.catalog_nonce),application:"owned fixture".into(),process_id:Some(self.catalog_pid),width:540,height:380,supports_input:true}]}),
+                SessionCommand::ListSources { request_id, .. }=>self.replies.push_back(SessionCommand::Sources{ source_icons: Vec::new(), icons: Vec::new(), request_id,sources:vec![CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {}",self.catalog_nonce),application:"owned fixture".into(),process_id:Some(self.catalog_pid),width:540,height:380,supports_input:true}]}),
                 SessionCommand::ReleaseInput{id} if self.release_ack=>{
                     self.release_sends+=1;
                     if self.late_input_error{self.replies.push_back(SessionCommand::Error{request_id:ID,reason:"INPUT_UNAVAILABLE: revoked after enqueue".into()});}

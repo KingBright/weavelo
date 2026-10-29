@@ -1,7 +1,7 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 2;
+pub const SESSION_VERSION: u32 = 3;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -78,10 +78,13 @@ pub enum SessionCommand {
     },
     ListSources {
         request_id: u32,
+        known_icons: Vec<[u8; 32]>,
     },
     Sources {
         request_id: u32,
         sources: Vec<CaptureSourceInfo>,
+        source_icons: Vec<crate::interaction::SourceIconBinding>,
+        icons: Vec<crate::interaction::ApplicationIcon>,
     },
     Subscribe(SubscriptionRequest),
     Subscribed {
@@ -194,4 +197,11 @@ mod tests {
         }
     }
 
+}
+
+impl SessionCommand {
+    /// A source directory without application artwork (e.g. a physical display).
+    pub fn sources(request_id: u32, sources: Vec<CaptureSourceInfo>) -> Self {
+        Self::Sources { request_id, sources, source_icons: Vec::new(), icons: Vec::new() }
+    }
 }

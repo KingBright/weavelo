@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(());
     }
     connection
-        .control(SessionCommand::ListSources { request_id: 1 })
+        .control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() })
         .await?;
     let sources = tokio::time::timeout(Duration::from_secs(8), async {
         loop {

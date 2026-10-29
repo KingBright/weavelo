@@ -441,7 +441,7 @@ async fn serve(
                                 if !silent && open_count==1 {continue;}
                                 reply(&sender,addr,SessionCommand::Opened{connection_id,version,max_subscriptions:8,files:false,clipboard:false,window_capture:true}).await;
                             }
-                            SessionCommand::ListSources{request_id}=>reply(&sender,addr,SessionCommand::Sources{request_id,sources:sources()}).await,
+                            SessionCommand::ListSources { request_id, .. }=>reply(&sender,addr,SessionCommand::Sources{ source_icons: Vec::new(), icons: Vec::new(), request_id,sources:sources()}).await,
                             SessionCommand::Subscribe(request)=>{
                                 if let Some(c)=connections.get_mut(&addr) {
                                     let id=request.id;let audio=request.audio;

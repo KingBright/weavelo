@@ -42,6 +42,7 @@ pub struct WorkspaceEvents {
 }
 
 pub struct WorkspaceConnection {
+    source_icons: Arc<std::sync::Mutex<crate::application_icons::SourceIconCache>>,
     close_confirmed: Arc<std::sync::atomic::AtomicBool>,
     last_response_rx: tokio::sync::watch::Receiver<Instant>,
     input: Arc<std::sync::Mutex<InputState>>,
@@ -178,7 +179,9 @@ impl WorkspaceConnection {
         });
         let close_confirmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let input = Arc::new(std::sync::Mutex::new(InputState::default()));
+        let source_icons = Arc::new(std::sync::Mutex::new(crate::application_icons::SourceIconCache::default()));
         let mut actor = Actor {
+            source_icons: source_icons.clone(),
             close_confirmed: close_confirmed.clone(),
             last_response_tx,
             input: input.clone(),
@@ -201,6 +204,7 @@ impl WorkspaceConnection {
         });
         Ok((
             Self {
+                source_icons,
                 close_confirmed,
                 last_response_rx,
                 input,
@@ -249,7 +253,13 @@ impl WorkspaceConnection {
         Ok(())
     }
 
-    fn prepare_command(&self, command: SessionCommand) -> Result<Command, String> {
+    pub fn source_icons(&self) -> crate::application_icons::SourceIconAssets {
+        self.source_icons.lock().unwrap().assets()
+    }
+    fn prepare_command(&self, mut command: SessionCommand) -> Result<Command, String> {
+        if let SessionCommand::ListSources { known_icons, .. } = &mut command {
+            *known_icons = self.source_icons.lock().unwrap().known_ids();
+        }
         let command = self.input.lock().unwrap().seal(command)?;
         Ok(match command {
             SessionCommand::RealtimeInput(packet) => Command::Realtime(packet, Instant::now()),
@@ -339,6 +349,7 @@ struct Pending {
     last_sent: Instant,
 }
 struct Actor {
+    source_icons: Arc<std::sync::Mutex<crate::application_icons::SourceIconCache>>,
     close_confirmed: Arc<std::sync::atomic::AtomicBool>,
     input: Arc<std::sync::Mutex<InputState>>,
     last_response_tx: tokio::sync::watch::Sender<Instant>,
@@ -375,6 +386,7 @@ mod input_api_tests {
         let (file_commands,_)=mpsc::channel(1);let (commands,mut queued)=mpsc::channel(1);
         let (cancel,_)=broadcast::channel(1);
         let conn=WorkspaceConnection {
+            source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:input.clone(),max_subscriptions:8,files_available:false,clipboard_available:false,
             settings_revision:std::sync::atomic::AtomicU64::new(0),id:1,sender,target,file_commands,
@@ -401,7 +413,7 @@ fn request_key(command: &SessionCommand) -> Option<(u8, u32)> {
         SessionCommand::SetClipboard { .. } | SessionCommand::ClipboardState { .. } => Some((5, 0)),
         SessionCommand::SwitchSource { request_id, .. }
         | SessionCommand::SourceSwitched { request_id, .. } => Some((8, *request_id)),
-        SessionCommand::ListSources { request_id } | SessionCommand::Sources { request_id, .. } => {
+        SessionCommand::ListSources { request_id, .. } | SessionCommand::Sources { request_id, .. } => {
             Some((1, *request_id))
         }
         SessionCommand::Subscribe(request) => Some((2, request.id)),
@@ -837,6 +849,13 @@ impl Actor {
                             }
                             if matches!(command, SessionCommand::Closed { connection_id, .. } if connection_id != self.id) { continue; }
                             if !self.accept_control(&command) { continue; }
+                            if let SessionCommand::Sources { request_id, sources, source_icons, icons } = &command {
+                                let result = self.source_icons.lock().unwrap().update(sources.iter().map(|s|s.source), source_icons, icons);
+                                if let Err(reason) = result {
+                                    let _ = self.control_tx.send(SessionCommand::Error { request_id: *request_id, reason });
+                                    continue;
+                                }
+                            }
                             let closed = matches!(command, SessionCommand::Closed { connection_id, .. } if connection_id == self.id);
                             if let SessionCommand::Activity { id, revision, video, .. } = &command {
                                 if let Some(view) = self.subscriptions.get(id) { view.host_stats.media_pause.acknowledge(self.target, *id, *revision, !video); }
@@ -1007,6 +1026,7 @@ mod tests {
         let (file_commands, _) = mpsc::channel(1);
         let (_, last_response_rx) = tokio::sync::watch::channel(Instant::now());
         let connection = WorkspaceConnection {
+            source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx, input: input.clone(), max_subscriptions: 1,
             files_available: false, clipboard_available: false,
@@ -1055,6 +1075,7 @@ mod tests {
         let (_,last_response_rx)=tokio::sync::watch::channel(Instant::now());
         let task=tokio::spawn(async {});while !task.is_finished(){tokio::task::yield_now().await;}
         let connection=WorkspaceConnection {
+            source_icons:Default::default(),
             close_confirmed:Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:actor.input.clone(),max_subscriptions:1,files_available:false,clipboard_available:false,
             settings_revision:std::sync::atomic::AtomicU64::new(0),id:81,sender:actor.sender.clone(),target:actor.target,
@@ -1095,7 +1116,8 @@ mod tests {
         let (files_tx, _) = mpsc::channel(1);
         (
             Actor {
-                close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                source_icons: Default::default(),
+            close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 input: Arc::new(std::sync::Mutex::new(InputState::default())),
                 last_response_tx,
                 id: 90108,
@@ -1734,7 +1756,9 @@ mod tests {
                 None,
             ),
         };
+        let source_artwork = Arc::new(std::sync::Mutex::new(crate::application_icons::SourceIconCache::default()));
         let mut actor = Actor {
+            source_icons: source_artwork.clone(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input:Arc::new(std::sync::Mutex::new(InputState::default())),
             last_response_tx,
@@ -1799,19 +1823,23 @@ mod tests {
             .unwrap()
             .unwrap();
         commands
-            .send(Command::Control(SessionCommand::ListSources {
-                request_id: 77,
-            }))
+            .send(Command::Control(SessionCommand::ListSources { request_id: 77, known_icons: Vec::new() }))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(1),async {
-            loop {if matches!(server_rx.recv().await.unwrap(),MultiplexedPacket::Control(ControlMessage::Session(cmd),_) if matches!(*cmd,SessionCommand::ListSources{request_id:77})){break;}}
+            loop {if matches!(server_rx.recv().await.unwrap(),MultiplexedPacket::Control(ControlMessage::Session(cmd),_) if matches!(*cmd,SessionCommand::ListSources { request_id:77, .. })){break;}}
         }).await.unwrap();
+        let icon = crate::application_icons::encode_rgba(1, 1, &[255, 20, 40, 255]).unwrap();
         server_tx
             .send_control(
                 &ControlMessage::Session(Box::new(SessionCommand::Sources {
                     request_id: 77,
-                    sources: vec![],
+                    sources: vec![protocol::session::CaptureSourceInfo {
+                        source: CaptureSource::Window(77), title: "Owned window".into(), application: "Fixture".into(), process_id: None,
+                        width: 16, height: 16, supports_input: false,
+                    }],
+                    source_icons: vec![protocol::interaction::SourceIconBinding { source: CaptureSource::Window(77), icon_id: icon.id }],
+                    icons: vec![icon],
                 })),
                 local,
             )
@@ -1829,6 +1857,7 @@ mod tests {
         })
         .await
         .unwrap();
+        assert_eq!(&*source_artwork.lock().unwrap().assets()[&CaptureSource::Window(77)].rgba, &[255,20,40,255]);
         while video_rx.try_recv().is_ok() {}
         cancel.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(1), task)
@@ -1854,6 +1883,7 @@ mod tests {
         let (audio_tx, _) = mpsc::channel(1);
         let (files_tx, _) = mpsc::channel(1);
         let mut actor = Actor {
+            source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input:Arc::new(std::sync::Mutex::new(InputState::default())),
             last_response_tx,
@@ -1989,6 +2019,7 @@ mod rejected_datagram_tests {
         let (audio_tx, _) = mpsc::channel(2);
         let (files_tx, _) = mpsc::channel(2);
         let mut actor = Actor {
+            source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input:Arc::new(std::sync::Mutex::new(InputState::default())),
             last_response_tx,

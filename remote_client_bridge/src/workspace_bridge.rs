@@ -241,7 +241,7 @@ impl MobileWorkspace {
             }
         });
         connection
-            .control(SessionCommand::ListSources { request_id: 1 })
+            .control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() })
             .await?;
         Ok(Self {
             connection,

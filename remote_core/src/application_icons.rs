@@ -16,6 +16,7 @@ pub type SourceIconAssets = Arc<HashMap<protocol::session::CaptureSource, Arc<Ic
 
 #[derive(Debug)]
 pub struct IconBitmap {
+    pub id: IconId,
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<[u8]>,
@@ -45,7 +46,15 @@ impl SourceIconCache {
         bindings: &[protocol::interaction::SourceIconBinding],
         icons: &[ApplicationIcon],
     ) -> Result<(), String> {
-        let advertised: HashSet<_> = advertised.into_iter().collect();
+        let mut unique = HashSet::new();
+        for source in advertised {
+            if unique.len() >= MAX_APPLICATION_ICONS || !unique.insert(source) {
+                return Err(
+                    "source directory is oversized or contains duplicate identities".into(),
+                );
+            }
+        }
+        let advertised = unique;
         if advertised.len() > MAX_APPLICATION_ICONS || bindings.len() > advertised.len() {
             return Err("invalid source icon directory size".into());
         }
@@ -108,7 +117,7 @@ impl IconCache {
             let bitmap = match supplied.get(&id) {
                 Some(icon) => match self.assets.get(&id) {
                     Some(cached) if cached.png.as_ref() == icon.png.as_slice() => cached.clone(),
-                    _ => Arc::new(decode(&icon.png)?),
+                    _ => Arc::new(decode(&icon.png, id)?),
                 },
                 None => self
                     .assets
@@ -123,7 +132,7 @@ impl IconCache {
     }
 }
 
-fn decode(bytes: &[u8]) -> Result<IconBitmap, String> {
+fn decode(bytes: &[u8], id: IconId) -> Result<IconBitmap, String> {
     let (width, height) = validate_icon_container(bytes)?;
     let decoder =
         png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: 128 * 1024 });
@@ -147,6 +156,7 @@ fn decode(bytes: &[u8]) -> Result<IconBitmap, String> {
     }
     reader.finish().map_err(|e| e.to_string())?;
     Ok(IconBitmap {
+        id,
         width,
         height,
         rgba: pixels.into(),
@@ -248,6 +258,12 @@ mod tests {
             .update([source], &[binding.clone()], &[icon.clone()])
             .unwrap();
         let first = cache.assets();
+        assert!(cache.update([source, source], &[], &[]).is_err());
+        assert!(
+            cache
+                .update((0..257).map(CaptureSource::Window), &[], &[])
+                .is_err()
+        );
         assert!(cache.update([other], &[binding.clone()], &[]).is_err());
         assert!(
             cache

@@ -93,14 +93,14 @@ async fn run(root: &std::path::Path, report: &mut serde_json::Value) -> Result<(
     let target = std::env::var("WEAVELO_PROBE_TARGET")?.parse()?;
     let temp = tempfile::tempdir()?;
     let (conn, mut events) = WorkspaceConnection::connect(target, temp.path().into()).await?;
-    conn.control(SessionCommand::ListSources { request_id: 900 })
+    conn.control(SessionCommand::ListSources { request_id: 900, known_icons: Vec::new() })
         .await?;
     let sources = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match events.control.recv().await.ok_or("closed")? {
                 SessionCommand::Sources {
                     request_id: 900,
-                    sources,
+                    sources, ..
                 } => return Ok::<_, E>(sources),
                 SessionCommand::Error { reason, .. } => return Err(reason.into()),
                 _ => {}

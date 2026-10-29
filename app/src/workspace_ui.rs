@@ -146,7 +146,7 @@ impl WorkspaceView {
                         return;
                     }
                     let _ = connection
-                        .control(SessionCommand::ListSources { request_id: 1 })
+                        .control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() })
                         .await;
                     drop(connection);
                     let WorkspaceEvents {
@@ -623,7 +623,7 @@ impl Render for WorkspaceView {
                 }); }
             })))
             .child(action("received", "Received files").on_click(cx.listener(|this, _, _, cx| cx.reveal_path(&this.receive_dir))))
-            .child(action("refresh", "Refresh sources").on_click(cx.listener(|this, _, _, _| { if let Some(connection) = this.connection() { tokio::spawn(async move { let _ = connection.control(SessionCommand::ListSources { request_id: 1 }).await; }); } })));
+            .child(action("refresh", "Refresh sources").on_click(cx.listener(|this, _, _, _| { if let Some(connection) = this.connection() { tokio::spawn(async move { let _ = connection.control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() }).await; }); } })));
         let file_toolbar=div().flex().flex_wrap().gap_2()
             .child(action("publish-files","Share files with network").on_click(cx.listener(|this,_,_,_| {
                 let shared=Arc::downgrade(&this.shared);

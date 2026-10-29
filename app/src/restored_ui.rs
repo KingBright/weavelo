@@ -359,7 +359,36 @@ impl FrontendExitGroup {
     }
 }
 
+type SourceArtwork = Arc<std::collections::HashMap<protocol::session::CaptureSource, Arc<gpui::RenderImage>>>;
+#[derive(Default)]
+struct ApplicationArtwork {
+    assets: remote_core::application_icons::SourceIconAssets,
+    images: std::collections::HashMap<[u8;32],Arc<gpui::RenderImage>>,
+    sources: SourceArtwork,
+}
+impl ApplicationArtwork {
+    fn update(&mut self, assets: remote_core::application_icons::SourceIconAssets) -> SourceArtwork {
+        if !Arc::ptr_eq(&self.assets,&assets) {
+            let mut images=std::collections::HashMap::new();
+            let sources=assets.iter().map(|(source,bitmap)| {
+                let image=images.entry(bitmap.id).or_insert_with(||self.images.get(&bitmap.id).cloned().unwrap_or_else(|| {
+                    let mut bgra=bitmap.rgba.to_vec();
+                    for pixel in bgra.chunks_exact_mut(4) {pixel.swap(0,2);}
+                    let buffer=image::RgbaImage::from_raw(bitmap.width,bitmap.height,bgra).expect("validated artwork pixels");
+                    Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)]))
+                })).clone();
+                (*source,image)
+            }).collect();
+            self.images=images;
+            self.sources=Arc::new(sources);
+            self.assets=assets;
+        }
+        self.sources.clone()
+    }
+}
+
 struct RestoredDashboard {
+    artwork_cache: std::cell::RefCell<ApplicationArtwork>,
     native_window_title: String,
     runtime: Arc<UnifiedRuntimeHandle>,
     owner: Arc<OriginalOwner>,
@@ -498,6 +527,7 @@ impl RestoredDashboard {
             test_selected_source: None,
             test_sequence:sequence_acceptance::Sequence::from_env(),
             test_media_cycle:sequence_acceptance::MediaCycle::from_env(),
+            artwork_cache: Default::default(),
             current_frame: None,
             presentation_frame: Arc::new(Mutex::new(None)),
             host_stats: None,
@@ -582,6 +612,7 @@ impl RestoredDashboard {
         DashboardSnapshot {
             role: snapshot.role,
             devices: snapshot.devices,
+            source_icons: self.artwork_cache.borrow_mut().update(snapshot.source_icons),
             capture_sources: snapshot.sources,
             source_binding: snapshot.source_binding,
             active_capture_source: snapshot.active_source,
@@ -958,6 +989,7 @@ impl RestoredDashboard {
         let owner = self.owner.clone();
         let result = cx.open_window(window_options, move |_window, cx| {
             let view = cx.new(|_cx| PopoutStreamView {
+                artwork_cache: Default::default(),
                 owner,
                 native_window_title: String::new(),
                 presentation_frame,
@@ -1901,6 +1933,7 @@ fn stream_video_canvas_surface(
 }
 
 struct PopoutStreamView {
+    artwork_cache: ApplicationArtwork,
     owner: Arc<OriginalOwner>,
     native_window_title: String,
     presentation_frame: FrameSlot,
@@ -1914,6 +1947,8 @@ impl Render for PopoutStreamView {
         let theme = cx.theme().clone();
         let view = cx.weak_entity();
         let snapshot = self.owner.snapshot();
+        let artwork = self.artwork_cache.update(snapshot.source_icons);
+        let source_icons = &artwork;
         let source = confirmed_source(&snapshot.sources, snapshot.active_source);
         let peer = snapshot.role.session().map(|s| s.peer.display_name.as_str());
         let title = remote_window_title(peer, source);
@@ -1979,7 +2014,7 @@ impl Render for PopoutStreamView {
             .into_any_element();
         let fullscreen = window.is_fullscreen();
         let controls = div().flex().items_center().gap_1()
-            .when_some(source, |this, source| this.child(capture_source_badge(source, &theme)))
+            .when_some(source, |this, source| this.child(capture_source_badge(source, source_icons, &theme)))
             .child(scale_btn)
             .child(command_button("pip_fullscreen", ActionVariantKind::Neutral, cx)
                 .h(px(24.0)).px_2()
@@ -2243,6 +2278,7 @@ impl Render for RestoredDashboard {
                         host_stats.as_ref(),
                         self.owner.clone(),
                         &snapshot.capture_sources,
+                        &snapshot.source_icons,
                         snapshot.source_binding.as_ref(),
                         snapshot.active_capture_source,
                         snapshot.pending_capture_source,
@@ -2563,6 +2599,7 @@ fn floating_control_island(
     _host_stats: Option<&UiHostStats>,
     owner: Arc<OriginalOwner>,
     capture_sources: &[protocol::session::CaptureSourceInfo],
+    source_icons: &SourceArtwork,
     source_binding: Option<&SourceViewBinding>,
     active_capture_source: protocol::session::CaptureSource,
     pending_capture_source: Option<protocol::session::CaptureSource>,
@@ -2631,7 +2668,7 @@ fn floating_control_island(
                         .items_center()
                         .gap_2()
                         .px_1()
-                        .when_some(source, |this, source| this.child(capture_source_badge(source, &theme)))
+                        .when_some(source, |this, source| this.child(capture_source_badge(source, source_icons, &theme)))
                         .child(
                             div()
                                 .size(px(8.0))
@@ -2854,6 +2891,7 @@ fn floating_control_island(
         .when(show_apps_menu, |this: Stateful<Div>| {
             this.child(capture_source_menu(
                 capture_sources,
+                source_icons,
                 source_binding,
                 active_capture_source,
                 pending_capture_source,
@@ -3034,7 +3072,10 @@ fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::Ca
     }
 }
 
-fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, theme: &Theme) -> AnyElement {
+fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, source_icons: &SourceArtwork, theme: &Theme) -> AnyElement {
+    if let Some(image)=source_icons.get(&source.source) {
+        return gpui::img(image.clone()).size(px(20.0)).flex_none().into_any_element();
+    }
     let window = matches!(source.source, protocol::session::CaptureSource::Window(_));
     let initial = window.then(|| source.application.trim().chars().next()).flatten();
     div().size(px(20.0)).flex_none().flex().items_center().justify_center()
@@ -3048,6 +3089,7 @@ fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, theme: &T
 
 fn capture_source_menu(
     sources: &[protocol::session::CaptureSourceInfo],
+    source_icons: &SourceArtwork,
     source_binding: Option<&SourceViewBinding>,
     active_source: protocol::session::CaptureSource,
     pending_source: Option<protocol::session::CaptureSource>,
@@ -3121,7 +3163,7 @@ fn capture_source_menu(
             format!("Display {} · view only", index + 1)
         };
         let detail = source.title.clone();
-        let badge = capture_source_badge(&source, &theme);
+        let badge = capture_source_badge(&source, source_icons, &theme);
         let action_label = label.clone();
         let selected = capture_source_is_selected(selected, &source, index);
         menu = menu.child(
@@ -3165,7 +3207,7 @@ fn capture_source_menu(
             let source_id = source.source;
             let title = source.title.clone();
             let app = source.application.clone();
-            let badge = capture_source_badge(&source, &theme);
+            let badge = capture_source_badge(&source, source_icons, &theme);
             let action_label = if app.is_empty() {
                 title.clone()
             } else {
@@ -5565,6 +5607,7 @@ struct DashboardSnapshot {
     role: RoleState,
     devices: Vec<AppDevice>,
     capture_sources: Arc<Vec<protocol::session::CaptureSourceInfo>>,
+    source_icons: SourceArtwork,
     source_binding: Option<SourceViewBinding>,
     active_capture_source: protocol::session::CaptureSource,
     pending_capture_source: Option<protocol::session::CaptureSource>,

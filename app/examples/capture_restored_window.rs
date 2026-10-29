@@ -27,14 +27,14 @@ async fn main() -> Result<(), E> {
     remote_core::session_crypto::use_paired_session_secret(config.network_secret.expose_secret());
     let dir = tempfile::tempdir()?;
     let (conn, mut events) = WorkspaceConnection::connect(target, dir.path().into()).await?;
-    conn.control(SessionCommand::ListSources { request_id: 711 })
+    conn.control(SessionCommand::ListSources { request_id: 711, known_icons: Vec::new() })
         .await?;
     let source = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match events.control.recv().await.ok_or("source channel closed")? {
                 SessionCommand::Sources {
                     request_id: 711,
-                    sources,
+                    sources, ..
                 } => {
                     let found: Vec<_> = sources
                         .iter()

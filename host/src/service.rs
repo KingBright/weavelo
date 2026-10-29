@@ -805,8 +805,8 @@ impl Connection {
 
     fn merge_capture_sources(
         &self,
-        legacy: crate::source_catalog::CatalogResult,
-    ) -> crate::source_catalog::CatalogResult {
+        legacy: Result<Vec<protocol::session::CaptureSourceInfo>, String>,
+    ) -> Result<Vec<protocol::session::CaptureSourceInfo>, String> {
         #[cfg(not(all(unix, any(test, target_os = "linux"))))]
         let mut sources = legacy?;
         #[cfg(all(unix, any(test, target_os = "linux")))]
@@ -823,6 +823,8 @@ impl Connection {
             Err(error) if sources.is_empty() => return Err(error),
             Err(_) => {}
         }
+        let mut unique = std::collections::HashSet::new();
+        sources.retain(|source| unique.insert(source.source));
         sources.truncate(256);
         Ok(sources)
     }
@@ -2006,8 +2008,10 @@ async fn run_host_service_inner(
                         observed_at_ms:now_unix_ms(),stats:peer.sender.stats(),
                     });
                     if let Some((request_id, result)) = peer.source_catalog.take_ready().await {
-                        let reply = match peer.merge_capture_sources(result) {
-                            Ok(sources) => SessionCommand::Sources { request_id, sources },
+                        let reply = match result.and_then(|mut directory| {
+                            peer.merge_capture_sources(Ok(std::mem::take(&mut directory.sources))).map(|sources|directory.reply(request_id,sources))
+                        }) {
+                            Ok(reply) => reply,
                             Err(reason) => SessionCommand::Error { request_id, reason },
                         };
                         input_owner.during_control(&injector, send_session(&udp_sender, *addr, reply)).await;
@@ -2146,11 +2150,13 @@ async fn run_host_service_inner(
                                         input_owner.during_control(&injector,send_session(&udp_sender,addr,broker.cancel(owner,request_id))).await;
                                     }
                                 }
-                                SessionCommand::ListSources { request_id } if peers.contains_key(&addr) => {
+                                SessionCommand::ListSources { request_id, known_icons } if peers.contains_key(&addr) => {
                                     let peer = peers.get_mut(&addr).unwrap();
-                                    if let Some(result) = peer.source_catalog.request(request_id) {
-                                        let reply = match peer.merge_capture_sources(result) {
-                                            Ok(sources) => SessionCommand::Sources { request_id, sources },
+                                    if let Some(result) = peer.source_catalog.request(request_id, known_icons) {
+                                        let reply = match result.and_then(|mut directory| {
+                            peer.merge_capture_sources(Ok(std::mem::take(&mut directory.sources))).map(|sources|directory.reply(request_id,sources))
+                        }) {
+                                            Ok(reply) => reply,
                                             Err(reason) => SessionCommand::Error { request_id, reason },
                                         };
                                         input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await;

@@ -1943,9 +1943,7 @@ impl UnifiedServiceOwner {
         sender
             .send_control(
                 &protocol::ControlMessage::Session(Box::new(
-                    protocol::session::SessionCommand::ListSources {
-                        request_id: capture_source_list_request_id(session_id),
-                    },
+                    protocol::session::SessionCommand::ListSources { request_id: capture_source_list_request_id(session_id), known_icons: Vec::new() },
                 )),
                 target,
             )

@@ -256,6 +256,7 @@ pub(crate) struct ViewSnapshot {
     pub role: RoleState,
     pub devices: Vec<AppDevice>,
     pub sources: Arc<Vec<CaptureSourceInfo>>,
+    pub source_icons: remote_core::application_icons::SourceIconAssets,
     pub source_binding: Option<SourceViewBinding>,
     pub active_source: CaptureSource,
     pub pending_source: Option<CaptureSource>,
@@ -401,6 +402,7 @@ impl OriginalOwner {
                 )),
                 devices,
                 sources: Arc::new(Vec::new()),
+                source_icons: Default::default(),
                 source_binding: None,
                 active_source: CaptureSource::MainDisplay,
                 pending_source: None,
@@ -432,6 +434,7 @@ impl OriginalOwner {
                 role,
                 devices,
                 sources: e.sources.clone(),
+                source_icons: s.conn.source_icons(),
                 source_binding: Some(SourceViewBinding::new(&s.conn, remote_core::shared_files::current_share_scope())),
                 active_source: s.source,
                 pending_source: s.pending.map(|_| s.request.source),
@@ -454,6 +457,7 @@ impl OriginalOwner {
                 role,
                 devices,
                 sources: Arc::new(Vec::new()),
+                source_icons: Default::default(),
                 source_binding: None,
                 active_source: CaptureSource::MainDisplay,
                 pending_source: None,
@@ -911,7 +915,7 @@ impl OriginalOwner {
         let e = p.active_mut().ok_or("No active connection")?;
         let connection = e.session.conn.clone();
         binding.apply(&connection, remote_core::shared_files::current_share_scope(), || {
-            if e.session.control(SessionCommand::ListSources { request_id: 900_001 }) { Ok(()) }
+            if e.session.control(SessionCommand::ListSources { request_id: 900_001, known_icons: Vec::new() }) { Ok(()) }
             else { Err("Control queue is busy".into()) }
         }).ok_or("Selected connection changed; source discovery was not sent")?
     }
@@ -1850,7 +1854,7 @@ fn active_video_error(host:Option<&str>,decoder:Option<&str>)->Option<String> {
     }
     #[test] fn recovered_decoder_does_not_leave_an_old_error() {
         assert!(active_video_error(None,Some("")).is_none());assert!(active_video_error(None,None).is_none());
-        assert!(active_video_error(Some("  "),Some(" 
+        assert!(active_video_error(Some("  "),Some("
  ")).is_none());
     }
 }

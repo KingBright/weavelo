@@ -622,7 +622,7 @@ pub fn spawn_client_session_receiver(
                             match *command {
                                 protocol::session::SessionCommand::Sources {
                                     request_id,
-                                    sources,
+                                    sources, ..
                                 } => {
                                     let _ = tx.send(ClientSessionEvent::CaptureSources {
                                         request_id,

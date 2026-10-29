@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     tokio::fs::remove_file(received_file).await?;
     connection
-        .control(SessionCommand::ListSources { request_id: 1 })
+        .control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() })
         .await?;
     let sources = loop {
         match tokio::time::timeout(Duration::from_secs(5), events.control.recv())
