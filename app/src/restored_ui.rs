@@ -222,6 +222,7 @@ fn open_restored_window(
             loop {
                 let Ok(interval) = weak.update(cx, |view, cx| {
                     if view.activation.swap(false, Ordering::AcqRel) {
+                        cx.activate(true);
                         let handle = view.window_handle;
                         let _ = handle.update(cx, |_, window, _| window.activate_window());
                     }
