@@ -16,10 +16,7 @@ fn new_private_receipt(path: &std::path::Path) -> std::io::Result<std::fs::File>
     options.open(path)
 }
 fn existing_profile() -> Result<PathBuf> {
-    let profile=if let Some(value)=std::env::var_os("WEAVELO_DEVICE_GROUP_DIR") {PathBuf::from(value)}
-    else if cfg!(target_os="windows") {PathBuf::from(std::env::var_os("APPDATA").ok_or("appdata unavailable")?).join("Weavelo/Mesh")}
-    else if cfg!(target_os="macos") {PathBuf::from(std::env::var_os("HOME").ok_or("home unavailable")?).join("Library/Application Support/Weavelo/NativeMesh")}
-    else {PathBuf::from(std::env::var_os("HOME").ok_or("home unavailable")?).join(".config/weavelo/mesh")};
+    let profile=remote_core::mesh::default_app_private_mesh_dir();
     if !profile.is_absolute() || !profile.is_dir() {return Err("existing absolute paired profile required".into());}
     Ok(profile)
 }
@@ -41,8 +38,11 @@ impl Target {
         let mut exact = sources.iter().filter(|s| s.source == CaptureSource::Window(self.window)
             && s.process_id == Some(self.pid) && s.title == format!("{TITLE} {}",self.nonce));
         let selected = exact.next().ok_or("exact synthetic Window/PID/title not found")?;
-        if exact.next().is_some() || selected.width < 200 || selected.height < 150 {
-            return Err("ambiguous or too-small synthetic window".into());
+        if exact.next().is_some() {
+            return Err("ambiguous synthetic window".into());
+        }
+        if selected.width < 200 || selected.height < 150 {
+            return Err(format!("synthetic window too small ({}x{})",selected.width,selected.height));
         }
         Ok(selected.clone())
     }
