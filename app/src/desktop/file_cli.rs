@@ -179,7 +179,10 @@ fn serial() -> &'static tokio::sync::Mutex<()> {
 fn verify_received(path: &Path, receive_dir: &Path, expected: &str, bytes: u64) -> Result<(), Error> {
     // Only the actual completion event's file, inside the configured receive folder.
     // Remote callers never supply a destination path and existing files are retained.
-    if path.parent() != Some(fs::canonicalize(receive_dir)?.as_path()) {
+    // Windows completion events use C:\... while canonicalize adds \\?\.
+    // Compare the directories in the same representation, then retain digest's
+    // independent rejection of linked files and user-controlled ancestors.
+    if fs::canonicalize(path.parent().ok_or("Received file has no parent")?)? != fs::canonicalize(receive_dir)? {
         return Err("Received file is outside the original receive folder".into());
     }
     if digest(path)? != (expected.to_owned(), bytes) {
@@ -538,7 +541,9 @@ async fn shared_request(
         return Err("Paired group changed after reservation".into());
     }
     let selection = record.shared.as_ref().ok_or("Missing shared request")?.selection.clone();
-    owner.connect_silent_files(&record.target).await?;
+    if matches!(&selection, SharedSelection::List { .. }) {
+        owner.connect_silent_files(&record.target).await?;
+    }
     let (connection, _) = owner.cli_file_connection(&record.target, scope)?;
     let connection_id = connection.upgrade().ok_or("File connection closed")?.id;
     let request = match &selection {
@@ -901,6 +906,13 @@ mod tests {
         #[cfg(unix)] {
             let alias = root.join("alias"); std::os::unix::fs::symlink(&received, &alias).unwrap();
             assert!(verify_received(&alias, &root, &sha, 4).is_err());
+            let linked_directory = root.join("linked-directory");
+            std::os::unix::fs::symlink(&root, &linked_directory).unwrap();
+            assert!(verify_received(&linked_directory.join(received.file_name().unwrap()), &root, &sha, 4).is_err());
+        }
+        #[cfg(windows)] {
+            let ordinary=PathBuf::from(root.to_string_lossy().strip_prefix(r"\\?\").unwrap().to_owned());
+            assert!(verify_received(&ordinary.join(received.file_name().unwrap()), &root, &sha, 4).is_ok());
         }
     }
     #[test]
