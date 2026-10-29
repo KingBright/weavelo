@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 
 pub mod session;
+pub mod interaction;
 pub mod session_auth;
 pub mod realtime_input;
 pub mod shared_files;
