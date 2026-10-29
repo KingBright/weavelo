@@ -185,6 +185,9 @@ impl Pool {
                 if active { if let Some((_, talkback)) = self.talkback.take() { talkback.stop(); } }
             }
         }
+        if self.sessions.is_empty() && self.tabs.connecting().is_none() && self.tabs.failed().is_none() {
+            self.message = "Ready".into();
+        }
     }
     fn retry(&self, scope: ShareScope) -> Option<(&remote_core::session_tabs::FailedSession, RetryBinding)> {
         let failed = self.tabs.failed()?;
@@ -1598,6 +1601,7 @@ impl OriginalOwner {
         p.pending_settings.clear();
         p.retry_binding = None;
         p.sessions.clear();
+        p.message = "Ready".into();
         if let Some((_, c)) = p.talkback.take() {
             c.stop();
         }
@@ -1710,7 +1714,9 @@ mod restoration_regression_tests {
         assert!(pool.receive_matches("a", Some("handshake")));
         pool.directed_receive.as_mut().unwrap().expires = Instant::now();
         assert!(!pool.receive_matches("a", Some("handshake")));
+        pool.message = "Connecting to a".into();
         pool.cancel_receive("handshake");
+        assert_eq!(pool.message, "Ready");
         assert_eq!(pool.tabs.complete("a", attempt, true, 0), Completion::Cancelled);
         assert!(pool.pending_settings.take("a", attempt).is_none());
     }
@@ -1722,7 +1728,9 @@ mod restoration_regression_tests {
         pool.directed_receive.as_mut().unwrap().attempt = Some(old);
         pool.cancel_receive("old");
         let manual = begin(&mut pool, "a", values());
+        pool.message = "Connecting to manual request".into();
         pool.cancel_receive("old");
+        assert_eq!(pool.message, "Connecting to manual request");
         assert!(manual > old);
         assert_eq!(pool.tabs.pending_attempt("a"), Some(manual));
         assert_eq!(pool.tabs.complete("a", old, true, 0), Completion::Cancelled);

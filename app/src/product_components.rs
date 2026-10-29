@@ -159,7 +159,13 @@ impl Styled for ProductIcon {
     }
 }
 impl RenderOnce for ProductIcon {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(mut self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // GPUI Svg paints only with an explicit tint; parent text color alone
+        // does not supply it. Preserve semantic colors set by callers.
+        if self.base.text_style().as_ref().and_then(|text| text.color).is_none() {
+            use theme::ActiveTheme;
+            self.base = self.base.text_color(cx.theme().content.primary);
+        }
         self.base
     }
 }
