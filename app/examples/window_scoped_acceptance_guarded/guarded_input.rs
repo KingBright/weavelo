@@ -51,7 +51,8 @@ impl Target {
 #[derive(Clone, Copy)]
 struct Budgets { operation: Duration, acknowledgement: Duration, pause: Duration }
 impl Default for Budgets {
-    fn default() -> Self { Self { operation: Duration::from_secs(28), acknowledgement: Duration::from_secs(8), pause: Duration::from_millis(140) } }
+    // The explicit drag must finish inside the existing 300 ms held-input lease.
+    fn default() -> Self { Self { operation: Duration::from_secs(28), acknowledgement: Duration::from_secs(8), pause: Duration::from_millis(50) } }
 }
 
 trait Link {
