@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
             var pairingMessage by remember { mutableStateOf<String?>(null) }
             val publisherStatus by PublisherClient.status.collectAsState()
             val receiverState by FileReceiverClient.state.collectAsState()
+            val controlReady by RemoteControlService.connected.collectAsState()
             fun joinNetwork(raw: String) {
                 if (joiningNetwork) return
                 if (WorkspaceClient.active || PublisherClient.active || FileReceiverClient.ownsNetwork ||
@@ -99,14 +100,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
             var publishAudio by remember { mutableStateOf(false) }
+            var publishControl by remember { mutableStateOf(false) }
             val projection = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-                if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio)
+                if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl)
             }
-            fun requestProjection(audio: Boolean) {
-                publishAudio = audio
-                projection.launch(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent())
+            fun requestProjection(audio: Boolean, control: Boolean = false) {
+                publishAudio = audio; publishControl = control
+                val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+                // A separate user action requests full-display control; existing viewing keeps the OS source choice.
+                val intent = if (control && android.os.Build.VERSION.SDK_INT >= 34)
+                    manager.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
+                    else manager.createScreenCaptureIntent()
+                projection.launch(intent)
             }
-            val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> requestProjection(granted) }
+            val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> requestProjection(granted,publishControl) }
 
             LaunchedEffect(Unit) {
                 lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -166,7 +173,15 @@ class MainActivity : ComponentActivity() {
                         receiverStarting = receiverState.starting,
                         onStartReceiving = { FileReceiverClient.start(this) },
                         onStopReceiving = { FileReceiverClient.stop(this) },
+                        controlReady = controlReady,
+                        onControlSettings = { RemoteControlService.openSettings(this) },
+                        onShareControlledScreen = {
+                            publishControl = true
+                            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                            else requestProjection(true,true)
+                        },
                         onShareScreen = { audio ->
+                            publishControl = false
                             if (audio && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
                             else requestProjection(audio)
                         },

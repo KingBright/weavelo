@@ -1,4 +1,5 @@
 pub mod publisher_bridge;
+mod publisher_input;
 pub mod touch_mapper;
 pub mod workspace_bridge;
 mod workspace_touch;

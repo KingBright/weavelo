@@ -63,22 +63,25 @@ pub struct MobilePublisher {
     frames: mpsc::Sender<Frame>,
     errors: mpsc::Sender<String>,
     permission: watch::Sender<MediaPermission>,
+    input: Arc<Mutex<crate::publisher_input::PublisherInput>>,
     capabilities: watch::Sender<remote_core::discovery::DiscoveryCapabilities>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for MobilePublisher {
     fn drop(&mut self) {
         self.capabilities.send_replace(crate::inbound_capabilities(0, false));
+        self.input.lock().unwrap().set_capture(false);
         self.task.abort();
     }
 }
 
 // The actual serving task owns the advertised lifetime. A failed or aborted
 // worker must not leave a stale screen/file claim in discovery.
-struct AdvertisedPublisher(watch::Sender<remote_core::discovery::DiscoveryCapabilities>);
+struct AdvertisedPublisher(watch::Sender<remote_core::discovery::DiscoveryCapabilities>, Arc<Mutex<crate::publisher_input::PublisherInput>>);
 impl Drop for AdvertisedPublisher {
     fn drop(&mut self) {
         self.0.send_replace(crate::inbound_capabilities(0, false));
+        self.1.lock().unwrap().set_capture(false);
     }
 }
 struct Peer {
@@ -150,19 +153,25 @@ impl MobilePublisher {
             epoch: 1,
         });
         let (capabilities, _) = watch::channel(crate::inbound_capabilities(address.port(), capture_enabled));
-        let advertised_lifetime = AdvertisedPublisher(capabilities.clone());
+        let input = Arc::new(Mutex::new(crate::publisher_input::PublisherInput::default()));
+        let shared_input = input.clone();
+        let advertised_lifetime = AdvertisedPublisher(capabilities.clone(), input.clone());
         let task = tokio::spawn(async move {
             let _advertised_lifetime = advertised_lifetime;
             let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
             let mut authenticated: HashMap<SocketAddr, ([u8;16], Instant)> = HashMap::new();
             let mut handshakes=remote_core::session_auth::ServerHandshake::default();
             let mut maintenance = tokio::time::interval(Duration::from_secs(1));
+            let mut input_watchdog = tokio::time::interval(Duration::from_millis(protocol::realtime_input::INPUT_WATCHDOG_INTERVAL_MS));
+            input_watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut input_ready = false;
             loop {
                 tokio::select! {
                     biased;
                     changed = permission_rx.changed() => {
                         if changed.is_err() { break; }
                         let permission = *permission_rx.borrow_and_update();
+                        shared_input.lock().unwrap().revoke();
                         // A new authorization must never inherit subscriptions or queued media.
                         while frame_rx.try_recv().is_ok() {}
                         *shared.lock().unwrap() = CaptureDemand::default();
@@ -174,15 +183,34 @@ impl MobilePublisher {
                                 reply(&sender, p.addr, SessionCommand::Unsubscribed { id: subscription.id }).await;
                             }
                             let (width, height) = *geometry.lock().unwrap();
+                            let supports_input = shared_input.lock().unwrap().ready();
                             reply(&sender, p.addr, SessionCommand::Sources {
                                 request_id: 0,
-                                sources: available_sources(permission, width, height),
+                                sources: available_sources(permission, width, height, supports_input),
                             }).await;
                         }
                     }
                     Some(reason) = error_rx.recv() => {
                         for p in peers.values() { reply(&sender,p.addr,SessionCommand::Closed {connection_id:p.id,reason:reason.clone()}).await; }
                         break;
+                    }
+                    _ = input_watchdog.tick(), if input_ready || shared_input.lock().unwrap().ready() => {
+                        let (ready, handled) = {
+                            let mut input = shared_input.lock().unwrap();
+                            (input.ready(), input.take_handled())
+                        };
+                        if ready != input_ready {
+                            input_ready = ready;
+                            for p in peers.values() {
+                                if let Some(subscription) = &p.subscription {
+                                    let audio = permission_rx.borrow().audio;
+                                    reply(&sender,p.addr,SessionCommand::Subscribed { id:subscription.id, audio_owner:audio.then_some(subscription.id), supports_input:ready }).await;
+                                }
+                            }
+                        }
+                        for ack in handled {
+                            reply(&sender,ack.addr,SessionCommand::InputHandled {binding:ack.binding,sequence:ack.sequence}).await;
+                        }
                     }
                     _ = maintenance.tick() => {
                         handshakes.expire(remote_core::session_auth::AuthTime::now());
@@ -192,6 +220,7 @@ impl MobilePublisher {
                                 |p| p.seen.elapsed() > Duration::from_secs(30),
                             );
                             if expired {
+                                shared_input.lock().unwrap().revoke_peer(*addr);
                                 if peers.remove(addr).is_some_and(|p| p.subscription.is_some()) {
                                     *shared.lock().unwrap() = CaptureDemand::default();
                                 }
@@ -257,7 +286,8 @@ impl MobilePublisher {
                                         SessionCommand::ListSources { request_id } if peers.contains_key(&addr) => {
                                             let (width, height) = *geometry.lock().unwrap();
                                             let permission = *permission_rx.borrow();
-                                            reply(&sender, addr, SessionCommand::Sources { request_id, sources:available_sources(permission, width, height) }).await;
+                                            let supports_input = shared_input.lock().unwrap().ready();
+                                            reply(&sender, addr, SessionCommand::Sources { request_id, sources:available_sources(permission, width, height, supports_input) }).await;
                                         }
                                         SessionCommand::Subscribe(request) if peers.contains_key(&addr) => {
                                             let permission = *permission_rx.borrow();
@@ -275,11 +305,12 @@ impl MobilePublisher {
                                             }
                                             if p.subscription.is_none() { let mut d = shared.lock().unwrap(); set_rates(&mut d, &request); d.active=true; d.audio=request.audio && permission.audio; d.keyframe+=1; }
                                             let id=request.id; if p.subscription.is_none() { p.subscription=Some(request); }
-                                            reply(&sender, addr, SessionCommand::Subscribed { id, audio_owner:permission.audio.then_some(id), supports_input:false }).await;
+                                            let supports_input = shared_input.lock().unwrap().ready();
+                                            reply(&sender, addr, SessionCommand::Subscribed { id, audio_owner:permission.audio.then_some(id), supports_input }).await;
                                         }
                                         SessionCommand::SetActivity { id, revision, video, audio } if peers.contains_key(&addr) => {
                                             let p=peers.get_mut(&addr).unwrap(); if p.subscription.as_ref().is_none_or(|s| s.id != id) { continue; }
-                                            let (video, audio) = { let mut d=shared.lock().unwrap(); if revision > p.activity_revision { p.activity_revision=revision; if video && !d.active { d.keyframe+=1; } d.active=video; d.audio=audio && permission_rx.borrow().audio; } (d.active,d.audio) };
+                                            let (video, audio) = { let mut d=shared.lock().unwrap(); if revision > p.activity_revision { if !video { shared_input.lock().unwrap().revoke_peer(addr); } p.activity_revision=revision; if video && !d.active { d.keyframe+=1; } d.active=video; d.audio=audio && permission_rx.borrow().audio; } (d.active,d.audio) };
                                             reply(&sender, addr, SessionCommand::Activity { id, revision:p.activity_revision, video, audio }).await;
                                         }
                                         SessionCommand::Configure { id, revision, width, height, fps, bitrate_kbps } if peers.contains_key(&addr) => {
@@ -299,10 +330,25 @@ impl MobilePublisher {
                                                 reply(&sender,addr,SessionCommand::Error {request_id:id,reason:"subscription ID capacity reached; reconnect".into()}).await;
                                                 continue;
                                             }
-                                            p.retired.insert(id); if p.subscription.as_ref().is_some_and(|s| s.id==id) { p.subscription=None; p.activity_revision=0; p.settings_revision=0; shared.lock().unwrap().active=false; shared.lock().unwrap().audio=false; }
+                                            p.retired.insert(id); if p.subscription.as_ref().is_some_and(|s| s.id==id) { shared_input.lock().unwrap().revoke_peer(addr); p.subscription=None; p.activity_revision=0; p.settings_revision=0; shared.lock().unwrap().active=false; shared.lock().unwrap().audio=false; }
                                             reply(&sender,addr,SessionCommand::Unsubscribed {id}).await;
                                         }
+                                        SessionCommand::RequestInputBinding {connection_id,id,source_revision:0,request}
+                                            if request != 0 && shared.lock().unwrap().active && peers.get(&addr).is_some_and(|p| p.id==connection_id && p.subscription.as_ref().is_some_and(|s| s.id==id)) => {
+                                            let binding = shared_input.lock().unwrap().grant(addr,connection_id,id);
+                                            if let Some(binding) = binding {
+                                                reply(&sender,addr,SessionCommand::InputBinding {binding,request,host_time_ms:crate::publisher_input::now_ms()}).await;
+                                            }
+                                        }
+                                        SessionCommand::RealtimeInput(packet) if shared.lock().unwrap().active && peers.get(&addr).is_some_and(|p| p.id==packet.binding.connection_id && p.subscription.as_ref().is_some_and(|s| s.id==packet.binding.subscription_id)) => {
+                                            shared_input.lock().unwrap().admit(addr,&packet);
+                                        }
+                                        SessionCommand::ReleaseInput {id} if peers.get(&addr).is_some_and(|p| p.subscription.as_ref().is_some_and(|s| s.id==id)) => {
+                                            shared_input.lock().unwrap().revoke_peer(addr);
+                                            reply(&sender,addr,SessionCommand::InputReleased {id}).await;
+                                        }
                                         SessionCommand::Close { connection_id } if peers.get(&addr).is_some_and(|p| p.id==connection_id) => {
+                                            shared_input.lock().unwrap().revoke_peer(addr);
                                             if peers.remove(&addr).is_some_and(|p| p.subscription.is_some()) { *shared.lock().unwrap()=CaptureDemand::default(); }
                                             authenticated.remove(&addr);
                                             sender.remove_peer_crypto(addr);
@@ -331,6 +377,7 @@ impl MobilePublisher {
             frames,
             errors,
             permission,
+            input,
             capabilities,
             task,
         })
@@ -355,9 +402,17 @@ impl MobilePublisher {
             capabilities.can_stream = capabilities.file_transfer && self.permission.borrow().enabled;
         });
         if !enabled {
+            self.input.lock().unwrap().set_capture(false);
             *self.demand.lock().unwrap() = CaptureDemand::default();
         }
     }
+    pub fn set_input_service_available(&self, available: bool) { self.input.lock().unwrap().set_service(available); }
+    pub fn set_input_capture_allowed(&self, allowed: bool) { self.input.lock().unwrap().set_capture(allowed && self.permission.borrow().enabled); }
+    pub fn input_dispatch(&self) -> Result<String,String> {
+        serde_json::to_string(&self.input.lock().unwrap().poll()).map_err(|e| e.to_string())
+    }
+    pub fn input_execution_valid(&self, generation: u64, token: u64) -> bool { self.input.lock().unwrap().execution_valid(generation,token) }
+    pub fn complete_input(&self, generation: u64, token: u64, accepted: bool) { self.input.lock().unwrap().complete(generation,token,accepted); }
     pub fn capabilities(&self) -> watch::Receiver<remote_core::discovery::DiscoveryCapabilities> {
         self.capabilities.subscribe()
     }
@@ -372,7 +427,8 @@ impl MobilePublisher {
         self.task.is_finished()
     }
     pub fn set_source_size(&self, width: u32, height: u32) {
-        *self.source.lock().unwrap() = (width, height);
+        let mut source = self.source.lock().unwrap();
+        if *source != (width,height) { self.input.lock().unwrap().revoke(); *source = (width,height); }
     }
     pub fn frame(&self, bytes: Vec<u8>, _timestamp_us: i64, audio: bool) {
         let permission = *self.permission.borrow();
@@ -402,6 +458,7 @@ fn available_sources(
     permission: MediaPermission,
     width: u32,
     height: u32,
+    supports_input: bool,
 ) -> Vec<CaptureSourceInfo> {
     if !permission.enabled {
         return Vec::new();
@@ -413,7 +470,7 @@ fn available_sources(
         process_id: None,
         width,
         height,
-        supports_input: false,
+        supports_input,
     }]
 }
 fn valid(s: &SubscriptionRequest) -> bool {
@@ -776,6 +833,44 @@ mod tests {
                 }
             }).await.expect("file receipt deadline");
         }
+    }
+
+    #[tokio::test]
+    async fn android_input_is_bound_to_its_viewer_and_requires_native_completion() {
+        use protocol::realtime_input::{InputPayload,RealtimeInput};
+        use crate::publisher_input::Dispatch;
+        let directory=ReceiverTestDir::new(); let key=b"android-input-fixture".to_vec();
+        let publisher=MobilePublisher::start_with_permissions("127.0.0.1:0".parse().unwrap(),directory.0.clone(),key.clone(),true,false).await.unwrap();
+        publisher.set_input_service_available(true); publisher.set_input_capture_allowed(true);
+        let (sender,receiver)=Box::pin(receiver_client(&publisher,&key)).await;
+        let (other,_other_receiver)=Box::pin(receiver_client(&publisher,&key)).await;
+        command(&sender,publisher.address,SessionCommand::Subscribe(receiver_subscription(256))).await;
+        loop { if matches!(reply(&receiver).await,SessionCommand::Subscribed {supports_input:true,..}) {break;} }
+        command(&sender,publisher.address,SessionCommand::RequestInputBinding {connection_id:17,id:256,source_revision:0,request:1}).await;
+        let binding=loop { if let SessionCommand::InputBinding {binding,..}=reply(&receiver).await {break binding;} };
+        let packet=RealtimeInput {binding,sequence:1,created_host_ms:crate::publisher_input::now_ms(),payload:InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute {x:123,y:456})};
+        // A file peer with the same connection ID cannot control this viewer.
+        command(&other,publisher.address,SessionCommand::RealtimeInput(packet.clone())).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        while let Some(job)=publisher.input.lock().unwrap().poll() { assert!(matches!(job,Dispatch::Reset {..})); }
+        command(&sender,publisher.address,SessionCommand::RealtimeInput(packet.clone())).await;
+        let job=tokio::time::timeout(Duration::from_secs(1),async {
+            loop {
+                if let Some(Dispatch::Events {generation,token,..})=publisher.input.lock().unwrap().poll() {break (generation,token);}
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }).await.unwrap();
+        assert!(publisher.input.lock().unwrap().take_handled().is_empty());
+        assert!(publisher.input_execution_valid(job.0,job.1));
+        publisher.complete_input(job.0,job.1,true);
+        loop { if let SessionCommand::InputHandled {binding:actual,sequence}=reply(&receiver).await {assert_eq!(actual,binding);assert_eq!(sequence,1);break;} }
+        command(&sender,publisher.address,SessionCommand::RealtimeInput(packet)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(publisher.input.lock().unwrap().poll().is_none());
+        publisher.set_source_size(1920,1080);
+        assert!(!publisher.input_execution_valid(job.0,job.1));
+        publisher.set_capture_available(false,false);
+        assert!(!publisher.input.lock().unwrap().ready());
     }
 
     #[tokio::test]

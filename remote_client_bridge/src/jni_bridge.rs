@@ -25,6 +25,7 @@ static PUBLISHER: std::sync::Mutex<Option<Arc<crate::publisher_bridge::MobilePub
 // same inbound endpoint independently; media authorization is never implicit.
 static FILE_RECEIVER_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+static INPUT_SERVICE_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CAPTURE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn refresh_network_ownership() {
@@ -72,6 +73,8 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             let publisher = node.as_ref().unwrap();
             if operation == 0 {
                 publisher.set_capture_available(true, value["audio"].as_bool().unwrap_or(false));
+                publisher.set_input_service_available(INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed));
+                publisher.set_input_capture_allowed(value["control"].as_bool().unwrap_or(false));
                 CAPTURE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             } else {
                 FILE_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -125,6 +128,19 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             })
             .to_string());
         }
+        if operation == 8 {
+            let available: bool = serde_json::from_str(&value).map_err(|e| e.to_string())?;
+            INPUT_SERVICE_AVAILABLE.store(available,std::sync::atomic::Ordering::Relaxed);
+            if let Some(publisher) = PUBLISHER.lock().unwrap().as_ref() { publisher.set_input_service_available(available); }
+            return Ok(String::new());
+        }
+        if operation == 9 {
+            let node = PUBLISHER.lock().unwrap();
+            return node.as_ref().filter(|p| !p.is_finished()).map_or_else(
+                || Ok(serde_json::json!({"kind":"Reset","generation":0}).to_string()),
+                |p| p.input_dispatch(),
+            );
+        }
         let publisher = PUBLISHER
             .lock()
             .unwrap()
@@ -142,6 +158,17 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                     value["width"].as_u64().unwrap_or(0) as u32,
                     value["height"].as_u64().unwrap_or(0) as u32,
                 );
+                Ok(String::new())
+            }
+            11 => {
+                let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
+                Ok(publisher.input_execution_valid(value["generation"].as_u64().ok_or("missing input generation")?,
+                    value["token"].as_u64().ok_or("missing input token")?).to_string())
+            }
+            10 => {
+                let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
+                publisher.complete_input(value["generation"].as_u64().ok_or("missing input generation")?,
+                    value["token"].as_u64().ok_or("missing input token")?, value["accepted"].as_bool().ok_or("missing input outcome")?);
                 Ok(String::new())
             }
             4 => {

@@ -69,6 +69,9 @@ fun MobileConsoleScreen(
     receiverStarting: Boolean = false,
     onStartReceiving: () -> Unit = {},
     onStopReceiving: () -> Unit = {},
+    controlReady: Boolean = false,
+    onControlSettings: () -> Unit = {},
+    onShareControlledScreen: () -> Unit = {},
     onShareScreen: (Boolean) -> Unit = {},
     onStopSharing: () -> Unit = {},
     onBrowseFiles: () -> Unit = {},
@@ -237,6 +240,9 @@ fun MobileConsoleScreen(
                         receiverStarting = receiverStarting,
                         onStartReceiving = onStartReceiving,
                         onStopReceiving = onStopReceiving,
+                        controlReady = controlReady,
+                        onControlSettings = onControlSettings,
+                        onShareControlledScreen = onShareControlledScreen,
                         onShareScreen = onShareScreen,
                         onStopSharing = onStopSharing,
                         onBrowseFiles = onBrowseFiles
@@ -745,6 +751,9 @@ private fun SecurityTabContent(
     receiverStarting: Boolean,
     onStartReceiving: () -> Unit,
     onStopReceiving: () -> Unit,
+    controlReady: Boolean,
+    onControlSettings: () -> Unit,
+    onShareControlledScreen: () -> Unit,
     onShareScreen: (Boolean) -> Unit,
     onStopSharing: () -> Unit,
     onBrowseFiles: () -> Unit
@@ -839,6 +848,23 @@ private fun SecurityTabContent(
                             Text("+ Audio", fontSize = 12.sp)
                         }
                     }
+                }
+            }
+        }
+
+        item {
+            Column(Modifier.fillMaxWidth().background(ColorSurfaceCard,RoundedCornerShape(12.dp))
+                .border(1.dp,ColorBorderFine,RoundedCornerShape(12.dp)).padding(14.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("REMOTE CONTROL",color = ColorTextPrimary,fontSize = 12.sp,fontWeight = FontWeight.Bold)
+                Text("Allow paired devices to tap, drag, scroll and type while you share this phone's full screen. Stop sharing to end control.",color = ColorTextSecondary,fontSize = 11.sp)
+                if (controlReady) {
+                    Button(onClick = onShareControlledScreen,enabled = nativeAvailable && !publishing,modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ColorAccentCyan,contentColor = Color.Black)) {
+                        Text("Share screen + control + audio",fontSize = 12.sp)
+                    }
+                    TextButton(onClick = onControlSettings) { Text("Remote control settings") }
+                } else {
+                    Button(onClick = onControlSettings,enabled = nativeAvailable,modifier = Modifier.fillMaxWidth()) { Text("Enable remote control") }
                 }
             }
         }

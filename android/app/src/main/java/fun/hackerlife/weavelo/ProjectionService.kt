@@ -21,6 +21,7 @@ class ProjectionService : Service() {
     @Volatile private var sourceWidth = 1080
     @Volatile private var sourceHeight = 1920
     @Volatile private var audioAllowed = false
+    @Volatile private var controlAllowed = false
     private val audioRunning = AtomicBoolean(false)
     private var audioWorker: Thread? = null
 
@@ -40,12 +41,17 @@ class ProjectionService : Service() {
         try {
             val metrics = resources.displayMetrics
             sourceWidth = metrics.widthPixels; sourceHeight = metrics.heightPixels
+            controlAllowed = intent?.getBooleanExtra("control", false) == true
             audioAllowed = intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
             val capture = checkNotNull(getSystemService(MediaProjectionManager::class.java).getMediaProjection(intent?.getIntExtra("result", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED, consent))
             projection = capture
             capture.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { running.set(false); stopSelf() }
-                override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1) { sourceWidth = width; sourceHeight = height } }
+                override fun onStop() { PublisherClient.controlSize = null; runCatching { PublisherClient.action(1) }; running.set(false); stopSelf() }
+                override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1) {
+                    sourceWidth = width; sourceHeight = height
+                    PublisherClient.controlSize = if (controlAllowed) width to height else null
+                    runCatching { PublisherClient.action(3,JSONObject().put("width",width).put("height",height).toString()) }
+                } }
             }, Handler(Looper.getMainLooper()))
             running.set(true)
             worker = Thread({ publish(capture, metrics.densityDpi) }, "remote-projection").apply { start() }
@@ -65,7 +71,8 @@ class ProjectionService : Service() {
         var nextDemand = 0L
         try {
             val directory = File(filesDir, "received").apply { mkdirs() }
-            PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001").put("directory", directory.absolutePath).put("audio", audioAllowed).toString())
+            PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001").put("directory", directory.absolutePath).put("audio", audioAllowed).put("control",controlAllowed).toString())
+            PublisherClient.controlSize = if (controlAllowed) sourceWidth to sourceHeight else null
             // Null surface suspends capture without releasing the authorization.
             display = capture.createVirtualDisplay("Weavelo", sourceWidth, sourceHeight, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, null, null, Handler(Looper.getMainLooper()))
@@ -160,6 +167,7 @@ class ProjectionService : Service() {
         } catch (e: Exception) {
             if (running.get()) { PublisherClient.status(e.message ?: "Projection stopped", false); runCatching { PublisherClient.action(4, e.message ?: "Projection stopped") } }
         } finally {
+            PublisherClient.controlSize = null
             running.set(false); stopAudio()
             display?.surface = null; display?.release()
             runCatching { codec?.stop() }; codec?.release(); surface?.release()

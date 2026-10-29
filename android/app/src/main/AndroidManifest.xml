@@ -29,6 +29,11 @@
             android:foregroundServiceType="connectedDevice" />
         <service android:name=".FileReceiverService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service android:name=".RemoteControlService" android:exported="true"
+            android:label="Weavelo Remote Control" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/remote_control_service" />
+        </service>
         <service android:name=".ProjectionService" android:exported="false" android:foregroundServiceType="mediaProjection" />
         <activity
             android:name=".MainActivity"

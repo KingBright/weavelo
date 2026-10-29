@@ -10,6 +10,8 @@ object PublisherClient {
     external fun nativeAction(operation: Int, payload: String): String
     external fun nativeFrame(bytes: ByteArray, ptsUs: Long)
     external fun nativePcm(samples: ShortArray): Boolean
+    @Volatile var controlSize: Pair<Int,Int>? = null
+        internal set
     private val mutable = MutableStateFlow("")
     val status = mutable.asStateFlow()
     @Volatile var active = false
@@ -20,9 +22,9 @@ object PublisherClient {
         if (result.startsWith("{\"error\"")) throw IllegalStateException(JSONObject(result).getString("error"))
         return result
     }
-    fun start(context: Context, resultCode: Int, data: Intent, audio: Boolean) {
+    fun start(context: Context, resultCode: Int, data: Intent, audio: Boolean, control: Boolean = false) {
         context.startForegroundService(Intent(context, ProjectionService::class.java)
-            .putExtra("result", resultCode).putExtra("consent", data).putExtra("audio", audio))
+            .putExtra("result", resultCode).putExtra("consent", data).putExtra("audio", audio).putExtra("control", control))
     }
     fun stop(context: Context) { context.stopService(Intent(context, ProjectionService::class.java)) }
 }
