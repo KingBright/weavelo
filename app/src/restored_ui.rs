@@ -2194,35 +2194,6 @@ impl Render for RestoredDashboard {
             .overflow_hidden()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let Some(keystroke) = fresh_key_down(event) else { return; };
-                if keystroke.key == "f11" {
-                    this.owner.release_input();
-                    this.pointer_input = PointerInputTracker::default();
-                    window.toggle_fullscreen();
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if keystroke.key == "escape"
-                    && !keystroke.modifiers.control
-                    && (this.drawer_open || this.show_apps_menu)
-                {
-                    this.owner.release_input();
-                    this.drawer_open = false;
-                    this.show_apps_menu = false;
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if keystroke.key == "escape"
-                    && keystroke.modifiers.control
-                    && keystroke.modifiers.alt
-                {
-                    this.set_input_locked(true);
-                    this.toolbar_revealed = true;
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
                 if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
                     this.queue_key(keystroke, true);
                     cx.stop_propagation();
@@ -2327,7 +2298,42 @@ impl Render for RestoredDashboard {
                     ))
                 },
             )
-            .map(|tree| ely_gpui_component::primitives::FocusScope::new(&self.root_focus).root().size_full().child(tree))
+            // Local window commands must also see the root focus itself. The
+            // remote-input surface remains inside the scope and keeps its focus guard.
+            .map(|tree| div().size_full()
+                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    let Some(keystroke) = fresh_key_down(event) else { return; };
+                    if keystroke.key == "f11" {
+                        this.owner.release_input();
+                        this.pointer_input = PointerInputTracker::default();
+                        window.toggle_fullscreen();
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    if keystroke.key == "escape"
+                        && !keystroke.modifiers.control
+                        && (this.drawer_open || this.show_apps_menu)
+                    {
+                        this.owner.release_input();
+                        this.drawer_open = false;
+                        this.show_apps_menu = false;
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                    if keystroke.key == "escape"
+                        && keystroke.modifiers.control
+                        && keystroke.modifiers.alt
+                    {
+                        this.set_input_locked(true);
+                        this.toolbar_revealed = true;
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
+                }))
+                .child(ely_gpui_component::primitives::FocusScope::new(&self.root_focus).root().size_full().child(tree)))
     }
 }
 

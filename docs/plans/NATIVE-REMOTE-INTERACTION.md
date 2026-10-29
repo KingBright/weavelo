@@ -10,7 +10,9 @@ Show the confirmed application/window and device in the OS window title and
 the compact toolbar. Use a display/window mark and the application's initial
 in source menus and the active toolbar. PiP follows the current confirmed
 source too. Fullscreen/restore and minimize operate on the local viewer;
-minimizing the controlling viewer releases remote input.
+minimizing the controlling viewer releases remote input. Local window shortcuts
+are handled above the focus scope, including idle and drawer focus; remote keys
+still require the confirmed video input focus.
 
 The current source catalog has application and title but no application image.
 These marks are identifiers, not the remote application's real icon. A later
