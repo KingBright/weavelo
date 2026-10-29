@@ -150,6 +150,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }, enabled = state.connected && state.clipboard) { Text("Send clipboard") }
             }
             Text(localError ?: state.status, color = Color.LightGray, maxLines = 2)
+            TextButton(onClick = { WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) }, enabled = state.connected) { Text("Refresh screens / windows") }
             Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.sources.forEach { source -> TextButton(onClick = { WorkspaceClient.add(source) }, enabled = state.connected) { Text("+ ${source.title}", maxLines = 1) } }
             }

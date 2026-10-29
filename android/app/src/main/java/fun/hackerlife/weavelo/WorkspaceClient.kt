@@ -158,6 +158,11 @@ object WorkspaceClient {
         if (!value) pendingClipboard?.let { applyClipboard(it); pendingClipboard = null }
         activity()
     }
+    fun refreshSources(sessionKey: String, generation: Long) = guarded {
+        val current = mutable.value
+        if (!active || !current.connected || current.sessionKey != sessionKey || current.connectionGeneration != generation) return@guarded
+        command("ListSources", JSONObject().put("request_id", 1))
+    }
     fun add(source: WorkspaceSource) = guarded {
         // Conservative default for mobile hardware; source count is distinct from visible decoder count.
         if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)"); return@guarded }
