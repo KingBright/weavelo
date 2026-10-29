@@ -138,5 +138,6 @@ Timer.scheduledTimer(withTimeInterval:0.1,repeats:true){_ in
     for w in windows.values {w.contentView?.needsDisplay=true}
     save()
 }
-Timer.scheduledTimer(withTimeInterval:180,repeats:false){_ in stopFixture()}
+// Remote phone observation and transfer can take several minutes; still stop automatically.
+Timer.scheduledTimer(withTimeInterval:600,repeats:false){_ in stopFixture()}
 save();app.run()
