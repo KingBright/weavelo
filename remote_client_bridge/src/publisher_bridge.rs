@@ -9,12 +9,17 @@ use remote_core::{
     session_crypto::*,
 };
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc, watch};
+
+// Bound authenticated transports, including clients which have not opened a file
+// session yet. One MediaProjection encoder may still have only one viewer.
+const MAX_PUBLISHER_PEERS: usize = 8;
 
 #[derive(Clone, serde::Serialize)]
 pub struct CaptureDemand {
@@ -148,8 +153,8 @@ impl MobilePublisher {
         let advertised_lifetime = AdvertisedPublisher(capabilities.clone());
         let task = tokio::spawn(async move {
             let _advertised_lifetime = advertised_lifetime;
-            let mut peer: Option<Peer> = None;
-            let mut authenticated: Option<(SocketAddr,[u8;16],[u8;16],Instant)>=None;
+            let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
+            let mut authenticated: HashMap<SocketAddr, ([u8;16], Instant)> = HashMap::new();
             let mut handshakes=remote_core::session_auth::ServerHandshake::default();
             let mut maintenance = tokio::time::interval(Duration::from_secs(1));
             loop {
@@ -161,7 +166,7 @@ impl MobilePublisher {
                         // A new authorization must never inherit subscriptions or queued media.
                         while frame_rx.try_recv().is_ok() {}
                         *shared.lock().unwrap() = CaptureDemand::default();
-                        if let Some(p) = peer.as_mut() {
+                        for p in peers.values_mut() {
                             if let Some(subscription) = p.subscription.take() {
                                 p.retired.insert(subscription.id);
                                 p.activity_revision = 0;
@@ -176,19 +181,26 @@ impl MobilePublisher {
                         }
                     }
                     Some(reason) = error_rx.recv() => {
-                        if let Some(p) = &peer { reply(&sender,p.addr,SessionCommand::Closed {connection_id:p.id,reason}).await; }
+                        for p in peers.values() { reply(&sender,p.addr,SessionCommand::Closed {connection_id:p.id,reason:reason.clone()}).await; }
                         break;
                     }
                     _ = maintenance.tick() => {
                         handshakes.expire(remote_core::session_auth::AuthTime::now());
-                        if peer.is_none() && authenticated.is_some_and(|(_,_,_,at)|at.elapsed()>Duration::from_secs(30)) {
-                            if let Some((addr,..))=authenticated.take(){sender.remove_peer_crypto(addr);handshakes.forget(addr);}
-                        }
-                        if peer.as_ref().is_some_and(|p| p.seen.elapsed() > Duration::from_secs(30)) {
-                            if let Some(p) = peer.take() { sender.remove_peer_crypto(p.addr);handshakes.forget(p.addr); }
-                            authenticated = None; shared.lock().unwrap().active = false; shared.lock().unwrap().audio = false;
-                        }
-                        if let Some(p) = &peer && shared.lock().unwrap().audio && let Some(subscription) = &p.subscription {
+                        authenticated.retain(|addr, (_, at)| {
+                            let expired = peers.get(addr).map_or_else(
+                                || at.elapsed() > Duration::from_secs(30),
+                                |p| p.seen.elapsed() > Duration::from_secs(30),
+                            );
+                            if expired {
+                                if peers.remove(addr).is_some_and(|p| p.subscription.is_some()) {
+                                    *shared.lock().unwrap() = CaptureDemand::default();
+                                }
+                                sender.remove_peer_crypto(*addr);
+                                handshakes.forget(*addr);
+                            }
+                            !expired
+                        });
+                        if let Some(p) = peers.values().find(|p| p.subscription.is_some()) && shared.lock().unwrap().audio && let Some(subscription) = &p.subscription {
                             let config = protocol::AudioStreamConfig::remote_system(protocol::remote_system_audio_stream_id(subscription.id), 48000, 2, 20);
                             if let Ok(envelope) = remote_core::media_plane::audio_stream_config_to_envelope(&config, 0, now_unix_ms()) { let _ = p.scheduled.send(envelope).await; }
                         }
@@ -196,7 +208,7 @@ impl MobilePublisher {
                     Some(frame) = frame_rx.recv() => {
                         let permission = *permission_rx.borrow();
                         if !permission.enabled || frame.epoch != permission.epoch || (frame.audio && !permission.audio) { continue; }
-                        let Some(p) = peer.as_mut() else { continue; };
+                        let Some(p) = peers.values_mut().find(|p| p.subscription.is_some()) else { continue; };
                         let Some(subscription) = &p.subscription else { continue; };
                         let wanted = shared.lock().unwrap().clone();
                         if (frame.audio && !wanted.audio) || (!frame.audio && !wanted.active) { continue; }
@@ -211,11 +223,11 @@ impl MobilePublisher {
                         let Ok(packet) = packet else { continue; };
                         match packet {
                             MultiplexedPacket::Control(ControlMessage::SessionHandshake(message),addr)=>{
-                                let allow_new=peer.is_none()&&authenticated.is_none();
+                                let allow_new=!authenticated.contains_key(&addr) && authenticated.len()<MAX_PUBLISHER_PEERS;
                                 if let Ok(response)=handshakes.receive(&key,&message,addr,remote_core::session_auth::AuthTime::now(),allow_new){
                                     if let Some(established)=response.established{
                                         sender.install_peer_crypto(addr,established.crypto);
-                                        authenticated=Some((addr,established.session_id,established.client_nonce,Instant::now()));
+                                        authenticated.insert(addr,(established.session_id,Instant::now()));
                                     }
                                     let _=sender.send_control(&ControlMessage::SessionHandshake(Box::new(response.message)),addr).await;
                                 }
@@ -225,7 +237,7 @@ impl MobilePublisher {
                             }
                             MultiplexedPacket::Control(ControlMessage::SessionReject{..},_)=>{}
                             MultiplexedPacket::ClockProbe(probe,host_recv_us,addr)=>{
-                                if authenticated.is_some_and(|(a,id,..)|a==addr&&id==probe.session_id) && let Some(p)=peer.as_mut(){
+                                if authenticated.get(&addr).is_some_and(|(id,_)|*id==probe.session_id) && let Some(p)=peers.get_mut(&addr){
                                     p.seen=Instant::now();
                                     let reply=protocol::session_auth::ClockReply{probe,host_recv_us,host_send_us:remote_core::timing::quanta_now_us()};
                                     let _=sender.send_control(&ControlMessage::ClockReply(reply),addr).await;
@@ -233,27 +245,31 @@ impl MobilePublisher {
                             }
                             MultiplexedPacket::ClockReply(..)=>{}
                             MultiplexedPacket::Control(message, addr) => {
-                                if authenticated.is_none_or(|(a, ..)| a != addr) { continue; }
-                                if let Some(p) = peer.as_mut() { p.seen = Instant::now(); }
+                                if !authenticated.contains_key(&addr) { continue; }
+                                if let Some(p) = peers.get_mut(&addr) { p.seen = Instant::now(); }
                                 match message {
                                     ControlMessage::Session(command) => match *command {
                                         SessionCommand::Open { connection_id, version:SESSION_VERSION } => {
-                                            if peer.as_ref().is_some_and(|p| p.id != connection_id) { reply(&sender, addr, SessionCommand::Error { request_id:connection_id, reason:"close the previous connection first".into() }).await; continue; }
-                                            if peer.is_none() { peer = Some(Peer::new(addr, connection_id, &sender, directory.clone())); }
+                                            if peers.get(&addr).is_some_and(|p| p.id != connection_id) { reply(&sender, addr, SessionCommand::Error { request_id:connection_id, reason:"close the previous connection first".into() }).await; continue; }
+                                            peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone()));
                                             reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:1, files:true, clipboard:false, window_capture:false }).await;
                                         }
-                                        SessionCommand::ListSources { request_id } if peer.is_some() => {
+                                        SessionCommand::ListSources { request_id } if peers.contains_key(&addr) => {
                                             let (width, height) = *geometry.lock().unwrap();
                                             let permission = *permission_rx.borrow();
                                             reply(&sender, addr, SessionCommand::Sources { request_id, sources:available_sources(permission, width, height) }).await;
                                         }
-                                        SessionCommand::Subscribe(request) if peer.is_some() => {
+                                        SessionCommand::Subscribe(request) if peers.contains_key(&addr) => {
                                             let permission = *permission_rx.borrow();
                                             if !permission.enabled {
                                                 reply(&sender, addr, SessionCommand::Error { request_id: request.id, reason: "Screen sharing is not authorized on this device; files remain available".into() }).await;
                                                 continue;
                                             }
-                                            let p = peer.as_mut().unwrap();
+                                            if peers.values().any(|p| p.addr != addr && p.subscription.is_some()) {
+                                                reply(&sender, addr, SessionCommand::Error { request_id:request.id, reason:"Android screen sharing already has an active viewer; files remain available".into() }).await;
+                                                continue;
+                                            }
+                                            let p = peers.get_mut(&addr).unwrap();
                                             if request.source != CaptureSource::MainDisplay || !valid(&request) || p.retired.contains(&request.id) || p.retired.len() >= 4096 || p.subscription.as_ref().is_some_and(|s| s.id != request.id) {
                                                 reply(&sender, addr, SessionCommand::Error { request_id:request.id, reason:"Android projection supports one authorized source".into() }).await; continue;
                                             }
@@ -261,13 +277,13 @@ impl MobilePublisher {
                                             let id=request.id; if p.subscription.is_none() { p.subscription=Some(request); }
                                             reply(&sender, addr, SessionCommand::Subscribed { id, audio_owner:permission.audio.then_some(id), supports_input:false }).await;
                                         }
-                                        SessionCommand::SetActivity { id, revision, video, audio } if peer.is_some() => {
-                                            let p=peer.as_mut().unwrap(); if p.subscription.as_ref().is_none_or(|s| s.id != id) { continue; }
+                                        SessionCommand::SetActivity { id, revision, video, audio } if peers.contains_key(&addr) => {
+                                            let p=peers.get_mut(&addr).unwrap(); if p.subscription.as_ref().is_none_or(|s| s.id != id) { continue; }
                                             let (video, audio) = { let mut d=shared.lock().unwrap(); if revision > p.activity_revision { p.activity_revision=revision; if video && !d.active { d.keyframe+=1; } d.active=video; d.audio=audio && permission_rx.borrow().audio; } (d.active,d.audio) };
                                             reply(&sender, addr, SessionCommand::Activity { id, revision:p.activity_revision, video, audio }).await;
                                         }
-                                        SessionCommand::Configure { id, revision, width, height, fps, bitrate_kbps } if peer.is_some() => {
-                                            let p=peer.as_mut().unwrap();
+                                        SessionCommand::Configure { id, revision, width, height, fps, bitrate_kbps } if peers.contains_key(&addr) => {
+                                            let p=peers.get_mut(&addr).unwrap();
                                             if let Some(s)=p.subscription.as_mut().filter(|s| s.id==id) {
                                                 let updated=SubscriptionRequest { width,height,fps,bitrate_kbps,..s.clone() };
                                                 if !valid(&updated) { reply(&sender,addr,SessionCommand::Error {request_id:id,reason:"unsupported stream settings".into()}).await; continue; }
@@ -275,20 +291,32 @@ impl MobilePublisher {
                                                 reply(&sender,addr,SessionCommand::Configured {id,revision:p.settings_revision}).await;
                                             }
                                         }
-                                        SessionCommand::Unsubscribe { id } if peer.is_some() => {
-                                            let p=peer.as_mut().unwrap(); p.retired.insert(id); if p.subscription.as_ref().is_some_and(|s| s.id==id) { p.subscription=None; p.activity_revision=0; p.settings_revision=0; shared.lock().unwrap().active=false; shared.lock().unwrap().audio=false; }
+                                        SessionCommand::Unsubscribe { id } if peers.contains_key(&addr) => {
+                                            let p=peers.get_mut(&addr).unwrap();
+                                            // Reserve a tombstone for the live subscription on permission revocation.
+                                            let reserved = usize::from(p.subscription.as_ref().is_some_and(|s| s.id != id));
+                                            if p.retired.len() + reserved >= 4096 && !p.retired.contains(&id) {
+                                                reply(&sender,addr,SessionCommand::Error {request_id:id,reason:"subscription ID capacity reached; reconnect".into()}).await;
+                                                continue;
+                                            }
+                                            p.retired.insert(id); if p.subscription.as_ref().is_some_and(|s| s.id==id) { p.subscription=None; p.activity_revision=0; p.settings_revision=0; shared.lock().unwrap().active=false; shared.lock().unwrap().audio=false; }
                                             reply(&sender,addr,SessionCommand::Unsubscribed {id}).await;
                                         }
-                                        SessionCommand::Close { connection_id } if peer.as_ref().is_some_and(|p| p.id==connection_id) => { peer=None; shared.lock().unwrap().active=false; shared.lock().unwrap().audio=false; }
+                                        SessionCommand::Close { connection_id } if peers.get(&addr).is_some_and(|p| p.id==connection_id) => {
+                                            if peers.remove(&addr).is_some_and(|p| p.subscription.is_some()) { *shared.lock().unwrap()=CaptureDemand::default(); }
+                                            authenticated.remove(&addr);
+                                            sender.remove_peer_crypto(addr);
+                                            handshakes.forget(addr);
+                                        }
                                         _ => {}
                                     },
-                                    ControlMessage::Ping { client_send_ts } if peer.is_some() => { let now=now_unix_ms(); let _=sender.send_control(&ControlMessage::Pong { client_send_ts,host_recv_ts:now,host_send_ts:now },addr).await; }
-                                    ControlMessage::RequestKeyframe { .. } => { shared.lock().unwrap().keyframe+=1; }
+                                    ControlMessage::Ping { client_send_ts } if peers.contains_key(&addr) => { let now=now_unix_ms(); let _=sender.send_control(&ControlMessage::Pong { client_send_ts,host_recv_ts:now,host_send_ts:now },addr).await; }
+                                    ControlMessage::RequestKeyframe { .. } if peers.get(&addr).is_some_and(|p| p.subscription.is_some()) => { shared.lock().unwrap().keyframe+=1; }
                                     _ => {}
                                 }
                             }
                             MultiplexedPacket::Data(envelope, addr) | MultiplexedPacket::DataWithTiming(envelope, _, addr) => {
-                                if let Some(p)=peer.as_mut().filter(|p| p.addr==addr) { p.seen=Instant::now(); let _=p.files.try_send(envelope); }
+                                if let Some(p)=peers.get_mut(&addr) { p.seen=Instant::now(); let _=p.files.try_send(envelope); }
                             }
                             _ => {}
                         }
@@ -811,6 +839,82 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_file_peers_keep_transfers_and_media_ownership_isolated() {
+        let directory = ReceiverTestDir::new();
+        let receive = directory.0.join("received");
+        let key = b"concurrent-receiver-fixture".to_vec();
+        let publisher = MobilePublisher::start_with_permissions(
+            "127.0.0.1:0".parse().unwrap(), receive.clone(), key.clone(), true, false,
+        ).await.unwrap();
+        let address = publisher.address;
+        let mut clients = Vec::new();
+        // Identical connection, subscription and transfer IDs on different
+        // authenticated transports must never alias another computer's state.
+        for _ in 0..4 { clients.push(Box::pin(receiver_client(&publisher,&key)).await); }
+        command(&clients[0].0,address,SessionCommand::Subscribe(receiver_subscription(256))).await;
+        assert!(matches!(reply(&clients[0].1).await,SessionCommand::Subscribed {id:256,..}));
+        command(&clients[1].0,address,SessionCommand::Subscribe(receiver_subscription(256))).await;
+        assert!(matches!(reply(&clients[1].1).await,SessionCommand::Error {request_id:256,..}));
+        command(&clients[1].0,address,SessionCommand::Unsubscribe {id:256}).await;
+        assert!(matches!(reply(&clients[1].1).await,SessionCommand::Unsubscribed {id:256}));
+        assert!(publisher.demand().active);
+        let payloads: Vec<Vec<u8>> = (0..4).map(|n| (0..262_161).map(|i| ((i+n*17)%251) as u8).collect()).collect();
+        let mut transfers = tokio::task::JoinSet::new();
+        for (i,(sender,receiver)) in clients.into_iter().enumerate() {
+            let path = directory.0.join(format!("computer-{i}.bin"));
+            std::fs::write(&path,&payloads[i]).unwrap();
+            // Each client owns its own receive loop, as on the four devices.
+            transfers.spawn(async move {
+                let mut transfer = FileTestSender::new(&sender,address);
+                transfer.deliver(&receiver,path).await;
+                (i,sender,receiver,transfer)
+            });
+        }
+        let mut completed = Vec::new();
+        while let Some(result) = transfers.join_next().await { completed.push(result.unwrap()); }
+        completed.sort_by_key(|client| client.0);
+        for (i, bytes) in payloads.iter().enumerate() {
+            assert_eq!(&std::fs::read(receive.join(format!("computer-{i}.bin"))).unwrap(),bytes);
+        }
+        command(&completed[1].1,address,SessionCommand::Close {connection_id:17}).await;
+        command(&completed[0].1,address,SessionCommand::SetActivity {id:256,revision:1,video:true,audio:false}).await;
+        assert!(matches!(reply(&completed[0].2).await,SessionCommand::Activity {video:true,..}));
+        assert!(publisher.demand().active,"closing a file peer stopped another viewer");
+        publisher.frame(vec![0,0,0,1,0x26,1,9],0,false);
+        let packet = tokio::time::timeout(Duration::from_secs(2),completed[0].2.recv()).await.unwrap().unwrap();
+        assert!(matches!(packet,MultiplexedPacket::Data(e,_) if e.header.stream_id==256 && e.payload==vec![0,0,0,1,0x26,1,9]));
+        publisher.set_capture_available(false,false);
+        assert!(matches!(reply(&completed[0].2).await,SessionCommand::Unsubscribed {id:256}));
+        for i in [0,2,3] {
+            assert!(matches!(reply(&completed[i].2).await,SessionCommand::Sources {sources,..} if sources.is_empty()));
+        }
+        let after = directory.0.join("after-revocation.bin");
+        std::fs::write(&after,&payloads[2]).unwrap();
+        let (_,_,receiver,transfer) = &mut completed[2];
+        transfer.deliver(receiver,after).await;
+        assert_eq!(std::fs::read(receive.join("after-revocation.bin")).unwrap(),payloads[2]);
+    }
+
+    #[tokio::test]
+    async fn authenticated_peer_capacity_is_bounded_without_displacing_file_clients() {
+        let directory = ReceiverTestDir::new();
+        let key = b"receiver-capacity-fixture".to_vec();
+        let publisher = MobilePublisher::start_with_permissions(
+            "127.0.0.1:0".parse().unwrap(),directory.0.clone(),key.clone(),false,false,
+        ).await.unwrap();
+        let mut clients = Vec::new();
+        for _ in 0..MAX_PUBLISHER_PEERS { clients.push(receiver_client(&publisher,&key).await); }
+        let extra = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let (sender,receiver) = extra.split();
+        let error = remote_core::session_auth::authenticate_with_key(&sender,&receiver,publisher.address,&key).await;
+        assert_eq!(error.unwrap_err(), "session authentication rejected: Busy");
+        for (sender,receiver) in &clients {
+            command(sender,publisher.address,SessionCommand::ListSources {request_id:3}).await;
+            assert!(matches!(reply(receiver).await,SessionCommand::Sources {request_id:3,sources} if sources.is_empty()));
+        }
     }
 
     #[tokio::test]
