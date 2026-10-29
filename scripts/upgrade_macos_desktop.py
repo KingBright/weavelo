@@ -540,11 +540,14 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             resume_sha = gate.sha(resume_sha)
         context = inspect(home, current_pins, transaction_sha=resume_sha)
         selected = context['paths']; registry = context['record_path']
+        stopped_resume = False
         if resume_sha is not None:
             prior = context['previous_transaction']
-            require(prior and prior.get('phase') == 'staged' and prior.get('source') == candidate_pins
+            stopped_resume = bool(prior and prior.get('phase') in ('stopping', 'stopped')
+                                  and no_new_rollback and prior.get('rollback_policy') == 'none_new')
+            require(prior and (prior.get('phase') == 'staged' or stopped_resume) and prior.get('source') == candidate_pins
                     and prior.get('archive_sha256') == archive_sha and prior.get('current') == current_pins,
-                    'Only the exact verified pre-stop staged transaction may resume')
+                    'Only the exact verified pre-stop staged transaction or an already-stopped current update may resume')
         decision = guard.check_upgrade(context['signed'], signed)
         if decision == 'already_installed':
             return {'applied': False, 'outcome': 'already_installed', 'source': candidate_pins}
@@ -561,7 +564,8 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             prior_journal_sha = gate.hash_file(journal) if journal.exists() else None
             if resume_sha is not None:
                 data, observed_sha = read_record(journal)
-                require(observed_sha == resume_sha and data.get('phase') == 'staged'
+                require(observed_sha == resume_sha and (data.get('phase') == 'staged'
+                        or (stopped_resume and data.get('phase') in ('stopping', 'stopped')))
                         and data.get('kind') == 'independent-desktop-upgrade'
                         and data.get('staging') == str(stage) and data.get('source') == candidate_pins
                         and data.get('archive_sha256') == archive_sha and data.get('current') == current_pins,
@@ -601,9 +605,13 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             guard.verify_app(staged, policy)
             candidate_tree = tree_digest(candidate)
             require(tree_digest(staged) == candidate_tree, 'Staged signed application differs')
-            checkpoint('staged')
+            if not stopped_resume:
+                checkpoint('staged')
             control = NativeControl(selected)
             before = control.before(current_pins['executable'])
+            if stopped_resume:
+                require(not before['loaded'] and before['background'] is None and before['gui'] is None,
+                        'Prior stop must be confirmed with no owners and the existing service unloaded')
             import desktop_upgrade_rollback
             rollback_root = desktop_upgrade_rollback.slot(selected)
             if no_new_rollback:
@@ -614,18 +622,24 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 if prior_slot:
                     private(rollback_root, True)
                 prior_slot_tree = tree_digest(rollback_root) if prior_slot else None
-                data['rollback'] = {'new_retained': False, 'prior_slot_preserved': prior_slot,
-                                    'prior_slot_tree': prior_slot_tree}
+                rollback = {'new_retained': False, 'prior_slot_preserved': prior_slot,
+                            'prior_slot_tree': prior_slot_tree}
+                if stopped_resume:
+                    require(data.get('rollback') == rollback, 'Prior rollback slot changed after stop')
+                data['rollback'] = rollback
                 rollback_record = None
             else:
                 rollback_record = desktop_upgrade_rollback.prepare(context, candidate_pins, candidate_tree, signed, archive_sha, before)
                 data['rollback'] = {'path': str(rollback_root),
                                     'record_sha256': gate.digest(desktop_upgrade_rollback.encoded(rollback_record)),
                                     'old_tree': context['tree']}
-            data['owners_before'] = {'background_pid': (before.get('background') or {}).get('pid'),
-                                     'frontend_pid': (before.get('gui') or {}).get('pid')}
-            checkpoint('stopping')
-            control.stop(before)
+            if stopped_resume:
+                data['resumed_after_verified_stop'] = True
+            else:
+                data['owners_before'] = {'background_pid': (before.get('background') or {}).get('pid'),
+                                         'frontend_pid': (before.get('gui') or {}).get('pid')}
+                checkpoint('stopping')
+                control.stop(before)
             checkpoint('stopped')
             with idle_locks(selected['profile']):
                 latest = inspect(home, current_pins, transaction_sha=prior_journal_sha)

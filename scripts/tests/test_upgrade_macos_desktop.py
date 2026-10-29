@@ -477,6 +477,62 @@ class UpgradeTests(unittest.TestCase):
             self.apply(pins,resume=digest)
         self.assertEqual(self.calls,['before','stop']);self.assertEqual(self.app_bytes(),b'old-image')
 
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_current_update_resumes_after_confirmed_unloaded_stop_without_repeating_stop_or_copy(self):
+        pins=self.current();membership=upgrade.membership_metadata(self.selected['profile'])
+        plist=self.selected['plist'].read_bytes()
+        self.stop_hook=lambda: (_ for _ in ()).throw(guard.ReleaseRejected('declined'))
+        with self.assertRaises(guard.ReleaseRejected):self.apply(pins,no_new=True)
+        journal=self.selected['state']/'upgrade.json';digest=upgrade.gate.hash_file(journal)
+        self.stop_hook=None
+        with patch.object(self.control,'before',return_value={'background':None,'gui':None,'loaded':False}), \
+             patch.object(shutil,'copytree',side_effect=AssertionError('must reuse the verified stage')):
+            result=self.apply(pins,resume=digest,no_new=True)
+        self.assertEqual(result['phase'],'completed')
+        self.assertTrue(result['resumed_after_verified_stop'])
+        self.assertEqual(result['owners_before'],{'background_pid':101,'frontend_pid':102})
+        self.assertEqual(self.calls.count('stop'),1)
+        self.assertEqual(self.app_bytes(),b'new-image')
+        self.assertEqual(upgrade.membership_metadata(self.selected['profile']),membership)
+        self.assertEqual(self.selected['plist'].read_bytes(),plist)
+        self.assertFalse((self.selected['app'].parent/'.desktop-upgrade.rollback').exists())
+
+    def test_current_stopping_resume_refuses_a_loaded_supervisor_without_changing_the_journal(self):
+        pins=self.current()
+        self.stop_hook=lambda: (_ for _ in ()).throw(guard.ReleaseRejected('declined'))
+        with self.assertRaises(guard.ReleaseRejected):self.apply(pins,no_new=True)
+        journal=self.selected['state']/'upgrade.json';digest=upgrade.gate.hash_file(journal)
+        with patch.object(self.control,'before',return_value={'background':None,'gui':None,'loaded':True}):
+            with self.assertRaisesRegex(guard.ReleaseRejected,'Prior stop must be confirmed'):
+                self.apply(pins,resume=digest,no_new=True)
+        self.assertEqual(upgrade.gate.hash_file(journal),digest)
+        self.assertEqual(self.app_bytes(),b'old-image');self.assertEqual(self.calls.count('stop'),1)
+
+    def test_current_stopping_resume_refuses_a_remaining_owner_without_repeating_stop(self):
+        pins=self.current()
+        self.stop_hook=lambda: (_ for _ in ()).throw(guard.ReleaseRejected('declined'))
+        with self.assertRaises(guard.ReleaseRejected):self.apply(pins,no_new=True)
+        journal=self.selected['state']/'upgrade.json';digest=upgrade.gate.hash_file(journal)
+        with patch.object(self.control,'before',return_value={'background':{'pid':101},'gui':None,'loaded':False}):
+            with self.assertRaisesRegex(guard.ReleaseRejected,'Prior stop must be confirmed'):
+                self.apply(pins,resume=digest,no_new=True)
+        self.assertEqual(upgrade.gate.hash_file(journal),digest)
+        self.assertEqual(self.app_bytes(),b'old-image');self.assertEqual(self.calls.count('stop'),1)
+
+    def test_current_stopping_resume_preserves_a_changed_historical_rollback(self):
+        root=self.selected['app'].parent/'.desktop-upgrade.rollback';root.mkdir(mode=0o700)
+        (root/'historical').write_bytes(b'prior-slot');pins=self.current()
+        self.stop_hook=lambda: (_ for _ in ()).throw(guard.ReleaseRejected('declined'))
+        with self.assertRaises(guard.ReleaseRejected):self.apply(pins,no_new=True)
+        journal=self.selected['state']/'upgrade.json';digest=upgrade.gate.hash_file(journal)
+        (root/'historical').write_bytes(b'changed-by-user')
+        with patch.object(self.control,'before',return_value={'background':None,'gui':None,'loaded':False}):
+            with self.assertRaisesRegex(guard.ReleaseRejected,'rollback slot changed after stop'):
+                self.apply(pins,resume=digest,no_new=True)
+        self.assertEqual((root/'historical').read_bytes(),b'changed-by-user')
+        self.assertEqual(upgrade.gate.hash_file(journal),digest)
+        self.assertEqual(self.app_bytes(),b'old-image');self.assertEqual(self.calls.count('stop'),1)
+
     def test_changed_staged_candidate_is_preserved_and_never_resumed(self):
         pins=self.current()
         self.before_hook=lambda: (_ for _ in ()).throw(KeyError('pid'))
