@@ -213,3 +213,142 @@ mod tests {
         assert!(validate_icon_container(&vec![0; MAX_ICON_BYTES + 1]).is_err());
     }
 }
+
+/// Already committed user text. Retries keep every byte, identity and timestamp.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextCommit {
+    pub binding: crate::realtime_input::InputBinding,
+    pub request_id: u64,
+    pub created_host_ms: u64,
+    pub text: CommittedText,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextAdmission {
+    New,
+    Pending,
+    Accepted,
+}
+
+/// One single-flight receipt per input epoch; an uncertain OS outcome is never replayed.
+#[derive(Default)]
+pub struct TextReceiver {
+    last: Option<TextCommit>,
+    outcome: Option<bool>,
+}
+impl TextReceiver {
+    pub fn begin(
+        &mut self,
+        request: &TextCommit,
+        lease: &mut crate::realtime_input::InputLease,
+        now_ms: u64,
+    ) -> Result<TextAdmission, &'static str> {
+        if request.request_id == 0
+            || request.binding != lease.binding
+            || lease.revocation().is_revoked()
+        {
+            return Err("text input ownership changed");
+        }
+        if let Some(last) = &self.last {
+            if request.request_id < last.request_id {
+                return Err("text input was superseded");
+            }
+            if request.request_id == last.request_id {
+                if request != last {
+                    return Err("text input retry differs from the original");
+                }
+                return match self.outcome {
+                    Some(true) => Ok(TextAdmission::Accepted),
+                    Some(false) => Err("text input did not complete"),
+                    None => Ok(TextAdmission::Pending),
+                };
+            }
+            if self.outcome.is_none() {
+                return Err("previous text input is still pending");
+            }
+        }
+        if !lease.accept_text(request.binding, request.created_host_ms, now_ms) {
+            return Err("text input expired or is unavailable");
+        }
+        self.last = Some(request.clone());
+        self.outcome = None;
+        Ok(TextAdmission::New)
+    }
+    pub fn complete(&mut self, request_id: u64, accepted: bool) {
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|last| last.request_id == request_id)
+            && self.outcome.is_none()
+        {
+            self.outcome = Some(accepted);
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_delivery_tests {
+    use super::*;
+    use crate::realtime_input::{InputBinding, InputLease};
+    fn request() -> TextCommit {
+        TextCommit {
+            binding: InputBinding {
+                connection_id: 1,
+                subscription_id: 2,
+                source_revision: 3,
+                epoch: [4; 16],
+            },
+            request_id: 5,
+            created_host_ms: 100,
+            text: CommittedText::new("你好🙂".into()).unwrap(),
+        }
+    }
+    #[test]
+    fn committed_text_cannot_bypass_receipts_through_realtime_input() {
+        let request=request();let mut lease=InputLease::new(request.binding,100);
+        let packet=crate::realtime_input::RealtimeInput {binding:request.binding,sequence:1,created_host_ms:100,
+            payload:crate::realtime_input::InputPayload::Event(crate::InputEvent::Text(request.text))};
+        assert!(lease.accept(&packet,100).is_none());
+    }
+    #[test]
+    fn lost_ack_retries_do_not_reinject_or_change_the_original_request() {
+        let request = request();
+        let mut lease = InputLease::new(request.binding, 100);
+        let mut receiver = TextReceiver::default();
+        assert_eq!(
+            receiver.begin(&request, &mut lease, 100),
+            Ok(TextAdmission::New)
+        );
+        assert_eq!(
+            receiver.begin(&request, &mut lease, 110),
+            Ok(TextAdmission::Pending)
+        );
+        receiver.complete(request.request_id, true);
+        assert_eq!(
+            receiver.begin(&request, &mut lease, 400),
+            Ok(TextAdmission::Accepted)
+        );
+        let mut changed = request.clone();
+        changed.text = CommittedText::new("another input".into()).unwrap();
+        assert!(receiver.begin(&changed, &mut lease, 110).is_err());
+        changed = request.clone();
+        changed.created_host_ms += 1;
+        assert!(receiver.begin(&changed, &mut lease, 110).is_err());
+    }
+    #[test]
+    fn failed_dispatch_and_old_source_epochs_cannot_be_retried() {
+        let request = request();
+        let mut lease = InputLease::new(request.binding, 100);
+        let mut receiver = TextReceiver::default();
+        receiver.begin(&request, &mut lease, 100).unwrap();
+        receiver.complete(request.request_id, false);
+        assert!(receiver.begin(&request, &mut lease, 110).is_err());
+        let mut other = request.clone();
+        other.binding.epoch[0] ^= 1;
+        assert!(receiver.begin(&other, &mut lease, 110).is_err());
+        let mut fresh = TextReceiver::default();
+        assert!(fresh.begin(&request, &mut lease, 351).is_err());
+        lease.revocation().revoke();
+        assert!(fresh.begin(&request, &mut lease, 100).is_err());
+    }
+}

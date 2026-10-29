@@ -69,6 +69,7 @@ fn frame_binding(frame: &OwnedFrame) -> Option<FrameBinding> {
 #[derive(Default)]
 struct Held {
     keys: BTreeSet<i32>,
+    keysyms: BTreeSet<i32>,
     buttons: BTreeSet<i32>,
     deadline: Option<std::time::Instant>,
 }
@@ -200,6 +201,18 @@ impl PortalInput {
         }
         result
     }
+    async fn keysym(&self, held: &mut Held, sym: i32, pressed: bool) -> Result<()> {
+        if pressed {
+            self.status()?;
+            if !held.keysyms.insert(sym) {return Ok(());}
+        } else if !held.keysyms.remove(&sym) {return Ok(());}
+        let result=self.notify("NotifyKeyboardKeysym",
+            &(&self.session,options(),sym,u32::from(pressed)),held.deadline).await;
+        if result==Err(PortalInputError::InvalidEvent) {
+            if pressed {held.keysyms.remove(&sym);} else {held.keysyms.insert(sym);}
+        }
+        result
+    }
     async fn button(&self, held: &mut Held, button: i32, pressed: bool) -> Result<()> {
         if pressed {
             self.status()?;
@@ -249,6 +262,19 @@ impl PortalInput {
         self.status()?;
         let result = async {
             match event {
+                InputEvent::Text(text) => {
+                    if [42,54,29,97,56,100,125,126].iter().any(|key|held.keys.contains(key)) {
+                        return Err(PortalInputError::InvalidEvent);
+                    }
+                    for ch in text.as_str().chars() {
+                        let sym = match ch { '\n'|'\r'=>0xff0d, '\t'=>0xff09,
+                            ch if (ch as u32)<=0xff => ch as i32,
+                            ch => 0x01000000 | ch as i32 };
+                        self.keysym(&mut held,sym,true).await?;
+                        self.keysym(&mut held,sym,false).await?;
+                    }
+                    Ok(())
+                }
                 InputEvent::MouseMoveAbsolute { x, y } => {
                     let (width, height) = self
                         .source
@@ -341,6 +367,9 @@ impl PortalInput {
             if self.key(&mut held, key, false).await.is_err() {
                 result = Err(PortalInputError::Transport);
             }
+        }
+        for sym in held.keysyms.clone() {
+            if self.keysym(&mut held,sym,false).await.is_err() {result=Err(PortalInputError::Transport);}
         }
         for button in held.buttons.clone() {
             if self.button(&mut held, button, false).await.is_err() {

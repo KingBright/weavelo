@@ -209,7 +209,12 @@ impl MobilePublisher {
                             }
                         }
                         for ack in handled {
-                            reply(&sender,ack.addr,SessionCommand::InputHandled {binding:ack.binding,sequence:ack.sequence}).await;
+                            let command=match ack.text {
+                                Some((request_id,true))=>SessionCommand::TextCommitted {binding:ack.binding,request_id},
+                                Some((request_id,false))=>SessionCommand::TextRejected {binding:ack.binding,request_id,reason:"Android could not commit text through the authorized input service".into()},
+                                None=>SessionCommand::InputHandled {binding:ack.binding,sequence:ack.sequence},
+                            };
+                            reply(&sender,ack.addr,command).await;
                         }
                     }
                     _ = maintenance.tick() => {
@@ -339,6 +344,10 @@ impl MobilePublisher {
                                             if let Some(binding) = binding {
                                                 reply(&sender,addr,SessionCommand::InputBinding {binding,request,host_time_ms:crate::publisher_input::now_ms()}).await;
                                             }
+                                        }
+                                        SessionCommand::CommitText(request) if shared.lock().unwrap().active && peers.get(&addr).is_some_and(|p| p.id==request.binding.connection_id && p.subscription.as_ref().is_some_and(|s| s.id==request.binding.subscription_id)) => {
+                                            let response=shared_input.lock().unwrap().admit_text(addr,&request);
+                                            if let Some(response)=response {reply(&sender,addr,response).await;}
                                         }
                                         SessionCommand::RealtimeInput(packet) if shared.lock().unwrap().active && peers.get(&addr).is_some_and(|p| p.id==packet.binding.connection_id && p.subscription.as_ref().is_some_and(|s| s.id==packet.binding.subscription_id)) => {
                                             shared_input.lock().unwrap().admit(addr,&packet);

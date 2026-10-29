@@ -123,7 +123,7 @@ impl HeldState {
             InputEvent::MouseUp(b) if *b <= 2 => {
                 self.transition(Press::Button(*b), false, sequence)
             }
-            InputEvent::MouseDown(_) | InputEvent::MouseUp(_) | InputEvent::Touch { .. } => false,
+            InputEvent::MouseDown(_) | InputEvent::MouseUp(_) | InputEvent::Touch { .. } | InputEvent::Text(_) => false,
             InputEvent::ModifiersChanged(mask) => {
                 // Caps Lock is a toggle, not a releasable momentary press.
                 for bit in [1, 2, 4, 8] {
@@ -195,7 +195,7 @@ impl InputLeaseRevocation {
     pub fn revoke(&self) {
         self.0.store(true, std::sync::atomic::Ordering::Release);
     }
-    fn is_revoked(&self) -> bool {
+    pub(crate) fn is_revoked(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }
 }
@@ -245,6 +245,16 @@ impl InputLease {
                 && (now_ms.saturating_sub(self.last_held_ms) >= HOLD_TIMEOUT_MS
                     || self.last_held.elapsed().as_millis() >= HOLD_TIMEOUT_MS as u128))
     }
+    /// Text has its own ordered receipts, independent of lossy pointer sequences.
+    pub fn accept_text(&mut self, binding: InputBinding, created_host_ms: u64, now_ms: u64) -> bool {
+        if binding != self.binding || self.expired(now_ms) || created_host_ms > now_ms
+            || now_ms - created_host_ms > MAX_INPUT_AGE_MS { return false; }
+        if created_host_ms > self.last_valid_ms {
+            self.last_valid_ms = created_host_ms;
+            self.last_valid = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(now_ms-created_host_ms)).unwrap_or(self.last_valid);
+        }
+        true
+    }
     pub fn accept(&mut self, packet: &RealtimeInput, now_ms: u64) -> Option<Vec<InputEvent>> {
         if packet.binding != self.binding
             || packet.sequence <= self.high_water
@@ -258,6 +268,9 @@ impl InputLease {
         if packet.created_host_ms > now_ms || now_ms - packet.created_host_ms > MAX_INPUT_AGE_MS {
             return None;
         }
+        // Committed text requires its ordered receipt channel; a fabricated
+        // realtime text event must not renew the input lease either.
+        if matches!(&packet.payload,InputPayload::Event(InputEvent::Text(_))) {return None;}
         // An explicit chord must not become a different (possibly bare) key
         // when its modifier-down was lost/reordered. Consume the sequence but
         // reject before changing held state. Legacy KeyDown has no such field.

@@ -14,10 +14,12 @@ pub(super) fn now_ms() -> u64 {
 struct Owner {
     addr: SocketAddr,
     lease: InputLease,
+    text: protocol::interaction::TextReceiver,
 }
 struct Pending {
     token: u64,
     sequence: u64,
+    text_id: Option<u64>,
     created: u64,
     events: Vec<InputEvent>,
 }
@@ -38,6 +40,7 @@ pub(super) struct Handled {
     pub addr: SocketAddr,
     pub binding: InputBinding,
     pub sequence: u64,
+    pub text: Option<(u64, bool)>,
 }
 
 #[derive(Default)]
@@ -122,6 +125,7 @@ impl PublisherInput {
             self.owner = Some(Owner {
                 addr,
                 lease: InputLease::new(binding, now_ms()),
+                text: Default::default(),
             });
         }
         self.owner.as_ref().map(|owner| owner.lease.binding)
@@ -173,9 +177,37 @@ impl PublisherInput {
         self.queued.push_back(Pending {
             token,
             sequence: packet.sequence,
+            text_id: None,
             created: packet.created_host_ms,
             events,
         });
+    }
+    pub fn admit_text(&mut self, addr: SocketAddr, request: &protocol::interaction::TextCommit) -> Option<protocol::session::SessionCommand> {
+        use protocol::{interaction::TextAdmission, session::SessionCommand};
+        self.tick();
+        let result=(|| {
+            if !self.ready() {return Err("Android screen control is unavailable");}
+            let owner=self.owner.as_mut().filter(|owner|owner.addr==addr).ok_or("text input owner changed")?;
+            owner.text.begin(request,&mut owner.lease,now_ms())
+        })();
+        let error = match result {
+            Ok(TextAdmission::Accepted)=>return Some(SessionCommand::TextCommitted {binding:request.binding,request_id:request.request_id}),
+            Ok(TextAdmission::Pending)=>return None,
+            Err(error)=>Some(error),
+            Ok(TextAdmission::New)=> {
+                if self.queued.len()+usize::from(self.executing.is_some())>=MAX_PENDING {Some("Android input queue is full")}
+                else if let Some(token)=self.next_token.checked_add(1) {
+                    self.next_token=token;
+                    self.queued.push_back(Pending {token,sequence:0,text_id:Some(request.request_id),
+                        created:request.created_host_ms,events:vec![InputEvent::Text(request.text.clone())]});
+                    return None;
+                } else {Some("Android input sequence exhausted")}
+            }
+        };
+        if let Some(owner)=self.owner.as_mut().filter(|owner|owner.addr==addr) {
+            owner.text.complete(request.request_id,false);
+        }
+        Some(SessionCommand::TextRejected {binding:request.binding,request_id:request.request_id,reason:error.unwrap().into()})
     }
     pub fn poll(&mut self) -> Option<Dispatch> {
         self.tick();
@@ -217,17 +249,16 @@ impl PublisherInput {
         {
             return;
         }
-        if !accepted || !self.ready() || self.handled.len() >= MAX_PENDING {
-            self.revoke();
-            return;
-        }
         let job = self.executing.take().unwrap();
-        if let Some(owner) = &self.owner {
-            self.handled.push_back(Handled {
-                addr: owner.addr,
-                binding: owner.lease.binding,
-                sequence: job.sequence,
-            });
+        let accepted=accepted && self.ready() && self.handled.len()<MAX_PENDING;
+        let receipt=self.owner.as_mut().map(|owner| {
+            if let Some(id)=job.text_id {owner.text.complete(id,accepted);}
+            Handled {addr:owner.addr,binding:owner.lease.binding,sequence:job.sequence,
+                text:job.text_id.map(|id|(id,accepted))}
+        });
+        if !accepted {self.revoke();}
+        if let Some(receipt)=receipt {
+            if accepted || receipt.text.is_some() {self.handled.push_back(receipt);}
         }
     }
     pub fn take_handled(&mut self) -> Vec<Handled> {
@@ -265,6 +296,38 @@ mod tests {
             panic!("expected admitted input")
         };
         (generation, token)
+    }
+    fn text(binding:InputBinding)->protocol::interaction::TextCommit {
+        protocol::interaction::TextCommit {binding,request_id:70,created_host_ms:now_ms(),
+            text:protocol::interaction::CommittedText::new("你好👨‍👩‍👧‍👦".into()).unwrap()}
+    }
+    #[test]
+    fn text_receipt_waits_for_os_and_lost_receipt_never_reinjects() {
+        use protocol::session::SessionCommand;
+        let (mut input,addr,binding)=fixture();let request=text(binding);
+        assert!(input.admit_text(addr,&request).is_none());
+        assert!(input.admit_text(addr,&request).is_none());
+        assert_eq!(input.queued.len(),1);
+        let (generation,token)=take(&mut input);
+        assert!(input.take_handled().is_empty());
+        input.complete(generation,token,true);
+        assert_eq!(input.take_handled()[0].text,Some((70,true)));
+        assert!(matches!(input.admit_text(addr,&request),Some(SessionCommand::TextCommitted {request_id:70,..})));
+        assert!(input.poll().is_none());
+        let mut altered=request.clone();altered.text=protocol::interaction::CommittedText::new("different".into()).unwrap();
+        assert!(matches!(input.admit_text(addr,&altered),Some(SessionCommand::TextRejected {..})));
+        assert!(input.poll().is_none());
+    }
+    #[test]
+    fn failed_or_changed_android_text_target_is_never_acknowledged_or_replayed() {
+        use protocol::session::SessionCommand;
+        let (mut input,addr,binding)=fixture();let request=text(binding);
+        input.admit_text(addr,&request);let (generation,token)=take(&mut input);
+        input.complete(generation,token,false);
+        assert_eq!(input.take_handled()[0].text,Some((70,false)));
+        input.poll();let next=input.grant(addr,1,256).unwrap();assert_ne!(next,binding);
+        assert!(matches!(input.admit_text(addr,&request),Some(SessionCommand::TextRejected {..})));
+        input.poll();assert!(input.poll().is_none());
     }
     #[test]
     fn requires_both_os_service_and_explicit_capture_control() {

@@ -305,6 +305,7 @@ thread_local! {static TEST_CAPTURE_CATALOG: std::cell::RefCell<Option<Vec<protoc
 
 struct InputLeaseSlot {
     lease:InputLease,
+    text:protocol::interaction::TextReceiver,
     target:InputTarget,
     portal_generation:Option<u64>,
 }
@@ -574,7 +575,7 @@ impl Connection {
             || slot.target!=target || slot.portal_generation!=generation);
         if rotate {
             let binding=InputBinding{connection_id:connection,subscription_id:id,source_revision:revision,epoch:random_bytes_16()};
-            self.input_leases.insert(id,InputLeaseSlot{lease:InputLease::new(binding,now),target,portal_generation:generation});
+            self.input_leases.insert(id,InputLeaseSlot{lease:InputLease::new(binding,now),text:Default::default(),target,portal_generation:generation});
         }
         self.versioned_control=true;
         Some(SessionCommand::InputBinding{binding:self.input_leases.get(&id)?.lease.binding,request,host_time_ms:now})
@@ -1474,6 +1475,55 @@ fn input_deadline(
     Some(now + Duration::from_millis(remaining))
 }
 
+async fn dispatch_committed_text(
+    peer: &mut Connection, owner: &mut ActiveInput, injector: &LazyInputInjector,
+    udp: &UdpSender, addr: SocketAddr, request: protocol::interaction::TextCommit,
+) {
+    use protocol::interaction::TextAdmission;
+    let binding = request.binding;
+    let id = binding.subscription_id;
+    let now = host_input_time_ms();
+    let deadline = input_deadline(request.created_host_ms, now, std::time::Instant::now());
+    let admission = (|| {
+        let (revision, target, generation) = peer.input_signature(id).ok_or("text source is unavailable")?;
+        let slot = peer.input_leases.get_mut(&id).ok_or("text input ownership is unavailable")?;
+        if binding.connection_id != peer.id || binding.source_revision != revision
+            || slot.target != target || slot.portal_generation != generation {
+            return Err("text input source changed");
+        }
+        slot.text.begin(&request, &mut slot.lease, now)
+    })();
+    let result = match admission {
+        Ok(TextAdmission::Pending) => return,
+        Ok(TextAdmission::Accepted) => Ok(()),
+        Err(reason) => Err(reason),
+        Ok(TextAdmission::New) => {
+            let mut accepted = deadline.is_some();
+            if owner.owner == Some((addr, id)) && owner.binding != Some(binding) {
+                accepted &= owner.release(injector).await.is_ok();
+            }
+            if accepted {
+                accepted = inject_fresh(injector, owner, peer, udp, addr, id,
+                    InputEvent::Text(request.text), deadline).await;
+            }
+            if let Some(slot) = peer.input_leases.get_mut(&id) {
+                slot.text.complete(request.request_id, accepted);
+                if accepted {
+                    owner.binding = Some(binding);
+                    owner.lease_revocation = Some(slot.lease.revocation());
+                    owner.deadline = Some(slot.lease.deadline());
+                }
+            }
+            if accepted { Ok(()) } else { Err("text input did not complete; select the source again") }
+        }
+    };
+    let reply = match result {
+        Ok(()) => SessionCommand::TextCommitted {binding, request_id:request.request_id},
+        Err(reason) => SessionCommand::TextRejected {binding, request_id:request.request_id, reason:reason.into()},
+    };
+    owner.during_control(injector, send_session(udp, addr, reply)).await;
+}
+
 async fn dispatch_realtime_input(
     peer: &mut Connection,
     owner: &mut ActiveInput,
@@ -2085,6 +2135,11 @@ async fn run_host_service_inner(
                                         input_owner.during_control(&injector,send_session(&udp_sender,addr,reply)).await;
                                     }
                                 }
+                                SessionCommand::CommitText(request) => {
+                                    if let Some(peer)=peers.get_mut(&addr) {
+                                        dispatch_committed_text(peer,&mut input_owner,&injector,&udp_sender,addr,request).await;
+                                    }
+                                }
                                 SessionCommand::RealtimeInput(packet) => {
                                     if let Some(peer)=peers.get_mut(&addr) {
                                         dispatch_realtime_input(peer,&mut input_owner,&injector,&udp_sender,addr,packet).await;
@@ -2428,6 +2483,31 @@ mod failure_admission_tests {
             std::thread::sleep(self.delay);
         }
     }
+    #[tokio::test]
+    async fn text_native_effect_is_once_and_never_targets_a_replaced_source() {
+        struct TextProbe(Arc<std::sync::Mutex<Vec<InputEvent>>>);
+        impl InputInjector for TextProbe {
+            fn inject_input(&self,event:InputEvent)->Result<(),Box<dyn Error+Send+Sync>> {self.0.lock().unwrap().push(event);Ok(())}
+            fn release_all_input(&self) {}
+        }
+        let (mut peer,addr)=fixture_peer(31).await;
+        let (sub,_)=mock_subscription(CaptureSource::MainDisplay);
+        sub.settings.send_modify(|settings|settings.paused=false);peer.subscriptions.insert(100,sub);
+        let SessionCommand::InputBinding {binding,..}=peer.input_binding(31,100,10,1).unwrap() else {panic!()};
+        let calls=Arc::new(std::sync::Mutex::new(Vec::new()));
+        let injector=LazyInputInjector(std::sync::Mutex::new(Some((InputTarget::Desktop,Box::new(TextProbe(calls.clone()))))));
+        let mux=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();let (udp,_)=mux.split();
+        let mut owner=ActiveInput::default();
+        let request=protocol::interaction::TextCommit {binding,request_id:1,created_host_ms:host_input_time_ms(),text:protocol::interaction::CommittedText::new("中文🙂".into()).unwrap()};
+        for _ in 0..2 {dispatch_committed_text(&mut peer,&mut owner,&injector,&udp,addr,request.clone()).await;}
+        assert_eq!(*calls.lock().unwrap(),vec![InputEvent::Text(request.text.clone())]);
+        let mut altered=request.clone();altered.text=protocol::interaction::CommittedText::new("changed".into()).unwrap();
+        dispatch_committed_text(&mut peer,&mut owner,&injector,&udp,addr,altered).await;
+        peer.subscriptions.get_mut(&100).unwrap().source_revision+=1;
+        dispatch_committed_text(&mut peer,&mut owner,&injector,&udp,addr,request).await;
+        assert_eq!(calls.lock().unwrap().len(),1);
+    }
+
     #[tokio::test]
     async fn cleanup_wait_cannot_renew_an_initially_valid_input_deadline() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
@@ -4308,90 +4388,26 @@ mod failure_admission_tests {
     }
 
     #[tokio::test]
-    async fn resubscribe_allows_capture_source_switch() {
-        let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
-        let (sender, _receiver) = mux.split();
-        let addr = "127.0.0.1:39572".parse().unwrap();
-        let config = HostServiceConfig {
-            bind_addr: addr,
-            stats: Statistics::new(),
-            enable_clipboard_sync: false,
-            enable_file_transfer: false,
-            enable_talkback: false,
-        };
-        let mut peer = Connection::new(1, addr, sender.clone(), &config);
-        let first_request = SubscriptionRequest {
-            id: 100,
-            source: CaptureSource::MainDisplay,
-            width: 1280,
-            height: 720,
-            fps: 30,
-            bitrate_kbps: 4000,
-            audio: false,
-        };
-        let res1 = peer
-            .subscribe_with_preflight(
-                first_request,
-                addr,
-                sender.clone(),
-                config.stats.clone(),
-                false,
-                || Ok(()),
-            )
-            .await;
-        assert!(res1.is_ok());
-        assert!(peer.subscriptions.contains_key(&100));
-
-        // Re-subscribing with same settings is idempotent
-        let res1_repeat = peer
-            .subscribe_with_preflight(
-                SubscriptionRequest {
-                    id: 100,
-                    source: CaptureSource::MainDisplay,
-                    width: 1280,
-                    height: 720,
-                    fps: 30,
-                    bitrate_kbps: 4000,
-                    audio: false,
-                },
-                addr,
-                sender.clone(),
-                config.stats.clone(),
-                false,
-                || Ok(()),
-            )
-            .await;
-        assert!(res1_repeat.is_ok());
-
-        // Re-subscribing with updated settings/audio cleanly switches the active stream
-        let res2 = peer
-            .subscribe_with_preflight(
-                SubscriptionRequest {
-                    id: 100,
-                    source: CaptureSource::MainDisplay,
-                    width: 1920,
-                    height: 1080,
-                    fps: 60,
-                    bitrate_kbps: 8000,
-                    audio: true,
-                },
-                addr,
-                sender.clone(),
-                config.stats.clone(),
-                false,
-                || Ok(()),
-            )
-            .await;
-        assert!(res2.is_ok());
-        let active = peer
-            .subscriptions
-            .get(&100)
-            .expect("replacement subscription");
-        assert_eq!(active.request.width, 1920);
-        assert_eq!(active.request.height, 1080);
-        assert_eq!(active.request.fps, 60);
-        assert_eq!(active.request.bitrate_kbps, 8000);
-        assert!(active.request.audio);
+    async fn resubscribe_updates_rates_without_reopening_capture_or_unchecked_audio() {
+        let (mut peer,addr)=fixture_peer(1).await;
+        let (sub,stopped)=mock_subscription(CaptureSource::MainDisplay);
+        let request=sub.request.clone();peer.subscriptions.insert(100,sub);
+        let mux=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();let (sender,_)=mux.split();
+        // This is a lifecycle unit test. Opening real unsigned OS capture here
+        // can block on consent and does not provide physical device acceptance.
+        let repeat=peer.subscribe_with_preflight(request.clone(),addr,sender.clone(),Statistics::new(),false,
+            ||panic!("unchanged subscription must reuse its capture")).await;
+        assert!(repeat.is_ok());
+        let mut changed=request;changed.width=1920;changed.height=1080;changed.fps=60;changed.bitrate_kbps=8000;
+        assert!(peer.subscribe_with_preflight(changed.clone(),addr,sender.clone(),Statistics::new(),false,
+            ||panic!("rate update must reuse its capture")).await.is_ok());
+        assert_eq!(peer.subscriptions[&100].request,changed);
+        assert!(!stopped.load(Relaxed));
+        let mut audio=changed.clone();audio.audio=true;
+        assert_eq!(peer.subscribe_with_preflight(audio,addr,sender,Statistics::new(),false,
+            ||Err("synthetic audio preflight failure".into())).await.unwrap_err(),"synthetic audio preflight failure");
+        assert_eq!(peer.subscriptions[&100].request,changed);
+        assert!(!stopped.load(Relaxed));
     }
 
     #[cfg(target_os = "windows")]

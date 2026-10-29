@@ -453,6 +453,14 @@ object WeaveloClient {
     private external fun nativeInputIntentToken(): Long
     private external fun nativeRefreshInputIntent(token: Long): Boolean
     private external fun nativeSendTouch(token: Long, actionCode: Int, pointerId: Int, normX: Float, normY: Float, pressure: Float)
+    @Synchronized fun commitText(token: InputIntentToken, text: String): Boolean =
+        isNativeLoaded && !backgrounded && !_mediaPaused.value && !_mediaPausePending.value &&
+            token.generation == connectionGeneration && nativeCommitText(token.session, text)
+    @Synchronized fun sendBoundVirtualKey(token: InputIntentToken, key: String, pressed: Boolean) {
+        if (isNativeLoaded && !backgrounded && token.generation == connectionGeneration) nativeSendBoundVirtualKey(token.session,key,pressed)
+    }
+    private external fun nativeCommitText(token: Long, text: String): Boolean
+    private external fun nativeSendBoundVirtualKey(token: Long, key: String, pressed: Boolean)
     private external fun nativeSendVirtualKey(keyName: String, pressed: Boolean)
     private external fun nativeSetTouchMode(modeCode: Int)
     private external fun nativeSetScreenBounds(width: Int, height: Int)

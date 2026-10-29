@@ -71,6 +71,9 @@ class RemoteControlService : AccessibilityService() {
         super.onServiceConnected()
         if (!WeaveloClient.initialize(this)) return
         PublisherClient.action(8,"true")
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            serviceInfo = serviceInfo.apply { flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR }
+        }
         mutableConnected.value = true
         running = true
         handler.removeCallbacks(poll); handler.post(poll)
@@ -158,6 +161,17 @@ class RemoteControlService : AccessibilityService() {
                 val ny = (y+delta.getInt("delta_y")*3f).coerceIn(1f,(size.second-2).toFloat())
                 val path = Path().apply { moveTo(x,y); lineTo(nx,ny) }
                 dispatch(GestureDescription.StrokeDescription(path,0,80),::done)
+            }
+            "Text" -> {
+                val text = value as? String
+                if (android.os.Build.VERSION.SDK_INT < 33 || text.isNullOrEmpty()) { done(false); return }
+                // The existing accessibility grant remains necessary. This is an
+                // input-method connection to the focused editor, never SET_TEXT
+                // on an inspected field or a read/replace of its contents.
+                val connection = inputMethod?.currentInputConnection
+                if (connection == null) { done(false); return }
+                connection.commitText(text, 1, null)
+                done(true)
             }
             "ModifiersChanged" -> done(true) // Chord ownership is enforced by the native InputLease.
             "Key" -> {

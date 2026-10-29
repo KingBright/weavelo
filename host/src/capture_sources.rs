@@ -137,7 +137,10 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
             let Some(app) = window.owning_application() else {
                 continue;
             };
-            if app.process_id() == std::process::id() as i32 {
+            // Stage Manager's icon surfaces are compositor internals, not app windows.
+            // Skip them before AX geometry queries and native artwork extraction.
+            if app.process_id() == std::process::id() as i32
+                || app.bundle_identifier() == "com.apple.WindowManager" {
                 continue;
             }
             let Some(title) = window.title().filter(|title| !title.trim().is_empty()) else {

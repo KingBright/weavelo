@@ -37,12 +37,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.draw.alpha
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -56,11 +50,8 @@ fun MobileViewportScreen(
     var heldModifiers by remember { mutableStateOf(emptySet<String>()) }
     val virtualKeys = remember { StickyKeyController(WeaveloClient::sendVirtualKey) }
     var showKeyboard by remember { mutableStateOf(false) }
-    var keyboardInput by remember { mutableStateOf(TextFieldValue("  ", selection = TextRange(2))) }
     val viewportTransform = remember { mutableStateOf(ViewportTransform()) }
     var transform by viewportTransform
-    val keyboardController = LocalSoftwareKeyboardController.current
-    val focusRequester = remember { FocusRequester() }
     val sessionState by WeaveloClient.sessionState.collectAsState()
     var playbackError by remember { mutableStateOf<String?>(null) }
     var decodedFps by remember { mutableStateOf<Int?>(null) }
@@ -96,7 +87,6 @@ fun MobileViewportScreen(
             if ((!inputEnabled || current != null) && current != inputSessionToken) {
                 virtualKeys.forgetAll()
                 heldModifiers = emptySet()
-                keyboardInput = TextFieldValue("  ", selection = TextRange(2))
                 inputSessionToken = current
             }
             if (!inputEnabled) break
@@ -115,15 +105,6 @@ fun MobileViewportScreen(
                     heldModifiers = emptySet()
                 }
             }
-        }
-    }
-
-    LaunchedEffect(showKeyboard) {
-        if (showKeyboard) {
-            focusRequester.requestFocus()
-            keyboardController?.show()
-        } else {
-            keyboardController?.hide()
         }
     }
 
@@ -321,52 +302,11 @@ fun MobileViewportScreen(
                 }
         )
 
-        // 隐形软键盘输入代理捕获
-        BasicTextField(
-            value = keyboardInput,
-            onValueChange = { newVal ->
-                if (!inputEnabled) {
-                    keyboardInput = TextFieldValue("  ", selection = TextRange(2))
-                    return@BasicTextField
-                }
-                // Composition belongs to the IME. Do not reset it on every candidate edit.
-                if (newVal.composition != null) {
-                    keyboardInput = newVal
-                    return@BasicTextField
-                }
-                val oldText = "  "
-                val newText = newVal.text
-                if (newText.length < oldText.length) {
-                    val deleted = oldText.length - newText.length
-                    repeat(deleted) {
-                        WeaveloClient.sendVirtualKey("backspace", true)
-                        WeaveloClient.sendVirtualKey("backspace", false)
-                    }
-                } else if (newText.length > oldText.length) {
-                    val added = if (newText.startsWith(oldText)) {
-                        newText.substring(oldText.length)
-                    } else {
-                        newText.filterIndexed { index, c -> index >= oldText.length || c != oldText.getOrNull(index) }
-                    }
-                    for (ch in added) {
-                        if (ch == '\n') {
-                            WeaveloClient.sendVirtualKey("enter", true)
-                            WeaveloClient.sendVirtualKey("enter", false)
-                        } else {
-                            WeaveloClient.sendVirtualKey(ch.toString(), true)
-                            WeaveloClient.sendVirtualKey(ch.toString(), false)
-                        }
-                    }
-                }
-                keyboardInput = TextFieldValue("  ", selection = TextRange(2))
-            },
-            modifier = Modifier
-                .size(1.dp)
-                .alpha(0.01f)
-                .focusRequester(focusRequester),
-            enabled = inputEnabled,
-            keyboardOptions = KeyboardOptions(autoCorrect = false)
-        )
+        val keyboardToken = inputSessionToken
+        RemoteKeyboard(identity = keyboardToken ?: "no-input", visible = showKeyboard,
+            enabled = inputEnabled && keyboardToken != null,
+            onText = { text -> keyboardToken?.let { WeaveloClient.commitText(it,text) } },
+            onKey = { key, pressed -> keyboardToken?.let { WeaveloClient.sendBoundVirtualKey(it,key,pressed) } })
 
         playbackError?.let { message ->
             Text(message, color = Color.White,

@@ -17,17 +17,22 @@ mod actual {
 enum Posted {
     Mouse(u32),
     Key(u16, bool),
+    Unicode(u16,bool),
 }
 #[derive(Default)]
 struct Calls {
     attempts: usize,
     fail_next: bool,
+    accept_next: Option<u32>,
+    fail_attempt: Option<usize>,
     pause_first_until: Option<std::time::Instant>,
     posted: Vec<Posted>,
 }
 static CALLS: Mutex<Calls> = Mutex::new(Calls {
     attempts: 0,
     fail_next: false,
+    accept_next: None,
+    fail_attempt: None,
     pause_first_until: None,
     posted: Vec::new(),
 });
@@ -66,6 +71,7 @@ mod recording_api {
     pub const INPUT_KEYBOARD: u32 = 1;
     pub const KEYEVENTF_EXTENDEDKEY: u32 = 1;
     pub const KEYEVENTF_KEYUP: u32 = 2;
+    pub const KEYEVENTF_UNICODE: u32 = 4;
     pub const MOUSEEVENTF_MOVE: u32 = 1;
     pub const MOUSEEVENTF_LEFTDOWN: u32 = 2;
     pub const MOUSEEVENTF_LEFTUP: u32 = 4;
@@ -78,17 +84,19 @@ mod recording_api {
     pub unsafe fn SendInput(count: u32, inputs: *mut INPUT, _size: i32) -> u32 {
         let mut calls = super::CALLS.lock().unwrap();
         calls.attempts += 1;
-        if calls.fail_next {
+        if calls.fail_next || calls.fail_attempt==Some(calls.attempts) {
             calls.fail_next = false;
             return 0;
         }
-        for i in 0..count {
+        let accepted=calls.accept_next.take().unwrap_or(count).min(count);
+        for i in 0..accepted {
             let input = unsafe { &*inputs.add(i as usize) };
             let posted = if input.r#type == INPUT_MOUSE {
                 super::Posted::Mouse(unsafe { input.Anonymous.mi.dwFlags })
             } else {
                 let key = unsafe { input.Anonymous.ki };
-                super::Posted::Key(key.wVk, key.dwFlags & KEYEVENTF_KEYUP == 0)
+                if key.dwFlags & KEYEVENTF_UNICODE != 0 {super::Posted::Unicode(key.wScan,key.dwFlags&KEYEVENTF_KEYUP==0)}
+                else {super::Posted::Key(key.wVk, key.dwFlags & KEYEVENTF_KEYUP == 0)}
             };
             calls.posted.push(posted);
         }
@@ -97,7 +105,7 @@ mod recording_api {
                 std::thread::sleep(until.saturating_duration_since(std::time::Instant::now()));
             }
         }
-        count
+        accepted
     }
     pub mod Win32 {
         pub mod UI {
@@ -259,4 +267,36 @@ fn batch_expiry_after_first_modifier_does_not_post_remaining_modifier_or_key() {
         CALLS.lock().unwrap().posted,
         vec![Posted::Key(0xA0, true), Posted::Key(0xA0, false)]
     );
+}
+
+#[test]
+fn unicode_text_uses_ordered_utf16_and_partial_prefix_only_releases_its_owned_down() {
+    let _serial=SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap()=Calls::default();
+    let input=actual::WindowsInputInjector::new().unwrap();
+    let text=protocol::interaction::CommittedText::new("中文🙂".into()).unwrap();
+    input.inject_input(InputEvent::Text(text.clone())).unwrap();
+    let expected:Vec<_>=text.as_str().encode_utf16().flat_map(|unit|[Posted::Unicode(unit,true),Posted::Unicode(unit,false)]).collect();
+    assert_eq!(CALLS.lock().unwrap().posted,expected);
+    assert_eq!(CALLS.lock().unwrap().attempts,1);
+    *CALLS.lock().unwrap()=Calls {accept_next:Some(1),..Default::default()};
+    assert!(input.inject_input(InputEvent::Text(text)).is_err());
+    let first="中".encode_utf16().next().unwrap();
+    assert_eq!(CALLS.lock().unwrap().posted,vec![Posted::Unicode(first,true),Posted::Unicode(first,false)]);
+    assert_eq!(CALLS.lock().unwrap().attempts,2);
+}
+
+#[test]
+fn unicode_partial_down_survives_a_failed_up_until_owned_cleanup() {
+    let _serial=SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap()=Calls {accept_next:Some(1),fail_attempt:Some(2),..Default::default()};
+    let input=actual::WindowsInputInjector::new().unwrap();
+    let text=protocol::interaction::CommittedText::new("🙂".into()).unwrap();
+    assert!(input.inject_input(InputEvent::Text(text.clone())).is_err());
+    assert!(input.inject_input(InputEvent::Text(text)).is_err());
+    assert_eq!(CALLS.lock().unwrap().attempts,2,"unconfirmed cleanup must block new text");
+    input.release_all_input();input.release_all_input();
+    let unit="🙂".encode_utf16().next().unwrap();
+    assert_eq!(CALLS.lock().unwrap().posted,vec![Posted::Unicode(unit,true),Posted::Unicode(unit,false)]);
+    assert_eq!(CALLS.lock().unwrap().attempts,3,"cleanup never replays text");
 }

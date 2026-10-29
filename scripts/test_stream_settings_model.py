@@ -26,6 +26,10 @@ OBSERVATION_TIMEOUT_SECONDS = 60
 # Fixed package/filter pairs only. These modes share the same guarded transaction;
 # callers cannot supply Cargo arguments, alternate profiles or test executables.
 SESSION_CLOCK_TESTS = {
+    "committed-text-input": ("remote_core", "workspace_input::tests"),
+    "committed-text-native": ("host", "unicode_"),
+    "committed-text-protocol": ("protocol", "interaction::"),
+    "committed-text-outbox": ("remote_core", "committed_text::"),
     "native-build-toolchain": ("client", "native_build_toolchain_tests"),
     "lifecycle-capability": ("weavelo_app", "gui_backend::tests"),
     "lifecycle-ownership": ("weavelo_app", "desktop::instance::tests"),

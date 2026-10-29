@@ -387,6 +387,31 @@ impl MobileWorkspace {
         }
         Ok(())
     }
+    pub fn keyboard_context(&self,json:&str)->Result<String,String> {
+        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64}
+        let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
+        let touches=self.touches.lock().unwrap();
+        let touch=touches.get(&request.id).ok_or("video surface is unavailable")?;
+        let binding=touch.keyboard_binding(request.token,self.connection.input_binding(request.id,touch.revision)).ok_or("remote keyboard is unavailable")?;
+        serde_json::to_string(&binding).map_err(|e|e.to_string())
+    }
+    pub fn keyboard(&self,json:&str)->Result<(),String> {
+        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,binding:protocol::realtime_input::InputBinding,
+            text:Option<String>,key:Option<String>,#[serde(default)]pressed:bool,#[serde(default)]age_ms:u64}
+        let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
+        let mut touches=self.touches.lock().unwrap();
+        let touch=touches.get_mut(&request.id).ok_or("video surface is unavailable")?;
+        if touch.keyboard_binding(request.token,self.connection.input_binding(request.id,touch.revision))!=Some(request.binding) {
+            return Err("remote keyboard source changed".into());
+        }
+        if let Some(text)=request.text {self.connection.try_commit_text_aged(request.binding,&text,std::time::Duration::from_millis(request.age_ms))}
+        else if let Some(key)=request.key {
+            for event in touch.key_events(&key,request.pressed) {
+                if !self.connection.try_bound_input(request.binding,Some(event)) {return Err("remote keyboard queue is full".into());}
+            }
+            Ok(())
+        } else {Err("missing remote keyboard event".into())}
+    }
     pub fn touch(&self, json: &str) -> Result<(), String> {
         #[derive(serde::Deserialize)]
         struct Touch {

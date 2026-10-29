@@ -1,7 +1,7 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 3;
+pub const SESSION_VERSION: u32 = 4;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -151,6 +151,9 @@ pub enum SessionCommand {
     DeliveryClaim { request_id: u64, target_device_id: String, ticket: [u8; 32] },
     DeliveryCancel { request_id: u64 },
     DeliveryReceipt { request_id: u64, revision: u64, state: DeliveryState, reason: String },
+    CommitText(crate::interaction::TextCommit),
+    TextCommitted { binding: crate::realtime_input::InputBinding, request_id: u64 },
+    TextRejected { binding: crate::realtime_input::InputBinding, request_id: u64, reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1158,6 +1158,8 @@ pub enum InputEvent {
         normalized_y: f32,
         pressure: f32,
     },
+    /// Native dispatch only: admitted through the receipted CommitText channel.
+    Text(crate::interaction::CommittedText),
 }
 
 pub mod input_modifiers {

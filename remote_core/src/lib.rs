@@ -84,3 +84,5 @@ pub fn init_crypto_provider() {
 }
 
 pub mod routed_relay;
+
+pub(crate) mod committed_text;

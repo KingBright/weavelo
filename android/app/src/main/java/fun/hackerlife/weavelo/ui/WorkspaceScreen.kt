@@ -273,6 +273,13 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         }
     }
     val token = surfaceToken
+    var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
+    var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
+    val keyboardOwner = keyboardBinding
+    RemoteKeyboard(identity = listOf(pane.id,sessionKey,generation,token,keyboardOwner), visible = keyboardVisible,
+        enabled = pane.input && token != 0L && keyboardOwner != null,
+        onText = { text -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,text=text) } },
+        onKey = { key,pressed -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,key=key,pressed=pressed) } })
     RemoteViewport(
         dimensions = dimensions, transformState = transform,
         enabled = pane.input && token != 0L,
@@ -291,6 +298,12 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
         },
         overlay = {
+            TextButton(onClick = {
+                if (keyboardVisible) keyboardVisible=false else {
+                    keyboardBinding=WorkspaceClient.keyboardBinding(pane.id,sessionKey,generation,token)
+                    keyboardVisible=keyboardBinding!=null
+                }
+            }, enabled=pane.input && token!=0L, modifier=Modifier.align(Alignment.BottomEnd)) {Text(if(keyboardVisible) "Hide keyboard" else "Keyboard")}
             if (transform.value.scale > 1.05f) {
                 TextButton(onClick = { transform.value = transform.value.reset() }, modifier = Modifier.align(Alignment.TopEnd)) {
                     Text("Reset zoom")

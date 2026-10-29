@@ -483,12 +483,25 @@ impl RemoteBridgeClient {
         for event in events { live.connection.try_bound_input(binding, Some(event)); }
     }
 
-    pub fn send_virtual_key(&self, key_name: &str, pressed: bool) {
+    pub fn commit_text(&self,token:u64,text:&str) -> Result<(),String> {
+        let _lifecycle=self.lifecycle.try_lock().map_err(|_|"connection is busy")?;
+        let live=self.live.try_lock().map_err(|_|"connection is busy")?;
+        let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready()).ok_or("input is unavailable")?;
+        let binding=live.connection.input_binding(live.session_id,0).ok_or("input is unavailable")?;
+        if token==0 || token!=self.manual_token(binding) {return Err("text input source changed".into());}
+        live.connection.try_commit_text(binding,text)
+    }
+    pub fn send_bound_virtual_key(&self,token:u64,key_name:&str,pressed:bool) {
+        self.virtual_key(Some(token),key_name,pressed)
+    }
+    pub fn send_virtual_key(&self, key_name: &str, pressed: bool) {self.virtual_key(None,key_name,pressed)}
+    fn virtual_key(&self, token:Option<u64>, key_name:&str, pressed:bool) {
         let Ok(_lifecycle) = self.lifecycle.try_lock() else { self.revoke_manual_token(self.manual_input_owner.load(Relaxed)); return; };
         if pressed && self.desired_media_paused.load(Relaxed) { return; }
         let Ok(live) = self.live.try_lock() else { self.revoke_manual_token(self.manual_input_owner.load(Relaxed)); return; };
         if let Some(live) = live.as_ref().filter(|live| live.input_ready()) {
             let Some(binding) = live.connection.input_binding(live.session_id, 0) else { return; };
+            if token.is_some_and(|token|token==0||token!=self.manual_token(binding)) {return;}
             let now = Instant::now();
             self.expire_manual_input(live, binding, now);
             {
@@ -912,6 +925,9 @@ async fn start_live_session(
                     id, supports_input, ..
                 } if id == session_id => {
                     event_input.store(supports_input, Relaxed);
+                }
+                SessionCommand::TextRejected {binding,reason,..} if binding.subscription_id==session_id => {
+                    event_error_tx.send_replace(reason);
                 }
                 SessionCommand::Error { request_id, reason } if request_id == session_id => {
                     event_input.store(false, Relaxed);

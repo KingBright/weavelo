@@ -15,7 +15,7 @@ fn check_deadline(deadline: Option<Instant>) -> InputResult {
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY,
 };
@@ -25,6 +25,7 @@ pub struct WindowsInputInjector {
     cleanup_unconfirmed: AtomicBool,
     modifiers: AtomicU8,
     pressed_keys: Mutex<BTreeSet<VIRTUAL_KEY>>,
+    unicode_up: Mutex<Option<u16>>,
 }
 
 impl WindowsInputInjector {
@@ -34,7 +35,16 @@ impl WindowsInputInjector {
             cleanup_unconfirmed: AtomicBool::new(false),
             modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
+            unicode_up: Mutex::new(None),
         })
+    }
+
+    fn release_unicode(&self) -> bool {
+        let mut pending=self.unicode_up.lock().unwrap();
+        let Some(unit)=*pending else {return true;};
+        let mut input=INPUT {r#type:INPUT_KEYBOARD,Anonymous:INPUT_0 {ki:KEYBDINPUT {
+            wVk:0,wScan:unit,dwFlags:KEYEVENTF_UNICODE|KEYEVENTF_KEYUP,time:0,dwExtraInfo:0}}};
+        if unsafe {SendInput(1,&mut input,std::mem::size_of::<INPUT>() as i32)}==1 {*pending=None;true} else {false}
     }
 
     fn post_key(&self, vk: VIRTUAL_KEY, pressed: bool, deadline: Option<Instant>) -> InputResult {
@@ -126,6 +136,29 @@ impl WindowsInputInjector {
             return Err("Windows input cleanup is unconfirmed; new input is disabled".into());
         }
         match event {
+            InputEvent::Text(text) => {
+                if self.modifiers.load(Ordering::Relaxed) & 0x0f != 0 {
+                    return Err("release remote modifiers before committing text".into());
+                }
+                // SendInput inserts this UTF-16 array in order; the zero VK
+                // selects VK_PACKET rather than the machine's keyboard layout.
+                let mut inputs: Vec<INPUT> = text.as_str().encode_utf16().flat_map(|unit| {
+                    [0, KEYEVENTF_KEYUP].map(|up| INPUT { r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {ki: KEYBDINPUT {wVk:0,wScan:unit,
+                            dwFlags:KEYEVENTF_UNICODE|up,time:0,dwExtraInfo:0}}})
+                }).collect();
+                check_deadline(deadline)?;
+                let accepted=unsafe {SendInput(inputs.len() as u32,inputs.as_mut_ptr(),std::mem::size_of::<INPUT>() as i32)};
+                if accepted != inputs.len() as u32 {
+                    // A partial positive prefix may end in our known down.
+                    // Release that exact Unicode unit, without replaying text.
+                    if accepted % 2 == 1 && (accepted as usize)<inputs.len() {
+                        *self.unicode_up.lock().unwrap()=Some(unsafe {inputs[accepted as usize].Anonymous.ki.wScan});
+                        self.cleanup_unconfirmed.store(!self.release_unicode(),Ordering::Release);
+                    }
+                    return Err("Windows did not accept the complete text; it will not be replayed".into());
+                }
+            }
             InputEvent::MouseMove { dx, dy } => {
                 if !send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0, deadline)? {
                     return Err("Windows did not accept pointer motion".into());
@@ -216,7 +249,7 @@ impl InputInjector for WindowsInputInjector {
     fn release_all_input(&self) {
         self.modifiers.store(0, Ordering::Relaxed);
         let keys = std::mem::take(&mut *self.pressed_keys.lock().unwrap());
-        let mut unconfirmed = false;
+        let mut unconfirmed = !self.release_unicode();
         for vk in keys {
             if !send_key(vk, false, None).unwrap_or(false) {
                 // SendInput reports zero accepted events, unlike an unknown RPC.

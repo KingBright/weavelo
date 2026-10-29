@@ -20,6 +20,10 @@ from scripts.test_stream_settings_model import (validation_command, validation_e
 
 class ServiceContractEntryTests(unittest.TestCase):
     SESSION_CLOCK_CASES = {
+        "committed-text-input": ("remote_core", "workspace_input::tests"),
+        "committed-text-native": ("host", "unicode_"),
+        "committed-text-protocol": ("protocol", "interaction::"),
+        "committed-text-outbox": ("remote_core", "committed_text::"),
         'native-build-toolchain': ('client', 'native_build_toolchain_tests'),
         'lifecycle-capability': ('weavelo_app', 'gui_backend::tests'),
         'lifecycle-ownership': ('weavelo_app', 'desktop::instance::tests'),

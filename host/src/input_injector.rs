@@ -221,8 +221,30 @@ impl MacInputInjector {
         Ok(())
     }
 
+    fn commit_text(&self, text: &protocol::interaction::CommittedText, deadline: Option<Instant>) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.current_modifiers() & 0x0f != 0 {
+            return Err("release remote modifiers before committing text".into());
+        }
+        // Small UTF-16 batches retain surrogate pairs, with no keyboard-layout or
+        // clipboard mutation. Native dispatch confirmation is not field readback.
+        for chunk in unicode_event_chunks(text.as_str()) {
+            let units: Vec<u16> = chunk.encode_utf16().collect();
+            for pressed in [true, false] {
+                let event = CGEvent::new_keyboard_event(self.source.clone(), 0, pressed)
+                    .map_err(|_| "cannot create native Unicode event")?;
+                event.set_flags(CGEventFlags::empty());
+                event.set_string_from_utf16_unchecked(&units);
+                if !self.post(&event, deadline) {
+                    return Err("text input target changed or dispatch expired".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn inject(&self, event: InputEvent, deadline: Option<Instant>) {
         match event {
+            InputEvent::Text(_) => unreachable!("text uses checked native dispatch"),
             InputEvent::KeyDown(scancode) => {
                 self.post_tracked_key(scancode as u16, true, self.current_modifiers(), deadline);
             }
@@ -670,6 +692,18 @@ fn pointer_mouse_button(pressed_buttons: u8) -> CGMouseButton {
     }
 }
 
+fn unicode_event_chunks(text:&str)->impl Iterator<Item=&str> {
+    let mut remaining=text;
+    std::iter::from_fn(move || {
+        if remaining.is_empty() {return None;}
+        let mut units=0;
+        let end=remaining.char_indices().find_map(|(i,ch)| {
+            units+=ch.len_utf16(); (units>20).then_some(i)
+        }).unwrap_or(remaining.len());
+        let (chunk,rest)=remaining.split_at(end);remaining=rest;Some(chunk)
+    })
+}
+
 impl InputInjector for MacInputInjector {
     fn inject_input(&self, event: InputEvent) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Consent can be revoked after the injector was created. Propagate a
@@ -677,6 +711,7 @@ impl InputInjector for MacInputInjector {
         // posting events; CGEvent::post itself has no success return value.
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
         self.prepare_window_event(&event, None)?;
+        if let InputEvent::Text(text) = &event { return self.commit_text(text, None); }
         self.inject(event, None);
         Ok(())
     }
@@ -695,6 +730,7 @@ impl InputInjector for MacInputInjector {
         if std::time::Instant::now() >= deadline {
             return Err("input expired after target validation".into());
         }
+        if let InputEvent::Text(text) = &event { return self.commit_text(text, Some(deadline)); }
         self.inject(event, Some(deadline));
         if Instant::now() >= deadline {
             return Err("input expired during native dispatch".into());
@@ -731,6 +767,14 @@ mod tests {
         assert_eq!(mouse_event_type(1, false).map(|kind| kind as u32), Some(4));
         assert_eq!(mouse_event_type(2, true).map(|kind| kind as u32), Some(25));
         assert_eq!(mouse_event_type(2, false).map(|kind| kind as u32), Some(26));
+    }
+
+    #[test]
+    fn unicode_event_batches_preserve_cjk_surrogates_and_combining_text() {
+        let text="中文👨‍👩‍👧‍👦é🙂".repeat(20);
+        let chunks:Vec<_>=unicode_event_chunks(&text).collect();
+        assert_eq!(chunks.concat(),text);
+        assert!(chunks.iter().all(|chunk|!chunk.is_empty()&&chunk.encode_utf16().count()<=20));
     }
 
     #[test]

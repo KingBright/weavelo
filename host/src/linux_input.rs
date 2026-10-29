@@ -286,6 +286,7 @@ impl LinuxUinputInjector {
             return Err("input expired before uinput dispatch".into());
         }
         match event {
+            InputEvent::Text(_) => return Err("Unicode text requires the consented desktop portal input session".into()),
             InputEvent::MouseMove { dx, dy } => {
                 let mut batch = Vec::new();
                 if dx != 0 {

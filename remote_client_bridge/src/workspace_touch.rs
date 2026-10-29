@@ -13,6 +13,7 @@ pub(crate) struct WorkspaceTouch {
     binding: Option<InputBinding>,
     last_intent: Option<Instant>,
     tracker: TouchStateTracker,
+    keyboard: crate::touch_mapper::VirtualKeyboard,
 }
 
 impl WorkspaceTouch {
@@ -27,10 +28,12 @@ impl WorkspaceTouch {
             binding: None,
             last_intent: None,
             tracker: TouchStateTracker::default(),
+            keyboard: Default::default(),
         }
     }
     pub fn cancel(&mut self) -> Option<InputBinding> {
         self.tracker.cancel_all();
+        self.keyboard=Default::default();
         self.last_intent = None;
         self.binding.take()
     }
@@ -104,6 +107,11 @@ impl WorkspaceTouch {
             _ => None,
         }
     }
+    pub fn keyboard_binding(&self,token:u64,current:Option<InputBinding>)->Option<InputBinding> {
+        (token!=0 && token==self.surface && self.attached && self.frame_ready && self.visible && self.supported)
+            .then_some(current).flatten()
+    }
+    pub fn key_events(&mut self,name:&str,pressed:bool)->Vec<InputEvent> {self.keyboard.event(name,pressed)}
     pub fn touch(
         &mut self,
         token: u64,

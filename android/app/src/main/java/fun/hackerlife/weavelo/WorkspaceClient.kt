@@ -270,6 +270,17 @@ object WorkspaceClient {
         return active && s.connected && s.sessionKey == sessionKey && s.connectionGeneration == generation &&
             s.panes.any { it.id == id } && (!visible || (!background && (s.grid || s.selected == id)))
     }
+    fun keyboardBinding(id: Int, sessionKey: String, generation: Long, token: Long): String? = synchronized(this) {
+        if (!currentView(id,sessionKey,generation,true)) return@synchronized null
+        runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("epoch") } }.getOrNull()
+    }
+    fun keyboard(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
+        text: String? = null, key: String? = null, pressed: Boolean = false, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
+        if (!currentView(id,sessionKey,generation,true) || SystemClock.uptimeMillis()-eventTime !in 0L..250L) return@guarded
+        val event=JSONObject().put("id",id).put("token",token).put("binding",JSONObject(binding)).put("age_ms",SystemClock.uptimeMillis()-eventTime)
+        if (text!=null) event.put("text",text) else event.put("key",key).put("pressed",pressed)
+        action(14,event.toString())
+    }
     fun surface(id: Int, sessionKey: String, generation: Long, token: Long, phase: String, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
         if (!currentView(id, sessionKey, generation, phase == "begin" || phase == "ready" || phase == "alive")) return@guarded
         val currentPhase = if (phase == "alive" && SystemClock.uptimeMillis() - eventTime !in 0L..250L) "cancel" else phase
@@ -292,6 +303,7 @@ object WorkspaceClient {
             val control = event.optJSONObject("control")
             control?.optJSONObject("Opened")?.let { mutable.value = mutable.value.copy(maxSubscriptions = it.getInt("max_subscriptions"), files = it.getBoolean("files"), clipboardAvailable = it.getBoolean("clipboard")) }
             control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, status = it.getString("reason")) }
+            control?.optJSONObject("TextRejected")?.let { mutable.value=mutable.value.copy(status=it.getString("reason")) }
             control?.optJSONObject("ClipboardState")?.let { mutable.value = mutable.value.copy(clipboard = it.getBoolean("enabled")) }
             event.optJSONObject("clipboard")?.let { applyClipboard(it) }
             event.optJSONObject("detail")?.takeIf { it.has("clipboard_files") }?.let { applyClipboard(it) }

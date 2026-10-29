@@ -312,6 +312,8 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
                 10 => remote_core::shared_files::shared_file_catalog().clear(),
                 11 => workspace.surface(&payload)?,
                 12 => workspace.touch(&payload)?,
+                13 => return workspace.keyboard_context(&payload),
+                14 => workspace.keyboard(&payload)?,
                 _ => return Err("unknown workspace operation".into()),
             }
             Ok(String::new())
@@ -495,6 +497,20 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendTouch
         _ => TouchAction::Cancel,
     };
     client().handle_bound_touch_input(token as u64, action, pointer_id as u32, norm_x, norm_y, pressure);
+}
+
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeCommitText(
+    mut env:JNIEnv,_:JClass,token:jni::sys::jlong,text:JString) -> jboolean {
+    let Ok(text)=env.get_string(&text) else {return 0;};
+    client().commit_text(token as u64,&String::from(text)).is_ok() as jboolean
+}
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendBoundVirtualKey(
+    mut env:JNIEnv,_:JClass,token:jni::sys::jlong,key:JString,pressed:jboolean) {
+    if let Ok(key)=env.get_string(&key) {client().send_bound_virtual_key(token as u64,&String::from(key),pressed!=0);}
 }
 
 #[cfg(feature = "android")]

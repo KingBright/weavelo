@@ -1,3 +1,5 @@
+#[path="restored_text_input.rs"]
+mod remote_text_input;
 #[path="restored_acceptance.rs"]
 mod sequence_acceptance;
 #[cfg(target_os = "macos")]
@@ -422,6 +424,9 @@ struct RestoredDashboard {
     pairing_image_import: remote_core::pairing_image::PairingImageImport,
     pointer_input: PointerInputTracker,
     input_focus: FocusHandle,
+    remote_text: Option<Entity<remote_text_input::RemoteTextInput>>,
+    text_mode: bool,
+    ime_anchor: Option<Point<Pixels>>,
     root_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     input_session_id: Option<u32>,
@@ -538,6 +543,9 @@ impl RestoredDashboard {
             pairing_image_import: Default::default(),
             pointer_input: PointerInputTracker::default(),
             input_focus: cx.focus_handle(),
+            remote_text: None,
+            text_mode: true,
+            ime_anchor: None,
             root_focus,
             video_surface_bounds: Arc::new(Mutex::new(None)),
             input_session_id: None,
@@ -1228,6 +1236,11 @@ impl RestoredDashboard {
         {
             return;
         }
+        if self.text_mode && pressed {
+            let modifiers=protocol_modifiers(keystroke.modifiers);
+            self.owner.queue_viewing_input(protocol::InputEvent::ModifiersChanged(modifiers));
+            self.pointer_input.modifiers=modifiers;
+        }
         let Some(event) = protocol_key_event(keystroke, pressed) else {
             return;
         };
@@ -1249,6 +1262,7 @@ impl RestoredDashboard {
             return;
         }
         let mut modifiers = protocol_modifiers(event.modifiers);
+        if self.text_mode {modifiers &= self.pointer_input.modifiers;}
         if event.capslock.on {
             modifiers |= protocol::input_modifiers::CAPS_LOCK;
         }
@@ -2173,6 +2187,7 @@ impl Render for RestoredDashboard {
         }
         if !matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_)) {
             self.manual_media_paused = false;
+            self.show_apps_menu = false;
         }
         self.window_active = window.is_window_active();
         self.window_visible = window.is_window_visible();
@@ -2199,6 +2214,15 @@ impl Render for RestoredDashboard {
         let input_ready = stable_input_ready(snapshot.input_eligible
             && self.input_focus.is_focused(window) && !show_drawer && !self.show_apps_menu,
             &mut self.input_ready_since, Instant::now());
+        let text_binding=if self.text_mode && input_ready && !self.input_locked {
+            self.owner.text_input_binding()
+        } else {None};
+        if let Some((view,binding))=text_binding {
+            if self.remote_text.as_ref().is_none_or(|input|input.read(cx).binding!=binding) {
+                self.remote_text=Some(cx.new(|_|remote_text_input::RemoteTextInput::new(
+                    self.owner.clone(),view,binding,self.input_focus.clone(),self.ime_anchor)));
+            }
+        } else {self.remote_text=None;}
         let is_fullscreen = window.is_fullscreen();
         let compact = f32::from(window.viewport_size().width) < 1200.0;
         let host_stats = self.host_stats_snapshot(&role);
@@ -2230,6 +2254,10 @@ impl Render for RestoredDashboard {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let Some(keystroke) = fresh_key_down(event) else { return; };
                 if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
+                    if this.text_mode && !keystroke.modifiers.control && !keystroke.modifiers.platform
+                        && (keystroke.key_char.is_some() || this.remote_text.as_ref().is_some_and(|input|input.read(cx).composing())) {
+                        return;
+                    }
                     this.queue_key(keystroke, true);
                     cx.stop_propagation();
                 }
@@ -2364,6 +2392,7 @@ impl Render for RestoredDashboard {
                     {
                         this.set_input_locked(true);
                         this.toolbar_revealed = true;
+                        this.last_toolbar_activity = Instant::now();
                         cx.stop_propagation();
                         cx.notify();
                         return;
@@ -2418,13 +2447,17 @@ fn full_video_surface(
         &theme,
     );
 
+    let text_input=cx.entity().read(cx).remote_text.clone();
+    let text_focus=input_focus.clone();
     let input_bounds_probe = canvas(
         move |bounds, _window, _cx| {
             *video_surface_bounds
                 .lock()
                 .expect("video surface bounds lock") = Some(bounds);
         },
-        |_bounds, (), _window, _cx| {},
+        move |bounds, (), window, cx| {
+            if let Some(input)=&text_input {window.handle_input(&text_focus,ElementInputHandler::new(bounds,input.clone()),cx);}
+        },
     )
     .absolute()
     .top_0()
@@ -2462,6 +2495,8 @@ fn full_video_surface(
                 cx.notify();
                 return; // dismissing a local menu is not a remote click
             }
+            this.ime_anchor=Some(event.position);
+            if let Some(input)=&this.remote_text {input.update(cx,|input,_|input.anchor=Some(event.position));}
             window.focus(&this.input_focus);
             this.queue_pointer_move(event.position);
             this.queue_pointer_button(event.button, true);
@@ -2810,6 +2845,18 @@ fn floating_control_island(
                                 theme.content.primary
                             } else { theme.content.secondary }))
                             .child(input_control_caption(input_locked, capture_supports_input, input_ready, compact))
+                        })
+                        .child({
+                            let text_mode=cx.entity().read(cx).text_mode;
+                            let view=view.clone();
+                            command_button("island_keyboard_mode",ActionVariantKind::Neutral,cx)
+                                .h(px(26.)).px_2().text_size(px(10.))
+                                .tooltip(tooltip("Text uses your local input method. Keys forwards physical keys for games.".to_string()).build())
+                                .on_click(move |_,window,cx| {let _=view.update(cx,|this,cx| {
+                                    this.owner.release_input();this.remote_text=None;this.text_mode=!text_mode;
+                                    this.input_focus.focus(window);cx.notify();
+                                });})
+                                .child(if text_mode {"Text"} else {"Keys"})
                         })
                         .child(scale_mode_control(scale_mode, cx)),
                     )

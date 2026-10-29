@@ -6,7 +6,7 @@ mod text_edit_state;
 mod text_input;
 pub mod theme;
 pub use ely_gpui_component::buttons::Button;
-use text_edit_state::TextEditState;
+pub(crate) use text_edit_state::TextEditState;
 pub use text_input::text_input;
 const CURSOR_BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 type ChangeCallback<T> = Arc<dyn Fn(T, &mut Window, &mut App)>;

@@ -690,6 +690,9 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.confirmed = false;
                     self.error = reason;
                 }
+                SessionCommand::TextRejected {binding,reason,..} if binding.connection_id==self.conn.id && binding.subscription_id==self.video_id && binding.source_revision==self.source_revision() => {
+                    self.release_input();self.locked=true;self.error=reason;
+                }
                 SessionCommand::Error { request_id, reason }
                     if request_id == self.video_id && reason.starts_with("INPUT_UNAVAILABLE:") =>
                 {

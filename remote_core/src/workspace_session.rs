@@ -26,6 +26,7 @@ type VideoIngress = mpsc::Sender<VideoPacket>;
 enum Command {
     Control(SessionCommand),
     Realtime(protocol::realtime_input::RealtimeInput, Instant),
+    Text(Vec<protocol::interaction::TextCommit>, Instant),
     Subscribe(
         SubscriptionRequest,
         VideoIngress,
@@ -42,6 +43,7 @@ pub struct WorkspaceEvents {
 }
 
 pub struct WorkspaceConnection {
+    text_pending: Arc<std::sync::atomic::AtomicUsize>,
     source_icons: Arc<std::sync::Mutex<crate::application_icons::SourceIconCache>>,
     close_confirmed: Arc<std::sync::atomic::AtomicBool>,
     last_response_rx: tokio::sync::watch::Receiver<Instant>,
@@ -180,7 +182,10 @@ impl WorkspaceConnection {
         let close_confirmed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let input = Arc::new(std::sync::Mutex::new(InputState::default()));
         let source_icons = Arc::new(std::sync::Mutex::new(crate::application_icons::SourceIconCache::default()));
+        let text = crate::committed_text::TextOutbox::default();
+        let text_pending = text.pending.clone();
         let mut actor = Actor {
+            text,
             source_icons: source_icons.clone(),
             close_confirmed: close_confirmed.clone(),
             last_response_tx,
@@ -204,6 +209,7 @@ impl WorkspaceConnection {
         });
         Ok((
             Self {
+                text_pending,
                 source_icons,
                 close_confirmed,
                 last_response_rx,
@@ -253,6 +259,23 @@ impl WorkspaceConnection {
         Ok(())
     }
 
+    pub fn try_commit_text(&self, binding: protocol::realtime_input::InputBinding, text: &str) -> Result<(), String> {
+        self.try_commit_text_aged(binding,text,Duration::ZERO)
+    }
+    /// Mobile serial dispatch retains the age at the original IME callback.
+    pub fn try_commit_text_aged(&self,binding:protocol::realtime_input::InputBinding,text:&str,age:Duration)->Result<(),String> {
+        use std::sync::atomic::Ordering;
+        let queued = Instant::now().checked_sub(age).ok_or("invalid text input age")?;
+        let mut input = self.input.lock().unwrap();
+        let requests = input.text_aged(binding, text, age)?;
+        let count = requests.len();
+        self.text_pending.try_update(Ordering::AcqRel,Ordering::Acquire,|n|n.checked_add(count).filter(|sum|*sum<=crate::committed_text::MAX_TEXT_EVENTS)).map_err(|_|"text input queue is full")?;
+        if self.commands.try_send(Command::Text(requests,queued)).is_err() {
+            self.text_pending.fetch_sub(count,Ordering::AcqRel);
+            return Err("input command queue is full".into());
+        }
+        Ok(())
+    }
     pub fn source_icons(&self) -> crate::application_icons::SourceIconAssets {
         self.source_icons.lock().unwrap().assets()
     }
@@ -260,6 +283,7 @@ impl WorkspaceConnection {
         if let SessionCommand::ListSources { known_icons, .. } = &mut command {
             *known_icons = self.source_icons.lock().unwrap().known_ids();
         }
+        if matches!(command, SessionCommand::CommitText(_)|SessionCommand::TextCommitted{..}|SessionCommand::TextRejected{..}) {return Err("use the bound committed text API".into());}
         let command = self.input.lock().unwrap().seal(command)?;
         Ok(match command {
             SessionCommand::RealtimeInput(packet) => Command::Realtime(packet, Instant::now()),
@@ -349,6 +373,7 @@ struct Pending {
     last_sent: Instant,
 }
 struct Actor {
+    text: crate::committed_text::TextOutbox,
     source_icons: Arc<std::sync::Mutex<crate::application_icons::SourceIconCache>>,
     close_confirmed: Arc<std::sync::atomic::AtomicBool>,
     input: Arc<std::sync::Mutex<InputState>>,
@@ -386,6 +411,7 @@ mod input_api_tests {
         let (file_commands,_)=mpsc::channel(1);let (commands,mut queued)=mpsc::channel(1);
         let (cancel,_)=broadcast::channel(1);
         let conn=WorkspaceConnection {
+            text_pending: Default::default(),
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:input.clone(),max_subscriptions:8,files_available:false,clipboard_available:false,
@@ -457,6 +483,22 @@ pub fn trace_control_event(connection_id: u32, stage: &str, command: &SessionCom
         "elapsed_ms":elapsed.map(|v|v.as_millis() as u64),"gui_pending":gui_pending}));
 }
 impl Actor {
+    async fn fail_text(&mut self,binding:protocol::realtime_input::InputBinding,request_id:u64,reason:&str) {
+        self.text.cancel(binding);
+        let release=self.input.lock().unwrap().seal_bound(binding,None);
+        if let Ok(command)=release {self.send(&command).await;}
+        let _=self.control_tx.send(SessionCommand::TextRejected {binding,request_id,reason:reason.into()});
+    }
+    async fn flush_text(&mut self) {
+        let input=self.input.clone();
+        let actions=self.text.advance(Instant::now(),|binding|input.lock().unwrap().binding(binding.subscription_id,binding.source_revision)==Some(binding));
+        for action in actions {
+            match action {
+                crate::committed_text::Action::Send(command)=>self.send(&command).await,
+                crate::committed_text::Action::Failed{binding,request_id,reason}=>self.fail_text(binding,request_id,reason).await,
+            }
+        }
+    }
     async fn send(&self, command: &SessionCommand) {
         let _ = self
             .sender
@@ -791,8 +833,12 @@ impl Actor {
                         for request in requests { self.send(&request).await; }
                         input_requests_at=Instant::now();
                     }
-                    let snapshots=self.input.lock().unwrap().snapshots();
+                    let snapshots={
+                        let mut input=self.input.lock().unwrap();
+                        if self.text.pending.load(std::sync::atomic::Ordering::Acquire)==0 {input.snapshots()} else {Vec::new()}
+                    };
                     for packet in snapshots { self.send(&SessionCommand::RealtimeInput(packet)).await; }
+                    self.flush_text().await;
                 }
                 _ = media.tick(), if self.subscriptions.values().any(|s| s.active) || !self.pending_audio_activity.is_empty() => {
                     self.flush_audio_activity();
@@ -816,7 +862,20 @@ impl Actor {
                         self.refresh_audio_activity();
                         self.request(SessionCommand::Subscribe(request)).await;
                     }
+                    Some(Command::Text(requests, queued)) => {
+                        self.text.text(requests, queued);
+                        self.flush_text().await;
+                    }
                     Some(Command::Realtime(packet, queued)) => {
+                        if matches!(packet.payload,protocol::realtime_input::InputPayload::Release) {
+                            self.text.cancel(packet.binding);
+                        } else if self.text.waiting() {
+                            let binding=packet.binding;
+                            if !self.text.input(packet,queued) {
+                                self.fail_text(binding,0,"ordered input queue is full").await;
+                            }
+                            continue;
+                        }
                         // Enqueue-time identity is immutable across awaits and switches.
                         if queued.elapsed().as_millis() <= protocol::realtime_input::MAX_INPUT_AGE_MS as u128
                             && self.input.lock().unwrap().ready(packet.binding.subscription_id,packet.binding.source_revision) {
@@ -835,6 +894,14 @@ impl Actor {
                         Ok(MultiplexedPacket::Control(ControlMessage::Session(command), addr)) if addr == self.target => {
                             let command = *command;
                             match &command {
+                                SessionCommand::TextCommitted{binding,request_id} => {
+                                    if self.text.acknowledge(*binding,*request_id) {self.flush_text().await;}
+                                    continue;
+                                }
+                                SessionCommand::TextRejected{binding,request_id,reason} => {
+                                    if self.text.acknowledge(*binding,*request_id) {self.fail_text(*binding,*request_id,reason).await;}
+                                    continue;
+                                }
                                 SessionCommand::InputBinding{binding,request,host_time_ms} => {
                                     self.input.lock().unwrap().grant(self.id,*binding,*request,*host_time_ms);
                                     continue;
@@ -1026,6 +1093,7 @@ mod tests {
         let (file_commands, _) = mpsc::channel(1);
         let (_, last_response_rx) = tokio::sync::watch::channel(Instant::now());
         let connection = WorkspaceConnection {
+            text_pending: Default::default(),
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx, input: input.clone(), max_subscriptions: 1,
@@ -1075,6 +1143,7 @@ mod tests {
         let (_,last_response_rx)=tokio::sync::watch::channel(Instant::now());
         let task=tokio::spawn(async {});while !task.is_finished(){tokio::task::yield_now().await;}
         let connection=WorkspaceConnection {
+            text_pending: Default::default(),
             source_icons:Default::default(),
             close_confirmed:Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:actor.input.clone(),max_subscriptions:1,files_available:false,clipboard_available:false,
@@ -1116,6 +1185,7 @@ mod tests {
         let (files_tx, _) = mpsc::channel(1);
         (
             Actor {
+                text: Default::default(),
                 source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 input: Arc::new(std::sync::Mutex::new(InputState::default())),
@@ -1719,6 +1789,51 @@ mod tests {
         assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true}));
     }
 
+    #[tokio::test]
+    async fn encrypted_text_retry_preserves_original_intent_and_orders_the_following_click() {
+        use protocol::realtime_input::{InputBinding,InputPayload};
+        let server=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target=server.local_addr().unwrap();let (tx,rx)=server.split();
+        let (mut actor,_)=source_switch_actor().await;
+        let local=actor.target;
+        actor.target=target;
+        actor.sender.install_peer_crypto(target,SessionCrypto::from_psk(b"text-fixture",b"ordered",SessionRole::Client).unwrap());
+        tx.install_peer_crypto(local,SessionCrypto::from_psk(b"text-fixture",b"ordered",SessionRole::Host).unwrap());
+        let binding=InputBinding {connection_id:actor.id,subscription_id:7,source_revision:0,epoch:[9;16]};
+        let (commands,command_rx)=mpsc::channel(16);actor.commands=command_rx;
+        let (requests,click)={
+            let mut input=actor.input.lock().unwrap();input.source(7,0);
+            let SessionCommand::RequestInputBinding{request,..}=input.requests(actor.id).remove(0) else {panic!()};
+            input.grant(actor.id,binding,request,1000);
+            let requests=input.text(binding,"你好🙂").unwrap();
+            let SessionCommand::RealtimeInput(click)=input.seal_bound(binding,Some(protocol::InputEvent::MouseDown(0))).unwrap() else {panic!()};
+            (requests,click)
+        };
+        let original=requests[0].clone();actor.text.pending.store(1,std::sync::atomic::Ordering::Release);
+        let (cancel,_)=broadcast::channel(2);let cancel_rx=cancel.subscribe();
+        let task=tokio::spawn(async move {actor.run(cancel_rx).await});
+        commands.send(Command::Text(requests,Instant::now())).await.unwrap();
+        commands.send(Command::Realtime(click,Instant::now())).await.unwrap();
+        let mut attempts=0;
+        tokio::time::timeout(Duration::from_secs(2),async {
+            loop {
+                if let MultiplexedPacket::Control(ControlMessage::Session(command),_)=rx.recv().await.unwrap() {
+                    match *command {
+                        SessionCommand::CommitText(request)=> {
+                            assert_eq!(request,original);attempts+=1;
+                            if attempts==2 {tx.send_control(&ControlMessage::Session(Box::new(SessionCommand::TextCommitted {binding,request_id:request.request_id})),local).await.unwrap();}
+                        }
+                        SessionCommand::RealtimeInput(packet) if matches!(packet.payload,InputPayload::Event(protocol::InputEvent::MouseDown(0)))=> {
+                            assert_eq!(attempts,2);break;
+                        }
+                        _=>{}
+                    }
+                }
+            }
+        }).await.unwrap();
+        cancel.send(()).unwrap();task.await.unwrap();
+    }
+
     /// Protocol-only regression. No capture, decoder, account profile or system
     /// input is used: synthetic encrypted datagrams exercise the real actor.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1758,6 +1873,7 @@ mod tests {
         };
         let source_artwork = Arc::new(std::sync::Mutex::new(crate::application_icons::SourceIconCache::default()));
         let mut actor = Actor {
+            text: Default::default(),
             source_icons: source_artwork.clone(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input:Arc::new(std::sync::Mutex::new(InputState::default())),
@@ -1883,6 +1999,7 @@ mod tests {
         let (audio_tx, _) = mpsc::channel(1);
         let (files_tx, _) = mpsc::channel(1);
         let mut actor = Actor {
+            text: Default::default(),
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input:Arc::new(std::sync::Mutex::new(InputState::default())),
@@ -2019,6 +2136,7 @@ mod rejected_datagram_tests {
         let (audio_tx, _) = mpsc::channel(2);
         let (files_tx, _) = mpsc::channel(2);
         let mut actor = Actor {
+            text: Default::default(),
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input:Arc::new(std::sync::Mutex::new(InputState::default())),

@@ -7,6 +7,7 @@ use std::time::Instant;
 pub(crate) struct InputState {
     slots: HashMap<u32, Slot>,
     next_request: u64,
+    next_text: u64,
 }
 struct Slot {
     enabled: bool,
@@ -125,6 +126,24 @@ impl InputState {
             frontend_intent:None,
             frontend_expired:false,
         });
+    }
+    #[cfg(test)]
+    pub(crate) fn text(&mut self, binding: InputBinding, text: &str) -> Result<Vec<protocol::interaction::TextCommit>, String> {
+        self.text_aged(binding,text,std::time::Duration::ZERO)
+    }
+    pub(crate) fn text_aged(&mut self,binding:InputBinding,text:&str,age:std::time::Duration)->Result<Vec<protocol::interaction::TextCommit>,String> {
+        if age.as_millis()>protocol::realtime_input::MAX_INPUT_AGE_MS as u128 {return Err("text input expired in the local UI queue".into());}
+        if text.len()>crate::committed_text::MAX_TEXT_EVENTS*protocol::interaction::MAX_COMMITTED_TEXT_BYTES {return Err("text input is too large".into());}
+        let chunks=protocol::interaction::text_chunks(text)?.map(|s|protocol::interaction::CommittedText::new(s.to_owned())).collect::<Result<Vec<_>,_>>()?;
+        if self.binding(binding.subscription_id,binding.source_revision)!=Some(binding) {return Err("text input ownership changed".into());}
+        let lease=self.slots[&binding.subscription_id].lease.as_ref().unwrap();
+        let created_host_ms=lease.host_ms.saturating_add(lease.received.elapsed().as_millis() as u64).saturating_sub(age.as_millis() as u64);
+        let mut requests=Vec::with_capacity(chunks.len());
+        for text in chunks {
+            self.next_text=self.next_text.checked_add(1).ok_or("text input sequence exhausted")?;
+            requests.push(protocol::interaction::TextCommit {binding,request_id:self.next_text,created_host_ms,text});
+        }
+        Ok(requests)
     }
     pub(crate) fn requests(&mut self, connection: u32) -> Vec<SessionCommand> {
         self.slots
@@ -304,6 +323,17 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn queued_text_preserves_its_original_age_and_source_epoch() {
+        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
+        let binding=state.binding(7,0).unwrap();
+        let requests=state.text_aged(binding,"中文🙂",std::time::Duration::from_millis(160)).unwrap();
+        let lease=state.slots[&7].lease.as_ref().unwrap();
+        let now=lease.host_ms.saturating_add(lease.received.elapsed().as_millis() as u64);
+        assert!(now.saturating_sub(requests[0].created_host_ms)>=160);
+        assert!(state.text_aged(binding,"stale",std::time::Duration::from_millis(251)).is_err());
+        grant(&mut state,2);assert!(state.text_aged(binding,"wrong source",std::time::Duration::ZERO).is_err());
+    }
     fn grant(state: &mut InputState, epoch: u8) {
         let SessionCommand::RequestInputBinding { request, .. } = state.requests(1).remove(0)
         else {
