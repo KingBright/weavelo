@@ -1063,6 +1063,9 @@ async fn run_tcp_relay_connection(
                     );
                     let forward = state.forward_frame(&group_id, connection_id, encoded);
                     drop(state);
+                    // Buffered fragments can stay ready without an I/O yield.
+                    // Let healthy peer writers drain before admitting the next burst.
+                    tokio::task::yield_now().await;
                     if config.log_events {
                         println!(
                             "TCP relay data forwarded targets={} slow_peers={}",
@@ -1224,6 +1227,9 @@ async fn handle_tcp_relay_packet(
             );
             let forward = state.forward_frame(&group_id, connection_id, encoded);
             drop(state);
+            // A ready WebSocket burst must not monopolize the executor and
+            // make another healthy connection's bounded writer look slow.
+            tokio::task::yield_now().await;
             if config.log_events {
                 println!(
                     "WebSocket relay data forwarded targets={} slow_peers={}",
@@ -2050,6 +2056,61 @@ mod tests {
             .await
             .expect("client tunnel task should join")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_video_fragment_burst_keeps_a_draining_peer_connected() {
+        let (cancel, _) = broadcast::channel(1);
+        let server = BoundTcpRelayServer::bind(TcpRelayServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+        )).await.unwrap();
+        let url = format!("ws://{}/relay", server.local_addr().unwrap());
+        let server_task = tokio::spawn(server.run_websocket(cancel.subscribe()));
+        let (mut sender, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut receiver, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        for (socket, peer) in [(&mut sender, "sender"), (&mut receiver, "receiver")] {
+            socket.send(Message::Binary(RelayPacket::Register {
+                group_id: "fragment-burst".into(), peer_id: peer.into(),
+            }.encode().into())).await.unwrap();
+        }
+        // Observe actual forwarding before the burst; registration has no ACK.
+        timeout(Duration::from_secs(2), async {
+            loop {
+                sender.send(Message::Binary(RelayPacket::Data {
+                    group_id: "fragment-burst".into(), peer_id: "sender".into(),
+                    payload: b"ready".to_vec(),
+                }.encode().into())).await.unwrap();
+                if let Ok(Some(Ok(Message::Binary(_)))) =
+                    timeout(Duration::from_millis(10), receiver.next()).await { break; }
+            }
+        }).await.unwrap();
+        const FRAGMENTS: u32 = 256;
+        let receive_task = tokio::spawn(async move {
+            let mut received = 0;
+            while received < FRAGMENTS {
+                let message = receiver.next().await.expect("draining peer disconnected")
+                    .expect("draining peer received a transport error");
+                if let Message::Binary(bytes) = message {
+                    let RelayPacket::Data { payload, .. } = RelayPacket::decode(&bytes).unwrap()
+                        else { panic!("unexpected relay response") };
+                    if payload == b"ready" { continue; }
+                    assert_eq!(payload.len(), 1400);
+                    assert_eq!(u32::from_be_bytes(payload[..4].try_into().unwrap()), received);
+                    received += 1;
+                }
+            }
+        });
+        for sequence in 0..FRAGMENTS {
+            let mut payload = vec![0; 1400];
+            payload[..4].copy_from_slice(&sequence.to_be_bytes());
+            sender.feed(Message::Binary(RelayPacket::Data {
+                group_id: "fragment-burst".into(), peer_id: "sender".into(), payload,
+            }.encode().into())).await.unwrap();
+        }
+        sender.flush().await.unwrap();
+        timeout(Duration::from_secs(3), receive_task).await.unwrap().unwrap();
+        cancel.send(()).unwrap();
+        server_task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
