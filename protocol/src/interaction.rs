@@ -67,6 +67,12 @@ pub struct ApplicationIcon {
     pub png: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceIconBinding {
+    pub source: crate::session::CaptureSource,
+    pub icon_id: [u8; 32],
+}
+
 const fn crc_table() -> [u32; 256] {
     let mut table = [0; 256];
     let mut index = 0;
