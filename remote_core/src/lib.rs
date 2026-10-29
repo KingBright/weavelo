@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod application_icons;
 pub mod desktop_identity;
 pub mod device_name;
 pub mod desktop_storage;

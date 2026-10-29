@@ -5507,6 +5507,7 @@ dependencies = [
  "hmac",
  "image",
  "libc",
+ "png 0.18.1",
  "protocol",
  "qrcode",
  "quanta",

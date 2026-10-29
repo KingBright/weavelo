@@ -3,7 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub const MAX_ICON_EDGE: u32 = 64;
 pub const MAX_ICON_BYTES: usize = 16 * 1024;
-pub const MAX_DIRECTORY_ICON_BYTES: usize = 64 * 1024;
+pub const MAX_APPLICATION_ICONS: usize = 256;
+pub const MAX_DIRECTORY_ICON_BYTES: usize = MAX_APPLICATION_ICONS * MAX_ICON_BYTES;
 pub const MAX_COMMITTED_TEXT_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

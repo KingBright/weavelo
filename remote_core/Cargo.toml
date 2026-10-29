@@ -16,6 +16,7 @@ rand = "0.10.1"
 socket2 = "0.6.3"
 hmac = "0.12.1"
 sha2 = "0.10.9"
+png = "=0.18.1"
 ring = "0.17"
 bytes = "1.11.1"
 futures-util = { version = "0.3.32", features = ["sink"] }
