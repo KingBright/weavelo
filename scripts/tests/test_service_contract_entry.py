@@ -43,6 +43,7 @@ class ServiceContractEntryTests(unittest.TestCase):
         'hevc-access-units': ('host', 'ffmpeg_hevc::tests'),
         'transport-replay': ('remote_core', 'net::tests'),
         'scheduled-sender': ('remote_core', 'scheduled_sender::tests'),
+        'media-plane': ('remote_core', 'media_plane::tests'),
         'routed-auth': ('remote_core', 'p2p::routed_p2p_tests'),
         'clock-display': ('weavelo_app', 'telemetry_display::tests'),
         'clock-renderer': ('client', 'render_timing::tests'),

@@ -5,8 +5,6 @@ use std::error::Error;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const VIDEO_DEADLINE_DELTA_MS: u64 = 16;
-
 /// Inspect the first HEVC VCL NAL; normal P frames return after their header.
 pub fn is_hevc_keyframe(data: &[u8]) -> bool {
     data.windows(5)
@@ -87,16 +85,15 @@ pub fn rtp_to_realtime_data_at(
     match packet.header.payload_type {
         payload_type if payload_type == PayloadType::VideoH265 as u8 => {
             let timestamp_ms = unwrap_wrapped_millis(packet.header.timestamp, now_ms);
-            Ok(DataEnvelope::realtime_video(
+            // The encoder has already committed this frame to its reference
+            // chain. A transport deadline must not discard it independently.
+            // Keep the realtime lane and its existing bounded queue.
+            Ok(DataEnvelope::new(
+                DataLane::Realtime,
+                ContentKind::VideoH265,
                 stream_id,
                 sequence_number,
                 timestamp_ms,
-                // This is a transport queue budget. Encoder startup and a
-                // costly IDR must not expire before they even enter the queue.
-                now_ms
-                    .max(timestamp_ms)
-                    .saturating_add(VIDEO_DEADLINE_DELTA_MS)
-                    .min(timestamp_ms.saturating_add(u16::MAX as u64)),
                 packet.payload.clone(),
             ))
         }
@@ -218,7 +215,7 @@ mod tests {
             rtp.header.sequence_number as u64
         );
         assert_eq!(envelope.header.timestamp_ms as u32, rtp.header.timestamp);
-        assert_eq!(envelope.header.deadline_ms, Some(10_016));
+        assert_eq!(envelope.header.deadline_ms, None);
 
         let decoded = realtime_data_to_rtp(envelope).expect("video data should adapt back");
         assert_eq!(decoded, rtp);
@@ -321,15 +318,36 @@ mod tests {
     }
 
     #[test]
-    fn video_queue_deadline_survives_encoder_startup_and_stays_wire_representable() {
+    fn encoded_video_survives_queue_delay_with_compact_wire_compatibility() {
+        use crate::data_plane::{LaneScheduler, SchedulerPushResult};
+        let mut scheduler = LaneScheduler::new();
         for (capture, now) in [(1000u32, 1500u64), (2000, 1900), (1000, 90000)] {
             let rtp = packet(PayloadType::VideoH265 as u8, 7, capture, 77);
             let envelope = rtp_to_realtime_data_at(&rtp, now).unwrap();
-            assert!(protocol::CompactRealtimeHeader::from_data_header(&envelope.header).is_ok());
-            if now.saturating_sub(u64::from(capture)) < 65519 {
-                assert!(envelope.header.deadline_ms.unwrap() > now);
-            }
+            let wire = envelope.encode_compact_realtime().unwrap();
+            let decoded = DataEnvelope::decode_compact_realtime(&wire).unwrap();
+            assert_eq!(decoded.header.deadline_ms, None);
+            assert_eq!(scheduler.push(decoded, now + 100), SchedulerPushResult::Queued);
+            assert_eq!(realtime_data_to_rtp(scheduler.pop_next(now + 200).unwrap()).unwrap(), rtp);
         }
+        assert_eq!(scheduler.stats().dropped_stale_realtime, 0);
+    }
+
+    #[test]
+    fn delayed_encoded_reference_chain_keeps_every_frame_in_order() {
+        use crate::data_plane::{LaneScheduler, SchedulerPushResult};
+        let mut scheduler = LaneScheduler::new();
+        for sequence in 1..=4 {
+            let rtp = packet(PayloadType::VideoH265 as u8, sequence, 1000, 77);
+            let envelope = rtp_to_realtime_data_at(&rtp, 1500).unwrap();
+            assert_eq!(scheduler.push(envelope, 1600), SchedulerPushResult::Queued);
+        }
+        for sequence in 1..=4 {
+            let rtp = realtime_data_to_rtp(scheduler.pop_next(1700).unwrap()).unwrap();
+            assert_eq!(rtp.header.sequence_number, sequence);
+        }
+        assert!(scheduler.pop_next(1800).is_none());
+        assert_eq!(scheduler.stats().dropped_stale_realtime, 0);
     }
 
     #[test]
@@ -348,7 +366,7 @@ mod tests {
 
         assert_eq!(envelope.header.timestamp_ms, u32::MAX as u64 + 11);
         assert_eq!(envelope.header.timestamp_ms as u32, rtp.header.timestamp);
-        assert_eq!(envelope.header.deadline_ms, Some(now_ms + 16));
+        assert_eq!(envelope.header.deadline_ms, None);
         assert_eq!(realtime_data_to_rtp(envelope).unwrap(), rtp);
     }
 }
