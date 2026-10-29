@@ -35,8 +35,10 @@ import hashlib, json, re, sys
 from pathlib import Path
 apk = Path(sys.argv[1])
 receipt = json.loads(apk.with_suffix('.verification.json').read_text())
-commit = receipt.get('source_commit_observed')
-if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit) or receipt.get('source_inputs', {}).get('product_commit') != commit:
+inputs = receipt.get('source_inputs', {})
+commit = inputs.get('product_commit')
+producer = inputs.get('producer_commit')
+if not all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{40}', value) for value in (commit, producer)) or receipt.get('source_commit_observed') != producer:
     raise SystemExit('APK compiler source receipt is missing or inconsistent')
 if receipt.get('sha256') != hashlib.sha256(apk.read_bytes()).hexdigest():
     raise SystemExit('APK bytes differ from its compiler source receipt')

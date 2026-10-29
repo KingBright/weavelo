@@ -191,13 +191,19 @@ def verify_unsigned(apk: Path, root: Path) -> dict:
     return _inspect_apk(apk, root, release_signature=False)
 
 
-if __name__ == '__main__':
+def main(argv=None):
     try:
         root = Path(__file__).resolve().parent.parent
-        apk = Path(sys.argv[1]).resolve()
+        apk = Path((sys.argv[1:] if argv is None else argv)[0]).resolve()
         result = verify(apk, root)
-        apk.with_suffix('.verification.json').write_text(json.dumps(result, indent=2) + '\n')
+        # Only the public artifact producer owns the source-bearing receipt.
+        # An independent signature check must never replace it with a subset.
         print('RELEASE_APK_VERIFIED', json.dumps(result), flush=True)
+        return 0
     except Exception as error:
         print(f'RELEASE_APK_REJECTED: {error}', file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
