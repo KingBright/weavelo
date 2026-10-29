@@ -166,6 +166,13 @@ class WindowsPackagingPreflightTests(unittest.TestCase):
         self.assertEqual(original,{'PATH':'existing'})
         self.assertEqual(inherited,{'PSExecutionPolicyPreference':'RemoteSigned'})
 
+    def test_packaging_preserves_native_command_extensions_without_changing_compiler_paths(self):
+        original={'PATH':'compiler-path','LIB':'compiler-libraries'}
+        inherited={'PATHEXT':'.COM;.EXE;.BAT;.CMD','PATH':'another-path','PRIVATE_TOKEN':'synthetic-secret'}
+        result=windows.packaging_environment(original,inherited)
+        self.assertEqual(result,dict(original,PATHEXT=inherited['PATHEXT']))
+        self.assertEqual(original,{'PATH':'compiler-path','LIB':'compiler-libraries'})
+
     def test_restricted_is_rejected_without_a_fallback(self):
         with self.assertRaisesRegex(windows.gate.IdentityRejected,'Restricted'):
             windows.validate_packaging_policy(self.report('Restricted'))

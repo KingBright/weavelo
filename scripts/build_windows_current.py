@@ -16,6 +16,10 @@ def packaging_environment(build_env, inherited=None):
     """Preserve compiler inputs; packaging uses its authorized process policy."""
     result = dict(build_env)
     inherited = os.environ if inherited is None else inherited
+    # PowerShell resolves cargo/python using PATHEXT; CreateProcess can find
+    # the same .exe files without it during compilation.
+    if inherited.get('PATHEXT'):
+        result['PATHEXT'] = inherited['PATHEXT']
     policy = inherited.get('PSExecutionPolicyPreference')
     if policy:
         gate.require(policy in ('Restricted', 'AllSigned', 'RemoteSigned',
