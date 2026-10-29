@@ -940,12 +940,24 @@ impl TcpRelayServerState {
         group_id: &str,
         source_connection_id: u64,
         frame: Arc<[u8]>,
+        payload: &[u8],
     ) -> RelayForwardResult {
+        let mut result = RelayForwardResult {
+            forwarded: 0,
+            disconnected_slow_peers: 0,
+        };
+        let source = self.identity(source_connection_id)
+            .filter(|identity| identity.group_id == group_id)
+            .map(|identity| identity.peer_id.as_str()).unwrap_or_default();
+        let Ok(target) = crate::routed_relay::relay_target(payload, source) else {
+            return result;
+        };
         let targets = self
             .peers
             .iter()
             .filter(|(key, peer)| {
                 key.group_id == group_id && peer.connection_id != source_connection_id
+                    && target.is_none_or(|target| key.peer_id == target)
             })
             .map(|(_, peer)| {
                 (
@@ -955,10 +967,6 @@ impl TcpRelayServerState {
                 )
             })
             .collect::<Vec<_>>();
-        let mut result = RelayForwardResult {
-            forwarded: 0,
-            disconnected_slow_peers: 0,
-        };
         let mut failed_connections = Vec::new();
         for (connection_id, writer_tx, disconnect_tx) in targets {
             match writer_tx.try_send(frame.clone()) {
@@ -1056,15 +1064,8 @@ async fn run_tcp_relay_connection(
                             "relay data identity does not match registration",
                         ));
                     }
-                    let encoded = Arc::<[u8]>::from(
-                        RelayPacket::Data {
-                            group_id: group_id.clone(),
-                            peer_id,
-                            payload,
-                        }
-                        .encode(),
-                    );
-                    let forward = state.forward_frame(&group_id, connection_id, encoded);
+                    let encoded = Arc::<[u8]>::from(frame.as_slice());
+                    let forward = state.forward_frame(&group_id, connection_id, encoded, &payload);
                     drop(state);
                     // Buffered fragments can stay ready without an I/O yield.
                     // Let healthy peer writers drain before admitting the next burst.
@@ -1220,15 +1221,8 @@ async fn handle_tcp_relay_packet(
                     "relay data identity does not match registration",
                 ));
             }
-            let encoded = Arc::<[u8]>::from(
-                RelayPacket::Data {
-                    group_id: group_id.clone(),
-                    peer_id,
-                    payload,
-                }
-                .encode(),
-            );
-            let forward = state.forward_frame(&group_id, connection_id, encoded);
+            let encoded = Arc::<[u8]>::from(frame);
+            let forward = state.forward_frame(&group_id, connection_id, encoded, &payload);
             drop(state);
             // A ready WebSocket burst must not monopolize the executor and
             // make another healthy connection's bounded writer look slow.
@@ -1854,6 +1848,51 @@ mod tests {
     }
 
     #[test]
+    fn routed_frame_does_not_disconnect_an_unrelated_slow_peer() {
+        let mut state = TcpRelayServerState::default();
+        let mut register = |group: &str, peer: &str, capacity| {
+            let connection = state.next_connection_id();
+            let (writer, reader) = mpsc::channel(capacity);
+            let (disconnect, disconnected) = watch::channel(false);
+            state.register(group.into(), peer.into(), connection, writer.clone(), disconnect, 8).unwrap();
+            (connection, writer, reader, disconnected)
+        };
+        let (source, _, _, _) = register("control-group", "source", 2);
+        let (_, _, mut target, _) = register("control-group", "target", 2);
+        let (_, unrelated, _unrelated_reader, disconnected) = register("control-group", "unrelated", 1);
+        let (_, _, mut other_group, _) = register("other-group", "target", 2);
+        unrelated.try_send(Arc::<[u8]>::from([7])).unwrap();
+        // Existing RPMX v1 routing metadata. The relay does not hold the end-to-end
+        // MAC key; recipient selection must never stand in for receiver authentication.
+        let mut payload = b"RPMX\x01\x00".to_vec();
+        payload.extend_from_slice(&[0; 16]);
+        payload.extend_from_slice(&[6, 6]);
+        payload.extend_from_slice(b"sourcetarget");
+        payload.extend_from_slice(&5u16.to_be_bytes());
+        payload.extend_from_slice(b"video");
+        payload.extend_from_slice(&[0; 32]);
+        let frame = Arc::<[u8]>::from(RelayPacket::Data {
+            group_id: "control-group".into(), peer_id: "source".into(), payload: payload.clone(),
+        }.encode());
+        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &payload),
+            RelayForwardResult { forwarded: 1, disconnected_slow_peers: 0 });
+        assert_eq!(target.try_recv().unwrap().as_ref(), frame.as_ref());
+        let rejected = RelayForwardResult { forwarded: 0, disconnected_slow_peers: 0 };
+        assert_eq!(state.forward_frame("other-group", source, frame.clone(), &payload), rejected);
+        assert_eq!(state.forward_frame("control-group", u64::MAX, frame.clone(), &payload), rejected);
+        let mut spoofed = payload.clone();
+        spoofed[24] = b'x';
+        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &spoofed), rejected);
+        let mut unknown_target = payload.clone();
+        unknown_target[30] = b'x';
+        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &unknown_target), rejected);
+        assert_eq!(state.forward_frame("control-group", source, frame, &payload[..4]), rejected);
+        assert!(target.try_recv().is_err());
+        assert!(!*disconnected.borrow(), "another device's stream disconnected this peer");
+        assert!(other_group.try_recv().is_err());
+    }
+
+    #[test]
     fn tcp_forwarding_queue_is_bounded() {
         let mut state = TcpRelayServerState::default();
         let source_connection = state.next_connection_id();
@@ -1873,14 +1912,14 @@ mod tests {
 
         let frame = std::sync::Arc::<[u8]>::from([1, 2, 3]);
         assert_eq!(
-            state.forward_frame("group", source_connection, frame.clone()),
+            state.forward_frame("group", source_connection, frame.clone(), &[]),
             RelayForwardResult {
                 forwarded: 1,
                 disconnected_slow_peers: 0,
             }
         );
         assert_eq!(
-            state.forward_frame("group", source_connection, frame),
+            state.forward_frame("group", source_connection, frame, &[]),
             RelayForwardResult {
                 forwarded: 0,
                 disconnected_slow_peers: 1,

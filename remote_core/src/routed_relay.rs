@@ -104,6 +104,58 @@ fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
+
+// Shape validation is shared with the opaque relay's recipient selection. This
+// view is not authenticated; only Envelope::decode may deliver to an endpoint.
+struct EnvelopeView<'a> {
+    source: &'a str,
+    target: &'a str,
+    token: Token,
+    response: bool,
+    payload: &'a [u8],
+}
+impl<'a> EnvelopeView<'a> {
+    fn parse(bytes: &'a [u8]) -> Option<Self> {
+        if bytes.len() < 58
+            || bytes.len() > MAX_PAYLOAD + 314
+            || &bytes[..4] != MAGIC
+            || bytes[4] != 1
+            || bytes[5] > 1
+        {
+            return None;
+        }
+        let body = &bytes[..bytes.len() - 32];
+        let a = body[22] as usize;
+        let b = body[23] as usize;
+        let end = 24usize.checked_add(a)?.checked_add(b)?;
+        let source = std::str::from_utf8(body.get(24..24 + a)?).ok()?;
+        let target = std::str::from_utf8(body.get(24 + a..end)?).ok()?;
+        let size = u16::from_be_bytes(body.get(end..end + 2)?.try_into().ok()?) as usize;
+        if !valid_id(source) || !valid_id(target) || body.len() != end + 2 + size || size > MAX_PAYLOAD {
+            return None;
+        }
+        Some(Self {
+            source,
+            target,
+            token: body[6..22].try_into().ok()?,
+            response: body[5] != 0,
+            payload: &body[end + 2..],
+        })
+    }
+}
+
+/// Select an existing v1 destination without treating its metadata as authority.
+/// Discovery remains broadcast. Malformed or source-spoofed RPMX is never broadcast.
+pub(crate) fn relay_target<'a>(bytes: &'a [u8], registered_source: &str) -> Result<Option<&'a str>, ()> {
+    if !bytes.starts_with(MAGIC) {
+        return Ok(None);
+    }
+    let envelope = EnvelopeView::parse(bytes).ok_or(())?;
+    if envelope.source != registered_source {
+        return Err(());
+    }
+    Ok(Some(envelope.target))
+}
 impl Envelope {
     fn encode(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
         if !valid_id(&self.source) || !valid_id(&self.target) || self.payload.len() > MAX_PAYLOAD {
@@ -127,37 +179,17 @@ impl Envelope {
         Some(bytes)
     }
     fn decode(bytes: &[u8], key: &[u8; 32]) -> Option<Self> {
-        if bytes.len() < 58
-            || bytes.len() > MAX_PAYLOAD + 314
-            || &bytes[..4] != MAGIC
-            || bytes[4] != 1
-            || bytes[5] > 1
-        {
-            return None;
-        }
+        let envelope = EnvelopeView::parse(bytes)?;
         let (body, tag) = bytes.split_at(bytes.len() - 32);
         let mut mac = HmacSha256::new_from_slice(key).ok()?;
         mac.update(body);
         mac.verify_slice(tag).ok()?;
-        let a = body[22] as usize;
-        let b = body[23] as usize;
-        let end = 24usize.checked_add(a)?.checked_add(b)?;
-        let source = std::str::from_utf8(body.get(24..24 + a)?).ok()?.to_owned();
-        let target = std::str::from_utf8(body.get(24 + a..end)?).ok()?.to_owned();
-        let size = u16::from_be_bytes(body.get(end..end + 2)?.try_into().ok()?) as usize;
-        if !valid_id(&source)
-            || !valid_id(&target)
-            || body.len() != end + 2 + size
-            || size > MAX_PAYLOAD
-        {
-            return None;
-        }
         Some(Self {
-            source,
-            target,
-            token: body[6..22].try_into().ok()?,
-            response: body[5] != 0,
-            payload: body[end + 2..].to_vec(),
+            source: envelope.source.to_owned(),
+            target: envelope.target.to_owned(),
+            token: envelope.token,
+            response: envelope.response,
+            payload: envelope.payload.to_vec(),
         })
     }
 }
@@ -638,6 +670,30 @@ mod tests {
         let mut changed = bytes;
         changed[25] = b'c';
         assert!(Envelope::decode(&changed, &key().0).is_none());
+    }
+    #[test]
+    fn relay_routing_hints_do_not_replace_recipient_authentication() {
+        let bytes = packet().encode(&key().0).unwrap();
+        assert_eq!(relay_target(b"discovery", "a"), Ok(None));
+        assert_eq!(relay_target(&bytes, "a"), Ok(Some("b")));
+        assert_eq!(relay_target(&bytes, "other-source"), Err(()));
+        for n in 4..bytes.len() {
+            assert_eq!(relay_target(&bytes[..n], "a"), Err(()));
+        }
+        for (offset, value) in [(4, 2), (5, 2), (22, 0), (23, 129), (24, b'/'), (26, 255)] {
+            let mut malformed = bytes.clone();
+            malformed[offset] = value;
+            assert_eq!(relay_target(&malformed, "a"), Err(()));
+        }
+        let mut changed = bytes.clone();
+        changed[25] = b'c';
+        assert_eq!(relay_target(&changed, "a"), Ok(Some("c")));
+        assert!(Envelope::decode(&changed, &key().0).is_none());
+        let last = changed.len() - 32;
+        changed[last..].fill(0);
+        assert!(Envelope::decode(&changed, &key().0).is_none());
+        changed.push(0);
+        assert_eq!(relay_target(&changed, "a"), Err(()));
     }
     #[test]
     fn wrong_network_and_legacy_packets_are_rejected() {
