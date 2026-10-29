@@ -1499,6 +1499,16 @@ impl OriginalOwner {
         let p = self.pool.lock().unwrap();
         serde_json::json!({"pending":p.tabs.pending_count(),"directed_receive_failed":p.receive_failed(),"sessions":p.sessions.iter().map(|e|{
             let s=&e.session;
+            let recovery=s.stats.video_recovery.snapshot();
+            let video_diagnostics=serde_json::json!({
+                "source":recovery.epoch.source,"attempt":recovery.epoch.recovery,
+                "waiting":recovery.waiting,"age_ms":recovery.began_at.elapsed().as_millis() as u64,
+                "reference_gaps":s.stats.video_decoder_reference_gaps.load(std::sync::atomic::Ordering::Relaxed),
+                "reference_skipped":s.stats.video_decoder_reference_skipped.load(std::sync::atomic::Ordering::Relaxed),
+                "queue_dropped":s.stats.video_decode_queue_dropped.load(std::sync::atomic::Ordering::Relaxed),
+                "presented_epoch":s.uploaded_epoch.map(|epoch|serde_json::json!({"source":epoch.source,"attempt":epoch.recovery})),
+                "presented_age_ms":s.uploaded_at.map(|at|at.elapsed().as_millis() as u64),
+            });
             let native=serde_json::Value::Null;
             #[cfg(all(target_os="windows",feature="native-windows-video"))]
             let native=s.texture.as_ref().and_then(|frame|frame.native.as_ref().map(|n|serde_json::json!({
@@ -1512,7 +1522,7 @@ impl OriginalOwner {
                 "cpu_pixel_bytes":frame.rgba.len(),"exact_frame_submitted":n.frame.was_submitted(),
                 "surface_counters":n.frame.stats().snapshot(),"surface_error":n.frame.stats().last_error.lock().unwrap().clone()
             }))).unwrap_or(native);
-            serde_json::json!({"connected":s.connected,"peer_responsive":s.conn.peer_is_responsive(),
+            let mut result=serde_json::json!({"connected":s.connected,"peer_responsive":s.conn.peer_is_responsive(),
                 "supports_input":s.supports_input,"input_eligible":s.can_input(),
                 "request_audio":s.request.audio,"volume":s.volume,"muted":s.muted,
                 "audio_output_status":s.media.as_ref().map(|m|format!("{:?}",m.status)),
@@ -1530,7 +1540,10 @@ impl OriginalOwner {
                 "source":format!("{:?}",s.source),"decoded_frames":s.stats.video_frames_decoded.load(std::sync::atomic::Ordering::Relaxed),
                 "decode_errors":s.stats.video_decode_errors.load(std::sync::atomic::Ordering::Relaxed),"confirmed":s.confirmed,
                 "scene_submitted_frame":s.uploaded_at.is_some(),"input_locked":s.locked,"error":s.error,"video_error":s.video_error,
-                "files_listed":s.files.len(),"transfers":s.transfers.lock().unwrap().snapshots().len()})
+                "files_listed":s.files.len(),"transfers":s.transfers.lock().unwrap().snapshots().len()});
+            result["input_status"]=s.input_status().into();
+            result["video_diagnostics"]=video_diagnostics;
+            result
         }).collect::<Vec<_>>()})
     }
     #[cfg(all(test, any(target_os = "macos", target_os = "linux", target_os = "windows")))]
