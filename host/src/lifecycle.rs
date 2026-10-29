@@ -17,6 +17,13 @@ pub(crate) struct Resources {
     pub native_stop_errors: AtomicU64,
     pub captured_frames: AtomicU64,
     pub encoded_frames: AtomicU64,
+    pub scheduled_data: Mutex<Option<ScheduledDataObservation>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ScheduledDataObservation {
+    pub observed_at_ms: u64,
+    pub stats: remote_core::scheduled_sender::ScheduledDataSenderStats,
 }
 
 pub(crate) const CLEANUP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -94,6 +101,8 @@ pub struct ConnectionLifecycleSnapshot {
     pub native_stop_errors: u64,
     pub captured_frames: u64,
     pub encoded_frames: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_data: Option<ScheduledDataObservation>,
 }
 struct Record {
     resources: Arc<Resources>,
@@ -164,6 +173,7 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 native_stop_errors: x.native_stop_errors.load(SeqCst),
                 captured_frames: x.captured_frames.load(SeqCst),
                 encoded_frames: x.encoded_frames.load(SeqCst),
+                scheduled_data: x.scheduled_data.lock().unwrap().clone(),
             }
         })
         .collect()
@@ -172,6 +182,23 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connection_diagnostics_keep_unobserved_sender_unknown_and_export_observed_counters() {
+        let resources=Arc::new(Resources::default());
+        publish(90_991,&resources,"open");
+        assert!(inspect_connection(90_991).remove(0).scheduled_data.is_none());
+        *resources.scheduled_data.lock().unwrap()=Some(ScheduledDataObservation {
+            observed_at_ms:1234,
+            stats:remote_core::scheduled_sender::ScheduledDataSenderStats {
+                scheduler_dropped_stale_realtime:7,scheduler_dropped_realtime_capacity:2,
+                ..Default::default()
+            },
+        });
+        let observed=inspect_connection(90_991).remove(0).scheduled_data.unwrap();
+        assert_eq!(observed.observed_at_ms,1234);
+        assert_eq!(observed.stats.scheduler_dropped_stale_realtime,7);
+        assert_eq!(observed.stats.scheduler_dropped_realtime_capacity,2);
+    }
     #[cfg(target_os = "macos")]
     struct CallbackOwner(Arc<std::sync::atomic::AtomicBool>);
     #[cfg(target_os = "macos")]

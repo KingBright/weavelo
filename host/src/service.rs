@@ -2002,6 +2002,9 @@ async fn run_host_service_inner(
                 let retain_for_local_share = false;
                 for (addr, peer) in &mut peers {
                     peer.prune_finished_subscriptions(retain_for_local_share);
+                    *peer.resources.scheduled_data.lock().unwrap()=Some(crate::lifecycle::ScheduledDataObservation {
+                        observed_at_ms:now_unix_ms(),stats:peer.sender.stats(),
+                    });
                     if let Some((request_id, result)) = peer.source_catalog.take_ready().await {
                         let reply = match peer.merge_capture_sources(result) {
                             Ok(sources) => SessionCommand::Sources { request_id, sources },

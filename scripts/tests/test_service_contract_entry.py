@@ -39,6 +39,7 @@ class ServiceContractEntryTests(unittest.TestCase):
         'clock-host-cleared': ('host', 'service::failure_admission_tests::cleared_auth_'),
         'host-resubscribe-lifecycle': ('host', 'service::failure_admission_tests::resubscribe_allows_capture_source_switch'),
         'host-capture-lifecycle': ('host', 'linux_capture::lifecycle_tests::'),
+        'host-lifecycle-observation': ('host', 'lifecycle::tests'),
         'hevc-access-units': ('host', 'ffmpeg_hevc::tests'),
         'transport-replay': ('remote_core', 'net::tests'),
         'routed-auth': ('remote_core', 'p2p::routed_p2p_tests'),

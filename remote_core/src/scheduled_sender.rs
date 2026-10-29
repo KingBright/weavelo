@@ -38,7 +38,7 @@ pub struct ScheduledDataSender {
     counters: Arc<ScheduledDataSenderCounters>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScheduledDataSenderStats {
     pub entrance_queued: usize,
     pub entrance_enqueued: u64,

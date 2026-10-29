@@ -43,6 +43,7 @@ SESSION_CLOCK_TESTS = {
     "clock-host-cleared": ("host", "service::failure_admission_tests::cleared_auth_"),
     "host-resubscribe-lifecycle": ("host", "service::failure_admission_tests::resubscribe_allows_capture_source_switch"),
     "host-capture-lifecycle": ("host", "linux_capture::lifecycle_tests::"),
+    "host-lifecycle-observation": ("host", "lifecycle::tests"),
     "hevc-access-units": ("host", "ffmpeg_hevc::tests"),
     "clock-host-auth": ("host", "service::failure_admission_tests::finish_rechecks_native_owner_and_retired_finish_cannot_replace_new_session"),
     "clock-host-rotation": ("host", "service::failure_admission_tests::key_rotation_same_address_hello_keeps_pending_native_budget_until_release"),
