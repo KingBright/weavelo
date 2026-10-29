@@ -721,6 +721,53 @@ mod tests {
         (data, a)
     }
     #[tokio::test]
+    async fn fragmented_video_burst_survives_local_relay_hops() {
+        let server =
+            BoundTcpRelayServer::bind(TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap()))
+                .await
+                .unwrap();
+        let address = server.local_addr().unwrap();
+        let (cancel, _) = broadcast::channel(8);
+        let rx = cancel.subscribe();
+        let server_task = tokio::spawn(async move { server.run_websocket(rx).await.unwrap() });
+        let a = node("burst-a", address, &cancel).await;
+        let b = node("burst-b", address, &cancel).await;
+        // Match production application sockets; leave relay hops at their actual defaults.
+        for host in [&a.host, &b.host] {
+            let socket = socket2::SockRef::from(host.as_ref());
+            socket.set_recv_buffer_size(4 * 1024 * 1024).unwrap();
+            socket.set_send_buffer_size(4 * 1024 * 1024).unwrap();
+        }
+        let endpoint = a.routes.endpoint("burst-b").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        a.host.send_to(b"warm-up", endpoint).await.unwrap();
+        assert_eq!(recv(&b.host).await.0, b"warm-up");
+        let receiver = b.host.clone();
+        let drain = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut seen = std::collections::HashSet::new();
+            let mut buf = [0u8; 1500];
+            while seen.len() < 256 {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { break; };
+                let Ok(Ok((n, _))) = tokio::time::timeout(remaining, receiver.recv_from(&mut buf)).await else { break; };
+                assert_eq!(n, 1400);
+                seen.insert(u32::from_be_bytes(buf[..4].try_into().unwrap()));
+            }
+            seen
+        });
+        for sequence in 0u32..256 {
+            let mut bytes = [0x51; 1400];
+            bytes[..4].copy_from_slice(&sequence.to_be_bytes());
+            a.host.send_to(&bytes, endpoint).await.unwrap();
+        }
+        let seen = drain.await.unwrap();
+        let _ = cancel.send(());
+        server_task.abort();
+        assert_eq!(seen.len(), 256, "local relay hops lost a draining viewer's video fragments");
+        assert!((0u32..256).all(|sequence| seen.contains(&sequence)));
+    }
+
+    #[tokio::test]
     async fn three_devices_two_clients_and_reverse_control_never_cross_route() {
         let server =
             BoundTcpRelayServer::bind(TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap()))
