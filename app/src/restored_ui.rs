@@ -2282,6 +2282,7 @@ impl Render for RestoredDashboard {
                     self.input_focus.clone(),
                     self.video_surface_bounds.clone(),
                     self.scale_mode,
+                    self.remote_text.clone(),
                     cx,
                 ),
             ))
@@ -2296,6 +2297,7 @@ impl Render for RestoredDashboard {
                         &self.viewer_media_status,
                         &self.status,
                         self.input_locked,
+                        self.text_mode,
                         input_ready,
                         input_hint.as_deref().unwrap_or(&snapshot.input_status),
                         snapshot.active_capture_supports_input,
@@ -2408,6 +2410,7 @@ fn full_canvas_stream_viewport(
     input_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     scale_mode: ViewportScaleMode,
+    text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
     cx: &mut Context<RestoredDashboard>,
 ) -> AnyElement {
     match role {
@@ -2421,6 +2424,7 @@ fn full_canvas_stream_viewport(
             input_focus,
             video_surface_bounds,
             scale_mode,
+            text_input,
             cx,
         ),
         RoleState::Serving(session) => {
@@ -2436,6 +2440,7 @@ fn full_video_surface(
     input_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     scale_mode: ViewportScaleMode,
+    text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
     cx: &mut Context<RestoredDashboard>,
 ) -> AnyElement {
     let theme = cx.theme().clone();
@@ -2447,7 +2452,6 @@ fn full_video_surface(
         &theme,
     );
 
-    let text_input=cx.entity().read(cx).remote_text.clone();
     let text_focus=input_focus.clone();
     let input_bounds_probe = canvas(
         move |bounds, _window, _cx| {
@@ -2624,6 +2628,7 @@ fn floating_control_island(
     _viewer_media_status: &UnifiedViewerMediaStatus,
     status: &str,
     input_locked: bool,
+    text_mode: bool,
     input_ready: bool,
     input_status: &str,
     capture_supports_input: bool,
@@ -2847,7 +2852,6 @@ fn floating_control_island(
                             .child(input_control_caption(input_locked, capture_supports_input, input_ready, compact))
                         })
                         .child({
-                            let text_mode=cx.entity().read(cx).text_mode;
                             let view=view.clone();
                             command_button("island_keyboard_mode",ActionVariantKind::Neutral,cx)
                                 .h(px(26.)).px_2().text_size(px(10.))
