@@ -39,7 +39,7 @@ window_scoped_acceptance_guarded MODE LOOPBACK_TARGET FIXTURE_PID WINDOW_ID FIXT
   presses in B; preserve the sender's closing/cleanup receipt. This mode does
   not require process loss. Never change focus to user documents or other apps.
 
-The fixture exits automatically after 180 seconds. It retains only bounded
+The fixture exits automatically after 600 seconds. It retains only bounded
 native-event/text evidence: source PID, actual target window, monotonic time,
 key down/up, modifier flags, pointer movement/drag and scroll. No microphone,
 private application inspection or system input monitor is installed. The sender
