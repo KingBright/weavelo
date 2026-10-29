@@ -6139,6 +6139,7 @@ fn decoded_video_frame_surface_with_fit(
     if let Some(native) = &frame.native {
         surface(native.ready.frame.clone())
             .object_fit(fit)
+            .size_full()
             .into_any_element()
     } else {
         div()

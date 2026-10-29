@@ -126,7 +126,9 @@ impl X11CapturePlan {
             "-i",
             &format!("{display}+{},{}", self.source.x, self.source.y),
             "-vf",
-            &format!("scale=w={}:h={}", self.output_width, self.output_height),
+            // X11 supplies full-range RGB. Choose the YUV conversion explicitly;
+            // this establishes the matrix, without inventing RGB primaries/transfer.
+            &format!("scale=w={}:h={}:in_range=pc:out_range=tv:out_color_matrix=bt709", self.output_width, self.output_height),
         ]);
     }
 }
@@ -160,7 +162,7 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["-i", ":0.0+0,0"]));
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["-vf", "scale=w=1920:h=1080"])
+                .any(|pair| pair == ["-vf", "scale=w=1920:h=1080:in_range=pc:out_range=tv:out_color_matrix=bt709"])
         );
         assert_eq!((plan.output_width, plan.output_height), (1920, 1080));
     }
@@ -182,7 +184,7 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["-i", ":2.1+1920,120"]));
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["-vf", "scale=w=1152:h=720"])
+                .any(|pair| pair == ["-vf", "scale=w=1152:h=720:in_range=pc:out_range=tv:out_color_matrix=bt709"])
         );
         assert_eq!((plan.output_width, plan.output_height), (1152, 720));
     }

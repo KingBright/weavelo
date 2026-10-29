@@ -156,6 +156,8 @@ fn capture_command_using(
     cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]);
     #[cfg(target_os = "windows")]
     let capture_rect = crate::capture_readiness::capture_display_rect()?;
+    #[cfg(target_os = "linux")]
+    let x11_display = std::env::var("DISPLAY").ok();
     #[cfg(target_os = "windows")]
     crate::capture_readiness::require_srgb_capture_profile(&capture_rect)?;
     #[cfg(target_os = "windows")]
@@ -184,10 +186,10 @@ fn capture_command_using(
     }
     #[cfg(target_os = "linux")]
     {
-        if let Ok(display) = std::env::var("DISPLAY") {
-            let region = crate::linux_capture_geometry::capture_region(&display)?;
+        if let Some(display) = &x11_display {
+            let region = crate::linux_capture_geometry::capture_region(display)?;
             let plan = crate::linux_capture_geometry::X11CapturePlan::new(region, width, height)?;
-            plan.append_args(&mut cmd, &display, fps);
+            plan.append_args(&mut cmd, display, fps);
             println!(
                 "[FfmpegHevc] X11 compatibility plan: root source {}x{} at +{},{}; encoded {}x{} within requested {}x{}",
                 region.width,
@@ -249,6 +251,14 @@ fn capture_command_using(
     let keyint = fps.max(1).to_string();
     let mut encoder_options =
         format!("keyint={keyint}:min-keyint={keyint}:repeat-headers=1:bframes=0");
+    #[cfg(target_os = "linux")]
+    if x11_display.is_some() {
+        // Match the explicit RGB -> limited BT.709 conversion in X11CapturePlan.
+        // Unknown source primaries/transfer stay unspecified. KMS/native YUV
+        // sources keep their own metadata path, never this RGB declaration.
+        cmd.args(["-color_range", "tv", "-colorspace", "bt709"]);
+        encoder_options.push_str(":colormatrix=bt709:range=limited");
+    }
     #[cfg(target_os = "windows")]
     encoder_options.push_str(":pools=2:frame-threads=1:colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=limited");
     cmd.args([
@@ -379,7 +389,7 @@ mod tests {
             .collect();
         let input_size = format!("{}x{}", source.width, source.height);
         let input = format!("{display}+0,0");
-        let filter = format!("scale=w={}:h={}", plan.output_width, plan.output_height);
+        let filter = format!("scale=w={}:h={}:in_range=pc:out_range=tv:out_color_matrix=bt709", plan.output_width, plan.output_height);
         for (flag, value) in [
             ("-video_size", input_size.as_str()),
             ("-i", input.as_str()),
@@ -393,6 +403,9 @@ mod tests {
             crate::capture_backend::ffmpeg_input_format(&command),
             "x11grab"
         );
+        assert!(args.windows(2).any(|pair| pair == ["-colorspace", "bt709"]));
+        assert!(args.iter().any(|value| value.ends_with(":colormatrix=bt709:range=limited")));
+        assert!(!args.iter().any(|value| value.contains("colorprim=") || value.contains("transfer=")));
         println!("metadata-only Linux command verified: {command:?}");
     }
 
