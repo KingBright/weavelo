@@ -206,12 +206,12 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         }
     }
     pub fn control(&mut self, command: SessionCommand) -> bool {
-        if self.conn.try_control(command) {
-            true
-        } else {
-            self.error = "Control queue is busy; release input and retry".into();
-            self.locked = true;
-            false
+        match self.conn.try_control_checked(command) {
+            Ok(()) => true,
+            Err(reason) => {
+                self.fail_input(reason);
+                false
+            }
         }
     }
     pub fn start_video(&mut self) {
@@ -629,7 +629,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     pub fn poll(&mut self) {
         if self.can_input() && (!self.keys.is_empty()||!self.mouse.is_empty()||self.modifiers!=0) {
             let healthy=self.conn.input_binding(self.video_id,self.source_revision).is_some_and(|binding|self.conn.refresh_bound_input(binding));
-            if !healthy {self.release_input();self.locked=true;self.status="Input paused after the window stopped responding; enable control to continue".into();}
+            if !healthy {self.fail_input("Input paused after the window stopped responding; enable control to continue".into());}
         }
         let recovery = self.stats.video_recovery.snapshot();
         self.first_frame_after = self.first_frame_after.max(recovery.began_at);
@@ -1134,6 +1134,23 @@ pub(crate) mod static_input_tests {
             events,
         );
         (session, recorded_rx, recorder, temp)
+    }
+
+    #[tokio::test]
+    async fn rejected_input_preserves_its_actual_reason_for_the_control_retry() {
+        let (mut session, mut received, recorder, _temp) = recorder_session().await;
+        assert!(!session.control(SessionCommand::SourceInput {
+            id: 991, source_revision: 0,
+            event: protocol::InputEvent::MouseMoveAbsolute { x: 10, y: 20 },
+        }));
+        assert!(session.locked);
+        assert!(session.input_failed());
+        assert_eq!(session.error, "input binding unavailable");
+        assert!(received.try_recv().is_err());
+        session.set_input_locked(false);
+        assert!(session.error.is_empty());
+        assert!(!session.can_input());
+        recorder.abort();
     }
 
     #[tokio::test]

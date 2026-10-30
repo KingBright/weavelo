@@ -78,6 +78,17 @@ impl TextOutbox {
         }
     }
     pub fn input(&mut self, packet: RealtimeInput, queued: Instant) -> bool {
+        // Only an unsent, adjacent absolute position can be superseded.
+        // Clicks, relative deltas, text and grant changes remain barriers.
+        if matches!(packet.payload, protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { .. }))
+            && let Some(Item::Input { packet: tail, queued: at }) = self.items.back_mut()
+            && tail.binding == packet.binding
+            && matches!(tail.payload, protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { .. }))
+        {
+            *tail = packet;
+            *at = queued;
+            return true;
+        }
         if self.items.len() >= MAX_ORDERED_INPUTS {
             return false;
         }
@@ -278,6 +289,61 @@ mod tests {
         out.acknowledge(next.binding, next.request_id);
         assert!(matches!(&out.advance(now, |_|true)[0],
             Action::Send(SessionCommand::CommitText(r)) if r==&other));
+    }
+
+    #[test]
+    fn pointer_burst_behind_text_keeps_latest_position_and_click_order() {
+        let now = Instant::now();
+        let text = request();
+        let mut out = TextOutbox::default();
+        out.pending.store(1, Ordering::Release);
+        out.text(vec![text.clone()], now);
+        let packet = |sequence, payload| RealtimeInput {
+            binding: text.binding, sequence, created_host_ms: 100 + sequence, payload,
+        };
+        for sequence in 0..1024 {
+            assert!(out.input(packet(sequence, InputPayload::Event(
+                protocol::InputEvent::MouseMoveAbsolute { x: sequence as u16, y: 3 }
+            )), now + Duration::from_micros(sequence)), "motion {sequence} rejected");
+        }
+        let down = packet(1024, InputPayload::Event(protocol::InputEvent::MouseDown(0)));
+        assert!(out.input(down, now));
+        assert!(out.input(packet(1025, InputPayload::Event(
+            protocol::InputEvent::MouseMoveAbsolute { x: 99, y: 4 }
+        )), now));
+        assert_eq!(out.items.len(), 4);
+        assert!(matches!(&out.items[1], Item::Input { queued, .. }
+            if *queued == now + Duration::from_micros(1023)));
+        assert!(out.acknowledge(text.binding, text.request_id));
+        let actions = out.advance(now + Duration::from_millis(2), |_| true);
+        assert!(matches!(&actions[..], [Action::Send(SessionCommand::RealtimeInput(a)),
+            Action::Send(SessionCommand::RealtimeInput(b)), Action::Send(SessionCommand::RealtimeInput(c))]
+            if a.sequence == 1023 && a.created_host_ms == 1123
+                && matches!(a.payload, InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { x: 1023, .. }))
+                && matches!(b.payload, InputPayload::Event(protocol::InputEvent::MouseDown(0)))
+                && c.sequence == 1025));
+    }
+
+    #[test]
+    fn pointer_coalescing_keeps_epoch_text_and_relative_motion_barriers() {
+        let now = Instant::now();
+        let text = request();
+        let motion = |binding, sequence| RealtimeInput {
+            binding, sequence, created_host_ms: 100,
+            payload: InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { x: 1, y: 2 }),
+        };
+        let mut out = TextOutbox::default();
+        let mut other = text.binding; other.epoch = [9; 16];
+        assert!(out.input(motion(text.binding, 1), now));
+        assert!(out.input(motion(other, 2), now));
+        let mut relative = motion(other, 3);
+        relative.payload = InputPayload::Event(protocol::InputEvent::MouseMove { dx: 1, dy: 2 });
+        assert!(out.input(relative, now));
+        assert!(out.input(motion(other, 4), now));
+        out.pending.store(1, Ordering::Release);
+        out.text(vec![text], now);
+        assert!(out.input(motion(other, 5), now));
+        assert_eq!(out.items.len(), 6);
     }
 
     #[test]

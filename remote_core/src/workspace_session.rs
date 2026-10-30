@@ -24,9 +24,41 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
 type VideoIngress = mpsc::Sender<VideoPacket>;
+type PointerUpdate = Arc<std::sync::Mutex<Option<(protocol::realtime_input::RealtimeInput, Instant)>>>;
+
+#[derive(Default)]
+struct PointerQueue(std::sync::Weak<std::sync::Mutex<Option<(protocol::realtime_input::RealtimeInput, Instant)>>>);
+impl PointerQueue {
+    fn barrier(&mut self) { self.0 = Default::default(); }
+    fn try_send(&mut self, commands: &mpsc::Sender<Command>, command: Command) -> Result<(), String> {
+        let command = match command {
+            Command::Realtime(packet, queued)
+                if matches!(packet.payload, protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { .. })) => {
+                if let Some(slot) = self.0.upgrade() {
+                    let mut pending = slot.lock().unwrap();
+                    if pending.as_ref().is_some_and(|(old,_)| old.binding == packet.binding) {
+                        // This is a new physical position with its own original time,
+                        // never a refreshed timestamp on an old input or sent packet.
+                        *pending = Some((packet, queued));
+                        return Ok(());
+                    }
+                }
+                let slot = Arc::new(std::sync::Mutex::new(Some((packet, queued))));
+                self.0 = Arc::downgrade(&slot);
+                Command::Pointer(slot)
+            }
+            other => { self.barrier(); other }
+        };
+        commands.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => "input command queue is full".into(),
+            mpsc::error::TrySendError::Closed(_) => "connection closed".into(),
+        })
+    }
+}
 enum Command {
     Control(SessionCommand),
     Realtime(protocol::realtime_input::RealtimeInput, Instant),
+    Pointer(PointerUpdate),
     Text(Vec<protocol::interaction::TextCommit>, Instant),
     Subscribe(
         SubscriptionRequest,
@@ -44,6 +76,7 @@ pub struct WorkspaceEvents {
 }
 
 pub struct WorkspaceConnection {
+    pointer_queue: std::sync::Mutex<PointerQueue>,
     text_pending: Arc<std::sync::atomic::AtomicUsize>,
     source_icons: Arc<std::sync::Mutex<crate::application_icons::SourceIconCache>>,
     close_confirmed: Arc<std::sync::atomic::AtomicBool>,
@@ -210,6 +243,7 @@ impl WorkspaceConnection {
         });
         Ok((
             Self {
+                pointer_queue: Default::default(),
                 text_pending,
                 source_icons,
                 close_confirmed,
@@ -286,6 +320,8 @@ impl WorkspaceConnection {
     }
     fn enqueue_text(&self, requests: Vec<protocol::interaction::TextCommit>, queued: Instant) -> Result<(), String> {
         use std::sync::atomic::Ordering;
+        let mut pointer = self.pointer_queue.lock().unwrap();
+        pointer.barrier();
         let count = requests.len();
         self.text_pending.try_update(Ordering::AcqRel,Ordering::Acquire,|n|n.checked_add(count).filter(|sum|*sum<=crate::committed_text::MAX_TEXT_EVENTS)).map_err(|_|"text input queue is full")?;
         if self.commands.try_send(Command::Text(requests,queued)).is_err() {
@@ -297,12 +333,12 @@ impl WorkspaceConnection {
     pub fn source_icons(&self) -> crate::application_icons::SourceIconAssets {
         self.source_icons.lock().unwrap().assets()
     }
-    fn prepare_command(&self, mut command: SessionCommand) -> Result<Command, String> {
+    fn prepare_command(&self, mut command: SessionCommand, input: &mut InputState) -> Result<Command, String> {
         if let SessionCommand::ListSources { known_icons, .. } = &mut command {
             *known_icons = self.source_icons.lock().unwrap().known_ids();
         }
         if matches!(command, SessionCommand::CommitText(_)|SessionCommand::TextCommitted{..}|SessionCommand::TextRejected{..}) {return Err("use the bound committed text API".into());}
-        let command = self.input.lock().unwrap().seal(command)?;
+        let command = input.seal(command)?;
         Ok(match command {
             SessionCommand::RealtimeInput(packet) => Command::Realtime(packet, Instant::now()),
             other => Command::Control(other),
@@ -324,19 +360,28 @@ impl WorkspaceConnection {
     pub fn try_bound_input(&self, binding: protocol::realtime_input::InputBinding, event: Option<protocol::InputEvent>) -> bool {
         let mut input = self.input.lock().unwrap();
         let Ok(SessionCommand::RealtimeInput(packet)) = input.seal_bound(binding, event) else { return false; };
-        self.commands.try_send(Command::Realtime(packet, Instant::now())).is_ok()
+        self.pointer_queue.lock().unwrap().try_send(&self.commands,Command::Realtime(packet, Instant::now())).is_ok()
     }
     pub fn control(&self, command: SessionCommand) -> impl std::future::Future<Output=Result<(),String>> + Send + '_ {
         // async fn bodies are lazy: seal at API invocation, before the returned
         // future can wait or a newer source can replace the current binding.
-        let command=self.prepare_command(command);
+        let command={
+            let mut input=self.input.lock().unwrap();
+            self.pointer_queue.lock().unwrap().barrier();
+            self.prepare_command(command,&mut input)
+        };
         async move {
             let command=command?;
             self.commands.send(command).await.map_err(|_| "connection closed".into())
         }
     }
     pub fn try_control(&self, command: SessionCommand) -> bool {
-        self.prepare_command(command).is_ok_and(|command|self.commands.try_send(command).is_ok())
+        self.try_control_checked(command).is_ok()
+    }
+    pub fn try_control_checked(&self, command: SessionCommand) -> Result<(), String> {
+        let mut input=self.input.lock().unwrap();
+        let command=self.prepare_command(command,&mut input)?;
+        self.pointer_queue.lock().unwrap().try_send(&self.commands,command)
     }
     pub async fn subscribe(
         &self,
@@ -414,6 +459,109 @@ struct Actor {
 #[cfg(test)]
 mod input_api_tests {
     use super::*;
+    async fn motion_connection(capacity: usize) -> (WorkspaceConnection, mpsc::Receiver<Command>, protocol::realtime_input::InputBinding) {
+        let mux=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target=mux.local_addr().unwrap();let (sender,_)=mux.split();
+        let mut input=InputState::default();input.source(7,0);
+        let binding=protocol::realtime_input::InputBinding{connection_id:1,subscription_id:7,source_revision:0,epoch:[1;16]};
+        let SessionCommand::RequestInputBinding{request,..}=input.requests(1).remove(0) else{panic!()};
+        input.grant(1,binding,request,now_unix_ms());
+        let (_,last_response_rx)=tokio::sync::watch::channel(Instant::now());
+        let (file_commands,_)=mpsc::channel(1);let (commands,queued)=mpsc::channel(capacity);
+        (WorkspaceConnection {
+            pointer_queue:Default::default(),
+            text_pending:Default::default(),source_icons:Default::default(),close_confirmed:Default::default(),
+            last_response_rx,input:Arc::new(std::sync::Mutex::new(input)),max_subscriptions:1,
+            files_available:false,clipboard_available:false,settings_revision:Default::default(),id:1,sender,target,
+            file_commands,file_activity:Default::default(),commands,cancel:broadcast::channel(1).0,
+            task:tokio::spawn(async {}),
+        },queued,binding)
+    }
+
+    #[tokio::test]
+    async fn high_rate_pointer_motion_does_not_fill_the_control_queue() {
+        let (conn,mut queued,binding)=motion_connection(128).await;
+        for x in 0..1024 {
+            assert!(conn.try_bound_input(binding,Some(protocol::InputEvent::MouseMoveAbsolute{x,y:123})),
+                "fresh pointer motion {x} filled the queue before the following click");
+        }
+        assert!(conn.try_bound_input(binding,Some(protocol::InputEvent::MouseDown(0))));
+        assert_eq!(queued.len(),2);
+        // Inspect the actual last position before the discrete press.
+        let first=queued.recv().await.unwrap();
+        let Command::Pointer(slot) = first else {panic!("missing pointer update")};
+        let (packet,_)=slot.lock().unwrap().take().unwrap();
+        assert!(matches!(packet.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute{x:1023,y:123})));
+        assert!(matches!(queued.recv().await.unwrap(),Command::Realtime(packet,_) if matches!(packet.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseDown(0)))));
+    }
+
+    fn pointer(command: Command) -> (protocol::realtime_input::RealtimeInput, Instant) {
+        let Command::Pointer(slot)=command else {panic!("missing queued pointer")};
+        slot.lock().unwrap().take().unwrap()
+    }
+
+    #[tokio::test]
+    async fn pointer_updates_preserve_click_text_and_release_barriers() {
+        let (conn,mut queued,binding)=motion_connection(8).await;
+        let motion=|x|SessionCommand::SourceInput{id:7,source_revision:0,event:protocol::InputEvent::MouseMoveAbsolute{x,y:0}};
+        conn.try_control_checked(motion(1)).unwrap();
+        conn.try_control_checked(SessionCommand::Input{id:7,event:protocol::InputEvent::MouseDown(0)}).unwrap();
+        conn.try_control_checked(motion(2)).unwrap();
+        conn.try_commit_text(binding,"x").unwrap();
+        conn.try_control_checked(motion(3)).unwrap();
+        assert!(conn.try_bound_input(binding,None));
+        conn.try_control_checked(motion(4)).unwrap();
+        assert_eq!(queued.len(),7);
+        for x in 1..=4 {
+            let (packet,_)=pointer(queued.recv().await.unwrap());
+            assert_eq!(packet.binding,binding);
+            assert!(matches!(packet.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute{x:actual,..}) if actual==x));
+            match x {
+                1=>assert!(matches!(queued.recv().await.unwrap(),Command::Realtime(packet,_) if matches!(packet.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseDown(0))))),
+                2=>assert!(matches!(queued.recv().await.unwrap(),Command::Text(..))),
+                3=>assert!(matches!(queued.recv().await.unwrap(),Command::Realtime(packet,_) if matches!(packet.payload,protocol::realtime_input::InputPayload::Release))),
+                _=>{}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dequeued_pointer_is_immutable_and_new_epoch_has_its_own_slot() {
+        let (conn,mut queued,mut binding)=motion_connection(3).await;
+        let motion=|x|Some(protocol::InputEvent::MouseMoveAbsolute{x,y:0});
+        assert!(conn.try_bound_input(binding,motion(1)));
+        let (sent,queued_at)=pointer(queued.recv().await.unwrap());
+        assert!(conn.try_bound_input(binding,motion(2)));
+        {
+            let mut input=conn.input.lock().unwrap();
+            let SessionCommand::RequestInputBinding{request,..}=input.requests(1).remove(0) else {panic!()};
+            binding.epoch=[2;16];input.grant(1,binding,request,now_unix_ms());
+        }
+        assert!(conn.try_bound_input(binding,motion(3)));
+        assert_eq!(queued.len(),2);
+        assert_eq!(sent.binding.epoch,[1;16]);
+        assert!(matches!(sent.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute{x:1,..})));
+        assert!(queued_at<=Instant::now());
+        let (old,_)=pointer(queued.recv().await.unwrap());
+        let (new,_)=pointer(queued.recv().await.unwrap());
+        assert_eq!(old.binding.epoch,[1;16]);assert_eq!(new.binding,binding);
+        assert!(matches!(old.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute{x:2,..})));
+        assert!(matches!(new.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute{x:3,..})));
+    }
+
+    #[tokio::test]
+    async fn failed_pointer_enqueue_cannot_leave_an_unreachable_coalescing_slot() {
+        let (conn,mut queued,_)=motion_connection(1).await;
+        conn.commands.try_send(Command::Clipboard(None)).unwrap();
+        let motion=|x|SessionCommand::SourceInput{id:7,source_revision:0,event:protocol::InputEvent::MouseMoveAbsolute{x,y:0}};
+        assert_eq!(conn.try_control_checked(motion(1)).unwrap_err(),"input command queue is full");
+        queued.recv().await.unwrap();
+        conn.try_control_checked(motion(2)).unwrap();conn.try_control_checked(motion(3)).unwrap();
+        let (packet,_)=pointer(queued.recv().await.unwrap());
+        assert!(matches!(packet.payload,protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute{x:3,..})));
+        drop(queued);
+        assert_eq!(conn.try_control_checked(motion(4)).unwrap_err(),"connection closed");
+    }
     #[tokio::test]
     async fn unpolled_input_future_cannot_be_rebound_to_a_new_generation() {
         let mux=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
@@ -429,6 +577,7 @@ mod input_api_tests {
         let (file_commands,_)=mpsc::channel(1);let (commands,mut queued)=mpsc::channel(1);
         let (cancel,_)=broadcast::channel(1);
         let conn=WorkspaceConnection {
+            pointer_queue:Default::default(),
             text_pending: Default::default(),
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -501,6 +650,22 @@ pub fn trace_control_event(connection_id: u32, stage: &str, command: &SessionCom
         "elapsed_ms":elapsed.map(|v|v.as_millis() as u64),"gui_pending":gui_pending}));
 }
 impl Actor {
+    async fn realtime(&mut self, packet: protocol::realtime_input::RealtimeInput, queued: Instant) {
+        if matches!(packet.payload,protocol::realtime_input::InputPayload::Release) {
+            self.text.cancel(packet.binding);
+        } else if self.text.waiting() {
+            let binding=packet.binding;
+            if !self.text.input(packet,queued) {
+                self.fail_text(binding,0,"ordered input queue is full").await;
+            }
+            return;
+        }
+        // A queued position keeps the exact grant and time of its originating event.
+        let current=self.input.lock().unwrap().binding(packet.binding.subscription_id,packet.binding.source_revision)==Some(packet.binding);
+        if queued.elapsed().as_millis() <= protocol::realtime_input::MAX_INPUT_AGE_MS as u128 && current {
+            self.send(&SessionCommand::RealtimeInput(packet)).await;
+        }
+    }
     async fn fail_text(&mut self,binding:protocol::realtime_input::InputBinding,request_id:u64,reason:&str) {
         self.text.cancel(binding);
         let release=self.input.lock().unwrap().seal_bound(binding,None);
@@ -854,7 +1019,9 @@ impl Actor {
                     }
                     let snapshots={
                         let mut input=self.input.lock().unwrap();
-                        if self.text.pending.load(std::sync::atomic::Ordering::Acquire)==0 {input.snapshots()} else {Vec::new()}
+                        // A new held snapshot must not overtake queued presses or
+                        // positions with earlier sequence numbers.
+                        if self.text.pending.load(std::sync::atomic::Ordering::Acquire)==0 && self.commands.is_empty() {input.snapshots()} else {Vec::new()}
                     };
                     for packet in snapshots { self.send(&SessionCommand::RealtimeInput(packet)).await; }
                     self.flush_text().await;
@@ -886,20 +1053,12 @@ impl Actor {
                         self.flush_text().await;
                     }
                     Some(Command::Realtime(packet, queued)) => {
-                        if matches!(packet.payload,protocol::realtime_input::InputPayload::Release) {
-                            self.text.cancel(packet.binding);
-                        } else if self.text.waiting() {
-                            let binding=packet.binding;
-                            if !self.text.input(packet,queued) {
-                                self.fail_text(binding,0,"ordered input queue is full").await;
-                            }
-                            continue;
-                        }
-                        // Enqueue-time identity is immutable across awaits and switches.
-                        if queued.elapsed().as_millis() <= protocol::realtime_input::MAX_INPUT_AGE_MS as u128
-                            && self.input.lock().unwrap().ready(packet.binding.subscription_id,packet.binding.source_revision) {
-                            self.send(&SessionCommand::RealtimeInput(packet)).await;
-                        }
+                        self.realtime(packet,queued).await;
+                    }
+                    Some(Command::Pointer(slot)) => {
+                        // Take before awaiting: a later move starts a new queue slot.
+                        let pending=slot.lock().unwrap().take();
+                        if let Some((packet,queued))=pending { self.realtime(packet,queued).await; }
                     }
                     Some(Command::Clipboard(ingress)) => self.clipboard = ingress,
                     Some(Command::Control(command)) => {
@@ -1112,6 +1271,7 @@ mod tests {
         let (file_commands, _) = mpsc::channel(1);
         let (_, last_response_rx) = tokio::sync::watch::channel(Instant::now());
         let connection = WorkspaceConnection {
+            pointer_queue:Default::default(),
             text_pending: Default::default(),
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1162,6 +1322,7 @@ mod tests {
         let (_,last_response_rx)=tokio::sync::watch::channel(Instant::now());
         let task=tokio::spawn(async {});while !task.is_finished(){tokio::task::yield_now().await;}
         let connection=WorkspaceConnection {
+            pointer_queue:Default::default(),
             text_pending: Default::default(),
             source_icons:Default::default(),
             close_confirmed:Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1858,6 +2019,7 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_typing_burst_survives_ack_latency_and_keeps_the_following_click_ordered() {
+        let host_started=std::time::Instant::now();
         use protocol::realtime_input::{InputBinding, InputPayload, InputLease};
         use protocol::interaction::{TextReceiver, TextAdmission};
         let server=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
@@ -1889,7 +2051,7 @@ mod tests {
                 if let MultiplexedPacket::Control(ControlMessage::Session(command),_)=rx.recv().await.unwrap() {
                     if let SessionCommand::CommitText(request)=*command {
                         assert_eq!(request,original);
-                        assert_eq!(receiver.begin(&request,&mut lease,1000).unwrap(),TextAdmission::New);
+                        assert_eq!(receiver.begin(&request,&mut lease,1000+host_started.elapsed().as_millis() as u64).unwrap(),TextAdmission::New);
                         text.push_str(request.text.as_str());receiver.complete(request.request_id,true);delivered+=1;
                         stage="typing burst";
                         break;
@@ -1910,7 +2072,7 @@ mod tests {
                     match *command {
                         SessionCommand::CommitText(request)=> {
                             received.push((request.request_id,request.text.as_str().len()));
-                            let admission=receiver.begin(&request,&mut lease,1000+queued.elapsed().as_millis() as u64);
+                            let admission=receiver.begin(&request,&mut lease,1000+host_started.elapsed().as_millis() as u64);
                             if matches!(admission,Ok(TextAdmission::New)) {
                                 assert_eq!(request.text.as_str(),"eavelo42");
                                 text.push_str(request.text.as_str());receiver.complete(request.request_id,true);delivered+=1;

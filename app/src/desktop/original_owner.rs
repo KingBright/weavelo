@@ -1198,7 +1198,9 @@ impl OriginalOwner {
             return false;
         }
         match &event {
+            InputEvent::MouseDown(id) if s.mouse.contains(id) => return false,
             InputEvent::MouseUp(id) if !s.mouse.contains(id) => return false,
+            InputEvent::Key { key_code, pressed: true, .. } if s.keys.contains(key_code) => return false,
             InputEvent::Key {
                 key_code,
                 pressed: false,
