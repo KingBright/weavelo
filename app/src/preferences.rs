@@ -387,6 +387,16 @@ impl UserPreferences {
 mod tests {
     use super::*;
 
+    fn private_profile_fixture() -> tempfile::TempDir {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        builder.tempdir().unwrap()
+    }
+
     #[test]
     fn preferences_default_values_are_valid() {
         let prefs = UserPreferences::default();
@@ -458,7 +468,7 @@ mod tests {
 
     #[test]
     fn concurrent_updates_preserve_each_field_and_increment() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_profile_fixture();
         let path = dir.path().join("preferences.json");
         std::thread::scope(|scope| {
             for worker in 0..8 {
@@ -481,7 +491,7 @@ mod tests {
 
     #[test]
     fn invalid_preferences_are_preserved_on_update() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_profile_fixture();
         let path = dir.path().join("preferences.json");
         fs::write(&path, b"{ invalid configuration").unwrap();
         let err =
@@ -492,7 +502,7 @@ mod tests {
 
     #[test]
     fn failed_replace_leaves_destination_and_cleans_temporary_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_profile_fixture();
         let path = dir.path().join("preferences.json");
         fs::create_dir(&path).unwrap();
         fs::write(path.join("keep"), "original").unwrap();
@@ -503,7 +513,7 @@ mod tests {
 
     #[test]
     fn unchanged_update_does_not_replace_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_profile_fixture();
         let path = dir.path().join("preferences.json");
         let json = "{\"stream\":{\"fps\":60},\"future_feature\":true}";
         fs::write(&path, json).unwrap();

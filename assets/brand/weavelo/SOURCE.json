@@ -13,7 +13,7 @@
     "android-foreground.svg": "fa14f8c486ce1cf22bc81dd3d57910ec289ed202ddd484a0c344ea810efc1dfd",
     "android-monochrome.png": "e1cbffc0407eea7286a0f95d6dec0e2cffe6591f2396ef513e2e0915398e6b23",
     "android-monochrome.svg": "b1224cf0964be6b1db31a1b8e16fda44901bbd1825ab4183c58c7f9a60c10091",
-    "app-square.svg": "b99b3ef288d2c47cb1b4cdacf857b5e39e39fa22585e32b19aedfe03d988b330",
+    "app-square.svg": "db353c164bd3de16a23e4ff5b0979a24a795e91ff9826eb1061ffe148b070055",
     "favicon.ico": "7a8bde209d84993245e04538eb1c78a4e8267815f0c88dcefcc46efb1d8ad265",
     "icon-1024.png": "91a14fa50f5dc8b5edbf6b291499b0cde0c52e24d0b32e8c2dc60d5234d58cc5",
     "icon-128.png": "792031f1ed303d1c1ef90c21fe502a867ffd1e46b8b33ab4da3341c5059852fe",
@@ -43,5 +43,8 @@
     "optical-32.svg": "1e1761b8fd7d0f9959bad6e977dcc339687d38ba2db80fd1ad80142911f130d0",
     "tile.png": "cd6bfc6a63873ca5d3a87b8dc5cc9320917bd59ca5c7ce8b709095e146eec762",
     "tile.svg": "382285690ea9b1a93439bb73981924536a0521102d5f69d0399053579a1f306d"
+  },
+  "asset_notes": {
+    "app-square.svg": "The approved mark is flattened to ordinary paths so native Qt SVG rendering preserves the clipped design."
   }
 }

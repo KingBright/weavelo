@@ -483,6 +483,7 @@ impl RestoredDashboard {
         let device_name_editor = remote_core::device_name::NameEditor::new(
             mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()).unwrap_or_default());
         let prefs = crate::preferences::UserPreferences::load_or_default();
+        owner.set_clipboard_sync_enabled(prefs.side_services.clipboard_sync);
         let viewer_media_status = runtime.viewer_media_status.clone();
         let scale_mode = if prefs.ui.scale_mode == "fill" {
             ViewportScaleMode::Fill
@@ -764,7 +765,10 @@ impl RestoredDashboard {
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "lease":adapter.lease.as_ref().map(|lease| serde_json::json!({"request_id":lease.request_id,
                         "source_device_id":lease.source,"remaining_ms":lease.expires.saturating_duration_since(Instant::now()).as_millis()})),
-                    "sessions":self.owner.diagnostic_snapshot()}),
+                    "sessions":self.owner.diagnostic_snapshot(),
+                    "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
+                        "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
+                    })).collect::<Vec<_>>()}),
                 Request::Receive { request_id, source_device_id, lease_ms, claim, .. } => {
                     let tabs = self.owner.session_tabs();
                     if adapter.lease.is_some() || !tabs.tabs.is_empty() || tabs.connecting.is_some() {

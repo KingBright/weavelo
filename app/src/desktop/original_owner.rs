@@ -1572,6 +1572,7 @@ impl OriginalOwner {
                 "source":format!("{:?}",s.source),"decoded_frames":s.stats.video_frames_decoded.load(std::sync::atomic::Ordering::Relaxed),
                 "decode_errors":s.stats.video_decode_errors.load(std::sync::atomic::Ordering::Relaxed),"confirmed":s.confirmed,
                 "scene_submitted_frame":s.uploaded_at.is_some(),"input_locked":s.locked,"error":s.error,"video_error":s.video_error,
+                "clipboard_sync_supported":s.conn.clipboard_available,"clipboard_sync_enabled":s.clipboard_enabled,
                 "files_listed":s.files.len(),"transfers":s.transfers.lock().unwrap().snapshots().len()});
             result["input_status"]=s.input_status().into();
             result["video_diagnostics"]=video_diagnostics;
