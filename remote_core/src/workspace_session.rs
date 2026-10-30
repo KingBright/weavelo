@@ -1856,6 +1856,80 @@ mod tests {
         cancel.send(()).unwrap();task.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn encrypted_typing_burst_survives_ack_latency_and_keeps_the_following_click_ordered() {
+        use protocol::realtime_input::{InputBinding, InputPayload, InputLease};
+        use protocol::interaction::{TextReceiver, TextAdmission};
+        let server=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target=server.local_addr().unwrap();let (tx,rx)=server.split();
+        let (mut actor,_)=source_switch_actor().await;
+        let local=actor.target;actor.target=target;
+        actor.sender.install_peer_crypto(target,SessionCrypto::from_psk(b"text-burst-fixture",b"ordered",SessionRole::Client).unwrap());
+        tx.install_peer_crypto(local,SessionCrypto::from_psk(b"text-burst-fixture",b"ordered",SessionRole::Host).unwrap());
+        let binding=InputBinding {connection_id:actor.id,subscription_id:7,source_revision:0,epoch:[9;16]};
+        let (commands,command_rx)=mpsc::channel(16);actor.commands=command_rx;
+        let (mut requests,click)={
+            let mut input=actor.input.lock().unwrap();input.source(7,0);
+            let SessionCommand::RequestInputBinding{request,..}=input.requests(actor.id).remove(0) else {panic!()};
+            input.grant(actor.id,binding,request,1000);let owner=input.text_owner(7,0).unwrap();
+            let requests="Weavelo42".chars().map(|ch|input.text_for_owner(owner,&ch.to_string(),Duration::ZERO).unwrap()).collect::<Vec<_>>();
+            let SessionCommand::RealtimeInput(click)=input.seal_bound(binding,Some(protocol::InputEvent::MouseDown(0))).unwrap() else {panic!()};
+            (requests,click)
+        };
+        let pending=actor.text.pending.clone();pending.store(9,std::sync::atomic::Ordering::Release);
+        let first=requests.remove(0);let original=first[0].clone();
+        let (cancel,_)=broadcast::channel(2);let cancel_rx=cancel.subscribe();
+        let task=tokio::spawn(async move {actor.run(cancel_rx).await});
+        let queued=Instant::now();commands.send(Command::Text(first,queued)).await.unwrap();
+        let mut receiver=TextReceiver::default();let mut lease=InputLease::new(binding,1000);
+        let mut text=String::new();let mut delivered=0;
+        let mut stage="first commit";let mut received=Vec::new();
+        let result=tokio::time::timeout(Duration::from_secs(2),async {
+            loop {
+                if let MultiplexedPacket::Control(ControlMessage::Session(command),_)=rx.recv().await.unwrap() {
+                    if let SessionCommand::CommitText(request)=*command {
+                        assert_eq!(request,original);
+                        assert_eq!(receiver.begin(&request,&mut lease,1000).unwrap(),TextAdmission::New);
+                        text.push_str(request.text.as_str());receiver.complete(request.request_id,true);delivered+=1;
+                        stage="typing burst";
+                        break;
+                    }
+                }
+            }
+            // These independent IME callbacks arrive while the first native
+            // receipt is in flight. Simulate a lost ACK and an 80ms round trip.
+            for request in requests {commands.send(Command::Text(request,queued)).await.unwrap();}
+            commands.send(Command::Realtime(click,queued)).await.unwrap();
+            while pending.load(std::sync::atomic::Ordering::Acquire) != 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            tokio::time::sleep_until(queued+Duration::from_millis(80)).await;
+            tx.send_control(&ControlMessage::Session(Box::new(SessionCommand::TextCommitted{binding,request_id:original.request_id})),local).await.unwrap();
+            loop {
+                if let MultiplexedPacket::Control(ControlMessage::Session(command),_)=rx.recv().await.unwrap() {
+                    match *command {
+                        SessionCommand::CommitText(request)=> {
+                            received.push((request.request_id,request.text.as_str().len()));
+                            let admission=receiver.begin(&request,&mut lease,1000+queued.elapsed().as_millis() as u64);
+                            if matches!(admission,Ok(TextAdmission::New)) {
+                                assert_eq!(request.text.as_str(),"eavelo42");
+                                text.push_str(request.text.as_str());receiver.complete(request.request_id,true);delivered+=1;
+                            } else {assert_eq!(request,original);}
+                            tx.send_control(&ControlMessage::Session(Box::new(SessionCommand::TextCommitted{binding,request_id:request.request_id})),local).await.unwrap();
+                        }
+                        SessionCommand::RealtimeInput(packet) if matches!(packet.payload,InputPayload::Event(protocol::InputEvent::MouseDown(0)))=> {
+                            assert_eq!(text,"Weavelo42");assert_eq!(delivered,2);break;
+                        }
+                        _=>{}
+                    }
+                }
+            }
+        }).await;
+        assert!(result.is_ok(),"stage={stage}, received={received:?}, delivered={delivered}, pending={}",pending.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(pending.load(std::sync::atomic::Ordering::Acquire),0);
+        cancel.send(()).unwrap();task.await.unwrap();
+    }
+
     /// Protocol-only regression. No capture, decoder, account profile or system
     /// input is used: synthetic encrypted datagrams exercise the real actor.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

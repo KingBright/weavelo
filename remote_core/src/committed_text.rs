@@ -54,6 +54,22 @@ impl TextOutbox {
     }
     pub fn text(&mut self, requests: Vec<TextCommit>, queued: Instant) {
         for request in requests {
+            // Merge only adjacent, unsent commits to this exact wire owner.
+            // The first ID is retained (IDs may have gaps); a sent request and
+            // its retries are immutable. Input items remain ordering barriers.
+            if let Some(Item::Text { request: tail, queued: oldest, sent: None }) = self.items.back_mut()
+                && tail.binding == request.binding
+                && tail.request_id < request.request_id
+                && tail.text.as_str().len() + request.text.as_str().len()
+                    <= protocol::interaction::MAX_COMMITTED_TEXT_BYTES
+            {
+                let text = format!("{}{}", tail.text.as_str(), request.text.as_str());
+                tail.text = protocol::interaction::CommittedText::new(text).expect("bounded valid text concatenation");
+                tail.created_host_ms = tail.created_host_ms.min(request.created_host_ms);
+                *oldest = (*oldest).min(queued);
+                self.pending.fetch_sub(1, Ordering::AcqRel);
+                continue;
+            }
             self.items.push_back(Item::Text {
                 request,
                 queued,
@@ -208,5 +224,82 @@ mod tests {
             assert!(!out.waiting());
             assert!(!out.acknowledge(request.binding, 5));
         }
+    }
+
+    #[test]
+    fn fast_typing_batches_behind_the_inflight_commit_without_changing_its_retry() {
+        let now = Instant::now();
+        let mut first = request();
+        first.text = CommittedText::new("W".into()).unwrap();
+        let mut out = TextOutbox::default();
+        out.pending.store(9, Ordering::Release);
+        out.text(vec![first.clone()], now);
+        out.advance(now, |_| true);
+        for (i, ch) in "eavelo42".chars().enumerate() {
+            let mut next = first.clone();
+            next.request_id += i as u64 + 1;
+            next.created_host_ms += i as u64 + 1;
+            next.text = CommittedText::new(ch.to_string()).unwrap();
+            out.text(vec![next], now + Duration::from_millis(i as u64 + 1));
+        }
+        assert_eq!(out.pending.load(Ordering::Acquire), 2);
+        assert!(matches!(&out.advance(now+Duration::from_millis(60), |_|true)[0],
+            Action::Send(SessionCommand::CommitText(r)) if r==&first));
+        assert!(out.acknowledge(first.binding, first.request_id));
+        let actions = out.advance(now + Duration::from_millis(80), |_| true);
+        let Action::Send(SessionCommand::CommitText(batch)) = &actions[0] else { panic!() };
+        assert_eq!(batch.text.as_str(), "eavelo42");
+        assert_eq!(batch.request_id, first.request_id + 1);
+        assert_eq!(batch.created_host_ms, first.created_host_ms + 1);
+        assert!(out.acknowledge(batch.binding, batch.request_id));
+        assert_eq!(out.pending.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn batching_preserves_click_order_and_exact_source_ownership() {
+        let now = Instant::now();
+        let first = request();
+        let mut next = first.clone(); next.request_id += 1;
+        let mut other = next.clone(); other.binding.source_revision += 1;
+        let mut out = TextOutbox::default();
+        out.pending.store(3, Ordering::Release);
+        out.text(vec![first.clone()], now);
+        let packet = RealtimeInput {binding:first.binding,sequence:8,created_host_ms:100,
+            payload:InputPayload::Event(protocol::InputEvent::MouseDown(0))};
+        assert!(out.input(packet.clone(), now));
+        out.text(vec![next.clone(), other.clone()], now);
+        out.advance(now, |_| true);
+        out.acknowledge(first.binding, first.request_id);
+        let actions = out.advance(now, |_| true);
+        assert!(matches!(&actions[..], [Action::Send(SessionCommand::RealtimeInput(p)),
+            Action::Send(SessionCommand::CommitText(r))] if p.sequence==packet.sequence
+                && p.binding==packet.binding && p.created_host_ms==packet.created_host_ms
+                && matches!(p.payload,InputPayload::Event(protocol::InputEvent::MouseDown(0))) && r==&next));
+        out.acknowledge(next.binding, next.request_id);
+        assert!(matches!(&out.advance(now, |_|true)[0],
+            Action::Send(SessionCommand::CommitText(r)) if r==&other));
+    }
+
+    #[test]
+    fn batching_keeps_utf8_byte_limit_and_the_oldest_original_deadline() {
+        let now = Instant::now();
+        let mut first = request();
+        first.text = CommittedText::new("a".repeat(1020)).unwrap();
+        let mut emoji = first.clone(); emoji.request_id += 1; emoji.created_host_ms -= 20;
+        emoji.text = CommittedText::new("😀".into()).unwrap();
+        let mut after = emoji.clone(); after.request_id += 1;
+        after.text = CommittedText::new("x".into()).unwrap();
+        let mut out = TextOutbox::default();out.pending.store(3, Ordering::Release);
+        out.text(vec![first], now);
+        out.text(vec![emoji], now-Duration::from_millis(20));
+        out.text(vec![after], now);
+        assert_eq!(out.pending.load(Ordering::Acquire), 2);
+        let Item::Text {request,queued,..} = out.items.front().unwrap() else {panic!()};
+        assert_eq!(request.text.as_str().len(), 1024);
+        assert!(request.text.as_str().ends_with('😀'));
+        assert_eq!(request.created_host_ms, 80);
+        assert_eq!(*queued, now-Duration::from_millis(20));
+        assert!(matches!(&out.advance(now+Duration::from_millis(231), |_|true)[0],Action::Failed{..}));
+        assert_eq!(out.pending.load(Ordering::Acquire), 0);
     }
 }

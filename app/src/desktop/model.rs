@@ -431,6 +431,9 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             let _ = conn.control(SessionCommand::SetClipboard { enabled }).await;
         });
     }
+    pub(crate) fn input_failed(&self) -> bool {
+        self.input_error.is_some()
+    }
     pub fn set_input_locked(&mut self, locked: bool) {
         if locked {
             self.release_input();
@@ -1144,9 +1147,11 @@ pub(crate) mod static_input_tests {
         }).unwrap();
         session.poll();
         assert!(session.locked);
+        assert!(session.input_failed());
         assert_eq!(session.error, "selected application is inactive");
         session.set_input_locked(false);
         assert!(session.error.is_empty());
+        assert!(!session.input_failed());
         assert!(!session.locked);
         // Retrying the UI does not invent the source/frame/input authorization.
         assert!(!session.can_input());

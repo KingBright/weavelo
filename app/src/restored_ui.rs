@@ -650,6 +650,10 @@ impl RestoredDashboard {
                 .unwrap_or_else(|| Arc::new(Mutex::new(None)));
         }
         self.input_locked = state.locked;
+        if state.input_failed && state.locked {
+            self.toolbar_revealed = true;
+            self.last_toolbar_activity = Instant::now();
+        }
         self.status = if let Some(error) = state.error {
             error
         } else if matches!(state.role, RoleState::Viewing(_)) {
