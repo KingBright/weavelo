@@ -117,6 +117,7 @@ async fn prepare_input<L:Link>(link:&mut L, target:Target, budgets:Budgets, owne
     let SessionCommand::Sources{sources,..}=sources else { unreachable!() };
     let source=target.select(&sources)?;
     report["exact_window_catalog_match"]=true.into();
+    report["catalog_dimensions"]=json!([source.width,source.height]);
     // Set before enqueue: cancellation cannot lose a possibly-created capture.
     *owned=true;
     link.subscribe(source.source).await?;
@@ -177,14 +178,29 @@ fn suite_events() -> Vec<InputEvent> {
     events
 }
 
-async fn operation_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,owned:&mut bool,report:&mut Value,suite:bool)->Result<()> {
-    if !suite {return operation(link,target,budgets,owned,report).await;}
+#[derive(Clone, Copy)]
+enum InputProbe { Click, Suite, TitlebarDrag }
+
+async fn operation_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,owned:&mut bool,report:&mut Value,mode:InputProbe)->Result<()> {
+    if matches!(mode,InputProbe::Click) {return operation(link,target,budgets,owned,report).await;}
     prepare_input(link,target,budgets,owned,report).await?;
-    report["requested_sequence"]=json!("drag_scroll_abc_shift_a");
-    for event in suite_events() {
+    let (label,events,pause)=match mode {
+        InputProbe::Suite => ("drag_scroll_abc_shift_a",suite_events(),budgets.pause),
+        InputProbe::TitlebarDrag => {
+            // The guarded native fixture has a standard titlebar. Stay away
+            // from its window buttons and move right by 10% of its width.
+            let mut events=vec![InputEvent::MouseMoveAbsolute{x:32768,y:2000},InputEvent::MouseDown(0)];
+            events.extend([34406,36045,37683,39322].into_iter().map(|x|InputEvent::MouseMoveAbsolute{x,y:2000}));
+            events.push(InputEvent::MouseUp(0));
+            ("titlebar_drag_right_one_tenth",events,Duration::from_millis(20))
+        }
+        InputProbe::Click => unreachable!(),
+    };
+    report["requested_sequence"]=json!(label);
+    for event in events {
         link.send(SessionCommand::SourceInput{id:ID,source_revision:0,event}).await?;
         report["input_commands_enqueued"]=json!(report["input_commands_enqueued"].as_u64().unwrap_or(0)+1);
-        settle(link,budgets.pause).await?;
+        settle(link,pause).await?;
     }
     report["input_sequence_enqueued"]=true.into();
     // Enqueue is not native target evidence; the independent fixture verifies effects.
@@ -240,7 +256,7 @@ async fn cleanup_with_input_requirement<L:Link>(link:&mut L, owned:bool, budgets
     report["cleanup_complete"]=json!(closed && (!owned || ((!require_input_release || report["input_released_acknowledged"]==true) && report["unsubscribed_acknowledged"]==true)));
 }
 
-async fn drive_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,mut cancel:watch::Receiver<bool>,suite:bool) -> Value {
+async fn drive_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,mut cancel:watch::Receiver<bool>,mode:InputProbe) -> Value {
     let mut report=json!({"schema":1,"kind":"controlled-synthetic-window-production-v2-input-probe",
         "connection_id":link.connection_id(),"subscription_id":ID,"fixture_pid":target.pid,"fixture_window":target.window,"fixture_nonce":target.nonce.clone(),
         "source_revision":0,"input_commands_enqueued":0,"input_sequence_enqueued":false,"cleanup_complete":false,
@@ -250,7 +266,7 @@ async fn drive_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,mut cancel
     let cancelled=*cancel.borrow();
     let result=if cancelled { Err("cancelled before operation".into()) } else {
         tokio::select! {
-            result=tokio::time::timeout(budgets.operation,operation_mode(link,target,budgets,&mut owned,&mut report,suite))=>
+            result=tokio::time::timeout(budgets.operation,operation_mode(link,target,budgets,&mut owned,&mut report,mode))=>
                 result.unwrap_or_else(|_|Err("operation timed out; owned cleanup follows".into())),
             _=cancel.changed()=>Err("cancelled; owned cleanup follows".into()),
         }
@@ -264,7 +280,7 @@ async fn drive_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,mut cancel
 
 
 async fn drive<L:Link>(link:&mut L,target:Target,budgets:Budgets,cancel:watch::Receiver<bool>)->Value {
-    drive_mode(link,target,budgets,cancel,false).await
+    drive_mode(link,target,budgets,cancel,InputProbe::Click).await
 }
 
 // Dedicated diagnostic mode. The direct parent observes held native effects,
@@ -338,7 +354,8 @@ pub fn main_cli(args:&[String]) {
     }
     let hold_loss=args.get(1).is_some_and(|mode|matches!(mode.as_str(),"hold-loss"|"hold-focus"));
     let suite=args.get(1).is_some_and(|mode|mode=="input-suite");
-    if args.len()!=7 || !matches!(args[1].as_str(),"input-window"|"input-suite"|"hold-loss"|"hold-focus") { eprintln!("usage: probe input-window|input-suite|hold-loss|hold-focus LOOPBACK_TARGET FIXTURE_PID WINDOW_ID FIXTURE_NONCE NEW_ABSOLUTE_OUTPUT_JSON");std::process::exit(2); }
+    let titlebar=args.get(1).is_some_and(|mode|mode=="titlebar-drag");
+    if args.len()!=7 || !matches!(args[1].as_str(),"input-window"|"input-suite"|"titlebar-drag"|"hold-loss"|"hold-focus") { eprintln!("usage: probe input-window|input-suite|titlebar-drag|hold-loss|hold-focus LOOPBACK_TARGET FIXTURE_PID WINDOW_ID FIXTURE_NONCE NEW_ABSOLUTE_OUTPUT_JSON");std::process::exit(2); }
     let checked=(||->Result<_>{
         let address=args[2].parse::<SocketAddr>().map_err(|_|"invalid route")?;
         if !address.ip().is_loopback() || address.port()==0 { return Err("must use the existing viewer-local loopback route".into()); }
@@ -375,7 +392,7 @@ pub fn main_cli(args:&[String]) {
             Ok(Ok((conn,events)))=>{
                 let mut link=Wire{conn,events,stats:Statistics::new(),media:None};
                 if hold_loss {drive_hold_loss(&mut link,target,Budgets::default(),rx,&output,args[1]=="hold-focus").await}
-                else if suite {drive_mode(&mut link,target,Budgets::default(),rx,true).await}
+                else if suite || titlebar {drive_mode(&mut link,target,Budgets::default(),rx,if titlebar {InputProbe::TitlebarDrag}else{InputProbe::Suite}).await}
                 else {drive(&mut link,target,Budgets::default(),rx).await}
             },
             Ok(Err(e))=>json!({"error":e,"input_commands_enqueued":0,"target_effect_verified":false,"connection_opened":false}),
@@ -457,13 +474,13 @@ mod tests {
     #[tokio::test] async fn different_fixture_nonce_never_subscribes_or_sends_input(){let mut f=Fake{catalog_nonce:"ffffffffffffffffffffffffffffffff".into(),..Fake::default()};let r=run(&mut f).await;assert_eq!(input_count(&f),0);assert!(r.get("subscribed_acknowledged").is_none());assert_eq!(r["cleanup_complete"],true);}
     #[tokio::test] async fn suite_keeps_same_guard_and_confirms_cleanup() {
         let mut f=Fake::default();let (_tx,rx)=watch::channel(false);
-        let r=drive_mode(&mut f,target(),Budgets{operation:Duration::from_secs(1),acknowledgement:Duration::from_millis(20),pause:Duration::from_millis(1)},rx,true).await;
+        let r=drive_mode(&mut f,target(),Budgets{operation:Duration::from_secs(1),acknowledgement:Duration::from_millis(20),pause:Duration::from_millis(1)},rx,InputProbe::Suite).await;
         assert_eq!(r["operation_succeeded"],true);assert_eq!(r["cleanup_complete"],true);
         assert_eq!(input_count(&f),16);assert_eq!(r["target_effect_verified"],false);
     }
     #[tokio::test] async fn suite_view_only_never_enqueues_input() {
         let mut f=Fake{ready:false,..Fake::default()};let (_tx,rx)=watch::channel(false);
-        let r=drive_mode(&mut f,target(),short(),rx,true).await;
+        let r=drive_mode(&mut f,target(),short(),rx,InputProbe::Suite).await;
         assert_eq!(input_count(&f),0);assert_eq!(r["cleanup_complete"],true);
     }
     #[test] fn suite_only_uses_safe_keys_and_releases_modifiers_and_button() {
