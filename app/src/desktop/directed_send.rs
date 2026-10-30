@@ -92,6 +92,7 @@ mod sender {
             source: String,
             target: String,
             routes: Vec<(String, SocketAddr)>,
+            sources: Vec<protocol::session::CaptureSource>,
             upgrade_operation: super::super::upgrade_quit::Operation,
         ) -> Self {
             let (stop, mut cancelled) = tokio::sync::watch::channel(false);
@@ -108,6 +109,7 @@ mod sender {
                     source,
                     peer,
                     routes,
+                    sources,
                     &mut cancelled,
                     beat,
                     progress.clone(),
@@ -152,10 +154,13 @@ mod sender {
         source: String,
         target: String,
         routes: Vec<(String, SocketAddr)>,
+        sources: Vec<protocol::session::CaptureSource>,
         cancelled: &mut tokio::sync::watch::Receiver<bool>,
         heartbeat: Arc<Mutex<Instant>>,
         status: Arc<Mutex<String>>,
     ) -> Result<(), Error> {
+        protocol::session::validate_delivery_sources(&sources)?;
+        let scope=remote_core::shared_files::current_share_scope();
         let sequence = NEXT_REGISTRATION
             .fetch_update(
                 std::sync::atomic::Ordering::Relaxed,
@@ -167,6 +172,11 @@ mod sender {
             crate::background_service::Client::connect(&profile)
         })
         .await??;
+        let listing=client.clone();
+        let available=tokio::task::spawn_blocking(move||listing.capture_sources()).await??;
+        if sources.iter().any(|source|!available.iter().any(|info|info.source==*source)) {
+            return Err("A selected source ended or is no longer shared".into());
+        }
         let mut connected = None;
         for (_, endpoint) in routes.into_iter().take(3) {
             let result = tokio::select! {biased;_=cancelled.changed()=>return Ok(()),result=tokio::time::timeout(Duration::from_secs(5),WorkspaceConnection::connect_media(endpoint))=>result};
@@ -180,6 +190,7 @@ mod sender {
         ticket[..16].copy_from_slice(&remote_core::session_crypto::random_bytes_16());
         ticket[16..].copy_from_slice(&remote_core::session_crypto::random_bytes_16());
         let request = u64::from_le_bytes(ticket[..8].try_into().unwrap()).max(1);
+        if scope!=remote_core::shared_files::current_share_scope() {return Err("The device network changed".into());}
         local(
             &client,
             LocalIntent::Register {
@@ -188,11 +199,10 @@ mod sender {
                 generation: generation.clone(),
                 connection: conn.id,
                 sequence,
-                sources: vec![protocol::session::CaptureSource::MainDisplay],
+                sources: sources.clone(),
             },
         )
         .await?;
-        let scope = remote_core::shared_files::current_share_scope();
         let cancellation = cancelled.clone();
         let sending = async {
             let mut revision = 1;
@@ -222,7 +232,7 @@ mod sender {
                     target_device_id: target.clone(),
                     ticket,
                     revision,
-                    sources: vec![protocol::session::CaptureSource::MainDisplay],
+                    sources: sources.clone(),
                 };
                 let state = exchange(&conn, &mut events, command, request, revision).await?;
                 *status.lock().unwrap() = match state {

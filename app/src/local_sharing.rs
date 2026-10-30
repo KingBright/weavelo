@@ -117,6 +117,12 @@ impl Manager {
                 .collect(),
         }
     }
+    pub fn catalog(&self) -> Vec<protocol::session::CaptureSourceInfo> {
+        let scope=current_share_scope();
+        self.state.lock().unwrap().sources.iter()
+            .filter(|source|source.scope==scope && !source.capture.is_revoked())
+            .map(|source|source.capture.source_info()).collect()
+    }
     pub fn call(self: &Arc<Self>, call: SharingCall) -> Result<SharingSnapshot, String> {
         if self.closing.load(Ordering::Acquire) && !matches!(&call, SharingCall::Status) {
             return Err("Sharing service is stopping".into());

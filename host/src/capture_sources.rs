@@ -218,3 +218,21 @@ pub(crate) fn filter(
         }
     }
 }
+/// The same serialized native query serves local selection and remote catalogs.
+pub async fn local_catalog() -> Result<Vec<protocol::session::CaptureSourceInfo>, String> {
+    let directory=crate::source_catalog::enumerate_native(|| {
+        list().map(|mut sources| {
+            sources.truncate(protocol::interaction::MAX_APPLICATION_ICONS);
+            crate::source_artwork::Directory {sources,..Default::default()}
+        }).map_err(|error|error.to_string())
+    }).await?;
+    Ok(directory.sources)
+}
+
+/// Native icons are loaded in the frontend worker, never sent as JSON pixels
+/// through the background control endpoint or fetched on a video/input tick.
+pub fn with_artwork(sources: Vec<protocol::session::CaptureSourceInfo>) -> protocol::session::SessionCommand {
+    let directory=crate::source_artwork::Directory::new(sources,&[]);
+    let sources=directory.sources.clone();
+    directory.reply(0,sources)
+}

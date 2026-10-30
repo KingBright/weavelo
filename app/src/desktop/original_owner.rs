@@ -33,6 +33,7 @@ struct RetryBinding {
     video: bool,
     audio: bool,
     auto_list: bool,
+    capture: Option<CaptureSource>,
 }
 #[derive(Debug)]
 struct ConnectionFailure {
@@ -601,7 +602,7 @@ impl OriginalOwner {
         self.pool.lock().unwrap().directed_receive.as_ref().is_some_and(|b| b.request_id == request && Instant::now() < b.expires)
     }
     pub(crate) async fn connect_received_device(&self, key: &str, options: StreamStartOptions, request: &str) -> Result<(), Error> {
-        self.connect_mode(key, options, true, true, None, Some(request), true).await
+        self.connect_mode(key, options, true, true, None, Some(request), true, None).await
     }
 
     pub async fn connect_device(
@@ -610,17 +611,20 @@ impl OriginalOwner {
         options: StreamStartOptions,
         _now: u64,
     ) -> Result<(), Error> {
-        self.connect_mode(key, options, true, true, None, None, true).await
+        self.connect_mode(key, options, true, true, None, None, true, None).await
     }
     pub async fn connect_files(&self, key: &str) -> Result<(), Error> {
-        self.connect_mode(key, StreamStartOptions::default(), false, true, None, None, true)
+        self.connect_mode(key, StreamStartOptions::default(), false, true, None, None, true, None)
             .await
     }
 
     pub async fn connect_silent_files(&self, key: &str) -> Result<(), Error> {
         // Command callers admit their own correlated List/Fetch after connecting.
-        self.connect_mode(key, StreamStartOptions::default(), false, false, None, None, false)
+        self.connect_mode(key, StreamStartOptions::default(), false, false, None, None, false, None)
             .await
+    }
+    pub(crate) async fn connect_capture_device(&self, key: &str, source: CaptureSource, options: StreamStartOptions) -> Result<(),Error> {
+        self.connect_mode(key,options,true,true,None,None,true,Some(source)).await
     }
     async fn connect_mode(
         &self,
@@ -631,6 +635,7 @@ impl OriginalOwner {
         expected_scope: Option<ShareScope>,
         receive: Option<&str>,
         auto_list: bool,
+        capture: Option<CaptureSource>,
     ) -> Result<(), Error> {
         protocol::validate_video_settings(
             options.width,
@@ -681,7 +686,7 @@ impl OriginalOwner {
             let name = device.as_ref().map(|d| d.display_name.as_str()).unwrap_or(key);
             let attempt = p.tabs.reject_open(key, name, count).ok_or("Connection generation exhausted")?;
             if let Some(binding) = p.directed_receive.as_mut() { binding.attempt = Some(attempt); }
-            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list });
+            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list, capture });
             p.message = message.into();
             return Err(connection_failure(key, attempt, scope, message.into()));
         }
@@ -731,7 +736,7 @@ impl OriginalOwner {
                 OpenDecision::AlreadyPending => {
                     if let Some(connecting) = p.tabs.connecting().cloned() {
                         p.pending_settings.update(key, connecting.attempt, initial_settings);
-                        p.retry_binding = Some(RetryBinding { attempt: connecting.attempt, scope, video, audio, auto_list });
+                        p.retry_binding = Some(RetryBinding { attempt: connecting.attempt, scope, video, audio, auto_list, capture });
                     }
                     let previous = p.tabs.selected_index();
                     if let Some(e) = p.sessions.get_mut(previous) {
@@ -746,7 +751,7 @@ impl OriginalOwner {
                 OpenDecision::Start(attempt) => attempt,
             };
             if let Some(binding) = p.directed_receive.as_mut() { binding.attempt = Some(attempt); }
-            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list });
+            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list, capture });
             p.pending_settings.begin(key, attempt, initial_settings);
             let previous = p.tabs.selected_index();
             if let Some(e) = p.sessions.get_mut(previous) {
@@ -832,6 +837,8 @@ impl OriginalOwner {
         } else if let Some(binding) = p.directed_receive.as_ref().filter(|binding| Some(binding.request_id.as_str()) == receive) {
             session.source = binding.capture;
             session.request.source = binding.capture;
+        } else if let Some(source)=capture {
+            session.source=source;session.request.source=source;
         }
         #[cfg(any(all(target_os = "windows", feature = "native-windows-video"), all(target_os = "linux", feature = "native-linux-video")))]
         {
@@ -886,15 +893,19 @@ impl OriginalOwner {
         Ok(())
     }
     pub async fn reconnect_active(&self, options: StreamStartOptions) -> Result<(), Error> {
-        let (key, mode) = {
+        let (key, mode, capture) = {
             let p = self.pool.lock().unwrap();
-            p.reconnect_target(remote_core::shared_files::current_share_scope()).ok_or("No selected device")?
+            let (key,mode)=p.reconnect_target(remote_core::shared_files::current_share_scope()).ok_or("No selected device")?;
+            (key,mode,p.active().filter(|entry|entry.session.media.is_some()).map(|entry|entry.session.source))
         };
         if let Some(mode) = mode {
-            return self.connect_mode(&key, options, mode.video, mode.audio, Some(mode.scope), None, mode.auto_list).await;
+            return self.connect_mode(&key, options, mode.video, mode.audio, Some(mode.scope), None, mode.auto_list, mode.capture).await;
         }
         self.disconnect_active().await?;
-        self.connect_device(&key, options, 0).await
+        match capture {
+            Some(source)=>self.connect_capture_device(&key,source,options).await,
+            None=>self.connect_device(&key, options, 0).await,
+        }
     }
     pub fn clear_failed_connection(&self) {
         let mut p = self.pool.lock().unwrap();
@@ -914,6 +925,16 @@ impl OriginalOwner {
     pub fn source_view_binding(&self) -> Option<SourceViewBinding> {
         let p = self.pool.lock().unwrap();
         p.active().map(|e| SourceViewBinding::new(&e.session.conn, remote_core::shared_files::current_share_scope()))
+    }
+    pub(crate) fn validate_source_selection(&self,binding:&SourceViewBinding,sources:&[CaptureSourceInfo])->Result<String,String> {
+        protocol::session::validate_delivery_sources(&sources.iter().map(|source|source.source).collect::<Vec<_>>())?;
+        let pool=self.pool.lock().unwrap();let entry=pool.active().ok_or("No active connection")?;
+        for source in sources {
+            remote_core::view_commands::apply_enumerated_source(binding,&entry.session.conn,
+                remote_core::shared_files::current_share_scope(),source,&entry.session.sources,|_|())
+                .ok_or("The connection or source list changed; choose the sources again")?;
+        }
+        Ok(entry.session.key.clone())
     }
     pub fn source_binding_is_current(&self, binding: &SourceViewBinding) -> bool {
         let p = self.pool.lock().unwrap();
@@ -1548,6 +1569,18 @@ impl OriginalOwner {
             }
         }
     }
+    pub(crate) fn receive_snapshot(&self, request: &str) -> serde_json::Value {
+        let pool=self.pool.lock().unwrap();
+        let binding=pool.directed_receive.as_ref().filter(|binding|binding.request_id==request);
+        serde_json::json!({"pending":pool.tabs.pending_count(),"directed_receive_failed":binding.is_none()||pool.receive_failed(),
+            "sessions":pool.sessions.iter().filter(|entry|binding.is_some_and(|binding|
+                binding.connection==Some(entry.session.conn.id) && binding.source==entry.session.key))
+                .map(|entry| {let session=&entry.session;serde_json::json!({
+                    "device_id":session.key,"source_id":session.source,"connected":session.connected,
+                    "decoded_frames":session.stats.video_frames_decoded.load(std::sync::atomic::Ordering::Relaxed),
+                    "scene_submitted_frame":session.uploaded_at.is_some(),"video_error":session.video_error,
+                })}).collect::<Vec<_>>()})
+    }
     pub fn diagnostic_snapshot(&self) -> serde_json::Value {
         let p = self.pool.lock().unwrap();
         serde_json::json!({"pending":p.tabs.pending_count(),"directed_receive_failed":p.receive_failed(),"sessions":p.sessions.iter().map(|e|{
@@ -1818,7 +1851,7 @@ mod restoration_regression_tests {
         let mut pool = pending_pool();
         let scope = Some([7; 32]);
         let first = pool.tabs.reject_open("a", "A", 0).unwrap();
-        pool.retry_binding = Some(RetryBinding { attempt: first, scope, video: false, audio: false, auto_list: false });
+        pool.retry_binding = Some(RetryBinding { attempt: first, scope, video: false, audio: false, auto_list: false, capture:None });
         let (failed, mode) = pool.retry(scope).unwrap();
         assert_eq!(failed.device_id, "a");
         assert!(!mode.video && !mode.audio);
@@ -1826,14 +1859,14 @@ mod restoration_regression_tests {
         let next = pool.tabs.reject_open("a", "A", 0).unwrap();
         assert!(next > first);
         assert!(pool.retry(scope).is_none());
-        pool.retry_binding = Some(RetryBinding { attempt: next, scope, video: true, audio: true, auto_list: true });
+        pool.retry_binding = Some(RetryBinding { attempt: next, scope, video: true, audio: true, auto_list: true, capture:None });
         assert!(pool.retry(scope).is_some());
         pool.expire_retry(Some([8; 32]));
         assert!(pool.tabs.failed().is_none());
         assert!(pool.retry_binding.is_none());
         assert_eq!(pool.message, "Ready");
         let pending = begin(&mut pool, "b", values());
-        pool.retry_binding = Some(RetryBinding { attempt: pending, scope, video: false, audio: true, auto_list: true });
+        pool.retry_binding = Some(RetryBinding { attempt: pending, scope, video: false, audio: true, auto_list: true, capture:None });
         let (key, mode) = pool.reconnect_target(scope).unwrap();
         assert_eq!(key, "b");
         assert_eq!(mode.unwrap().attempt, pending);

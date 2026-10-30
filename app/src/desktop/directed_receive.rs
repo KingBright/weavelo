@@ -169,7 +169,7 @@ impl Lease {
                 let owner=window.owner.upgrade();
                 serde_json::json!({"source":window.source,"open":owner.is_some(),
                     "active":owner.as_ref().is_some_and(|owner|owner.directed_receive_current(&self.request_id)),
-                    "sessions":owner.map(|owner|owner.diagnostic_snapshot())})
+                    "sessions":owner.map(|owner|owner.receive_snapshot(&self.request_id))})
             }).collect::<Vec<_>>()})
     }
 }

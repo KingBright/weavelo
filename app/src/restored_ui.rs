@@ -2,6 +2,8 @@
 mod remote_text_input;
 #[path="restored_acceptance.rs"]
 mod sequence_acceptance;
+#[path="restored_source_selection.rs"]
+mod source_selection;
 #[cfg(target_os = "macos")]
 use client::decoded_video_frame_surface_with_fit;
 // Original product visual tree rebound to the current authenticated workspace sessions.
@@ -387,6 +389,8 @@ impl ApplicationArtwork {
 }
 
 struct RestoredDashboard {
+    source_selection: Option<source_selection::Selection>,
+    source_query_inflight: bool,
     artwork_cache: std::cell::RefCell<ApplicationArtwork>,
     native_window_title: String,
     runtime: Arc<UnifiedRuntimeHandle>,
@@ -524,6 +528,8 @@ impl RestoredDashboard {
             directed_receive,
             #[cfg(any(unix, windows))]
             directed_send: None,
+            source_selection: None,
+            source_query_inflight: false,
             delivery_closed: None,
             activation,
             bound_source: None,
@@ -1087,6 +1093,7 @@ impl RestoredDashboard {
         self.request_bound_capture_sources(binding, cx);
     }
     fn invalidate_source_commands(&mut self) {
+        self.source_selection=None;
         self.source_commands.begin(); self.discovery_commands.begin();
     }
     fn request_bound_capture_sources(&mut self, binding: SourceViewBinding, cx: &mut Context<Self>) {
@@ -2257,12 +2264,12 @@ impl Render for RestoredDashboard {
         let show_drawer = self.drawer_open;
         let input_hint = matches!(role, RoleState::Viewing(_)).then(|| {
             remote_input_hint(&snapshot.input_status, snapshot.input_eligible,
-                self.input_focus.is_focused(window), show_drawer || self.show_apps_menu)
+                self.input_focus.is_focused(window), show_drawer || self.show_apps_menu || self.source_selection.is_some())
         }).flatten();
         // The native text client must be ready with the current, focused grant;
         // a display debounce here would silently discard the first typed text.
         let input_ready = snapshot.input_eligible
-            && self.input_focus.is_focused(window) && !show_drawer && !self.show_apps_menu;
+            && self.input_focus.is_focused(window) && !show_drawer && !self.show_apps_menu && self.source_selection.is_none();
         let text_binding=if self.text_mode && input_ready && !self.input_locked {
             self.owner.text_input_owner()
         } else {None};
@@ -2413,6 +2420,7 @@ impl Render for RestoredDashboard {
                     ))
                 },
             )
+            .when_some(self.source_selection.as_ref(),|tree,selection|tree.child(source_selection::render(selection,cx)))
             // Local window commands must also see the root focus itself. The
             // remote-input surface remains inside the scope and keeps its focus guard.
             .map(|tree| div().size_full()
@@ -2428,11 +2436,12 @@ impl Render for RestoredDashboard {
                     }
                     if keystroke.key == "escape"
                         && !keystroke.modifiers.control
-                        && (this.drawer_open || this.show_apps_menu)
+                        && (this.drawer_open || this.show_apps_menu || this.source_selection.is_some())
                     {
                         this.owner.release_input();
                         this.drawer_open = false;
                         this.show_apps_menu = false;
+                        this.source_selection = None;
                         cx.stop_propagation();
                         cx.notify();
                         return;
@@ -3246,6 +3255,11 @@ fn capture_source_menu(
         )
         .child(div().w_full().h(px(1.0)).bg(theme.border.divider));
 
+    let multiple_view=view.clone();let multiple_binding=source_binding.cloned();
+    menu=menu.child(command_button("island_menu_multiple",ActionVariantKind::Neutral,cx)
+        .disabled(multiple_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
+        .on_click(move|_,_,cx| {let _=multiple_view.update(cx,|this,cx|this.begin_remote_source_selection(multiple_binding.clone(),cx));})
+        .child("Open several windows…"));
     if let Some(error) = error {
         menu = menu.child(
             div()
@@ -3917,6 +3931,9 @@ impl RestoredDashboard {
     }
 
     fn start_stream_connection(&mut self, device_id: String, receive: Option<String>, cx: &mut Context<Self>) {
+        self.start_stream_connection_capture(device_id,receive,None,cx);
+    }
+    fn start_stream_connection_capture(&mut self, device_id:String,receive:Option<String>,capture:Option<protocol::session::CaptureSource>,cx:&mut Context<Self>) {
         if self.exit_group.stopping.load(Ordering::Acquire) { return; }
                 self.invalidate_source_commands();
                 let ticket = self.session_commands.begin();
@@ -3934,7 +3951,10 @@ impl RestoredDashboard {
                     }).unwrap_or(None) else { return; };
                     let result = match receive {
                         Some(request) => owner.connect_received_device(&device_id, options, &request).await,
-                        None => owner.connect_device(&device_id, options, crate::unix_now_ms()).await,
+                        None => match capture {
+                            Some(source)=>owner.connect_capture_device(&device_id,source,options).await,
+                            None=>owner.connect_device(&device_id, options, crate::unix_now_ms()).await,
+                        },
                     };
                     let _ = view.update(cx, |this, cx| {
                         if !this.session_commands.is_current(ticket) { return; }
@@ -3952,7 +3972,7 @@ impl RestoredDashboard {
     }
 
     #[cfg(any(unix, windows))]
-    fn send_screen(&mut self,device_id:String)->Result<(),String>{
+    fn send_screen(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>)->Result<(),String>{
         if self.exit_group.stopping.load(Ordering::Acquire) {return Err("GUI exit is already requested".into());}
         if self.directed_send.as_ref().is_some_and(|s|!s.is_finished()){return Err("Stop the current delivery before choosing another target".into());}
         let instance=self._instance.as_ref().ok_or("Send from the main device window")?;
@@ -3962,7 +3982,7 @@ impl RestoredDashboard {
         let generation=self.directed_receive.as_ref().ok_or("GUI generation is unavailable")?.generation.clone();
         let routes=self.runtime.owner.discovery_snapshot_rx().map(|rx|crate::desktop::model::candidate_routes(&rx.borrow(),&device_id)).unwrap_or_default();
         if routes.is_empty(){return Err("Target is not currently available".into());}
-        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(profile,generation,identity.node_id,device_id,routes,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
+        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
         self.status="Contacting target to receive this screen".into();Ok(())
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {
@@ -3991,7 +4011,7 @@ impl RestoredDashboard {
             }
             DeviceListEffect::SendScreen(device_id) => {
                 #[cfg(any(unix, windows))]
-                if let Err(error)=self.send_screen(device_id){self.status=error;}
+                self.begin_delivery_selection(device_id,cx);
                 #[cfg(not(any(unix, windows)))]
                 {let _=device_id;self.status="Automatic delivery GUI adapter is currently available on macOS/Linux".into();}
             }

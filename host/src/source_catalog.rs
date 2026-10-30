@@ -7,6 +7,19 @@ use std::{
 use tokio::{sync::Semaphore, task::JoinHandle, time::Instant};
 
 pub(crate) type CatalogResult = Result<Directory, String>;
+pub(crate) async fn enumerate_native(
+    enumerate: impl FnOnce() -> CatalogResult + Send + 'static,
+) -> CatalogResult {
+    static LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    let permit = LIMIT.get_or_init(|| Arc::new(Semaphore::new(1))).clone()
+        .acquire_owned().await.map_err(|error|error.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit=permit;
+        let mut result=enumerate();
+        if let Ok(directory)=&mut result {directory.sources.truncate(256);}
+        result
+    }).await.map_err(|error|error.to_string())?
+}
 #[derive(Default)]
 pub(crate) struct SourceCatalog {
     pending: Option<(u32, JoinHandle<CatalogResult>)>,
@@ -41,21 +54,7 @@ impl SourceCatalog {
         }
         // One native enumeration at a time across peers, including queries
         // whose connection closed while the non-cancellable native call ran.
-        static LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        let limit = LIMIT.get_or_init(|| Arc::new(Semaphore::new(1))).clone();
-        let task = tokio::spawn(async move {
-            let permit = limit.acquire_owned().await.map_err(|e| e.to_string())?;
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                let mut result = enumerate();
-                if let Ok(directory) = &mut result {
-                    directory.sources.truncate(256);
-                }
-                result
-            })
-            .await
-            .map_err(|e| e.to_string())?
-        });
+        let task = tokio::spawn(enumerate_native(enumerate));
         self.pending = Some((id, task));
         None
     }
@@ -85,6 +84,25 @@ impl Drop for SourceCatalog {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    #[tokio::test]
+    async fn cancelled_local_query_keeps_the_native_permit_until_work_really_ends() {
+        let (started,running)=tokio::sync::oneshot::channel();
+        let (release,blocked)=std::sync::mpsc::channel();
+        let first=tokio::spawn(enumerate_native(move || {
+            let _=started.send(());
+            blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(Directory::default())
+        }));
+        tokio::time::timeout(Duration::from_secs(2),running).await.unwrap().unwrap();
+        first.abort();
+        let count=Arc::new(AtomicUsize::new(0));let calls=count.clone();
+        let second=tokio::spawn(enumerate_native(move|| {calls.fetch_add(1,SeqCst);Ok(Directory::default())}));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(count.load(SeqCst),0);
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2),second).await.unwrap().unwrap().unwrap();
+        assert_eq!(count.load(SeqCst),1);
+    }
     #[tokio::test]
     async fn slow_catalog_does_not_hold_control_and_udp_retries_do_not_repeat_native_work() {
         let calls = Arc::new(AtomicUsize::new(0));
