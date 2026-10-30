@@ -5,6 +5,20 @@ use std::process::Command;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::ConnectionExt as _;
 
+pub(crate) fn require_x11_desktop(session_type: Option<&str>, wayland_display: Option<&str>) -> Result<(), String> {
+    if session_type.is_some_and(|s| s.eq_ignore_ascii_case("wayland"))
+        || wayland_display.is_some_and(|s| !s.is_empty())
+    {
+        return Err("Wayland screen sharing needs system permission on the Linux computer. In Weavelo, open Devices → Share this computer → Refresh viewers, select this viewer and allow a screen in the system dialog. X11 capture cannot show the Wayland desktop.".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn require_current_x11_desktop() -> Result<(), String> {
+    require_x11_desktop(std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        std::env::var("WAYLAND_DISPLAY").ok().as_deref())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct X11CaptureRegion {
     pub x: i32,
@@ -17,6 +31,7 @@ pub(crate) struct X11CaptureRegion {
 /// source from a requested encoded size. A failed probe must precede FFmpeg spawn.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn capture_region(display: &str) -> Result<X11CaptureRegion, String> {
+    require_current_x11_desktop()?;
     let result = (|| -> Result<_, Box<dyn std::error::Error + Send + Sync>> {
         let (connection, screen_index) = x11rb::connect(Some(display))?;
         let root = connection
@@ -135,6 +150,16 @@ impl X11CapturePlan {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wayland_never_uses_the_x11_compatibility_desktop() {
+        assert!(super::require_x11_desktop(Some("wayland"), None).is_err());
+        assert!(super::require_x11_desktop(Some("Wayland"), Some("wayland-0")).is_err());
+        assert!(super::require_x11_desktop(Some("x11"), Some("wayland-0")).is_err());
+        assert!(super::require_x11_desktop(None, Some("wayland-1")).unwrap_err().contains("system permission"));
+        assert!(super::require_x11_desktop(Some("x11"), None).is_ok());
+        assert!(super::require_x11_desktop(Some("x11"), Some("")).is_ok());
+    }
+
     use super::*;
 
     fn region(x: i32, y: i32, width: u32, height: u32) -> X11CaptureRegion {

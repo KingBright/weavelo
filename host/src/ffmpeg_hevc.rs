@@ -157,7 +157,10 @@ fn capture_command_using(
     #[cfg(target_os = "windows")]
     let capture_rect = crate::capture_readiness::capture_display_rect()?;
     #[cfg(target_os = "linux")]
-    let x11_display = std::env::var("DISPLAY").ok();
+    let x11_display = {
+        crate::linux_capture_geometry::require_current_x11_desktop()?;
+        std::env::var("DISPLAY").ok()
+    };
     #[cfg(target_os = "windows")]
     crate::capture_readiness::require_srgb_capture_profile(&capture_rect)?;
     #[cfg(target_os = "windows")]

@@ -174,7 +174,12 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
         process_id: None,
         width: 0,
         height: 0,
-        supports_input: true,
+        supports_input: {
+            #[cfg(target_os = "linux")]
+            { crate::linux_capture_geometry::require_current_x11_desktop().is_ok() }
+            #[cfg(not(target_os = "linux"))]
+            { true }
+        },
     }])
 }
 
