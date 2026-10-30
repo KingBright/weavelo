@@ -389,7 +389,7 @@ fn unsubmitted_slot_keeps_latest_and_rejects_malformed_or_unknown_rgb() {
         .unwrap();
     assert_eq!(input.receive().unwrap().stamp.sequence, Some(2));
     let mut invalid = frame(PixelFormat::I420, known_color(), 1);
-    invalid.planes[0].pop();
+    Arc::get_mut(&mut invalid.planes).unwrap()[0].pop();
     assert!(RawHevcSource::start(&invalid, settings()).is_err());
     let mut rgb = frame(PixelFormat::I420, SourceColor::default(), 1);
     rgb.source_format.pixel_format = PixelFormat::Bgra;

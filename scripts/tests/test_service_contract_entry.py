@@ -20,6 +20,7 @@ from scripts.test_stream_settings_model import (validation_command, validation_e
 
 class ServiceContractEntryTests(unittest.TestCase):
     SESSION_CLOCK_CASES = {
+        "host-linux-capture": ("host", "linux_"),
         "committed-text-input": ("remote_core", "workspace_input::tests"),
         "committed-text-native": ("host", "unicode_"),
         "committed-text-protocol": ("protocol", "interaction::"),

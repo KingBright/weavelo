@@ -144,7 +144,7 @@ fn separate_planes_keep_chunk_and_mapping_offsets_distinct_and_crop_pixels() {
             3,
         )
         .unwrap();
-    assert_eq!(owned.planes, vec![vec![3, 4, 7, 8], vec![11, 12]]);
+    assert_eq!(*owned.planes, vec![vec![3, 4, 7, 8], vec![11, 12]]);
     assert_eq!((owned.width, owned.height), (2, 2));
 }
 

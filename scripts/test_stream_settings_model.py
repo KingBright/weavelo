@@ -26,6 +26,7 @@ OBSERVATION_TIMEOUT_SECONDS = 60
 # Fixed package/filter pairs only. These modes share the same guarded transaction;
 # callers cannot supply Cargo arguments, alternate profiles or test executables.
 SESSION_CLOCK_TESTS = {
+    "host-linux-capture": ("host", "linux_"),
     "committed-text-input": ("remote_core", "workspace_input::tests"),
     "committed-text-native": ("host", "unicode_"),
     "committed-text-protocol": ("protocol", "interaction::"),

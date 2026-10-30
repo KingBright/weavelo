@@ -142,7 +142,7 @@ impl RawHevcSource {
                     if stamps_tx.send(frame.stamp).is_err() {
                         break;
                     }
-                    for plane in &frame.planes {
+                    for plane in frame.planes.iter() {
                         if stdin.write_all(plane).is_err() {
                             let _ = writer_errors
                                 .blocking_send(Err("native HEVC raw write failed".into()));

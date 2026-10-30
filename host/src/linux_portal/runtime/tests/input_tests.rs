@@ -1,5 +1,25 @@
 //! Private-bus target effects; these are not desktop portal approval receipts.
 use super::*;
+
+#[tokio::test]
+async fn shared_subscriber_close_cannot_release_another_viewers_keys_or_os_grant() {
+    let (fixture,source)=prepared_control_fixture().await;
+    let a=source.fork().unwrap();
+    let b=source.fork().unwrap();
+    a.inject_input(InputEvent::KeyDown(0)).await.unwrap();
+    assert!(!fixture.calls.target.lock().unwrap().keys.is_empty());
+    b.close_owned().await.unwrap();
+    assert!(b.is_revoked() && !a.is_revoked() && !source.is_revoked());
+    assert!(!fixture.calls.target.lock().unwrap().keys.is_empty());
+    a.release_input().await.unwrap();
+    assert!(fixture.calls.target.lock().unwrap().keys.is_empty());
+    a.revoke();
+    assert!(!source.is_revoked());
+    let c=source.fork().unwrap();
+    source.revoke();
+    assert!(c.is_revoked());
+    assert!(c.observe_owned_frame(Duration::from_secs(1),8*1024*1024).await.is_err());
+}
 use crate::linux_frame::{PixelFormat, Transform};
 use protocol::{InputEvent, input_modifiers};
 
@@ -42,7 +62,7 @@ fn frame(generation: u64) -> OwnedFrame {
     frame.height = 720;
     frame.source_format.width = 1280;
     frame.source_format.height = 720;
-    frame.planes = vec![vec![0; 1280 * 720], vec![128; 1280 * 720 / 2]];
+    frame.planes = vec![vec![0; 1280 * 720], vec![128; 1280 * 720 / 2]].into();
     frame
 }
 pub(super) async fn control(fixture: &Fixture) -> PreparedPortalCapture {
@@ -71,7 +91,7 @@ pub(super) async fn control(fixture: &Fixture) -> PreparedPortalCapture {
         first.source_format.width = first.width;
         first.source_format.height = first.height;
         let pixels = first.width as usize * first.height as usize;
-        first.planes = vec![vec![0; pixels], vec![128; pixels / 2]];
+        first.planes = vec![vec![0; pixels], vec![128; pixels / 2]].into();
     }
     lease.prepare_owned_capture(first).unwrap()
 }

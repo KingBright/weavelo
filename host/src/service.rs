@@ -1183,7 +1183,7 @@ impl Connection {
                 previous.release_input().await.map_err(|e| e.to_string())?;
                 if native_capture
                     .as_ref()
-                    .is_some_and(|next| next.generation() == previous.generation())
+                    .is_some_and(|next| next.same_subscription(previous))
                 {
                     // A settings/resubscribe update reuses this same consented
                     // source. Old Subscription::drop must not revoke its lease.
@@ -1452,7 +1452,7 @@ impl ActiveInput {
         {
             // Closing the granted session is the bounded recovery if a
             // compositor cannot confirm key-up; no global input fallback.
-            capture.revoke();
+            capture.revoke_source();
             return Err(error.into());
         }
         Ok(())
@@ -1694,7 +1694,7 @@ async fn inject_fresh(
             if result==Err(crate::linux_portal::runtime::PortalInputError::Transport) {
                 // An unknown up outcome cannot be retried. Close this exact
                 // compositor lease to clear its state without a second up RPC.
-                capture.revoke();
+                capture.revoke_source();
             }
             result.map_err(|e|Box::new(e) as Box<dyn Error+Send+Sync>)
         },

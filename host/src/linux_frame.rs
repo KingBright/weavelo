@@ -126,13 +126,13 @@ impl Drop for FrameMemory {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OwnedFrame {
     pub source_format: FrameFormat,
     pub width: u32,
     pub height: u32,
-    pub planes: Vec<Vec<u8>>,
-    _memory: Option<FrameMemory>,
+    pub planes: std::sync::Arc<Vec<Vec<u8>>>,
+    _memory: Option<std::sync::Arc<FrameMemory>>,
     pub mapping_offsets: Vec<u32>,
     pub stamp: FrameStamp,
     pub(crate) received_at: std::time::Instant,
@@ -336,8 +336,8 @@ impl OwnedFrame {
             source_format: format,
             width: crop.width,
             height: crop.height,
-            planes: owned,
-            _memory: memory,
+            planes: std::sync::Arc::new(owned),
+            _memory: memory.map(std::sync::Arc::new),
             mapping_offsets: planes.iter().map(|plane| plane.mapping_offset).collect(),
             stamp,
             received_at: std::time::Instant::now(),
@@ -363,6 +363,7 @@ pub struct FrameMailbox {
     allow_initial_snapshot: bool,
     state: Mutex<MailboxState>,
     changed: Notify,
+    children: Mutex<Vec<std::sync::Weak<FrameMailbox>>>,
 }
 
 impl FrameMailbox {
@@ -403,7 +404,28 @@ impl FrameMailbox {
                 closed: false,
             }),
             changed: Notify::new(),
+            children: Mutex::new(Vec::new()),
         })
+    }
+
+    /// One latest raw frame per viewer; pixel planes and their memory charge
+    /// remain shared. A paused/closed viewer never changes its parent source.
+    pub(crate) fn fork(&self) -> Result<std::sync::Arc<Self>, FrameError> {
+        let mut children=self.children.lock().unwrap_or_else(|e|e.into_inner());
+        children.retain(|child|child.strong_count()>0);
+        if children.len()>=8 {return Err(FrameError::Budget);}
+        let state=self.state.lock().unwrap_or_else(|e|e.into_inner());
+        if state.closed {return Err(FrameError::Generation);}
+        let child=std::sync::Arc::new(Self::with_policy(self.generation,self.max_age,self.allow_initial_snapshot)?);
+        {
+            let mut next=child.state.lock().unwrap_or_else(|e|e.into_inner());
+            next.latest=state.latest.clone();
+            next.dimensions=state.dimensions;
+            next.format_revision=state.format_revision;
+            next.paused=state.paused;
+        }
+        children.push(std::sync::Arc::downgrade(&child));
+        Ok(child)
     }
 
     pub fn publish(&self, frame: OwnedFrame) -> bool {
@@ -424,10 +446,15 @@ impl FrameMailbox {
         if !only_if_empty || state.latest.is_none() {
             state.dimensions = Some((frame.width, frame.height));
             let received_at = frame.received_at;
-            state.latest = Some((frame, received_at));
+            state.latest = Some((frame.clone(), received_at));
         }
         drop(state);
         self.changed.notify_one();
+        self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
+            let Some(child)=child.upgrade() else {return false;};
+            child.publish_inner(frame.clone(),only_if_empty);
+            true
+        });
         true
     }
 
@@ -439,6 +466,12 @@ impl FrameMailbox {
         }
         state.format_revision = revision;
         state.latest = None;
+        drop(state);
+        self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
+            let Some(child)=child.upgrade() else {return false;};
+            child.set_format_revision(revision);
+            true
+        });
         true
     }
 
@@ -476,6 +509,12 @@ impl FrameMailbox {
         if paused {
             state.latest = None;
         }
+        drop(state);
+        self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
+            let Some(child)=child.upgrade() else {return false;};
+            child.set_paused(paused);
+            true
+        });
     }
 
     pub fn close(&self) {
@@ -484,6 +523,11 @@ impl FrameMailbox {
         state.latest = None;
         drop(state);
         self.changed.notify_waiters();
+        self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
+            let Some(child)=child.upgrade() else {return false;};
+            child.close();
+            true
+        });
     }
 
     pub async fn receive(&self) -> Result<OwnedFrame, FrameError> {
@@ -518,6 +562,30 @@ impl FrameMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shared_viewers_reuse_pixels_and_keep_pause_close_and_epochs_independent() {
+        let source=FrameMailbox::new(1).unwrap();
+        let a=source.fork().unwrap();
+        let b=source.fork().unwrap();
+        assert!(source.publish(packed(1)));
+        let first=a.receive().await.unwrap();
+        let second=b.receive().await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first.planes,&second.planes));
+        a.set_paused(true);
+        assert!(!source.is_paused() && !b.is_paused());
+        assert!(source.publish(packed(1)));
+        assert!(b.receive().await.is_ok());
+        assert!(source.set_format_revision(2));
+        assert!(!b.matches_input_epoch(0,[first.width,first.height]));
+        let mut changed=packed(1);changed.stamp.format_revision=2;
+        assert!(source.publish(changed));
+        assert_eq!(b.receive().await.unwrap().stamp.format_revision,2);
+        a.close();
+        assert!(!source.is_closed() && !b.is_closed());
+        source.close();
+        assert!(b.receive().await.is_err());
+    }
 
     #[test]
     fn bounded_four_k_copy_reserves_before_allocation_and_releases_on_drop() {
@@ -660,7 +728,7 @@ mod tests {
             stamp(1),
         )
         .unwrap();
-        assert_eq!(nv12.planes, vec![vec![1, 2, 3, 4, 5, 6, 7, 8], uv.to_vec()]);
+        assert_eq!(*nv12.planes, vec![vec![1, 2, 3, 4, 5, 6, 7, 8], uv.to_vec()]);
         let i420 = OwnedFrame::copy_from(
             format(PixelFormat::I420),
             &[plane(&y, 10, 6), plane(&u, 2, 2), plane(&v, 2, 2)],

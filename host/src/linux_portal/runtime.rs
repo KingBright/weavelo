@@ -311,6 +311,7 @@ impl PortalCaptureLease {
                 info: Mutex::new(info),
                 worker: Mutex::new(None),
             }),
+            branch: None,
         })
     }
 
@@ -366,12 +367,42 @@ impl Drop for PreparedInner {
 #[derive(Clone)]
 pub struct PreparedPortalCapture {
     inner: Arc<PreparedInner>,
+    branch: Option<Arc<CaptureBranch>>,
+}
+struct CaptureBranch {
+    mailbox: Arc<FrameMailbox>,
+    revoked: watch::Sender<bool>,
+    input_owned: std::sync::atomic::AtomicBool,
+}
+impl Drop for CaptureBranch {
+    fn drop(&mut self) { self.mailbox.close(); }
 }
 impl PreparedPortalCapture {
+    /// Separate subscription cancellation, shared source pixels and OS grant.
+    pub(crate) fn fork(&self) -> Result<Self> {
+        if self.branch.is_some() || self.is_revoked() {return Err(PortalCallError::Revoked);}
+        let mailbox=self.inner.mailbox.fork().map_err(|_|PortalCallError::InvalidSource)?;
+        let (revoked,mut cancelled)=watch::channel(false);
+        let branch=Arc::new(CaptureBranch {mailbox,revoked,input_owned:std::sync::atomic::AtomicBool::new(false)});
+        let weak=Arc::downgrade(&branch);
+        let mut parent=self.revocation();
+        tokio::spawn(async move {
+            if !*parent.borrow() {
+                tokio::select! {biased;_=parent.changed()=>{},_=cancelled.changed()=>return}
+            }
+            if let Some(branch)=weak.upgrade() {branch.revoked.send_replace(true);branch.mailbox.close();}
+        });
+        Ok(Self {inner:self.inner.clone(),branch:Some(branch)})
+    }
+    pub(crate) fn same_subscription(&self, other:&Self)->bool {
+        Arc::ptr_eq(&self.inner,&other.inner) && match (&self.branch,&other.branch) {
+            (Some(a),Some(b))=>Arc::ptr_eq(a,b),(None,None)=>true,_=>false,
+        }
+    }
     /// Also observe local cancellation synchronously, before the cleanup actor
     /// has processed its watch notification or delivered Session.Closed.
     pub fn is_revoked(&self) -> bool {
-        self.inner
+        self.branch.as_ref().is_some_and(|branch|*branch.revoked.borrow()) || self.inner
             .lease
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -417,6 +448,9 @@ impl PreparedPortalCapture {
         if self.is_revoked() {
             return Err(PortalInputError::SessionClosed);
         }
+        if self.branch.as_ref().is_some_and(|branch|branch.mailbox.is_paused()) {
+            return Err(PortalInputError::FrameBinding);
+        }
         self.input().ok_or(PortalInputError::ViewOnly)?.status()
     }
     fn input(&self) -> Option<Arc<input::PortalInput>> {
@@ -438,7 +472,7 @@ impl PreparedPortalCapture {
         size: [u32; 2],
     ) -> std::result::Result<(), PortalInputError> {
         self.input_status()?;
-        if !self.inner.mailbox.matches_input_epoch(revision, size) {
+        if !self.mailbox().matches_input_epoch(revision, size) {
             return Err(PortalInputError::FrameBinding);
         }
         Ok(())
@@ -449,6 +483,7 @@ impl PreparedPortalCapture {
         event: protocol::InputEvent,
     ) -> std::result::Result<(), PortalInputError> {
         self.input_status()?;
+        if let Some(branch)=&self.branch {branch.input_owned.store(true,Ordering::Release);}
         self.input()
             .ok_or(PortalInputError::ViewOnly)?
             .inject(event)
@@ -456,10 +491,12 @@ impl PreparedPortalCapture {
     }
     pub async fn inject_input_before(&self,event:protocol::InputEvent,deadline:Option<std::time::Instant>) -> std::result::Result<(),PortalInputError> {
         self.input_status()?;
+        if let Some(branch)=&self.branch {branch.input_owned.store(true,Ordering::Release);}
         self.input().ok_or(PortalInputError::ViewOnly)?.inject_before(event,deadline).await
     }
 
     pub async fn release_input(&self) -> std::result::Result<(), PortalInputError> {
+        if self.branch.as_ref().is_some_and(|branch|!branch.input_owned.swap(false,Ordering::AcqRel)) {return Ok(());}
         match self.input() {
             Some(input) => input.release().await,
             None => Ok(()),
@@ -474,6 +511,7 @@ impl PreparedPortalCapture {
             .generation
     }
     pub fn revocation(&self) -> watch::Receiver<bool> {
+        if let Some(branch)=&self.branch {return branch.revoked.subscribe();}
         self.inner
             .lease
             .lock()
@@ -529,6 +567,14 @@ impl PreparedPortalCapture {
         Ok(published)
     }
     pub fn revoke(&self) {
+        if let Some(branch)=&self.branch {
+            branch.revoked.send_replace(true);
+            branch.mailbox.close();
+            return;
+        }
+        self.revoke_source();
+    }
+    pub(crate) fn revoke_source(&self) {
         self.inner
             .lease
             .lock()
@@ -553,7 +599,7 @@ impl PreparedPortalCapture {
         if self.is_revoked() {
             return Err(PortalCallError::Revoked);
         }
-        let frame = tokio::time::timeout(timeout, self.inner.mailbox.receive())
+        let frame = tokio::time::timeout(timeout, self.mailbox().receive())
             .await
             .map_err(|_| PortalCallError::Timeout)?
             .map_err(|_| PortalCallError::Revoked)?;
@@ -589,6 +635,10 @@ impl PreparedPortalCapture {
     /// drop this resource's native worker. Success confirms RPC acceptance;
     /// native compositor effect/FD reclamation requires live acceptance.
     pub async fn close_owned(&self) -> Result<()> {
+        if self.branch.is_some() {
+            self.revoke();
+            return self.release_input().await.map_err(|_|PortalCallError::Transport);
+        }
         let done = {
             let mut lease = self.inner.lease.lock().unwrap_or_else(|e| e.into_inner());
             lease.remote = None;
@@ -611,7 +661,7 @@ impl PreparedPortalCapture {
     }
 
     pub(crate) fn mailbox(&self) -> Arc<FrameMailbox> {
-        self.inner.mailbox.clone()
+        self.branch.as_ref().map(|branch|branch.mailbox.clone()).unwrap_or_else(||self.inner.mailbox.clone())
     }
 }
 

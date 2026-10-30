@@ -919,8 +919,8 @@ async fn adopting_worker_mailbox_preserves_newest_pixels_and_dynamic_geometry() 
         height: 64,
     });
     changed.width = 64;
-    changed.planes[0].truncate(64 * 64);
-    changed.planes[1].truncate(64 * 32);
+    Arc::get_mut(&mut changed.planes).unwrap()[0].truncate(64 * 64);
+    Arc::get_mut(&mut changed.planes).unwrap()[1].truncate(64 * 32);
     changed.validate_owned().unwrap();
     assert!(mailbox.publish(changed));
     assert_eq!(
