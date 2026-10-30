@@ -15,7 +15,7 @@ use cocoa::{
         NSColor, NSEvent, NSEventModifierFlags, NSFilenamesPboardType, NSPasteboard, NSScreen,
         NSView, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectMaterial,
         NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowButton,
-        NSWindowCollectionBehavior, NSWindowOcclusionState, NSWindowOrderingMode,
+        NSWindowCollectionBehavior, NSWindowOrderingMode,
         NSWindowStyleMask, NSWindowTitleVisibility,
     },
     base::{id, nil},
@@ -473,16 +473,23 @@ impl MacWindowState {
         }
     }
 
+    fn is_presentation_visible(&self) -> bool {
+        // Occluded windows may still have a live remote-window capture consumer.
+        // Only explicit hiding/minimizing stops rendering; keyboard focus remains
+        // an independent input condition.
+        unsafe {
+            let visible: BOOL = msg_send![self.native_window, isVisible];
+            let minimized: BOOL = msg_send![self.native_window, isMiniaturized];
+            let app = NSApplication::sharedApplication(nil);
+            let hidden: BOOL = msg_send![app, isHidden];
+            visible == YES && minimized != YES && hidden != YES
+        }
+    }
+
     fn start_display_link(&mut self) {
         self.stop_display_link();
-        unsafe {
-            if !self
-                .native_window
-                .occlusionState()
-                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-            {
-                return;
-            }
+        if !self.is_presentation_visible() {
+            return;
         }
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
         if let Some(mut display_link) =
@@ -1226,8 +1233,7 @@ impl PlatformWindow for MacWindow {
     }
 
     fn is_visible(&self) -> Option<bool> {
-        Some(unsafe { self.0.lock().native_window.occlusionState()
-            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible) })
+        Some(self.0.lock().is_presentation_visible())
     }
 
     // is_hovered is unused on macOS. See Window::is_window_hovered.
@@ -1923,17 +1929,11 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
 extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let lock = &mut *window_state.lock();
-    unsafe {
-        if lock
-            .native_window
-            .occlusionState()
-            .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-        {
-            lock.move_traffic_light();
-            lock.start_display_link();
-        } else {
-            lock.stop_display_link();
-        }
+    if lock.is_presentation_visible() {
+        lock.move_traffic_light();
+        lock.start_display_link();
+    } else {
+        lock.stop_display_link();
     }
 }
 
