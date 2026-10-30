@@ -724,7 +724,7 @@ private fun SecurityTabContent(
     ) {
         item {
             Text(
-                text = "INBOUND SERVICES (THIS PHONE)",
+                text = "Sharing & permissions",
                 color = ColorTextSecondary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -771,8 +771,8 @@ private fun SecurityTabContent(
                     }
                 }
                 Text(
-                    text = if (publishing) "Paired devices can reconnect while this sharing session stays on. Stop sharing to end access."
-                        else "Being online does not share your screen. Tap Share screen and confirm Android screen capture. Paired devices can then view this phone without another prompt until sharing stops.",
+                    text = if (publishing) "Paired devices can view this phone until you stop sharing."
+                        else "Choose a screen or app and confirm Android screen sharing.",
                     color = ColorTextSecondary,
                     fontSize = 11.sp
                 )
@@ -817,7 +817,7 @@ private fun SecurityTabContent(
             Column(Modifier.fillMaxWidth().background(ColorSurfaceCard,RoundedCornerShape(12.dp))
                 .border(1.dp,ColorBorderFine,RoundedCornerShape(12.dp)).padding(14.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("REMOTE CONTROL",color = ColorTextPrimary,fontSize = 12.sp,fontWeight = FontWeight.Bold)
-                Text("Allow paired devices to tap, drag, scroll and type while you share this phone's full screen. Stop sharing to end control.",color = ColorTextSecondary,fontSize = 11.sp)
+                Text("Allow touch and typing while sharing this phone's full screen.",color = ColorTextSecondary,fontSize = 11.sp)
                 if (controlReady) {
                     Button(onClick = onShareControlledScreen,enabled = nativeAvailable && !publishing,modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = ColorAccentCyan,contentColor = Color.Black)) {

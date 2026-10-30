@@ -430,6 +430,8 @@ struct RestoredDashboard {
     local_share_state: crate::desktop::local_share::State,
     #[cfg(target_os = "linux")]
     local_share_owner: crate::desktop::local_share::linux::Owner,
+    local_permissions: Option<Result<crate::sharing_permissions::Status, String>>,
+    checking_permissions: bool,
     session_commands: SessionCommandState,
     source_commands: SessionCommandState,
     discovery_commands: SessionCommandState,
@@ -463,6 +465,9 @@ impl RestoredDashboard {
     ) -> Self {
         cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
+            if this.window_active && this.drawer_open && this.active_tab==DrawerTab::Security {
+                this.refresh_local_permissions(cx);
+            }
             this.window_visible = window.is_window_visible();
             if !this.window_active {
                 this.owner.release_input();
@@ -548,6 +553,8 @@ impl RestoredDashboard {
             local_share_state: crate::desktop::local_share::State::default(),
             #[cfg(target_os = "linux")]
             local_share_owner,
+            local_permissions: None,
+            checking_permissions: false,
             session_commands: SessionCommandState::default(),
             source_commands: SessionCommandState::default(),
             discovery_commands: SessionCommandState::default(),
@@ -3554,7 +3561,7 @@ fn slide_over_management_drawer(
                 ))
                 .child(drawer_tab_button("Files", DrawerTab::Files, active_tab, cx))
                 .child(drawer_tab_button(
-                    "Security",
+                    "Sharing",
                     DrawerTab::Security,
                     active_tab,
                     cx,
@@ -3581,8 +3588,6 @@ fn slide_over_management_drawer(
                         device_list_state,
                         #[cfg(any(unix, windows))] receive_label,
                         #[cfg(any(unix, windows))] send_label,
-                        #[cfg(target_os = "linux")] local_share_state,
-                        #[cfg(target_os = "linux")] local_share_active,
                         owner.clone(),
                         cx,
                     )
@@ -3592,7 +3597,9 @@ fn slide_over_management_drawer(
                     }
                     DrawerTab::Files => file_transfer_panel(owner.clone(), cx).into_any_element(),
                     DrawerTab::Security => {
-                        drawer_security_tab(input_locked, side_services, owner, cx)
+                        drawer_security_tab(input_locked, side_services,
+                            #[cfg(target_os = "linux")] local_share_state,
+                            #[cfg(target_os = "linux")] local_share_active, owner, cx)
                             .into_any_element()
                     }
                     DrawerTab::Network => drawer_network_telemetry_tab(
@@ -3633,6 +3640,7 @@ fn drawer_tab_button(
     .on_click(move |_event, _window, cx| {
         let _ = view.update(cx, |this, cx| {
             this.active_tab = tab;
+            if tab == DrawerTab::Security { this.refresh_local_permissions(cx); }
             cx.notify();
         });
     })
@@ -3643,8 +3651,6 @@ fn drawer_devices_tab(
     devices: &[AppDevice], role: &RoleState, local_name: Option<String>, state: &DeviceListState,
     #[cfg(any(unix, windows))] receive_label: Option<String>,
     #[cfg(any(unix, windows))] send_label: Option<String>,
-    #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
-    #[cfg(target_os = "linux")] local_share_active: Vec<String>,
     owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>,
 ) -> Div {
     let view = cx.weak_entity();
@@ -3679,15 +3685,15 @@ fn drawer_devices_tab(
                 .on_click(move|_,_,cx|{let _=stop.update(cx,|this,cx|{this.directed_send.take();this.status="Stopping directed delivery".into();cx.notify();});})
         ))
     } else {content};
-    #[cfg(target_os = "linux")]
-    let content = {
-        let share_view = cx.weak_entity();
-        content.child(crate::desktop::local_share::Controls::new(
-            local_share_state.clone(), local_share_active,
-            move |action, cx| { let _ = share_view.update(cx, |this, cx| this.dispatch_local_share(action, cx)); },
-        ))
-    };
-    content.child(crate::desktop::session_recovery::ConnectionRecoveryControls::new(
+    let permissions = cx.weak_entity();
+    content.child(command_button("sharing-permissions", ActionVariantKind::Neutral, cx)
+        .h(px(28.0)).text_size(px(11.0)).child("Sharing & permissions")
+        .on_click(move |_,_,cx| { let _ = permissions.update(cx, |this,cx| {
+            this.active_tab=DrawerTab::Security;
+            this.refresh_local_permissions(cx);
+            cx.notify();
+        }); }))
+    .child(crate::desktop::session_recovery::ConnectionRecoveryControls::new(
         owner.session_tabs(), move |action, cx| {
             let _ = recovery_view.update(cx, |this, cx| this.dispatch_session_action(action, cx));
         },
@@ -3703,6 +3709,24 @@ fn drawer_devices_tab(
 }
 
 impl RestoredDashboard {
+    fn refresh_local_permissions(&mut self, cx: &mut Context<Self>) {
+        if self.checking_permissions { return; }
+        self.checking_permissions=true;
+        let background=self.background.clone();
+        let work=tokio::task::spawn_blocking(move || match background {
+            Some(client)=>client.sharing_permissions().map_err(|error|error.to_string()),
+            None=>Ok(crate::sharing_permissions::inspect()),
+        });
+        cx.spawn(async move |view,cx| {
+            let result=work.await.unwrap_or_else(|_|Err("Permission check stopped; try again".into()));
+            let _=view.update(cx,|this,cx| {
+                this.checking_permissions=false;
+                this.local_permissions=Some(result);
+                cx.notify();
+            });
+        }).detach();
+    }
+
     #[cfg(target_os = "linux")]
     fn dispatch_local_share(&mut self, action: crate::desktop::local_share::Action, cx: &mut Context<Self>) {
         use crate::desktop::local_share::Effect;
@@ -3969,9 +3993,48 @@ fn drawer_device_group_tab(
     content
 }
 
+fn local_permissions_panel(cx: &mut Context<RestoredDashboard>) -> Div {
+    use crate::sharing_permissions::{Access, Setting};
+    let view=cx.weak_entity();
+    let state=cx.entity().read(cx);
+    let checking=state.checking_permissions;
+    let status=state.local_permissions.clone();
+    let mut panel=div().flex().flex_col().gap_2()
+        .child(div().flex().items_center().justify_between()
+            .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).child("Sharing & permissions"))
+            .child(command_button("refresh-local-permissions",ActionVariantKind::Neutral,cx)
+                .h(px(26.0)).text_size(px(10.0)).child(if checking {"Checking…"} else {"Check status"})
+                .on_click(move |_,_,cx| {let _=view.update(cx,|this,cx|this.refresh_local_permissions(cx));})))
+        .child(div().text_size(px(11.0)).text_color(cx.theme().content.secondary)
+            .child("Choose what to share, with control and audio permissions."));
+    let status=match status {
+        Some(Ok(status))=>Some(status),
+        Some(Err(error))=>{panel=panel.child(div().text_size(px(11.0)).child(error));None},
+        None=>None,
+    };
+    for (id,label,setting,access) in [
+        ("permission-screen","Screen & windows",Setting::Screen,status.as_ref().map(|s|s.screen)),
+        ("permission-control","Remote control",Setting::Control,status.as_ref().map(|s|s.control)),
+        ("permission-audio","Microphone",Setting::Microphone,status.as_ref().map(|s|s.microphone)),
+    ] {
+        let row=div().flex().items_center().justify_between().gap_2().text_size(px(11.0))
+            .child(div().flex_1().child(label))
+            .child(div().text_color(cx.theme().content.secondary)
+                .child(access.map(Access::label).unwrap_or(if checking {"Checking…"} else {"Unchecked"})));
+        let row=if let Some(uri)=crate::sharing_permissions::settings_uri(setting) {
+            row.child(command_button(id,ActionVariantKind::Neutral,cx).h(px(26.0)).text_size(px(10.0))
+                .child("Open settings").on_click(move |_,_,cx|cx.open_url(uri)))
+        } else {row};
+        panel=panel.child(row);
+    }
+    panel
+}
+
 fn drawer_security_tab(
     input_locked: bool,
     side_services: SideServiceUiState,
+    #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
+    #[cfg(target_os = "linux")] local_share_active: Vec<String>,
     owner: Arc<OriginalOwner>,
     cx: &mut Context<RestoredDashboard>,
 ) -> Div {
@@ -3982,11 +4045,21 @@ fn drawer_security_tab(
     let file_transfer_enabled = side_services.file_transfer.enabled;
     let snapshot = owner.snapshot();
     let input_available = snapshot.supports_input && matches!(snapshot.role, RoleState::Viewing(_));
+    let mut local = local_permissions_panel(cx);
+    #[cfg(target_os = "linux")]
+    {
+        let share_view=cx.weak_entity();
+        local=local.child(crate::desktop::local_share::Controls::new(
+            local_share_state.clone(),local_share_active,
+            move |action,cx| {let _=share_view.update(cx,|this,cx|this.dispatch_local_share(action,cx));},
+        ));
+    }
 
     div()
         .flex()
         .flex_col()
         .gap_3()
+        .child(local)
         .child(
             div()
                 .text_size(px(12.0))

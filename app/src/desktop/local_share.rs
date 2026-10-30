@@ -138,9 +138,9 @@ impl RenderOnce for Controls {
         let cancel = self.send.clone();
         let mut content=div().flex().flex_col().gap_2().p_3().rounded(px(8.0))
             .bg(cx.theme().surface.sunken).text_size(px(11.0)).text_color(cx.theme().content.primary)
-            .child("Share this computer")
-            .child(div().text_color(cx.theme().content.tertiary).child("Window and Display share video only. Display + control asks for keyboard and pointer access. Previously allowed selections can be reused while RP runs. Choose another source to select again. The viewer selects the shared source in Sources."))
-            .child(Button::new("share_refresh","Refresh viewers").debug_selector(||"share-refresh".into())
+            .child("Share a source")
+            .child(div().text_color(cx.theme().content.tertiary).child("Choose a screen or app window in the system dialog."))
+            .child(Button::new("share_refresh","Reload connected devices").debug_selector(||"share-refresh".into())
                 .control_size(ControlSize::Sm).variant(ButtonVariant::Secondary).rounded_full().h(px(28.0)).disabled(pending)
                 .on_click(move |_,_,cx|refresh(Action::Refresh,cx)));
         if pending {
@@ -154,7 +154,7 @@ impl RenderOnce for Controls {
         }
         if self.state.rows.is_empty() {
             content =
-                content.child("No connected viewers. Connect from another device, then refresh.");
+                content.child("No connected devices yet.");
         }
         for row in self.state.rows {
             let active = self.active.contains(&row.key);

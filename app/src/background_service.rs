@@ -25,7 +25,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Request { PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
+enum Request { Permissions { generation:String, executable_sha256:String }, PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -44,7 +44,7 @@ struct Snapshot {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Response { Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
+enum Response { Permissions { generation:String, executable_sha256:String, status:crate::sharing_permissions::Status }, Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -247,7 +247,7 @@ fn upgrade_quit_background_replacement_is_refused_before_stop() {
     assert!(upgrade_quit_background_owner(("101-1","image",101),("101-1","image",101)).is_ok());
 }
 fn shutdown_observation(request: &Request) -> bool {
-    matches!(request, Request::Snapshot | Request::NetworkDiagnostics {..} | Request::InspectConnection {..})
+    matches!(request, Request::Snapshot | Request::Permissions {..} | Request::NetworkDiagnostics {..} | Request::InspectConnection {..})
 }
 
 fn admit_shutdown<'a>(mode: OwnerMode, expected: &str, hash: &str, generation: &str, actual_hash: &str, closing: &Mutex<bool>, serial: &'a tokio::sync::Mutex<()>) -> Result<(tokio::sync::MutexGuard<'a, ()>, bool), String> {
@@ -263,6 +263,10 @@ fn admit_shutdown<'a>(mode: OwnerMode, expected: &str, hash: &str, generation: &
 }
 
 fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: String, executable_sha256: String, owner_mode:OwnerMode) -> Response {
+    if let Request::Permissions { generation: expected, executable_sha256: hash } = request {
+        if expected != generation || hash != executable_sha256 { return Response::Rejected("Background generation or executable changed".into()); }
+        return Response::Permissions { generation, executable_sha256, status:crate::sharing_permissions::inspect() };
+    }
     if let Request::Negotiate { generation: expected, executable_sha256: hash, offer } = request {
         return answer_negotiation(expected, hash, offer, generation, executable_sha256);
     }
@@ -295,7 +299,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::JoinGroup(code) => pairing.join_from_invite_code(&code),
         Request::RenameDevice { expected_name, name } => pairing.rename_device(&expected_name, &name),
         Request::Reload(message) => pairing.request_runtime_reload(message),
-        Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
+        Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
     Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing })
@@ -407,6 +411,17 @@ impl Client {
             "endpoint_absent":true,"persistent_startup_changed":false,"idle_only":idle_only}))
     }
 
+    pub(crate) fn sharing_permissions(&self) -> Result<crate::sharing_permissions::Status, Error> {
+        let generation=self.cached.lock().unwrap().generation.clone();
+        match exchange_response(&self.profile, &Request::Permissions {generation:generation.clone(), executable_sha256:self.executable_sha256.clone()})? {
+            Response::Permissions {generation:actual,executable_sha256,status}
+                if actual==generation && executable_sha256==self.executable_sha256
+                    && self.cached.lock().unwrap().generation==generation => Ok(status),
+            Response::Rejected(reason) => Err(reason.into()),
+            _ => Err("Sharing permission owner changed; refresh permissions".into()),
+        }
+    }
+
     pub async fn frontend_runtime(&self) -> Result<UnifiedRuntimeHandle, Error> {
         if self.owner_mode()!=OwnerMode::Background{return Err("Standalone GUI already owns its runtime".into());}
         let (tx, rx) = watch::channel(self.cached.lock().unwrap().peers.clone());
@@ -475,7 +490,7 @@ fn request(profile: &Path, command: &Request, executable_sha256: &str) -> Result
     let snapshot = match exchange_response(profile, command)? {
         Response::Snapshot(snapshot) => snapshot,
         Response::Rejected(_) => return Err("Background service rejected the operation".into()),
-        Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
+        Response::Permissions{..}|Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
     };
     validate_snapshot(&snapshot, profile, executable_sha256)?;
     Ok(snapshot)

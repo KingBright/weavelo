@@ -17,6 +17,7 @@ pub mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod original_design;
 pub mod preferences;
+mod sharing_permissions;
 mod telemetry_display;
 pub mod network_diagnostics;
 
