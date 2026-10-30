@@ -832,8 +832,8 @@ impl OriginalOwner {
         let mut session =
             OriginalGuiSession::new(key.into(), device.display_name, route, conn, events);
         if let Some(proof) = &receive_claim {
-            session.source = proof.source;
-            session.request.source = proof.source;
+            session.source = *proof.sources.first().ok_or("Delivery has no selected source")?;
+            session.request.source = session.source;
         } else if let Some(binding) = p.directed_receive.as_ref().filter(|binding| Some(binding.request_id.as_str()) == receive) {
             session.source = binding.capture;
             session.request.source = binding.capture;

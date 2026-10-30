@@ -55,7 +55,7 @@ pub(crate) async fn claim(
             request_id: proof.request_id,
             target_device_id: proof.target_device_id.clone(),
             ticket: proof.ticket,
-            source: proof.source,
+            sources: proof.sources.clone(),
         },
         proof.request_id,
         0,

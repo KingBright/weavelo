@@ -736,7 +736,7 @@ impl RestoredDashboard {
         let watchdog=match owner.begin_directed_receive(request,device,capture,duration) {
             Ok(watchdog)=>watchdog, Err(error)=>{let _=handle.update(cx,|_,window,_|window.remove_window());return Err(error.to_string());}
         };
-        if let Some(proof)=&mut claim {proof.source=capture;}
+        if let Some(proof)=&mut claim {proof.sources=vec![capture];}
         owner.set_receive_claim(request,claim);
         let close=Arc::new(AtomicBool::new(false));
         let member=crate::desktop::directed_receive::ReceiveWindow {

@@ -159,7 +159,7 @@ pub enum SessionCommand {
     // Directed delivery uses this same authenticated control connection. The
     // opaque ticket is an intent capability, never a new device identity.
     DeliveryOffer { request_id: u64, source_device_id: String, target_device_id: String, ticket: [u8; 32], revision: u64, sources: Vec<CaptureSource> },
-    DeliveryClaim { request_id: u64, target_device_id: String, ticket: [u8; 32], source: CaptureSource },
+    DeliveryClaim { request_id: u64, target_device_id: String, ticket: [u8; 32], sources: Vec<CaptureSource> },
     DeliveryCancel { request_id: u64 },
     DeliveryReceipt { request_id: u64, revision: u64, state: DeliveryState, reason: String },
     CommitText(crate::interaction::TextCommit),
@@ -168,7 +168,7 @@ pub enum SessionCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeliveryClaimProof { pub ticket:[u8;32], pub target_device_id:String, pub request_id:u64, pub source:CaptureSource }
+pub struct DeliveryClaimProof { pub ticket:[u8;32], pub target_device_id:String, pub request_id:u64, pub sources:Vec<CaptureSource> }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeliveryState { Pending, Accepted, Claimed, Cancelled, Rejected, Receiving }
@@ -214,7 +214,7 @@ mod tests {
             (SessionCommand::Close{connection_id:9},18),(SessionCommand::RequestInputBinding{connection_id:9,id:7,source_revision:0,request:1},23)];
         for(command,index)in existing {let bytes=bincode::serialize(&command).unwrap();assert_eq!(&bytes[..4],&index.to_le_bytes());}
         let commands=[SessionCommand::DeliveryOffer{request_id:17,source_device_id:"source".into(),target_device_id:"target".into(),ticket:[3;32],revision:1,sources:vec![CaptureSource::Display(7),CaptureSource::Window(9)]},
-            SessionCommand::DeliveryClaim{request_id:17,target_device_id:"target".into(),ticket:[3;32],source:CaptureSource::Display(7)},
+            SessionCommand::DeliveryClaim{request_id:17,target_device_id:"target".into(),ticket:[3;32],sources:vec![CaptureSource::Display(7)]},
             SessionCommand::DeliveryCancel{request_id:17},
             SessionCommand::DeliveryReceipt{request_id:17,revision:2,state:DeliveryState::Receiving,reason:String::new()}];
         for(index,command)in commands.into_iter().enumerate(){

@@ -544,7 +544,7 @@ mod tests {
         let counter=Arc::new(AtomicUsize::new(0)); let mut windows=Vec::new(); let mut flags=Vec::new();
         for (owner,source) in [(&first,CaptureSource::Window(11)),(&second,CaptureSource::Display(22))] {
             let watchdog=owner.begin_directed_receive("group","source",source,Duration::from_secs(15)).unwrap();
-            owner.set_receive_claim("group",Some(DeliveryClaimProof {ticket:[8;32],target_device_id:"receiver".into(),request_id:1,source}));
+            owner.set_receive_claim("group",Some(DeliveryClaimProof {ticket:[8;32],target_device_id:"receiver".into(),request_id:1,sources:vec![source]}));
             let close=Arc::new(AtomicBool::new(false));flags.push(close.clone());
             windows.push(ReceiveWindow {request_id:"group".into(),close,source,owner:Arc::downgrade(owner),watchdog});
         }

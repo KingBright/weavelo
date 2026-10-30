@@ -16,7 +16,7 @@ mod display_power;
 #[cfg(target_os = "macos")]
 mod input_injector;
 pub mod lifecycle;
-pub mod directed_delivery;
+pub use remote_core::directed_delivery;
 #[allow(dead_code)]
 mod sender;
 pub mod service;

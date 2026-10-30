@@ -159,7 +159,7 @@ async fn receive(
             lease_ms,
             claim: Some(DeliveryClaimProof {
                 ticket: offer.ticket,
-                source: offer.sources[0],
+                sources: offer.sources.clone(),
                 target_device_id: offer.target.clone(),
                 request_id: offer.request,
             }),

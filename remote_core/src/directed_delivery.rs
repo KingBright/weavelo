@@ -1,7 +1,7 @@
 //! Bounded, in-memory directed intent. Wire identity always comes from the
 //! authenticated host connection; a ticket is not a node-ID assertion.
 use protocol::session::{CaptureSource, DeliveryState, SessionCommand, validate_delivery_sources};
-use remote_core::shared_files::ShareScope;
+use crate::shared_files::ShareScope;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -47,7 +47,7 @@ struct Ticket {
     revision: u64,
     expires: Instant,
     sources: Vec<CaptureSource>,
-    claimed: HashMap<Peer, CaptureSource>,
+    claimed: HashMap<Peer, Vec<CaptureSource>>,
     cancel: tokio::sync::watch::Sender<bool>,
 }
 impl Drop for Ticket {
@@ -139,7 +139,7 @@ impl Broker {
                 };
                 broker.expire_tickets(
                     Instant::now(),
-                    remote_core::shared_files::current_share_scope(),
+                    crate::shared_files::current_share_scope(),
                 );
             }
         });
@@ -177,7 +177,7 @@ impl Broker {
     pub fn local(&self, command: LocalIntent) -> Result<(), String> {
         let mut s = self.state.lock().unwrap();
         let now = Instant::now();
-        let scope = remote_core::shared_files::current_share_scope();
+        let scope = crate::shared_files::current_share_scope();
         match command {
             LocalIntent::Register {
                 ticket,
@@ -291,15 +291,15 @@ impl Broker {
         request: u64,
         target: &str,
         ticket: [u8; 32],
-        source: CaptureSource,
+        sources: Vec<CaptureSource>,
     ) -> SessionCommand {
         self.claim_in_scope(
             peer,
             request,
             target,
             ticket,
-            source,
-            remote_core::shared_files::current_share_scope(),
+            sources,
+            crate::shared_files::current_share_scope(),
         )
     }
     fn claim_in_scope(
@@ -308,23 +308,24 @@ impl Broker {
         request: u64,
         target: &str,
         ticket: [u8; 32],
-        source: CaptureSource,
+        sources: Vec<CaptureSource>,
         scope: ShareScope,
     ) -> SessionCommand {
         let mut s = self.state.lock().unwrap();
         let accepted = peer.scope.is_some()
             && peer.scope == scope
+            && validate_delivery_sources(&sources).is_ok()
             && s.tickets.get_mut(&ticket).is_some_and(|t| {
                 if t.target != target
                     || t.scope != peer.scope
                     || Instant::now() >= t.expires
-                    || !t.sources.contains(&source)
-                    || t.claimed.get(&peer).is_some_and(|selected| *selected != source)
-                    || t.claimed.iter().any(|(p, selected)| *p != peer && *selected == source)
+                    || sources.iter().any(|source|!t.sources.contains(source))
+                    || t.claimed.get(&peer).is_some_and(|selected| *selected != sources)
+                    || t.claimed.iter().any(|(p, selected)| *p != peer && selected.iter().any(|source|sources.contains(source)))
                 {
                     return false;
                 }
-                t.claimed.insert(peer, source);
+                t.claimed.insert(peer, sources);
                 true
             });
         receipt(
@@ -371,22 +372,22 @@ impl Broker {
             .get(&ticket)
             .is_some_and(|t| {
                 t.claimed.contains_key(&peer)
-                    && t.scope == remote_core::shared_files::current_share_scope()
+                    && t.scope == crate::shared_files::current_share_scope()
                     && Instant::now() < t.expires
             })
     }
     pub fn allows_source(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource) -> bool {
-        self.allows_source_in_scope(peer, ticket, source, remote_core::shared_files::current_share_scope())
+        self.allows_source_in_scope(peer, ticket, source, crate::shared_files::current_share_scope())
     }
     fn allows_source_in_scope(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource, scope: ShareScope) -> bool {
         self.state.lock().unwrap().tickets.get(&ticket).is_some_and(|t| {
-            t.claimed.get(&peer) == Some(&source)
+            t.claimed.get(&peer).is_some_and(|sources|sources.contains(&source))
                 && t.scope == scope
                 && Instant::now() < t.expires
         })
     }
     pub fn reconcile(&self, live: impl Fn(Peer) -> bool) {
-        self.reconcile_in_scope(live, remote_core::shared_files::current_share_scope());
+        self.reconcile_in_scope(live, crate::shared_files::current_share_scope());
     }
     fn reconcile_in_scope(&self, live: impl Fn(Peer) -> bool, scope: ShareScope) {
         let mut s = self.state.lock().unwrap();
@@ -524,7 +525,7 @@ mod tests {
         let token = [8; 32];
         b.state.lock().unwrap().tickets.insert(token, ticket());
         assert!(matches!(
-            b.claim_in_scope(peer(), 1, "receiver", token, CaptureSource::MainDisplay, peer().scope),
+            b.claim_in_scope(peer(), 1, "receiver", token, vec![CaptureSource::MainDisplay], peer().scope),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Claimed,
                 ..
@@ -534,7 +535,7 @@ mod tests {
         let mut other = peer();
         other.nonce = [9; 16];
         assert!(matches!(
-            b.claim_in_scope(other, 1, "receiver", token, CaptureSource::MainDisplay, peer().scope),
+            b.claim_in_scope(other, 1, "receiver", token, vec![CaptureSource::MainDisplay], peer().scope),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Rejected,
                 ..
@@ -557,7 +558,7 @@ mod tests {
         let mut second = first; second.connection += 1; second.nonce = [9; 16];
         let mut item = ticket(); item.sources = vec![CaptureSource::Window(11), CaptureSource::Display(22)];
         broker.state.lock().unwrap().tickets.insert(token, item);
-        let claim = |peer, source| matches!(broker.claim_in_scope(peer, 1, "receiver", token, source, first.scope),
+        let claim = |peer, source| matches!(broker.claim_in_scope(peer, 1, "receiver", token, vec![source], first.scope),
             SessionCommand::DeliveryReceipt { state: DeliveryState::Claimed, .. });
         assert!(claim(first, CaptureSource::Window(11)));
         assert!(claim(first, CaptureSource::Window(11))); // Retry keeps the exact binding.
@@ -575,6 +576,24 @@ mod tests {
         assert!(!claim(third, CaptureSource::Window(11)));
         broker.reconcile_in_scope(|_| true, Some([6; 32]));
         cancel.changed().await.unwrap(); assert!(*cancel.borrow());
+    }
+    #[tokio::test]
+    async fn one_connection_can_claim_a_bounded_source_set_without_overlapping_other_windows() {
+        let (broker,_)=Broker::new();
+        let token=[8;32];let mut item=ticket();
+        item.sources=vec![CaptureSource::Window(11),CaptureSource::Display(22),CaptureSource::Window(33)];
+        broker.state.lock().unwrap().tickets.insert(token,item);
+        let first=peer();let mut second=first;second.connection+=1;
+        let claim=|peer,sources|matches!(broker.claim_in_scope(peer,1,"receiver",token,sources,peer.scope),SessionCommand::DeliveryReceipt{state:DeliveryState::Claimed,..});
+        let selected=vec![CaptureSource::Window(11),CaptureSource::Display(22)];
+        assert!(claim(first,selected.clone()));assert!(claim(first,selected));
+        assert!(broker.allows_source_in_scope(first,token,CaptureSource::Window(11),first.scope));
+        assert!(broker.allows_source_in_scope(first,token,CaptureSource::Display(22),first.scope));
+        assert!(!claim(first,vec![CaptureSource::Window(11)]));
+        assert!(!claim(second,vec![CaptureSource::Display(22)]));
+        assert!(!claim(second,vec![]));assert!(!claim(second,vec![CaptureSource::Window(33);2]));
+        assert!(claim(second,vec![CaptureSource::Window(33)]));
+        assert!(!broker.allows_source_in_scope(second,token,CaptureSource::Window(11),second.scope));
     }
     #[tokio::test]
     async fn offer_renewal_cannot_replace_its_source_selection() {
@@ -636,7 +655,7 @@ mod tests {
     async fn source_deadline_cancels_claim_even_without_network_loop() {
         let (b, _rx) = Broker::new();
         let mut t = ticket();
-        t.scope = remote_core::shared_files::current_share_scope();
+        t.scope = crate::shared_files::current_share_scope();
         t.expires = Instant::now() + Duration::from_millis(10);
         let mut cancel = t.cancel.subscribe();
         b.state.lock().unwrap().tickets.insert([8; 32], t);
