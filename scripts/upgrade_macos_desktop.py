@@ -260,7 +260,9 @@ class NativeControl:
         result = subprocess.run([str(self.exe), flag], env=clean_environment(self.paths['profile']),
                                 capture_output=True, timeout=12)
         if result.returncode:
-            require(not required, 'Native application command refused: ' + flag)
+            detail = result.stderr.decode('utf-8', errors='replace').strip()[-1600:]
+            require(not required, 'Native application command refused: ' + flag
+                    + (': ' + detail if detail else ''))
             return None
         require(len(result.stdout) <= LIMIT, 'Native status exceeds limit')
         return json.loads(result.stdout)

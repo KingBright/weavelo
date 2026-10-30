@@ -22,6 +22,15 @@ import macos_release_guard as guard
 
 
 class UpgradeTests(unittest.TestCase):
+    def test_native_stop_failure_keeps_the_bounded_real_reason(self):
+        control = NativeControlOriginal(self.selected)
+        error = b'prefix' * 400 + b'\nError: Background stop not confirmed: native teardown still pending\n'
+        with patch.object(upgrade.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, b'', error)):
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'native teardown still pending') as failure:
+                control.query('--background-stop-json')
+            self.assertLess(len(str(failure.exception)), 1700)
+            self.assertIsNone(control.query('--background-status-json', required=False))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name).resolve() / 'home'; self.home.mkdir(mode=0o700)
