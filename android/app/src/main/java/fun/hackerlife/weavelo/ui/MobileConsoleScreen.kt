@@ -315,10 +315,10 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                 tint = ColorAccentEmerald, modifier = Modifier.size(22.dp))
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(name, color = ColorTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+            Text(name, color = ColorTextPrimary, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(tag, color = ColorAccentEmerald, fontSize = 11.sp, maxLines = 1)
-            Text(subtext, color = ColorTextSecondary, fontSize = 12.sp, maxLines = 1,
+            Text(tag, color = ColorAccentEmerald, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1)
+            Text(subtext, color = ColorTextSecondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -356,7 +356,7 @@ fun NavTab(text: String, active: Boolean, onClick: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
         androidx.compose.material3.Icon(symbol.image, contentDescription = null,
             tint = if (active) ColorAccentEmerald else ColorTextSecondary, modifier = Modifier.size(20.dp))
-        Text(text, color = if (active) ColorTextPrimary else ColorTextSecondary, fontSize = 11.sp,
+        Text(text, color = if (active) ColorTextPrimary else ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
     }
 }

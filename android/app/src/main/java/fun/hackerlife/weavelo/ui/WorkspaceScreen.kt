@@ -128,6 +128,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         style = MaterialTheme.typography.labelSmall)
                 }
                 MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected) {
+                    WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                     pickerGeneration = state.connectionGeneration; sourcePicker = true
                 }
                 MobileAction(MobileSymbol.Refresh, "Refresh screens and windows", state.connected) {
@@ -219,7 +220,10 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         else "Open a display or application window. File transfers stay independent.",
                         color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    Button(onClick = { pickerGeneration = state.connectionGeneration; sourcePicker = true }, enabled = state.connected) {
+                    Button(onClick = {
+                        WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                        pickerGeneration = state.connectionGeneration; sourcePicker = true
+                    }, enabled = state.connected) {
                         Text("Browse screens and windows")
                     }
                 }
@@ -343,6 +347,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         },
         factory = { context ->
             SurfaceView(context).apply {
+                contentDescription = "Remote screen"
                 fun clearTouches() { pointers.clear(); touching = false }
                 holder.addCallback(object : SurfaceHolder.Callback {
                     private var active = AtomicBoolean(false)

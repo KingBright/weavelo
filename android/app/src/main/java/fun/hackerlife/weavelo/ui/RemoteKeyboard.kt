@@ -9,11 +9,10 @@ import android.view.View
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputMethodManager
+import androidx.core.view.SoftwareKeyboardControllerCompat
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 
@@ -22,7 +21,46 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
     private val key: (String, Boolean) -> Unit) : View(context) {
     var acceptingInput = true
     private var currentInput: InputConnection? = null
-    fun discardInput() { acceptingInput=false; currentInput?.finishComposingText() }
+    private var keyboardWanted = false
+    private val keyboard = SoftwareKeyboardControllerCompat(this)
+    private val showKeyboard = Runnable {
+        if (keyboardWanted && isAttachedToWindow && hasWindowFocus()) {
+            requestFocus()
+            if (isFocused) keyboard.show()
+        }
+    }
+    fun discardInput() {
+        keyboardWanted=false; removeCallbacks(showKeyboard)
+        acceptingInput=false; currentInput?.finishComposingText()
+    }
+    fun setKeyboardVisible(visible: Boolean) {
+        if (keyboardWanted == visible && acceptingInput == visible) return
+        if (visible) {
+            keyboardWanted=true; acceptingInput=true; showWhenReady()
+        } else {
+            // A disposed remote editor must not dismiss a source-search field's IME.
+            val ownedFocus=isFocused
+            discardInput(); if (ownedFocus) keyboard.hide(); clearFocus()
+        }
+    }
+    private fun showWhenReady() {
+        removeCallbacks(showKeyboard)
+        if (keyboardWanted && isAttachedToWindow && hasWindowFocus()) post(showKeyboard)
+    }
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (keyboardWanted) acceptingInput=true
+        showWhenReady()
+    }
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus) showWhenReady()
+    }
+    override fun onDetachedFromWindow() {
+        removeCallbacks(showKeyboard)
+        acceptingInput=false; currentInput?.finishComposingText()
+        super.onDetachedFromWindow()
+    }
     init { isFocusable = true; isFocusableInTouchMode = true }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = currentInput?.sendKeyEvent(event) == true || super.onKeyDown(keyCode,event)
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = currentInput?.sendKeyEvent(event) == true || super.onKeyUp(keyCode,event)
@@ -103,25 +141,11 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
 @Composable
 internal fun RemoteKeyboard(identity: Any, visible: Boolean, enabled: Boolean,
     onText: (String) -> Unit, onKey: (String, Boolean) -> Unit) {
-    val context = LocalContext.current
     // A new source owns a different View/InputConnection. Late IME callbacks
     // retain the old callbacks and must fail the native exact-binding check.
     key(identity) {
-        var editor by remember { mutableStateOf<RemoteImeView?>(null) }
-        AndroidView(factory = { RemoteImeView(it,onText,onKey).also { view -> editor=view } },
-            modifier = Modifier.size(1.dp))
-        LaunchedEffect(editor, visible, enabled) {
-            val view=editor ?: return@LaunchedEffect
-            val imm=context.getSystemService(InputMethodManager::class.java)
-            view.acceptingInput=visible && enabled
-            if (visible && enabled) {view.requestFocus();imm.showSoftInput(view,InputMethodManager.SHOW_IMPLICIT)}
-            else {view.discardInput();imm.hideSoftInputFromWindow(view.windowToken,0);view.clearFocus()}
-        }
-        DisposableEffect(editor) {
-            // The initial null -> View recomposition must not dispose the new
-            // editor by reading the mutable state from the old effect.
-            val owned = editor
-            onDispose { owned?.let { it.discardInput();context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(it.windowToken,0);it.clearFocus() } }
-        }
+        AndroidView(factory = { RemoteImeView(it,onText,onKey) }, modifier = Modifier.size(1.dp),
+            onReset = null, onRelease = { it.setKeyboardVisible(false) },
+            update = { it.setKeyboardVisible(visible && enabled) })
     }
 }

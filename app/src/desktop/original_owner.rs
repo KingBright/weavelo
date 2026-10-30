@@ -1206,6 +1206,9 @@ impl OriginalOwner {
                 pressed: false,
                 ..
             } if !s.keys.contains(key_code) => return false,
+            // Unchanged modifier snapshots must not split adjacent committed
+            // text into separate round trips. Real transitions remain ordered.
+            InputEvent::ModifiersChanged(modifiers) if s.modifiers == *modifiers => return false,
             _ => {}
         }
         let command = s.input_command(event.clone());
