@@ -581,10 +581,23 @@ public func stopStreamCapture(
             try await scStream.stopCapture()
             callback(context, true, nil)
         } catch {
+            // Closing a captured window can stop the native stream first.
+            // This exact SDK error confirms there is no running stream left;
+            // report terminal completion so the owned Rust callback releases it.
+            if captureStopAlreadyCompleted(error) {
+                callback(context, true, nil)
+                return
+            }
             let bridgeError = SCBridgeError.streamError(error.localizedDescription)
             bridgeError.description.withCString { callback(context, false, $0) }
         }
     }
+}
+
+func captureStopAlreadyCompleted(_ error: Error) -> Bool {
+    let native = error as NSError
+    return native.domain == SCStreamErrorDomain &&
+        native.code == SCStreamError.Code.attemptToStopStreamState.rawValue
 }
 
 /// Updates the content filter for the stream
