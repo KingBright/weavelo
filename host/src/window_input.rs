@@ -213,8 +213,21 @@ fn focus_for_click_with(
     if status != 0 {
         return Err(format!("The selected application could not be activated ({status}); input was not redirected"));
     }
-    if frontmost() { Ok(()) } else {
-        Err("Wait for the selected application to become active, then click again".into())
+    // AX accepts activation before AppKit finishes it. Wait only after that one
+    // write; already-active input never sleeps or repeats its AX round trip.
+    let until = deadline.unwrap_or_else(|| std::time::Instant::now() + std::time::Duration::from_millis(100));
+    loop {
+        if std::time::Instant::now() >= until {
+            return Err("input expired while waiting for application activation".into());
+        }
+        let active = frontmost();
+        // A blocking AX read must not renew or outlive the original event budget.
+        if std::time::Instant::now() >= until {
+            return Err("input expired while waiting for application activation".into());
+        }
+        if active { return Ok(()); }
+        std::thread::sleep(std::time::Duration::from_millis(5)
+            .min(until.saturating_duration_since(std::time::Instant::now())));
     }
 }
 
@@ -375,6 +388,29 @@ mod tests {
             || { reads.set(reads.get() + 1); true },
             || panic!("an already foreground app must not be activated")).unwrap();
         assert_eq!(reads.get(), 1, "each extra AX read consumes the original input deadline");
+    }
+    #[test]
+    fn click_waits_for_asynchronous_foreground_activation() {
+        use std::{cell::Cell, time::{Duration, Instant}};
+        let activated = Cell::new(None);
+        let writes = Cell::new(0);
+        focus_for_click_with(Some(Instant::now() + Duration::from_secs(1)), || Ok(()),
+            || activated.get().is_some_and(|at: Instant| at.elapsed() >= Duration::from_millis(15)),
+            || { writes.set(writes.get() + 1); activated.set(Some(Instant::now())); 0 }).unwrap();
+        assert_eq!(writes.get(), 1, "wait for the one activation, never repeat the focus write");
+    }
+    #[test]
+    fn activation_completion_read_cannot_dispatch_after_the_original_deadline() {
+        use std::{cell::Cell, time::{Duration, Instant}};
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let writes = Cell::new(0);
+        let result = focus_for_click_with(Some(deadline), || Ok(()), || {
+            if writes.get() == 0 { return false; }
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2));
+            true
+        }, || { writes.set(writes.get() + 1); 0 });
+        assert!(result.unwrap_err().contains("expired"));
+        assert_eq!(writes.get(), 1);
     }
     #[test]
     fn delayed_foreground_read_cannot_admit_expired_click() {
