@@ -177,22 +177,13 @@ fn open_restored_window(
     cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| RestoredDashboard::new(runtime, instance, activation, background, exit_group, window, cx));
         let weak = view.downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
+        window.on_window_should_close(cx, move |_window, cx| {
             if weak.update(cx, |this, _| this.exit_group.stopping.load(Ordering::Acquire)).unwrap_or(false) { return false; }
             if primary && attached {
-                let _ = weak.update(cx, |this, _| { this.owner.release_input(); this.owner.close_all(); });
-                cx.quit();
-                true
+                let _ = weak.update(cx, |this, cx| { this.begin_gui_quit(None, false, cx); });
+                false
             } else if primary {
-                let _ = weak.update(cx, |this, _| {
-                    #[cfg(any(unix, windows))]
-                    this.stop_directed_receive();
-                    #[cfg(any(unix, windows))]
-                    this.directed_send.take();
-                    this.owner.release_input();
-                    this.window_active = false;
-                });
-                window.minimize_window();
+                let _ = weak.update(cx, |this, cx| this.begin_full_exit(cx));
                 false
             } else {
                 true
@@ -729,8 +720,9 @@ impl RestoredDashboard {
                 let _ = command.reply.send(serde_json::json!({"ok":false,"error":error}).into()); continue;
             }
             let generation = adapter.generation.clone();
-            if matches!(&command.request, Request::UpgradeQuit {..}) {
-                self.begin_upgrade_quit(command,cx);continue;
+            if matches!(&command.request, Request::UpgradeQuit {..} | Request::CloseGui {..}) {
+                let idle_only = matches!(&command.request, Request::UpgradeQuit {..});
+                self.begin_gui_quit(Some(command),idle_only,cx);continue;
             }
             if let Request::File {generation,request_id,action,..}=command.request {
                 let profile=self._instance.as_ref().map(|i|i.state_directory().to_path_buf());
@@ -760,14 +752,14 @@ impl RestoredDashboard {
             }
             let mut newly_accepted = false;
             let response = match command.request {
-                Request::UpgradeQuit {..} | Request::ComputerUse {..} | Request::File {..} => unreachable!(),
+                Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} => unreachable!(),
                 Request::NetworkDiagnostics => serde_json::json!({
                     "ok":true, "generation":generation, "pid":std::process::id(),
                     "executable_sha256":adapter.executable_sha256,
                     "build_identity":crate::build_identity::compiled(),
                     "network":self.owner.network_snapshot(),
                 }),
-                Request::Status => serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,
+                Request::Status => serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,"gui_close":crate::desktop::upgrade_quit::GUI_CLOSE_CAPABILITY,
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "lease":adapter.lease.as_ref().map(|lease| serde_json::json!({"request_id":lease.request_id,
@@ -1774,31 +1766,53 @@ impl RestoredDashboard {
     }
 
     #[cfg(any(unix,windows))]
-    fn begin_upgrade_quit(&mut self, command: crate::desktop::directed_receive::Command, cx: &mut Context<Self>) {
+    fn begin_gui_quit(&mut self, command: Option<crate::desktop::directed_receive::Command>,
+        idle_only: bool, cx: &mut Context<Self>) {
         use crate::desktop::{directed_receive::{Request,Reply},upgrade_quit};
-        let Request::UpgradeQuit {generation,executable_sha256,request_id,..}=command.request else {unreachable!()};
-        if self.exit_group.stopping.swap(true,Ordering::AcqRel) {let _=command.reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested"}).into());return;}
-        let adapter=self.directed_receive.as_ref().unwrap();
-        let states=self.exit_group.owners().iter().map(|o|o.diagnostic_snapshot()).collect::<Vec<_>>();
-        let refusal=if !self.exit_group.pending.lock().unwrap().is_empty() {Err("Previous frontend cleanup is unconfirmed; observe it before upgrade quit")}
-            else if self.background.is_none() {Err("Upgrade quit requires an attached independent GUI")}
-            else {upgrade_quit::idle(&states,adapter.lease.is_some(),adapter.active_operations.load(Ordering::Acquire))};
-        if let Err(error)=refusal {self.exit_group.stopping.store(false,Ordering::Release);let _=command.reply.send(serde_json::json!({"ok":false,"error":error}).into());return;}
-        self.full_exit_pending=true; self.session_commands.begin(); self.invalidate_source_commands();
+        let reply = command.map(|command| {
+            let (generation,executable_sha256,request_id) = match command.request {
+                Request::UpgradeQuit {generation,executable_sha256,request_id,..}
+                | Request::CloseGui {generation,executable_sha256,request_id,..} => (generation,executable_sha256,request_id),
+                _ => unreachable!(),
+            };
+            (command.reply,generation,executable_sha256,request_id)
+        });
+        if self.exit_group.stopping.swap(true,Ordering::AcqRel) {
+            if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested"}).into());}
+            return;
+        }
+        let refusal = if !self.exit_group.pending.lock().unwrap().is_empty() {
+            Err("Previous frontend cleanup is unconfirmed; observe it before closing")
+        } else if self.background.is_none() {
+            Err("GUI-only exit requires an attached background service")
+        } else if idle_only {
+            let adapter=self.directed_receive.as_ref().unwrap();
+            let states=self.exit_group.owners().iter().map(|o|o.diagnostic_snapshot()).collect::<Vec<_>>();
+            upgrade_quit::idle(&states,adapter.lease.is_some(),adapter.active_operations.load(Ordering::Acquire))
+        } else {Ok(())};
+        if let Err(error)=refusal {
+            self.exit_group.stopping.store(false,Ordering::Release);
+            if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":error}).into());}
+            self.status=error.into();cx.notify();return;
+        }
+        self.full_exit_pending=true;
+        for owner in self.exit_group.owners() {owner.set_input_locked(true);owner.release_input();}
+        self.pointer_input=PointerInputTracker::default();
+        self.session_commands.begin();self.invalidate_source_commands();
+        self.stop_directed_receive();self.directed_send.take();
         let group=self.exit_group.clone();
         cx.spawn(async move |view,cx| {
-            let result=group.close_verified().await;
-            if let Err(error)=result {
+            if let Err(error)=group.close_verified().await {
                 group.stopping.store(false,Ordering::Release);
-                let _=command.reply.send(serde_json::json!({"ok":false,"error":error}).into());
-                let _=view.update(cx,|this,cx|{this.full_exit_pending=false;cx.notify();});return;
+                if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":error}).into());}
+                let _=view.update(cx,|this,cx|{this.full_exit_pending=false;this.status=format!("GUI exit not confirmed: {error}");cx.notify();});return;
             }
-            let (written,ack)=tokio::sync::oneshot::channel();
-            let _=command.reply.send(Reply::upgrade_exit(serde_json::json!({"ok":true,"cleanup_verified":true,
-                "generation":generation,"executable_sha256":executable_sha256,"request_id":request_id,"pid":std::process::id()}),written));
-            // A lost reply is unknown to the caller, never a second quit. This
-            // idle frontend still exits normally after its cleanup completed.
-            let _=tokio::time::timeout(Duration::from_secs(2),ack).await;
+            if let Some((reply,generation,executable_sha256,request_id))=reply {
+                let (written,ack)=tokio::sync::oneshot::channel();
+                let _=reply.send(Reply::upgrade_exit(serde_json::json!({"ok":true,"cleanup_verified":true,
+                    "generation":generation,"executable_sha256":executable_sha256,"request_id":request_id,"pid":std::process::id()}),written));
+                let _=tokio::time::timeout(Duration::from_secs(2),ack).await;
+            }
             let _=view.update(cx,|this,cx|{this.quitting=true;cx.quit();});
         }).detach();
         cx.notify();

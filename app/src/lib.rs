@@ -1,4 +1,6 @@
 pub mod entrypoint;
+#[cfg(all(feature = "gpui-restoration", any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+mod tray;
 #[cfg(any(unix, windows))]
 mod pairing_cli;
 pub mod service_contract;

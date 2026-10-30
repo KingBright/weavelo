@@ -4,6 +4,7 @@ use std::{path::Path, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::Durati
 use serde_json::Value;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 pub const CAPABILITY: &str = "gui-upgrade-quit.v1";
+pub const GUI_CLOSE_CAPABILITY: &str = "gui-close.v1";
 pub struct Operation(Arc<AtomicUsize>);
 impl Operation {
     pub fn begin(active: &Arc<AtomicUsize>) -> Self { active.fetch_add(1,Ordering::AcqRel);Self(active.clone()) }
@@ -20,15 +21,22 @@ pub fn idle(statuses: &[Value], lease: bool, operations: usize) -> Result<(), &'
 }
 pub fn command(directory:&Path,args:&[String]) -> Result<Value,Error> {
     let [_,generation,hash]=args else {return Err("GUI upgrade quit requires expected generation and executable SHA256".into());};
+    let user_close = args[0] == "--gui-close-json";
+    let (field,capability) = if user_close {("gui_close",GUI_CLOSE_CAPABILITY)} else {("upgrade_quit",CAPABILITY)};
     if crate::background_service::executable_hash()? != *hash {return Err("CLI executable differs from expected GUI owner".into());}
     let status=super::directed_receive::exchange(directory,&super::directed_receive::Request::Status)?;
     if status["ok"]!=true || status["generation"]!=*generation || status["executable_sha256"]!=*hash
-        || status["upgrade_quit"]!=CAPABILITY {return Err("Exact GUI owner does not support upgrade quit; use its normal Quit GUI control".into());}
+        || status[field]!=capability {return Err("Exact GUI owner does not support the requested close operation".into());}
     let pid=status["pid"].as_u64().and_then(|p|u32::try_from(p).ok()).ok_or("GUI PID unavailable")?;
     let observer=crate::background_service::exit_observer::ExitObserver::open(pid)?;
     let id=format!("{}-{}",std::process::id(),crate::unix_now_ms());
-    let result=super::directed_receive::exchange(directory,&super::directed_receive::Request::UpgradeQuit {
-        generation:generation.clone(),executable_sha256:hash.clone(),request_id:id.clone(),deadline_ms:crate::unix_now_ms().saturating_add(5000) })?;
+    let deadline_ms=crate::unix_now_ms().saturating_add(5000);
+    let request = if user_close {
+        super::directed_receive::Request::CloseGui {generation:generation.clone(),executable_sha256:hash.clone(),request_id:id.clone(),deadline_ms}
+    } else {
+        super::directed_receive::Request::UpgradeQuit {generation:generation.clone(),executable_sha256:hash.clone(),request_id:id.clone(),deadline_ms}
+    };
+    let result=super::directed_receive::exchange(directory,&request)?;
     if result["ok"]!=true || result["cleanup_verified"]!=true || result["generation"]!=*generation
         || result["executable_sha256"]!=*hash || result["request_id"]!=id || result["pid"]!=pid {
         return Err("GUI upgrade quit was rejected or outcome is unconfirmed; observe original owner, do not replay".into());
@@ -39,7 +47,7 @@ pub fn command(directory:&Path,args:&[String]) -> Result<Value,Error> {
     crate::private_ipc::private_file(&lock_path)?;
     let lock=std::fs::OpenOptions::new().read(true).open(lock_path)?;
     lock.try_lock().map_err(|_|"GUI lifecycle lock is still held; stop unconfirmed")?;
-    Ok(serde_json::json!({"ok":true,"kind":CAPABILITY,"generation":generation,"pid":pid,
+    Ok(serde_json::json!({"ok":true,"kind":capability,"generation":generation,"pid":pid,
         "executable_sha256":hash,"cleanup_verified":true,"process_exit_observed":true}))
 }
 #[cfg(test)]

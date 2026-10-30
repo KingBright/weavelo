@@ -292,8 +292,18 @@ class PreservedConfigurationTests(unittest.TestCase):
 class NativeSignatureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp=tempfile.TemporaryDirectory();cls.root=Path(cls.temp.name).resolve();cls.policy=guard.load_policy()
-        source=cls.root/'fixture.c';source.write_text('int main(void) { return 0; }\n')
+        cls.temp=tempfile.TemporaryDirectory();cls.root=Path(cls.temp.name).resolve();cls.policy=guard.desktop_policy()
+        cls.addClassCleanup(cls.temp.cleanup)
+        from desktop_identity import identity
+        desktop=identity()
+        info={'desktop_identity':desktop,'desktop_runtime':{
+            'control_port':desktop['control_port'],'discovery_port':desktop['discovery_port'],
+            'implicit_relay':False,'implicit_p2p':False}}
+        # Only the package metadata query runs; the fixture app has no GUI.
+        source=cls.root/'fixture.c';source.write_text(
+            '#include <stdio.h>\n#include <string.h>\nint main(int argc, char **argv) {\n'
+            'if (argc != 2 || strcmp(argv[1], "--product-info-json")) return 2;\n'
+            'puts('+json.dumps(json.dumps(info))+'); return 0; }\n')
         guard.run(['/usr/bin/clang',str(source),'-o',str(cls.root/'fixture')])
         cls.report=guard.package(cls.root/'fixture',cls.root/'out','2.0.0-alpha.99','29991231.1',cls.policy)
         cls.archive=Path(cls.report['archive'])
@@ -310,9 +320,14 @@ class NativeSignatureTests(unittest.TestCase):
         with guard.verified_archive(self.archive,self.policy) as (app,_):
             (app/'Contents/Resources/unapproved.txt').write_text('modified after signing')
             with self.assertRaises(guard.ReleaseRejected):guard.verify_app(app,self.policy)
-    def test_published_good_archive_passes_same_policy(self):
-        path=guard.ROOT.parent/'Workspace/.rp-four-gui-20260929/artifacts/Weavelo-macos-arm64-2.0.0-alpha.4.zip'
-        with guard.verified_archive(path,self.policy) as (_,report):self.assertEqual(report['version'],'2.0.0-alpha.4')
+    def test_signed_archive_passes_publication_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage=Path(directory);path=stage/self.archive.name;shutil.copyfile(self.archive,path)
+            (stage/'desktop-releases.json').write_text(json.dumps({'releases':[{
+                'file':path.name,'version':'2.0.0-alpha.99',
+                'sha256':guard.sha256(path),'size_bytes':path.stat().st_size}]}))
+            reports=guard.verify_stage(stage,self.policy)
+            self.assertEqual(len(reports),1);self.assertEqual(reports[0]['certificate_sha1'],self.policy.certificate_sha1)
     def test_rehashed_ad_hoc_archive_is_rejected_before_publication(self):
         with guard.verified_archive(self.archive,self.policy) as (app,_):
             guard.run(['/usr/bin/codesign','--force','--sign','-',str(app)])

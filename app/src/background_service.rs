@@ -639,6 +639,14 @@ pub async fn run(mut config: UnifiedRuntimeConfig) -> Result<(), Error> {
         }
         Err(error) => return Err(error.into()),
     }
+    #[cfg(all(feature = "gpui-restoration", any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        if let Err(error) = crate::tray::run(config.mesh_dir.clone(), runtime.clone(), service.stopped.clone()).await {
+            runtime.owner.shutdown_host().await?;
+            return Err(error);
+        }
+    }
+    #[cfg(not(all(feature = "gpui-restoration", any(target_os = "macos", target_os = "linux", target_os = "windows"))))]
     tokio::select! {
         _ = service.stopped.notified() => {},
         result = tokio::signal::ctrl_c() => { result?; runtime.owner.shutdown_host().await?; },

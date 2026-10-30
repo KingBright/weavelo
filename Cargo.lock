@@ -7612,11 +7612,14 @@ name = "weavelo_app"
 version = "2.0.0-alpha.9"
 dependencies = [
  "client",
+ "cocoa 0.26.0",
+ "dispatch",
  "ely-gpui-component",
  "gpui-ce",
  "host",
  "image",
  "libc",
+ "objc",
  "objc2 0.6.4",
  "objc2-app-kit",
  "protocol",
@@ -7633,6 +7636,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "windows-sys 0.59.0",
+ "zbus",
 ]
 
 [[package]]

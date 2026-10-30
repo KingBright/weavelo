@@ -26,6 +26,7 @@ pub(crate) enum Request {
     Status,
     NetworkDiagnostics,
     UpgradeQuit { generation:String, executable_sha256:String, request_id:String, deadline_ms:u64 },
+    CloseGui { generation:String, executable_sha256:String, request_id:String, deadline_ms:u64 },
     File {
         generation: String,
         request_id: String,
@@ -180,7 +181,8 @@ impl Adapter {
                 let Ok(Ok(request))=decoded else {continue;};
                 // Only admitted observation work gets a longer completion budget;
                 // reading a partial client frame retains its original two seconds.
-                let budget=if matches!(&request,Request::ComputerUse {call:super::computer_use_ipc::Call::Observe {..},..}) {35} else {2};
+                let budget=if matches!(&request,Request::ComputerUse {call:super::computer_use_ipc::Call::Observe {..},..}) {35}
+                    else if matches!(&request,Request::CloseGui {..}) {15} else {2};
                 let _ = tokio::time::timeout(Duration::from_secs(budget), async {
                     let (reply, response) = oneshot::channel();
                     tx.try_send(Command { request, reply, peer_pid })
@@ -221,7 +223,8 @@ impl Adapter {
         let now_ms=projected.map_or(now_ms,|value|now_ms.max(value));
         match request {
             Request::Status | Request::NetworkDiagnostics => Ok(()),
-            Request::UpgradeQuit {generation,executable_sha256,request_id,deadline_ms} => {
+            Request::UpgradeQuit {generation,executable_sha256,request_id,deadline_ms}
+            | Request::CloseGui {generation,executable_sha256,request_id,deadline_ms} => {
                 if executable_sha256 != &self.executable_sha256 {return Err("GUI executable changed");}
                 valid_request(&self.generation,generation,request_id,*deadline_ms,now_ms)?;
                 self.seen.retain(|_,deadline|*deadline>now_ms);
@@ -321,7 +324,8 @@ impl Drop for Adapter {
     }
 }
 pub(crate) fn exchange(directory: &Path, request: &Request) -> Result<serde_json::Value, Error> {
-    let mut socket = crate::private_ipc::connect(directory, SOCKET, Duration::from_secs(3))?;
+    let timeout = if matches!(request, Request::CloseGui {..}) {15} else {3};
+    let mut socket = crate::private_ipc::connect(directory, SOCKET, Duration::from_secs(timeout))?;
     let bytes = serde_json::to_vec(request)?;
     length((bytes.len() as u32).to_be_bytes())?;
     socket.write_all(&(bytes.len() as u32).to_be_bytes())?;
@@ -351,7 +355,7 @@ pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Val
     } else {
         args
     };
-    if args.first().is_some_and(|arg|arg=="--gui-upgrade-quit-json") {
+    if args.first().is_some_and(|arg|matches!(arg.as_str(),"--gui-upgrade-quit-json" | "--gui-close-json")) {
         return super::upgrade_quit::command(directory,args);
     }
     let request = match args {
@@ -402,6 +406,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         dir
+    }
+    #[tokio::test]
+    async fn explicit_gui_close_keeps_owner_deadline_and_shared_replay_checks() {
+        let dir=private_fixture();
+        let mut adapter=Adapter::start(dir.path()).unwrap();
+        let request=|generation:String,hash:String,id:&str,deadline_ms| Request::CloseGui {
+            generation,executable_sha256:hash,request_id:id.into(),deadline_ms,
+        };
+        let generation=adapter.generation.clone();let hash=adapter.executable_sha256.clone();
+        assert!(adapter.admit(&request("other-owner".into(),hash.clone(),"wrong-owner",200),100).is_err());
+        assert!(adapter.admit(&request(generation.clone(),"0".repeat(64),"wrong-image",200),100).is_err());
+        assert!(adapter.admit(&request(generation.clone(),hash.clone(),"expired-close",99),100).is_err());
+        let close=request(generation.clone(),hash.clone(),"explicit-user-close",200);
+        let decoded:Request=serde_json::from_slice(&serde_json::to_vec(&close).unwrap()).unwrap();
+        assert!(adapter.admit(&decoded,100).is_ok());
+        assert!(adapter.admit(&decoded,100).is_err());
+        assert!(adapter.admit(&Request::UpgradeQuit {generation,executable_sha256:hash,
+            request_id:"explicit-user-close".into(),deadline_ms:200},100).is_err());
     }
     #[tokio::test]
     async fn owns_private_endpoint_rejects_replay_and_removes_on_drop() {
