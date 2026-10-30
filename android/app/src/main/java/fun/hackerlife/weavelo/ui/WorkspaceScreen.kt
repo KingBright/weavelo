@@ -40,7 +40,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val sessionKey = rememberSaveable(endpoint, deviceId) { WorkspaceClient.sessionKeyFor(endpoint, deviceId) }
     var requestedFilePicker by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val state by WorkspaceClient.state.collectAsState()
+    val serviceState by WorkspaceClient.state.collectAsState()
+    val state = serviceState.takeIf { it.sessionKey == sessionKey }
+        ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
@@ -107,7 +109,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }.onFailure { withContext(Dispatchers.Main) { localError = it.message } }
         }
     }
-    LaunchedEffect(sessionKey, foreground, remoteDevice?.endpoint, remoteDevice?.canOpenWorkspace) {
+    LaunchedEffect(sessionKey, foreground, state.connected, remoteDevice?.endpoint, remoteDevice?.canOpenWorkspace) {
         val requested = WorkspaceClient.requestedSession()
         val current = WorkspaceClient.state.value
         if (foreground && remoteDevice?.canOpenWorkspace == true &&

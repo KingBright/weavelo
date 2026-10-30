@@ -135,7 +135,8 @@ object WorkspaceClient {
         if (!ownership.release(owner, preserveForForeground)) return@guarded
         closeNative()
         mutable.value = if (preserveForForeground) mutable.value.copy(connected = false,
-            panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, status = "Connection sleeping; reopen to reconnect")
+            panes = mutable.value.panes.map { it.copy(input = false, accepted = false) },
+            status = if (mutable.value.connected) "Connection sleeping; reopen to reconnect" else mutable.value.status)
             else WorkspaceState(status = "Disconnected")
     }
     private fun connectNative() {
