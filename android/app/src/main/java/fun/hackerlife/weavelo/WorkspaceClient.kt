@@ -53,6 +53,8 @@ object WorkspaceClient {
     private var transfersActive = false
     private var lastFileAction = 0L
     private var pendingClipboard: JSONObject? = null
+    private var incomingInitialized = false
+    private var incomingEnded = false
 
     private fun action(op: Int, payload: String = ""): String {
         val result = nativeAction(op, payload)
@@ -106,7 +108,10 @@ object WorkspaceClient {
                 polling?.cancel()
                 polling = ownerScope.launch(dispatcher) {
                     while (isActive && active) {
-                        if (!asleep) runCatching { drainEvents() }.onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection error") }
+                        if (!asleep) runCatching {
+                            if (!incomingEnded && ownership.request()?.incomingId?.let { !DirectedDelivery.alive(it) } == true) endIncoming("Sending stopped")
+                            drainEvents()
+                        }.onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection error") }
                         if (background && !asleep) {
                             val seconds = BackgroundConnectionPolicy.currentSeconds(context)
                             if (seconds > 0 && !transfersActive && SystemClock.elapsedRealtime() - lastFileAction >= 5_000 && SystemClock.elapsedRealtime() - backgroundAt >= seconds * 1000L) {
@@ -118,6 +123,7 @@ object WorkspaceClient {
                     }
                 }
             } catch (error: Exception) {
+                request.incomingId?.let { DirectedDelivery.finish(it, "Could not open the offered sources") }
                 ownership.release(owner, preserveForForeground = true)
                 throw error
             } finally { pendingStarts.decrementAndGet() }
@@ -125,7 +131,9 @@ object WorkspaceClient {
     }
 
     fun disconnectSession(sessionKey: String) = guarded {
+        val incoming = ownership.request()?.takeIf { it.sessionKey == sessionKey }?.incomingId
         if (!ownership.disconnect(sessionKey)) return@guarded
+        incoming?.let { DirectedDelivery.finish(it) }
         closeNative()
         applicationIcons.clear()
         mutable.value = WorkspaceState(status = "Disconnected")
@@ -143,7 +151,10 @@ object WorkspaceClient {
         val directory = File(checkNotNull(context).filesDir, "received").apply { mkdirs() }
         WeaveloClient.refreshDevices()
         val target = resolveNetworkEndpoint(deviceId, endpoint, WeaveloClient.devices.value)
-        action(0, JSONObject().put("endpoint", target).put("directory", directory.absolutePath).toString())
+        val payload = JSONObject().put("endpoint", target).put("directory", directory.absolutePath)
+        ownership.request()?.incomingId?.let { payload.put("claim", DirectedDelivery.claim(it)) }
+        action(0, payload.toString())
+        incomingInitialized = false; incomingEnded = false
         retainingConnection = true
         pendingShareList = 0L
         mutable.value = mutable.value.copy(connected = true, connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
@@ -171,8 +182,17 @@ object WorkspaceClient {
         val current = mutable.value
         if (!active || !current.connected || current.sessionKey != sessionKey || current.connectionGeneration != generation) return@guarded
         if (source !in current.sources) { mutable.value = current.copy(status = "Source list changed; choose the window again"); return@guarded }
+        addNative(source)
+    }
+    private fun addNative(source: WorkspaceSource) {
+        val incoming = ownership.request()?.incomingId
+        if (incoming != null && source.source.toString() !in DirectedDelivery.sources(incoming)) {
+            mutable.value = mutable.value.copy(status = "This view is bound to the offered sources"); return
+        }
+        val existing = mutable.value.panes.firstOrNull { it.source.source.toString() == source.source.toString() }
+        if (existing != null) { mutable.value = mutable.value.copy(selected = existing.id); activity(); return }
         // Conservative default for mobile hardware; source count is distinct from visible decoder count.
-        if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)"); return@guarded }
+        if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)"); return }
         val prefs = checkNotNull(context).getSharedPreferences("stream", Context.MODE_PRIVATE)
         val pane = WorkspacePane(nextId, source, prefs.getInt("fps", 60), prefs.getInt("bitrate_kbps", 20_000))
         nextId += 256
@@ -288,6 +308,9 @@ object WorkspaceClient {
         if (!currentView(id, sessionKey, generation, phase == "begin" || phase == "ready" || phase == "alive")) return@guarded
         val currentPhase = if (phase == "alive" && SystemClock.uptimeMillis() - eventTime !in 0L..250L) "cancel" else phase
         action(11, JSONObject().put("id", id).put("token", token).put("phase", currentPhase).toString())
+        if (currentPhase == "ready") ownership.request()?.incomingId?.let {
+            DirectedDelivery.rendered(it, generation, id, mutable.value.panes)
+        }
     }
     fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long, event: JSONObject) = guarded {
         if (!currentView(id, sessionKey, generation, true)) return@guarded
@@ -297,6 +320,12 @@ object WorkspaceClient {
             return@guarded
         }
         action(12, JSONObject().put("id", id).put("token", token).put("event", JSONObject().put("Touch", event)).toString())
+    }
+    private fun endIncoming(reason: String) {
+        incomingEnded = true
+        mutable.value.panes.forEach { command("Unsubscribe", JSONObject().put("id", it.id)) }
+        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), status = reason)
+        ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason) }
     }
     private fun drainEvents() {
         val events = JSONArray(action(5))
@@ -343,9 +372,22 @@ object WorkspaceClient {
                     WorkspaceSource(source.get("source"), source.getString("title"), source.getInt("width"), source.getInt("height"),
                         source.getString("application"), artwork[source.get("source").toString()])
                 }
-                mutable.value = mutable.value.copy(sources = directory, panes = mutable.value.panes.map { pane ->
+                val incoming = ownership.request()?.incomingId
+                val expected = incoming?.let { DirectedDelivery.sources(it) }
+                val visible = if (expected == null) directory else directory.filter { it.source.toString() in expected }
+                mutable.value = mutable.value.copy(sources = visible, panes = mutable.value.panes.map { pane ->
                     directory.firstOrNull { it.source.toString() == pane.source.source.toString() }?.let { pane.copy(source = it) } ?: pane
                 })
+                if (incoming != null && !incomingInitialized && !incomingEnded) {
+                    incomingInitialized = true
+                    if (expected.isNullOrEmpty() || expected.size > minOf(4, mutable.value.maxSubscriptions) || visible.size != expected.size) {
+                        endIncoming("An offered source is no longer available")
+                    } else visible.forEach { addNative(it) }
+                }
+            }
+            control?.optJSONObject("Unsubscribed")?.let { ended ->
+                val panes = mutable.value.panes.filter { it.id != ended.getInt("id") }
+                mutable.value = mutable.value.copy(panes = panes, selected = panes.firstOrNull()?.id ?: 0)
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map {

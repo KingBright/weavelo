@@ -13,7 +13,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
     time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc, watch};
@@ -67,6 +67,7 @@ pub struct MobilePublisher {
     input: Arc<Mutex<crate::publisher_input::PublisherInput>>,
     capabilities: watch::Sender<remote_core::discovery::DiscoveryCapabilities>,
     task: tokio::task::JoinHandle<()>,
+    file_reception: Arc<AtomicBool>,
     delivery: Arc<Broker>,
     incoming: Mutex<mpsc::Receiver<Arc<Incoming>>>,
     deliveries: Mutex<HashMap<String,Arc<Incoming>>>,
@@ -99,7 +100,7 @@ struct Peer {
     video_sequence: u16,
     audio_sequence: u16,
     scheduled: ScheduledDataSender,
-    files: mpsc::Sender<protocol::DataEnvelope>,
+    files: Option<mpsc::Sender<protocol::DataEnvelope>>,
     cancel: broadcast::Sender<()>,
     tasks: Vec<tokio::task::AbortHandle>,
     delivery_owner: Option<(DeliveryPeer,[u8;32])>,
@@ -164,12 +165,23 @@ impl MobilePublisher {
         let key = load_session_psk().ok_or("Join a device network before receiving files")?;
         Self::start_with_permissions(bind, directory, key, false, false).await
     }
+    /// Foreground incoming-screen listener grants neither capture nor file access.
+    pub async fn start_delivery_listener(bind: SocketAddr, directory: PathBuf) -> Result<Self, String> {
+        let key = load_session_psk().ok_or("Join a device network before receiving screens")?;
+        Self::start_with_access(bind, directory, key, false, false, false).await
+    }
     async fn start_with_permissions(
+        bind: SocketAddr, directory: PathBuf, key: Vec<u8>, capture_enabled: bool, allow_audio: bool,
+    ) -> Result<Self, String> {
+        Self::start_with_access(bind, directory, key, capture_enabled, allow_audio, true).await
+    }
+    async fn start_with_access(
         bind: SocketAddr,
         directory: PathBuf,
         key: Vec<u8>,
         capture_enabled: bool,
         allow_audio: bool,
+        allow_files: bool,
     ) -> Result<Self, String> {
         let mux = UdpMultiplexer::bind(&bind.to_string())
             .await
@@ -187,7 +199,11 @@ impl MobilePublisher {
             audio: capture_enabled && allow_audio,
             epoch: 1,
         });
-        let (capabilities, _) = watch::channel(crate::inbound_capabilities(address.port(), capture_enabled));
+        let mut advertised = crate::inbound_capabilities(address.port(), capture_enabled);
+        advertised.file_transfer = allow_files;
+        let (capabilities, _) = watch::channel(advertised);
+        let file_reception = Arc::new(AtomicBool::new(allow_files));
+        let peer_files = file_reception.clone();
         let input = Arc::new(Mutex::new(crate::publisher_input::PublisherInput::default()));
         let shared_input = input.clone();
         let (delivery,incoming)=Broker::new();
@@ -261,9 +277,9 @@ impl MobilePublisher {
                         let ended=peers.iter().filter(|(_,peer)|peer.delivery_owner.is_some_and(|(owner,ticket)|!peer_delivery.claim_alive(owner,ticket)))
                             .map(|(addr,_)|*addr).collect::<Vec<_>>();
                         for addr in ended {
-                            shared_input.lock().unwrap().revoke_peer(addr);
-                            if peers.remove(&addr).is_some_and(|peer|peer.subscription.is_some()) {*shared.lock().unwrap()=CaptureDemand::default();}
-                            authenticated.remove(&addr);sender.remove_peer_crypto(addr);
+                            if let Some(id) = peers.get_mut(&addr).and_then(|peer|peer.retire_media(&shared_input, &shared)) {
+                                reply(&sender, addr, SessionCommand::Unsubscribed { id }).await;
+                            }
                         }
                         handshakes.expire(remote_core::session_auth::AuthTime::now());
                         authenticated.retain(|addr, (_, _, at)| {
@@ -329,19 +345,23 @@ impl MobilePublisher {
                             MultiplexedPacket::Control(message, addr) => {
                                 if !authenticated.contains_key(&addr) { continue; }
                                 if let Some(p) = peers.get(&addr)
-                                    && p.delivery_owner.is_some_and(|(owner,ticket)| !peer_delivery.claim_alive(owner,ticket)
-                                        || authenticated.get(&addr).is_none_or(|(_,nonce,_)|*nonce!=owner.nonce)) {
+                                    && p.delivery_owner.is_some_and(|(owner,_)| authenticated.get(&addr).is_none_or(|(_,nonce,_)|*nonce!=owner.nonce)) {
                                     shared_input.lock().unwrap().revoke_peer(addr);
                                     if peers.remove(&addr).is_some_and(|peer|peer.subscription.is_some()) {*shared.lock().unwrap()=CaptureDemand::default();}
                                     authenticated.remove(&addr);sender.remove_peer_crypto(addr);continue;
+                                }
+                                if let Some(peer) = peers.get_mut(&addr)
+                                    && peer.delivery_owner.is_some_and(|(owner,ticket)|!peer_delivery.claim_alive(owner,ticket))
+                                    && let Some(id) = peer.retire_media(&shared_input, &shared) {
+                                    reply(&sender, addr, SessionCommand::Unsubscribed { id }).await;
                                 }
                                 if let Some(p) = peers.get_mut(&addr) { p.seen = Instant::now(); }
                                 match message {
                                     ControlMessage::Session(command) => match *command {
                                         SessionCommand::Open { connection_id, version:SESSION_VERSION } => {
                                             if peers.get(&addr).is_some_and(|p| p.id != connection_id) { reply(&sender, addr, SessionCommand::Error { request_id:connection_id, reason:"close the previous connection first".into() }).await; continue; }
-                                            peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone()));
-                                            reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:1, files:true, clipboard:false, window_capture:false }).await;
+                                            peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone(), peer_files.load(Ordering::Relaxed)));
+                                            reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:1, files:peers[&addr].files.is_some(), clipboard:false, window_capture:false }).await;
                                         }
                                         SessionCommand::DeliveryOffer {request_id,source_device_id,target_device_id,ticket,revision,sources} if peers.contains_key(&addr) => {
                                             let peer=&peers[&addr];let (_,nonce,_)=authenticated[&addr];
@@ -451,7 +471,7 @@ impl MobilePublisher {
                                 }
                             }
                             MultiplexedPacket::Data(envelope, addr) | MultiplexedPacket::DataWithTiming(envelope, _, addr) => {
-                                if let Some(p)=peers.get_mut(&addr) { p.seen=Instant::now(); let _=p.files.try_send(envelope); }
+                                if let Some(p)=peers.get_mut(&addr) { p.seen=Instant::now(); if let Some(files) = &p.files { let _=files.try_send(envelope); } }
                             }
                             _ => {}
                         }
@@ -468,7 +488,7 @@ impl MobilePublisher {
             permission,
             input,
             capabilities,
-            task,delivery,incoming:Mutex::new(incoming),deliveries:Mutex::new(HashMap::new()),
+            task,file_reception,delivery,incoming:Mutex::new(incoming),deliveries:Mutex::new(HashMap::new()),
         })
     }
     /// Detach or attach media without replacing the authenticated file connection.
@@ -488,12 +508,16 @@ impl MobilePublisher {
             // callback cannot resurrect the capture announcement.
             // Read the current permission while publishing, rather than replaying
             // a stale callback argument after a concurrent revoke.
-            capabilities.can_stream = capabilities.file_transfer && self.permission.borrow().enabled;
+            capabilities.can_stream = !self.task.is_finished() && self.permission.borrow().enabled;
         });
         if !enabled {
             self.input.lock().unwrap().set_capture(false);
             *self.demand.lock().unwrap() = CaptureDemand::default();
         }
+    }
+    pub fn set_file_reception(&self, enabled: bool) {
+        self.file_reception.store(enabled, Ordering::Relaxed);
+        self.capabilities.send_modify(|capabilities| capabilities.file_transfer = enabled && !self.task.is_finished());
     }
     pub fn set_input_service_available(&self, available: bool) { self.input.lock().unwrap().set_service(available); }
     pub fn set_input_capture_allowed(&self, allowed: bool) { self.input.lock().unwrap().set_capture(allowed && self.permission.borrow().enabled); }
@@ -580,13 +604,24 @@ async fn reply(sender: &UdpSender, addr: SocketAddr, command: SessionCommand) {
         .await;
 }
 impl Peer {
-    fn new(addr: SocketAddr, id: u32, sender: &UdpSender, directory: PathBuf) -> Self {
+    /// End media and input without dropping authenticated file workers. The
+    /// delivery_owner tombstone still prevents resubscription after revocation.
+    fn retire_media(&mut self, input: &Mutex<crate::publisher_input::PublisherInput>, demand: &Mutex<CaptureDemand>) -> Option<u32> {
+        input.lock().unwrap().revoke_peer(self.addr);
+        let subscription = self.subscription.take()?;
+        self.retired.insert(subscription.id);
+        *demand.lock().unwrap() = CaptureDemand::default();
+        Some(subscription.id)
+    }
+    fn new(addr: SocketAddr, id: u32, sender: &UdpSender, directory: PathBuf, allow_files: bool) -> Self {
         let (scheduled, worker) =
             ScheduledDataSender::spawn(sender.clone(), addr, Default::default());
+        let mut tasks = vec![worker.abort_handle()];
+        let (cancel, rx) = broadcast::channel(1);
+        let files = if allow_files {
         let (files, inbound) = mpsc::channel(128);
         let (commands, command_rx) = mpsc::channel(16);
         let (events, mut event_rx) = mpsc::unbounded_channel();
-        let (cancel, rx) = broadcast::channel(1);
         let file_task = tokio::spawn(run_file_transfer_runtime(
             scheduled.clone(),
             command_rx,
@@ -602,6 +637,9 @@ impl Peer {
             let _commands = commands;
             while event_rx.recv().await.is_some() {}
         });
+        tasks.extend([file_task.abort_handle(), event_task.abort_handle()]);
+        Some(files)
+        } else { None };
         Self {
             delivery_owner:None,
             addr,
@@ -616,11 +654,7 @@ impl Peer {
             scheduled,
             files,
             cancel,
-            tasks: vec![
-                worker.abort_handle(),
-                file_task.abort_handle(),
-                event_task.abort_handle(),
-            ],
+            tasks,
         }
     }
 }
@@ -628,6 +662,61 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn foreground_delivery_listener_does_not_enable_files_or_capture() {
+        let key = b"mobile-incoming-only".to_vec();
+        let publisher = MobilePublisher::start_with_access(
+            "127.0.0.1:0".parse().unwrap(), std::env::temp_dir(), key.clone(), false, false, false,
+        ).await.unwrap();
+        assert!(!publisher.capabilities().borrow().file_transfer);
+        assert!(!publisher.capabilities().borrow().can_stream);
+        let client = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let (sender, receiver) = client.split();
+        remote_core::session_auth::authenticate_with_key(&sender, &receiver, publisher.address, &key).await.unwrap();
+        command(&sender, publisher.address, SessionCommand::Open { connection_id: 31, version: SESSION_VERSION }).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::Opened { files: false, .. }));
+        command(&sender, publisher.address, SessionCommand::Subscribe(SubscriptionRequest {
+            id: 256, source: CaptureSource::MainDisplay, width: 720, height: 1280, fps: 30, bitrate_kbps: 4000, audio: false,
+        })).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::Error { request_id: 256, .. }));
+        assert!(!publisher.demand().active);
+        publisher.set_capture_available(true, false);
+        assert!(matches!(reply(&receiver).await, SessionCommand::Sources { .. }));
+        assert!(publisher.capabilities().borrow().can_stream);
+        assert!(!publisher.capabilities().borrow().file_transfer);
+        publisher.set_file_reception(true);
+        assert!(publisher.capabilities().borrow().file_transfer);
+        // An already-open control connection does not silently acquire file access.
+        command(&sender, publisher.address, SessionCommand::Open { connection_id: 31, version: SESSION_VERSION }).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::Opened { files: false, .. }));
+        let client = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let (sender, receiver) = client.split();
+        remote_core::session_auth::authenticate_with_key(&sender, &receiver, publisher.address, &key).await.unwrap();
+        command(&sender, publisher.address, SessionCommand::Open { connection_id: 32, version: SESSION_VERSION }).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::Opened { files: true, .. }));
+    }
+    #[tokio::test]
+    async fn retiring_delivery_media_keeps_file_workers_and_the_claim_tombstone() {
+        let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let (sender, _) = mux.split();
+        let addr = "127.0.0.1:39271".parse().unwrap();
+        let mut peer = Peer::new(addr, 9, &sender, std::env::temp_dir(), true);
+        peer.subscription = Some(SubscriptionRequest { id: 256, source: CaptureSource::MainDisplay,
+            width: 720, height: 1280, fps: 30, bitrate_kbps: 4000, audio: false });
+        let owner = DeliveryPeer { addr, connection: 9, nonce: [1;16], scope: Some([2;32]) };
+        peer.delivery_owner = Some((owner,[3;32]));
+        let files = peer.files.clone().unwrap();
+        let input = Mutex::new(crate::publisher_input::PublisherInput::default());
+        let demand = Mutex::new(CaptureDemand {active:true,..Default::default()});
+        assert_eq!(peer.retire_media(&input, &demand), Some(256));
+        assert_eq!(peer.retire_media(&input, &demand), None);
+        assert!(peer.subscription.is_none());
+        assert!(peer.retired.contains(&256));
+        assert_eq!(peer.delivery_owner, Some((owner,[3;32])));
+        assert!(files.same_channel(peer.files.as_ref().unwrap()) && !files.is_closed());
+        assert!(peer.tasks.iter().all(|task|!task.is_finished()));
+        assert!(!demand.lock().unwrap().active);
+    }
     #[tokio::test]
     async fn directed_offer_uses_the_authenticated_peer_and_exact_source_set() {
         let key = b"mobile-directed-offer-test".to_vec();

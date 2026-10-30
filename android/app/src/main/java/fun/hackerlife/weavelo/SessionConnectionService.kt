@@ -23,6 +23,7 @@ class SessionConnectionService : Service() {
             context.startForegroundService(Intent(context, SessionConnectionService::class.java)
                 .setAction(OPEN_WORKSPACE).putExtra("endpoint", request.endpoint)
                 .putExtra("device", request.deviceId).putExtra("session", request.sessionKey)
+                .putExtra("incoming", request.incomingId)
                 .putExtra("force-reconnect", forceReconnect))
         }
         fun closeWorkspace(context: android.content.Context, sessionKey: String) {
@@ -73,7 +74,7 @@ class SessionConnectionService : Service() {
                 val session = intent.getStringExtra("session")
                 if (!endpoint.isNullOrBlank() && device != null && !session.isNullOrBlank()) {
                     WorkspaceClient.openFromService(applicationContext, scope, workspaceOwner,
-                        WorkspaceSessionRequest(endpoint, device, session), intent.getBooleanExtra("force-reconnect", false))
+                        WorkspaceSessionRequest(endpoint, device, session, intent.getStringExtra("incoming")), intent.getBooleanExtra("force-reconnect", false))
                 }
             }
             CLOSE_WORKSPACE -> intent.getStringExtra("session")?.let { WorkspaceClient.disconnectSession(it) }

@@ -32,12 +32,13 @@ import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 
 @Composable
-fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, deviceId: String = "", onClose: () -> Unit) {
+fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, deviceId: String = "",
+    incoming: WorkspaceSessionRequest? = null, onClose: () -> Unit) {
     val context = LocalContext.current
     var sourcePicker by remember { mutableStateOf(false) }
     var actionsOpen by remember { mutableStateOf(false) }
     var pickerGeneration by remember { mutableStateOf(0L) }
-    val sessionKey = rememberSaveable(endpoint, deviceId) { WorkspaceClient.sessionKeyFor(endpoint, deviceId) }
+    val sessionKey = incoming?.sessionKey ?: rememberSaveable(endpoint, deviceId) { WorkspaceClient.sessionKeyFor(endpoint, deviceId) }
     var requestedFilePicker by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val serviceState by WorkspaceClient.state.collectAsState()
@@ -88,8 +89,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 backgroundSettings = false
             }
         }) { Text("Save") } })
-    DisposableEffect(endpoint, deviceId) {
-        SessionConnectionService.openWorkspace(context, WorkspaceSessionRequest(endpoint, deviceId, sessionKey))
+    DisposableEffect(endpoint, deviceId, sessionKey) {
+        SessionConnectionService.openWorkspace(context, incoming ?: WorkspaceSessionRequest(endpoint, deviceId, sessionKey))
         val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }

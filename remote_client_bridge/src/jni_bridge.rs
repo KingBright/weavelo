@@ -26,6 +26,7 @@ static PUBLISHER: std::sync::Mutex<Option<Arc<crate::publisher_bridge::MobilePub
 static FILE_RECEIVER_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static INPUT_SERVICE_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DELIVERY_RECEIVER_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CAPTURE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn refresh_network_ownership() {
@@ -45,7 +46,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
 ) -> jstring {
     let result = (|| -> Result<String, String> {
         let value: String = env.get_string(&payload).map_err(|e| e.to_string())?.into();
-        if operation == 0 || operation == 5 {
+        if operation == 0 || operation == 5 || operation == 20 {
             let value: serde_json::Value =
                 serde_json::from_str(&value).map_err(|e| e.to_string())?;
             let bind = value["bind"]
@@ -67,7 +68,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             let newly_started = node.is_none();
             if newly_started {
                 *node = Some(Arc::new(client().runtime().block_on(
-                    crate::publisher_bridge::MobilePublisher::start_receiver(bind, directory),
+                    async {
+                        if operation == 20 { crate::publisher_bridge::MobilePublisher::start_delivery_listener(bind, directory).await }
+                        else { crate::publisher_bridge::MobilePublisher::start_receiver(bind, directory).await }
+                    },
                 )?));
             }
             let publisher = node.as_ref().unwrap();
@@ -79,9 +83,12 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 publisher.set_input_service_available(INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed));
                 publisher.set_input_capture_allowed(value["control"].as_bool().unwrap_or(false));
                 CAPTURE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else if operation == 20 {
+                DELIVERY_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             } else {
                 FILE_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
+            publisher.set_file_reception(CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
             let address = publisher.address.to_string();
             crate::PUBLISHING_PORT.store(
                 publisher.address.port(),
@@ -97,18 +104,24 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             }
             return Ok(address);
         }
-        if operation == 1 || operation == 6 {
+        if operation == 1 || operation == 6 || operation == 21 {
             let mut node = PUBLISHER.lock().unwrap();
             if operation == 1 {
                 CAPTURE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
                 if let Some(publisher) = node.as_ref() {
                     publisher.set_capture_available(false, false);
                 }
+            } else if operation == 21 {
+                DELIVERY_RECEIVER_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
             } else {
                 FILE_RECEIVER_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
             }
             let stop = !CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
-                && !FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+                && !FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+                && !DELIVERY_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+            if let Some(publisher) = node.as_ref() {
+                publisher.set_file_reception(CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
+            }
             if stop {
                 node.take();
                 crate::PUBLISHING_PORT.store(0, std::sync::atomic::Ordering::Relaxed);

@@ -1,7 +1,8 @@
 package `fun`.hackerlife.weavelo
 
 /** Process-local intent, not credentials or a promise to survive force-stop. */
-data class WorkspaceSessionRequest(val endpoint: String, val deviceId: String, val sessionKey: String)
+data class WorkspaceSessionRequest(val endpoint: String, val deviceId: String, val sessionKey: String,
+    val incomingId: String? = null)
 
 /** A stale Service teardown must never close a replacement owner's connection. */
 class WorkspaceSessionOwnership {
@@ -12,7 +13,8 @@ class WorkspaceSessionOwnership {
 
     @Synchronized fun attach(token: Any, request: WorkspaceSessionRequest, backendActive: Boolean): Boolean {
         val reuse = backendActive && desired?.endpoint == request.endpoint &&
-            desired?.deviceId == request.deviceId && desired?.sessionKey == request.sessionKey
+            desired?.deviceId == request.deviceId && desired?.sessionKey == request.sessionKey &&
+            desired?.incomingId == request.incomingId
         owner = token
         desired = request
         return reuse

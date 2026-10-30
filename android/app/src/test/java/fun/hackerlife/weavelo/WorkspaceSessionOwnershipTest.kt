@@ -66,6 +66,14 @@ class WorkspaceSessionOwnershipTest {
         assertFalse(state.attach(service, request, backendActive = false))
     }
 
+    @Test fun aClaimedSessionCannotBeReusedAsOrdinaryPullOrAnotherOffer() {
+        val state = WorkspaceSessionOwnership(); val service = Any()
+        val incoming = request.copy(incomingId = "offer-a")
+        state.attach(service, incoming, false)
+        assertFalse(state.attach(service, request, backendActive = true))
+        assertFalse(state.attach(service, incoming.copy(incomingId = "offer-b"), backendActive = true))
+    }
+
     @Test fun explicitStopAfterIdleCannotLeaveARememberedReconnectIntent() {
         val state = WorkspaceSessionOwnership(); val service = Any()
         state.attach(service, request, false)

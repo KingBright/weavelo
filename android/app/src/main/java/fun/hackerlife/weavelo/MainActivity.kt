@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
             var scanningQr by remember { mutableStateOf(false) }
             var manualInvitationRequested by remember { mutableStateOf(false) }
             var workspaceEndpoint by remember { mutableStateOf(WorkspaceClient.requestedSession()?.endpoint) }
+            var incomingSession by remember { mutableStateOf(WorkspaceClient.requestedSession()?.takeIf { it.incomingId != null }) }
             var receivedFiles by remember { mutableStateOf(false) }
             var pairingMessage by remember { mutableStateOf<String?>(null) }
             val publisherStatus by PublisherClient.status.collectAsState()
@@ -90,7 +91,10 @@ class MainActivity : ComponentActivity() {
                 pairingMessage = "Joining device network..."
                 scope.launch {
                     try {
-                        pairingMessage = withContext(Dispatchers.IO) { WeaveloClient.joinPairingPayload(raw) }
+                        pairingMessage = withContext(Dispatchers.IO) {
+                            DirectedDelivery.pauseForNetworkChange()
+                            WeaveloClient.joinPairingPayload(raw)
+                        }
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         throw cancelled
                     } catch (error: Exception) {
@@ -119,19 +123,39 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(Unit) {
                 lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                    while (true) {
-                        withContext(Dispatchers.IO) {
-                            WeaveloClient.refreshDevices()
-                            WeaveloClient.pollTelemetry()
+                    val receiverOwner = Any()
+                    try {
+                        while (true) {
+                            val incoming = withContext(Dispatchers.IO) {
+                                WeaveloClient.refreshDevices()
+                                WeaveloClient.pollTelemetry()
+                                if (!WeaveloClient.nativeAvailable || joiningNetwork || devices.isEmpty()) null
+                                else runCatching {
+                                    DirectedDelivery.listen(applicationContext, receiverOwner)
+                                    DirectedDelivery.poll(workspaceEndpoint != null || scanningQr ||
+                                        WorkspaceClient.starting || WorkspaceClient.active ||
+                                        sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING))
+                                }.getOrNull()
+                            }
+                            if (incoming != null) {
+                                incomingSession = incoming
+                                sendFileOnConnect = false
+                                workspaceDeviceId = incoming.deviceId
+                                workspaceEndpoint = incoming.endpoint
+                            }
+                            delay(1000)
                         }
-                        delay(1000)
+                    } finally {
+                        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { DirectedDelivery.leave(receiverOwner) }
                     }
                 }
             }
 
             when {
                 workspaceEndpoint != null -> {
-                    `fun`.hackerlife.weavelo.ui.WorkspaceScreen(workspaceEndpoint!!, sendFileOnConnect, workspaceDeviceId) { workspaceEndpoint = null }
+                    `fun`.hackerlife.weavelo.ui.WorkspaceScreen(workspaceEndpoint!!, sendFileOnConnect, workspaceDeviceId, incomingSession) {
+                        workspaceEndpoint = null; incomingSession = null
+                    }
                 }
                 scanningQr -> {
                     QrScanScreen(
@@ -168,8 +192,8 @@ class MainActivity : ComponentActivity() {
                         onConnectHost = { deviceId, endpoint ->
                             scope.launch(Dispatchers.IO) { WeaveloClient.connect(deviceId, endpoint) }
                         },
-                        onConnectWorkspace = { deviceId, endpoint -> sendFileOnConnect = false; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
-                        onSendFiles = { deviceId, endpoint -> sendFileOnConnect = true; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onConnectWorkspace = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = false; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onSendFiles = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = true; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         publishing = PublisherClient.active,
                         receivingFiles = receiverState.active || receiverState.starting,
                         receiverStarting = receiverState.starting,
