@@ -144,7 +144,11 @@ impl MacInputInjector {
             }
             return Ok(());
         };
-        window.bounds()?;
+        let click = matches!(event, InputEvent::MouseDown(_)
+            | InputEvent::Touch { action: protocol::TouchAction::Down, .. });
+        // A click checks live bounds before activation and again in its hit test.
+        // Other events still validate their current selected window here.
+        if !click { window.bounds()?; }
         if matches!(event, InputEvent::MouseMove { .. }) {
             return Err("Window control requires normalized absolute coordinates".into());
         }
@@ -162,15 +166,7 @@ impl MacInputInjector {
         {
             return Err("Click inside the selected remote window before using its pointer".into());
         }
-        if matches!(
-            event,
-            InputEvent::MouseDown(_)
-                | InputEvent::Touch {
-                    action: protocol::TouchAction::Down,
-                    ..
-                }
-        ) {
-            window.focus_for_click(deadline)?;
+        if click {
             let point = match event {
                 InputEvent::Touch {
                     normalized_x,
@@ -191,6 +187,7 @@ impl MacInputInjector {
                     .expect("source pointer lock")
                     .ok_or("Pointer position missing")?,
             };
+            window.focus_for_click(deadline)?;
             window.check_pointer(point.0, point.1)?;
             return Ok(());
         }
@@ -315,10 +312,11 @@ impl MacInputInjector {
                 self.post_pointer_move(normalized_pointer_location(x, y, bounds), deadline);
             }
             InputEvent::MouseDown(button) => {
+                let position = self.pointer_position();
                 if self.window.is_some() || self.display_id.is_some() {
-                    self.post_pointer_move(self.pointer_position(), deadline);
+                    self.post_pointer_move(position, deadline);
                 }
-                self.post_mouse_button(button, true, deadline);
+                self.post_mouse_button_at(button, true, position, deadline);
             }
             InputEvent::MouseUp(button) => {
                 self.post_mouse_button(button, false, deadline);
@@ -369,11 +367,11 @@ impl MacInputInjector {
 
                 match action {
                     protocol::TouchAction::Down => {
-                        self.post_mouse_button(0, true, deadline);
+                        self.post_mouse_button_at(0, true, pos, deadline);
                     }
                     protocol::TouchAction::Move => {}
                     protocol::TouchAction::Up | protocol::TouchAction::Cancel => {
-                        self.post_mouse_button(0, false, deadline);
+                        self.post_mouse_button_at(0, false, pos, deadline);
                     }
                 }
             }
@@ -473,6 +471,10 @@ impl MacInputInjector {
     }
 
     fn post_mouse_button(&self, button: u8, pressed: bool, deadline: Option<Instant>) {
+        self.post_mouse_button_at(button, pressed, self.pointer_position(), deadline);
+    }
+
+    fn post_mouse_button_at(&self, button: u8, pressed: bool, position: CGPoint, deadline: Option<Instant>) {
         if !pressed
             && (button > 2 || self.pressed_buttons.load(Ordering::Relaxed) & (1 << button) == 0)
         {
@@ -486,7 +488,7 @@ impl MacInputInjector {
         let Ok(cg_event) = CGEvent::new_mouse_event(
             self.source.clone(),
             event_type,
-            self.pointer_position(),
+            position,
             cg_button,
         ) else {
             return;
@@ -724,10 +726,15 @@ impl InputInjector for MacInputInjector {
         if Instant::now() >= deadline {
             return Err("input expired before target validation".into());
         }
+        let started = Instant::now();
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
+        let access_checked = Instant::now();
         self.prepare_window_event(&event, Some(deadline))?;
         // AX focus/identity validation may have waited; check after it as well.
         if std::time::Instant::now() >= deadline {
+            eprintln!("MACOS_INPUT_EXPIRED phase=target_validation access_us={} target_us={} budget_us={}",
+                access_checked.duration_since(started).as_micros(), access_checked.elapsed().as_micros(),
+                deadline.saturating_duration_since(started).as_micros());
             return Err("input expired after target validation".into());
         }
         if let InputEvent::Text(text) = &event { return self.commit_text(text, Some(deadline)); }

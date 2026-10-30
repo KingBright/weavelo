@@ -119,9 +119,13 @@ fn windows(options: u32, id: u32) -> Result<Vec<WindowDescription>, String> {
         .collect())
 }
 fn current(id: u32, pid: i32) -> Result<WindowDescription, String> {
-    let w = windows(1 << 3, id)?
-        .into_iter()
+    selected(&windows(1 << 3, id)?, id, pid)
+}
+fn selected(list: &[WindowDescription], id: u32, pid: i32) -> Result<WindowDescription, String> {
+    let w = list
+        .iter()
         .find(|w| w.id == id)
+        .copied()
         .ok_or("The selected application window has closed; input was not redirected")?;
     if w.pid != pid {
         return Err("The selected window changed process; reconnect the window".into());
@@ -195,14 +199,19 @@ fn focus_for_click_with(
     activate: impl FnOnce() -> i32,
 ) -> Result<(), String> {
     bounds()?;
-    if !frontmost() {
-        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-            return Err("input expired before application activation".into());
-        }
-        let status = activate();
-        if status != 0 {
-            return Err(format!("The selected application could not be activated ({status}); input was not redirected"));
-        }
+    if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        return Err("input expired before application activation".into());
+    }
+    let active = frontmost();
+    if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        return Err("input expired before application activation".into());
+    }
+    if active {
+        return Ok(());
+    }
+    let status = activate();
+    if status != 0 {
+        return Err(format!("The selected application could not be activated ({status}); input was not redirected"));
     }
     if frontmost() { Ok(()) } else {
         Err("Wait for the selected application to become active, then click again".into())
@@ -272,12 +281,19 @@ impl WindowTarget {
         )
     }
     pub fn check_pointer(&self, x: u16, y: u16) -> Result<(), String> {
-        let r = self.bounds()?;
+        // One live snapshot binds identity, geometry and same-process ordering.
+        // Do not cache it across input events or reuse pre-activation geometry.
+        let list = windows(1 | 16, 0)?;
+        let window = selected(&list, self.id, self.pid)?;
+        if !window.visible || window.alpha <= 0. {
+            return Err("Restore the selected window on the host desktop before controlling it".into());
+        }
+        let r = window.bounds;
         let p = crate::input_injector::normalized_pointer_location(x, y, r);
         // Same-process window ordering excludes the wrong document or sheet.
         // Cross-process hit testing below uses Accessibility, not the bounding box
         // of Dock's transparent full-screen Stage Manager surface.
-        let owned: Vec<_> = windows(1 | 16, 0)?
+        let owned: Vec<_> = list
             .into_iter()
             .filter(|w| w.pid == self.pid)
             .collect();
@@ -351,6 +367,25 @@ mod tests {
             || active.get(), || { writes.set(writes.get() + 1); active.set(true); 0 }).unwrap();
         assert_eq!(writes.get(), 1);
     }
+    #[test]
+    fn foreground_click_does_not_repeat_the_accessibility_round_trip() {
+        use std::{cell::Cell, time::{Duration, Instant}};
+        let reads = Cell::new(0);
+        focus_for_click_with(Some(Instant::now() + Duration::from_secs(1)), || Ok(()),
+            || { reads.set(reads.get() + 1); true },
+            || panic!("an already foreground app must not be activated")).unwrap();
+        assert_eq!(reads.get(), 1, "each extra AX read consumes the original input deadline");
+    }
+    #[test]
+    fn delayed_foreground_read_cannot_admit_expired_click() {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let result = focus_for_click_with(Some(deadline), || Ok(()), || {
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2));
+            true
+        }, || panic!("expired input must never activate an app"));
+        assert!(result.unwrap_err().contains("expired"));
+    }
     fn w(id: u32, pid: i32, x: f64) -> WindowDescription {
         WindowDescription {
             id,
@@ -362,6 +397,19 @@ mod tests {
             unnamed: false,
             generic_frame_caption: false,
         }
+    }
+    #[test]
+    fn pointer_snapshot_keeps_live_geometry_identity_and_occlusion() {
+        let moved = w(1, 10, 600.);
+        let overlay = w(2, 10, 650.);
+        let live = [overlay, moved];
+        assert_eq!(selected(&live, 1, 10).unwrap().bounds.origin.x, 600.);
+        assert_eq!(top_at(&live, CGPoint::new(700., 50.)), Some(2));
+        assert!(selected(&live, 1, 20).unwrap_err().contains("changed process"));
+        assert!(selected(&live, 3, 10).unwrap_err().contains("closed"));
+        let mut invalid = moved;
+        invalid.layer = 1;
+        assert!(selected(&[invalid], 1, 10).unwrap_err().contains("normal application"));
     }
     #[test]
     fn native_titlebar_surface_is_not_mistaken_for_keyboard_focus() {

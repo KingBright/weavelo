@@ -163,7 +163,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     }
                 }, enabled = state.connected && state.clipboard) { Text("Send clipboard") }
             }
-            Text(localError ?: state.status, color = Color.LightGray, maxLines = 2)
+            Text(localError ?: state.status, color = Color.LightGray, minLines = 2, maxLines = 2)
             TextButton(onClick = { WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) }, enabled = state.connected) { Text("Refresh screens / windows") }
             TextButton(onClick = { pickerGeneration = state.connectionGeneration; sourcePicker = true }, enabled = state.connected) {
                 Text("Choose screen or app window (${state.sources.size})")
