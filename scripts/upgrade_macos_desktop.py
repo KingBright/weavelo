@@ -27,7 +27,9 @@ import desktop_identity as desktop
 import install_macos_desktop as fresh
 import macos_release_guard as guard
 
-LIMIT = 65536
+# Local installation history grows with normal main-only updates. Keep the
+# existing identity records rather than imposing the small IPC-frame budget.
+LIMIT = 4 * 1024 * 1024
 PHASES = ('verified', 'staged', 'stopping', 'stopped', 'exchanging',
           'exchanged', 'activated', 'registry_committed', 'completed')
 RETIRED = 'retired_before_stop'
@@ -598,7 +600,7 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 new_record['retired_staged'] = data['retired_staged']
             if no_new_rollback:
                 new_record['rollback_policy'] = 'none_new'
-            require(len(json.dumps(new_record).encode()) < LIMIT - 4096, 'Installation history full; no content discarded')
+            require(len((json.dumps(new_record, indent=2) + '\n').encode()) < LIMIT - 4096, 'Installation history full; no content discarded')
             staged = stage / 'Weavelo.app'
             if resume_sha is None:
                 checkpoint('verified')

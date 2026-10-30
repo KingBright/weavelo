@@ -372,8 +372,21 @@ class UpgradeTests(unittest.TestCase):
         self.registry.write_text(json.dumps(data))
         with self.assertRaisesRegex(guard.ReleaseRejected,'Original'):upgrade.inspect(self.home)
 
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_repeated_updates_keep_history_beyond_the_old_ipc_sized_limit(self):
+        history = [{'source': {'commit': str(i)}, 'retained': 'x' * 2048} for i in range(40)]
+        old = dict(self.record, history=history)
+        self.registry.write_text(json.dumps(old, indent=2))
+        self.assertGreater(self.registry.stat().st_size, 65536)
+        result = self.apply()
+        self.assertEqual(result['phase'], 'completed')
+        record = json.loads(self.registry.read_text())
+        self.assertEqual(record['history'][:-1], history)
+        self.assertEqual(record['history'][-1], self.record)
+        self.assertEqual(record['user_notes'], self.record['user_notes'])
+
     def test_unknown_history_and_overflow_never_discard_user_content(self):
-        for history in ({'unexpected':'format'},['x'*64000]):
+        for history in ({'unexpected':'format'},['x' * (upgrade.LIMIT - 2048)]):
             data=dict(self.record,history=history);self.registry.write_text(json.dumps(data))
             with self.assertRaises(guard.ReleaseRejected):self.apply()
             self.assertEqual(json.loads(self.registry.read_text()),data)
