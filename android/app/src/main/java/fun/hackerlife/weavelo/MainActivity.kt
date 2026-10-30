@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
         WeaveloClient.initialize(applicationContext)
 
         setContent {
+            `fun`.hackerlife.weavelo.ui.WeaveloTheme {
             val scope = rememberCoroutineScope()
             val sessionState by WeaveloClient.sessionState.collectAsState()
             val telemetry by WeaveloClient.telemetry.collectAsState()
@@ -195,6 +196,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (receivedFiles) `fun`.hackerlife.weavelo.ui.ReceivedFilesDialog { receivedFiles = false }
+            }
         }
     }
 }

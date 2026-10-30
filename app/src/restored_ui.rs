@@ -1770,28 +1770,7 @@ impl RestoredDashboard {
                     }),
             );
         }
-        let row = row.child(
-            command_button("quit_restored_app", ActionVariantKind::Neutral, cx)
-                .rounded_full()
-                .h(px(28.))
-                .text_size(px(10.))
-                .child(if self.background.is_some() { "Quit GUI" } else { "Quit Weavelo" })
-                .on_click(move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        if this.background.is_some() {
-                            this.owner.release_input(); this.owner.close_all();
-                            this.quitting = true; cx.quit();
-                        } else { this.begin_full_exit(cx); }
-                    });
-                }),
-        );
-        if self.background.is_none() { return row; }
-        let view = cx.entity().downgrade();
-        row.child(command_button("quit_all_weavelo", ActionVariantKind::Danger, cx)
-            .rounded_full().h(px(28.)).text_size(px(10.)).child("Quit Weavelo")
-            .on_click(move |_, _, cx| {
-                let _ = view.update(cx, |this, cx| this.begin_full_exit(cx));
-            }))
+        row
     }
 
     #[cfg(any(unix,windows))]

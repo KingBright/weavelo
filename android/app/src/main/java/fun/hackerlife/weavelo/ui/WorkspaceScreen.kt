@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, deviceId: String = "", onClose: () -> Unit) {
     val context = LocalContext.current
     var sourcePicker by remember { mutableStateOf(false) }
+    var actionsOpen by remember { mutableStateOf(false) }
     var pickerGeneration by remember { mutableStateOf(0L) }
     val sessionKey = rememberSaveable(endpoint, deviceId) { WorkspaceClient.sessionKeyFor(endpoint, deviceId) }
     var requestedFilePicker by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
@@ -113,20 +114,38 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             filePicker.launch(arrayOf("*/*"))
         }
     }
-    MaterialTheme {
+    WeaveloTheme {
         Column(Modifier.fillMaxSize().background(Color(0xff101318)).safeDrawingPadding().padding(8.dp)) {
-            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { SessionConnectionService.closeWorkspace(context, sessionKey); onClose() }) { Text("Disconnect") }
-                if (!state.connected) TextButton(onClick = { WorkspaceClient.reconnect() }) { Text("Reconnect") }
-                TextButton(onClick = { WorkspaceClient.layout(!state.grid) }) { Text(if (state.grid) "Use tabs" else "Show together") }
-                TextButton(onClick = { pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected && state.files) { Text("Send file") }
-                TextButton(onClick = { pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected) { Text("Share file with network") }
-                TextButton(onClick = { WorkspaceClient.clearSharedFiles() }, enabled = state.connected) { Text("Clear my shared list") }
-                TextButton(onClick = { sharedFilesOpen = true; WorkspaceClient.listSharedFiles() }, enabled = state.connected && state.files && !state.sharedBusy) { Text("Retrieve shared files") }
-                TextButton(onClick = { receivedFiles = true }) { Text("Received files") }
-                TextButton(onClick = { backgroundSettings = true }) { Text("Background") }
-                TextButton(onClick = { WorkspaceClient.enableClipboard(!state.clipboard) }, enabled = state.connected && state.clipboardAvailable) { Text(if (state.clipboard) "Clipboard ✓" else "Clipboard") }
-                TextButton(onClick = {
+            Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                MobileAction(MobileSymbol.Back, "Disconnect", onClick = {
+                    SessionConnectionService.closeWorkspace(context, sessionKey); onClose()
+                })
+                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                    Text(WeaveloClient.devices.value.firstOrNull { it.id == deviceId }?.name ?: "Remote device",
+                        color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text(if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
+                        style = MaterialTheme.typography.labelSmall)
+                }
+                MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected) {
+                    pickerGeneration = state.connectionGeneration; sourcePicker = true
+                }
+                MobileAction(MobileSymbol.Refresh, "Refresh screens and windows", state.connected) {
+                    WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                }
+                Box {
+                    MobileAction(MobileSymbol.More, "Connection actions") { actionsOpen = true }
+                    DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
+                if (!state.connected) TextButton(onClick = { actionsOpen = false;  WorkspaceClient.reconnect() }) { Text("Reconnect") }
+                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.layout(!state.grid) }) { Text(if (state.grid) "Use tabs" else "Show together") }
+                TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected && state.files) { Text("Send file") }
+                TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected) { Text("Share file with network") }
+                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.clearSharedFiles() }, enabled = state.connected) { Text("Clear my shared list") }
+                TextButton(onClick = { actionsOpen = false;  sharedFilesOpen = true; WorkspaceClient.listSharedFiles() }, enabled = state.connected && state.files && !state.sharedBusy) { Text("Retrieve shared files") }
+                TextButton(onClick = { actionsOpen = false;  receivedFiles = true }) { Text("Received files") }
+                TextButton(onClick = { actionsOpen = false;  backgroundSettings = true }) { Text("Background") }
+                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.enableClipboard(!state.clipboard) }, enabled = state.connected && state.clipboardAvailable) { Text(if (state.clipboard) "Clipboard ✓" else "Clipboard") }
+                TextButton(onClick = { actionsOpen = false;
                     // Android only allows reading the clipboard while this app has focus.
                     val clip = context.getSystemService(android.content.ClipboardManager::class.java).primaryClip
                     if (clip != null) scope.launch(Dispatchers.IO) {
@@ -162,13 +181,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         }.onFailure { withContext(Dispatchers.Main) { localError = it.message } }
                     }
                 }, enabled = state.connected && state.clipboard) { Text("Send clipboard") }
+                    }
+                }
             }
             Text(localError ?: state.status, color = Color.LightGray, minLines = 2, maxLines = 2)
-            TextButton(onClick = { WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) }, enabled = state.connected) { Text("Refresh screens / windows") }
-            TextButton(onClick = { pickerGeneration = state.connectionGeneration; sourcePicker = true }, enabled = state.connected) {
-                Text("Choose screen or app window (${state.sources.size})")
-            }
-            if (!state.grid) Row(Modifier.horizontalScroll(rememberScrollState())) {
+            if (!state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
             }
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
@@ -179,8 +196,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         key(pane.id, state.connectionGeneration) {
                             Column(Modifier.weight(1f).fillMaxHeight().padding(3.dp)) {
                                 Row(Modifier.fillMaxWidth()) {
-                                    TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { Text("${pane.source.title} · ${pane.fps} fps", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
-                                    TextButton(onClick = { WorkspaceClient.remove(pane.id) }, modifier = Modifier.width(48.dp), contentPadding = PaddingValues(0.dp)) { Text("×") }
+                                    TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                    MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
                                 }
                                 pane.audioOwner?.let { owner ->
                                     Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it }, modifier = Modifier.height(24.dp))
@@ -193,10 +210,20 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     }
                 }
             }
-            if (state.panes.isEmpty()) Text(
-                if (state.sources.isEmpty()) "No screen is currently shared by this device. File transfers work independently."
-                else "Choose a display or application window above. Files work without opening a video.",
-                color = Color.LightGray)
+            if (state.panes.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
+                    Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
+                    Text("Choose a screen", color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
+                    Text(if (state.sources.isEmpty()) "This device has not shared a screen yet. You can still exchange files."
+                        else "Open a display or application window. File transfers stay independent.",
+                        color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Button(onClick = { pickerGeneration = state.connectionGeneration; sourcePicker = true }, enabled = state.connected) {
+                        Text("Browse screens and windows")
+                    }
+                }
+            }
             if (foreground && state.connected) visible.mapNotNull { it.audioOwner }.distinct().forEach { owner ->
                 key(owner) { WorkspaceAudio(owner, volumes[owner] ?: 1f, onError = { localError = it }) }
             }
@@ -299,12 +326,15 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
         },
         overlay = {
-            TextButton(onClick = {
-                if (keyboardVisible) keyboardVisible=false else {
-                    keyboardBinding=WorkspaceClient.keyboardBinding(pane.id,sessionKey,generation,token)
-                    keyboardVisible=keyboardBinding!=null
+            MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
+                enabled = pane.input && token != 0L,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                    .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))) {
+                if (keyboardVisible) keyboardVisible = false else {
+                    keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                    keyboardVisible = keyboardBinding != null
                 }
-            }, enabled=pane.input && token!=0L, modifier=Modifier.align(Alignment.BottomEnd)) {Text(if(keyboardVisible) "Hide keyboard" else "Keyboard")}
+            }
             if (transform.value.scale > 1.05f) {
                 TextButton(onClick = { transform.value = transform.value.reset() }, modifier = Modifier.align(Alignment.TopEnd)) {
                     Text("Reset zoom")

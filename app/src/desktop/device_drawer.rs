@@ -3,8 +3,10 @@ use super::device_list::{
 };
 use crate::design_system::{color_accent_cyan, color_accent_emerald, color_border_fine};
 use crate::product_components::theme::ActiveTheme;
+use crate::product_components::component::tooltip;
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
+    primitives::IconName,
     theme::ControlSize,
 };
 use gpui::{App, FontWeight, IntoElement, RenderOnce, Window, div, prelude::*, px, rgb};
@@ -60,7 +62,7 @@ impl RenderOnce for DeviceDrawer {
                     .on_click(move |_, _, cx| send(DeviceListAction::SelectFilter(filter), cx)),
             );
         }
-        let mut content = div().flex().flex_col().gap_3().child(filters);
+        let mut content = div().flex().flex_col().gap_2().child(filters);
         if self.model.rows.is_empty() {
             return content.child(
                 div()
@@ -100,7 +102,7 @@ impl RenderOnce for DeviceDrawer {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .p_3()
+                    .p_2()
                     .rounded(px(8.0))
                     .shadow_xs()
                     .bg(if row.is_active() {
@@ -151,68 +153,70 @@ impl RenderOnce for DeviceDrawer {
                     )
                     .child(
                         div()
+                            .id(format!("device_status_{}", row.device_id))
                             .flex()
                             .justify_between()
                             .text_size(px(10.0))
                             .text_color(theme.content.tertiary)
-                            .child(format!("Endpoint: {}", row.endpoint))
+                            .tooltip(tooltip(format!("Connection address: {}", row.endpoint)).build())
+                            .child(if row.online { "Online" } else { "Offline" })
                             .child(row.connection.label()),
                     )
-                    .child(
-                        Button::new(format!("drawer_connect_{stream_id}"), connect_label)
+                    .child(div().flex().items_center().gap_2().child(
+                        Button::new(format!("drawer_connect_{stream_id}"), "")
                             .debug_selector({
                                 let id = stream_id.clone();
                                 move || format!("connect-{id}")
                             })
                             .control_size(ControlSize::Sm)
-                            .full_width()
+                            .icon(IconName::Monitor)
+                            .tooltip(tooltip(connect_label).build())
                             .variant(if row.can_connect {
                                 ButtonVariant::Primary
                             } else {
                                 ButtonVariant::Secondary
                             })
                             .disabled(!row.can_connect)
-                            .h(px(28.0))
-                            .text_size(px(10.0))
+                            .size(px(30.0)).p_0()
                             .on_click(move |_, _, cx| {
                                 stream(DeviceListAction::Connect(stream_id.clone()), cx)
                             }),
-                    )
-                    .child(
-                        Button::new(format!("send_screen_{delivery_id}"), "Send screen")
-                            .control_size(ControlSize::Sm).full_width().disabled(!row.online)
+                    ).child(
+                        Button::new(format!("send_screen_{delivery_id}"), "")
+                            .icon(IconName::ScreenShare).tooltip(tooltip("Send this screen").build())
+                            .control_size(ControlSize::Sm).variant(ButtonVariant::Ghost).size(px(30.0)).p_0().disabled(!row.online)
                             .on_click(move |_, _, cx| delivery(DeviceListAction::SendScreen(delivery_id.clone()), cx)),
-                    )
-                    .child(
-                        Button::new(format!("copy_receive_{receive_id}"), "Copy macOS receive command")
-                            .control_size(ControlSize::Sm).full_width().disabled(!row.online)
-                            .on_click(move |_, _, cx| receive(DeviceListAction::CopyReceiveCommand(receive_id.clone()), cx)),
-                    )
-                    .child(
-                        Button::new(format!("drawer_files_{files_id}"), "Files")
+                    ).child(
+                        Button::new(format!("drawer_files_{files_id}"), "")
                             .debug_selector({
                                 let id = files_id.clone();
                                 move || format!("files-{id}")
                             })
                             .control_size(ControlSize::Sm)
-                            .full_width()
+                            .icon(IconName::FolderOpen).tooltip(tooltip("Files").build())
+                            .variant(ButtonVariant::Ghost).size(px(30.0)).p_0()
                             .disabled(!row.can_open_files)
                             .on_click(move |_, _, cx| {
                                 files(DeviceListAction::OpenFiles(files_id.clone()), cx)
                             }),
-                    )
-                    .child(
+                    ).child(
                         Button::new(
                             format!("workspace-{workspace_id}"),
-                            "Open multi-window workspace",
+                            "",
                         )
                         .control_size(ControlSize::Sm)
-                        .full_width()
+                        .icon(IconName::LayoutGrid).tooltip(tooltip("Open multi-window workspace").build())
+                        .variant(ButtonVariant::Ghost).size(px(30.0)).p_0()
                         .disabled(!row.can_open_workspace)
                         .on_click(move |_, _, cx| {
                             workspace(DeviceListAction::OpenWorkspace(workspace_id.clone()), cx)
                         }),
-                    ),
+                    ).child(
+                        Button::new(format!("copy_receive_{receive_id}"), "")
+                            .icon(IconName::Terminal).tooltip(tooltip("Copy macOS receive command").build())
+                            .control_size(ControlSize::Sm).variant(ButtonVariant::Ghost).size(px(30.0)).p_0().disabled(!row.online)
+                            .on_click(move |_, _, cx| receive(DeviceListAction::CopyReceiveCommand(receive_id.clone()), cx)),
+                    )),
             );
         }
         content
