@@ -25,7 +25,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Request { Permissions { generation:String, executable_sha256:String }, PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
+enum Request { Sharing { generation:String, executable_sha256:String, call:crate::sharing_permissions::SharingCall }, Permissions { generation:String, executable_sha256:String }, PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -44,7 +44,7 @@ struct Snapshot {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Response { Permissions { generation:String, executable_sha256:String, status:crate::sharing_permissions::Status }, Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
+enum Response { Sharing { generation:String, executable_sha256:String, snapshot:crate::sharing_permissions::SharingSnapshot }, Permissions { generation:String, executable_sha256:String, status:crate::sharing_permissions::Status }, Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,7 +101,7 @@ fn valid_length(header: [u8; 4]) -> io::Result<usize> {
 
 /// Bind only after obtaining the existing canonical runtime lock. Refuse a live
 /// endpoint; remove an owned stale socket only when no server is listening.
-pub(crate) struct Service { path: PathBuf, task: tokio::task::JoinHandle<()>, delivery_task:tokio::task::JoinHandle<()>, closing:Arc<Mutex<bool>>, broker:Arc<host::directed_delivery::Broker>, stopped: Arc<tokio::sync::Notify> }
+pub(crate) struct Service { path: PathBuf, task: tokio::task::JoinHandle<()>, delivery_task:tokio::task::JoinHandle<()>, closing:Arc<Mutex<bool>>, broker:Arc<host::directed_delivery::Broker>, stopped: Arc<tokio::sync::Notify>, #[cfg(target_os="linux")] sharing:Arc<crate::local_sharing::Manager> }
 impl Service {
     pub(crate) fn start(profile: &Path, runtime: Arc<UnifiedRuntimeHandle>, guard: crate::desktop::HeadlessInstanceGuard) -> Result<Self, Error> {
         Self::start_owner(profile,runtime,Arc::new(guard),OwnerMode::Background)
@@ -118,6 +118,12 @@ impl Service {
         let generation = format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos());
         let identity=AppPrivateMeshConfigStore::new(profile).load()?.ok_or("Background identity unavailable")?;
         runtime.owner.delivery.set_identity(identity.node_id);
+        #[cfg(target_os="linux")]
+        let sharing=crate::local_sharing::Manager::new(profile,runtime.owner.local_portal_shares());
+        #[cfg(target_os="linux")]
+        {sharing.restore_saved();}
+        #[cfg(target_os="linux")]
+        let server_sharing=sharing.clone();
         let incoming=runtime.owner.delivery_incoming.lock().unwrap().take().ok_or("Delivery worker already attached")?;
         let delivery_guard=guard.clone();
         #[cfg(feature="gpui-restoration")]
@@ -136,6 +142,8 @@ impl Service {
                 while children.try_join_next().is_some() {}
                 let Ok(permit) = limit.clone().try_acquire_owned() else { continue; };
                 let guard = guard.clone(); let runtime = runtime.clone(); let generation = generation.clone(); let executable_sha256 = executable_sha256.clone();
+                #[cfg(target_os="linux")]
+                let sharing=server_sharing.clone();
                 let profile=profile.clone();let registration_lock=registration_lock.clone();let shutdown_serial=shutdown_serial.clone();let closed=closed.clone(); let finished=finished.clone();
                 children.spawn(async move {
                     let _guard = guard;
@@ -150,6 +158,18 @@ impl Service {
                     };
                     let timeout = if matches!(&request, Request::PublishShared {..}) { Duration::from_secs(60) } else { STOP_TIMEOUT };
                     let _ = tokio::time::timeout(timeout, async {
+                        if let Request::Sharing {generation:expected,executable_sha256:hash,call}=request {
+                            let response=if expected!=generation || hash!=executable_sha256 || (*closed.lock().unwrap() && !matches!(&call,crate::sharing_permissions::SharingCall::Status)) {
+                                Response::Rejected("Sharing owner changed or is stopping".into())
+                            } else {
+                                #[cfg(target_os="linux")]
+                                {match sharing.call(call) {Ok(snapshot)=>Response::Sharing {generation:generation.clone(),executable_sha256:executable_sha256.clone(),snapshot},Err(error)=>Response::Rejected(error)}}
+                                #[cfg(not(target_os="linux"))]
+                                {let _=call;Response::Rejected("This platform uses its native permission settings".into())}
+                            };
+                            socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await?;
+                            return Ok::<(),Error>(());
+                        }
                         if let Request::PublishShared { generation: expected, executable_sha256: hash, scope, publication } = request {
                             let response = shared_publication::answer(publication, scope, expected, hash,
                                 generation, executable_sha256, &runtime.owner, closed).await;
@@ -166,7 +186,13 @@ impl Service {
                             let response = match &admitted {
                                 Err(error) => Response::Rejected(error.clone()),
                                 Ok(_) => match if idle_only { runtime.owner.shutdown_host_if_idle().await } else { runtime.owner.shutdown_host().await } {
-                                    Ok(()) => Response::StopPrepared { generation: generation.clone(), executable_sha256: executable_sha256.clone(), pid: std::process::id(), cleanup_verified: true },
+                                    Ok(()) => {
+                                        #[cfg(target_os="linux")]
+                                        let local_cleanup=sharing.shutdown().await;
+                                        #[cfg(not(target_os="linux"))]
+                                        let local_cleanup:Result<(),String>=Ok(());
+                                        match local_cleanup {Ok(())=>Response::StopPrepared { generation:generation.clone(),executable_sha256:executable_sha256.clone(),pid:std::process::id(),cleanup_verified:true },Err(error)=>Response::Rejected(error)}
+                                    },
                                     Err(error) => Response::Rejected(error),
                                 },
                             };
@@ -182,7 +208,7 @@ impl Service {
                             Request::Delivery{generation:service,executable_sha256:hash,intent:host::directed_delivery::LocalIntent::Register{generation:gui,..}} if service==&generation&&hash==&executable_sha256=>Some(gui.clone()),
                             _=>None,
                         };
-                        let response=if let Request::ReadOnlyStatus { schema } = &request {
+                        let mut response=if let Request::ReadOnlyStatus { schema } = &request {
                             read_only_answer(*schema, &runtime, &generation, &executable_sha256, owner_mode, &closed).await
                         } else if let Some(gui)=registration {
                             let _serial=registration_lock.lock().await;
@@ -197,13 +223,19 @@ impl Service {
                             else if verified {runtime.owner.delivery.verified_gui_generation(&gui);answer(request,&runtime,generation,executable_sha256,owner_mode)}
                             else {Response::Rejected("Sending GUI generation or executable changed".into())}
                         } else {let closing=closed.lock().unwrap();if *closing && !shutdown_observation(&request){Response::Rejected("Background shutdown pending; inspect status or retry cleanup".into())}else{answer(request,&runtime,generation,executable_sha256,owner_mode)}};
+                        #[cfg(target_os="linux")]
+                        if let Response::Permissions {status,..}=&mut response {
+                            let sources=sharing.snapshot().sources;
+                            if !sources.is_empty() {status.screen=crate::sharing_permissions::Access::Allowed;}
+                            if sources.iter().any(|source|source.supports_input) {status.control=crate::sharing_permissions::Access::Allowed;}
+                        }
                         socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await?;
                         Ok::<(), Error>(())
                     }).await;
                 });
             }
         });
-        Ok(Self { path, task, delivery_task, closing, broker, stopped })
+        Ok(Self { path, task, delivery_task, closing, broker, stopped, #[cfg(target_os="linux")] sharing })
     }
 }
 async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:&str, hash:&str, mode:OwnerMode, closing:&Mutex<bool>)->Response {
@@ -232,7 +264,7 @@ async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:
     }
 }
 impl Drop for Service {
-    fn drop(&mut self) { let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_gui_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
+    fn drop(&mut self) { #[cfg(target_os="linux")] self.sharing.cancel_for_exit(); let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_gui_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
 }
 fn upgrade_quit_background_owner(expected:(&str,&str,u32), actual:(&str,&str,u32))->Result<(),String> {
     if expected!=actual {return Err("Planned background generation/executable/PID changed; no stop sent".into());}
@@ -299,7 +331,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::JoinGroup(code) => pairing.join_from_invite_code(&code),
         Request::RenameDevice { expected_name, name } => pairing.rename_device(&expected_name, &name),
         Request::Reload(message) => pairing.request_runtime_reload(message),
-        Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
+        Request::Sharing{..}|Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
     Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing })
@@ -411,6 +443,14 @@ impl Client {
             "endpoint_absent":true,"persistent_startup_changed":false,"idle_only":idle_only}))
     }
 
+    pub(crate) fn sharing_call(&self,call:crate::sharing_permissions::SharingCall)->Result<crate::sharing_permissions::SharingSnapshot,Error> {
+        let generation=self.cached.lock().unwrap().generation.clone();
+        match exchange_response(&self.profile,&Request::Sharing {generation:generation.clone(),executable_sha256:self.executable_sha256.clone(),call})? {
+            Response::Sharing {generation:actual,executable_sha256,snapshot}
+                if actual==generation && executable_sha256==self.executable_sha256 && self.cached.lock().unwrap().generation==generation=>Ok(snapshot),
+            Response::Rejected(error)=>Err(error.into()),_=>Err("Sharing owner changed; check status".into()),
+        }
+    }
     pub(crate) fn sharing_permissions(&self) -> Result<crate::sharing_permissions::Status, Error> {
         let generation=self.cached.lock().unwrap().generation.clone();
         match exchange_response(&self.profile, &Request::Permissions {generation:generation.clone(), executable_sha256:self.executable_sha256.clone()})? {
@@ -490,7 +530,7 @@ fn request(profile: &Path, command: &Request, executable_sha256: &str) -> Result
     let snapshot = match exchange_response(profile, command)? {
         Response::Snapshot(snapshot) => snapshot,
         Response::Rejected(_) => return Err("Background service rejected the operation".into()),
-        Response::Permissions{..}|Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
+        Response::Sharing{..}|Response::Permissions{..}|Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
     };
     validate_snapshot(&snapshot, profile, executable_sha256)?;
     Ok(snapshot)

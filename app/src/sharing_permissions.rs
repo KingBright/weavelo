@@ -2,6 +2,46 @@
 //! Opening settings never substitutes for a system grant or a captured frame.
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ShareKind {
+    Window,
+    Display,
+    ControlledDisplay,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SharedSource {
+    pub source: protocol::session::CaptureSource,
+    pub label: String,
+    pub kind: ShareKind,
+    pub supports_input: bool,
+    pub remembered: bool,
+}
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SharingSnapshot {
+    pub sources: Vec<SharedSource>,
+    pub selecting: Option<u64>,
+    pub stopping: bool,
+    pub message: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum SharingCall {
+    Status,
+    Select {
+        kind: ShareKind,
+        remember: bool,
+    },
+    Cancel {
+        attempt: u64,
+    },
+    Stop {
+        source: protocol::session::CaptureSource,
+    },
+    StopAll,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum Access {
     Allowed,

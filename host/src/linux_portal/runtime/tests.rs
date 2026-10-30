@@ -203,7 +203,7 @@ impl FakePortal {
         #[zbus(connection)] connection: &Connection,
     ) -> zbus::fdo::Result<OwnedObjectPath> {
         if let Some(mode) = options.get("persist_mode") {
-            assert!(u32::try_from(mode).unwrap() <= 1);
+            assert!(u32::try_from(mode).unwrap() <= 2);
             assert_eq!(self.calls.count("rd_create"), 0);
         } else {
             assert!(self.calls.count("rd_create") >= 1);
@@ -211,7 +211,7 @@ impl FakePortal {
         assert!(!bool::try_from(options.get("multiple").unwrap()).unwrap());
         let mode = options.get("persist_mode").map(|v|u32::try_from(v).unwrap()).unwrap_or(0);
         let restored = options.get("restore_token").map(|v|<&str>::try_from(v).unwrap().to_owned());
-        if restored.is_some() { assert_eq!(mode, 1); }
+        if restored.is_some() { assert!((1..=2).contains(&mode)); }
         self.calls.restore_requests.lock().unwrap().push((false, mode, restored));
         let types = u32::try_from(options.get("types").unwrap()).unwrap();
         assert_eq!(types & 4, 0);
@@ -376,6 +376,31 @@ pub(crate) async fn prepared_control_fixture() -> (Fixture, PreparedPortalCaptur
     let capture = input_tests::control(&fixture).await;
     (fixture, capture)
 }
+
+#[tokio::test]
+async fn linux_persistent_restore_uses_new_connection_and_still_requires_real_portal_start() {
+    let fixture=Fixture::new(Behavior::EarlyResponse,1).await;
+    fixture.calls.issue_restores.store(true,Ordering::Relaxed);
+    let (_first,rx)=watch::channel(false);
+    let mut lease=select_with_restoration_policy(fixture.client.clone(),"",PickerSources::Monitor,rx,
+        fixture.timeouts(),true,Restoration::Persistent(None),None).await.unwrap();
+    let token=lease.take_persistent_restoration().unwrap();
+    assert_eq!(format!("{token:?}"),"PersistentPortalRestore(<redacted>)");
+    assert!(lease.close().await);
+    let replacement=zbus::connection::Builder::address(fixture._bus.address.as_str()).unwrap().build().await.unwrap();
+    assert_ne!(replacement.unique_name(),fixture.client.unique_name());
+    let (_second,rx)=watch::channel(false);
+    let mut restored=select_with_restoration_policy(replacement,"",PickerSources::Monitor,rx,
+        fixture.timeouts(),true,Restoration::Persistent(Some(token)),None).await.unwrap();
+    assert!(restored.take_persistent_restoration().is_some());
+    let requests=fixture.calls.restore_requests.lock().unwrap();
+    let remote:Vec<_>=requests.iter().filter(|(control,_,_)|*control).collect();
+    assert_eq!(remote.len(),2);
+    assert_eq!((remote[0].1,remote[0].2.is_some()),(2,false));
+    assert_eq!((remote[1].1,remote[1].2.is_some()),(2,true));
+    drop(requests);
+    assert!(restored.close().await);
+}
 impl Fixture {
     pub(crate) fn target_text(&self) -> [String; 2] {
         self.calls.target.lock().unwrap().text.clone()
@@ -499,8 +524,8 @@ impl FakeRemoteDesktop {
         }
         let mode = options.get("persist_mode").map(|v|u32::try_from(v).unwrap()).unwrap_or(0);
         let restored = options.get("restore_token").map(|v|<&str>::try_from(v).unwrap().to_owned());
-        assert!(mode <= 1);
-        if restored.is_some() { assert_eq!(mode, 1); }
+        assert!(mode <= 2);
+        if restored.is_some() { assert!((1..=2).contains(&mode)); }
         self.calls.restore_requests.lock().unwrap().push((true, mode, restored));
         let (request, destination) =
             register_request(connection, header, &options, &self.calls).await;
@@ -956,6 +981,3 @@ async fn local_cancel_rejects_delivery_before_cleanup_actor_runs() {
 }
 
 mod restore_tests;
-
-#[cfg(not(target_os="linux"))]
-mod share_owner_tests;

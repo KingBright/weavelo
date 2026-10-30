@@ -1,132 +1,129 @@
-//! Scalar sharing view model and existing Ely controls. Portal capabilities,
-//! cancellation and worker lifetimes belong to the Linux owner below.
-use crate::product_components::theme::ActiveTheme;
+//! Frontend state contains labels and receipts, never an OS grant or descriptor.
+pub(crate) use crate::sharing_permissions::ShareKind;
+use crate::{
+    product_components::theme::ActiveTheme,
+    sharing_permissions::{SharingCall, SharingSnapshot},
+};
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
     theme::ControlSize,
 };
 use gpui::{App, IntoElement, RenderOnce, Window, div, prelude::*, px};
+use protocol::session::CaptureSource;
 use std::rc::Rc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ShareKind {
-    Window,
-    Display,
-    ControlledDisplay,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TargetRow {
-    pub key: String,
-    pub label: String,
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Refresh,
-    Select(String, ShareKind),
-    SelectFresh(String, ShareKind),
+    Select(ShareKind),
+    Remember(bool),
     Cancel,
-    Stop(String),
+    Stop(CaptureSource),
+    StopAll,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Effect {
-    Refresh(u64),
-    Select {
-        attempt: u64,
-        key: String,
-        kind: ShareKind,
-        reuse: bool,
-    },
-    Cancel(u64),
-    Stop(String),
+pub(crate) struct Effect {
+    pub receipt: u64,
+    pub call: SharingCall,
 }
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct State {
     serial: u64,
-    refresh: Option<u64>,
-    pub rows: Vec<TargetRow>,
-    pending: Option<(u64, String, ShareKind)>,
-    previous_kind: std::collections::HashMap<String, ShareKind>,
-    message: Option<String>,
+    busy: bool,
+    pub snapshot: SharingSnapshot,
+    remember: bool,
+    error: Option<String>,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            serial: 0,
+            busy: false,
+            snapshot: SharingSnapshot::default(),
+            remember: true,
+            error: None,
+        }
+    }
 }
 impl State {
     pub fn reduce(&mut self, action: Action) -> Option<Effect> {
-        let reuse = !matches!(&action, Action::SelectFresh(..));
-        match action {
-            Action::Refresh if self.pending.is_none() => {
-                self.serial += 1;
-                self.refresh = Some(self.serial);
-                Some(Effect::Refresh(self.serial))
+        let pending = self.pending();
+        let call = match action {
+            Action::Remember(value) if !pending => {
+                self.remember = value;
+                return None;
             }
-            Action::Select(key, kind) | Action::SelectFresh(key, kind)
-                if self.pending.is_none() && self.rows.iter().any(|row| row.key == key) =>
-            {
-                self.serial += 1;
-                self.refresh = None;
-                self.pending = Some((self.serial, key.clone(), kind));
-                self.message = None;
-                Some(Effect::Select {
-                    attempt: self.serial,
-                    key,
-                    kind,
-                    reuse,
-                })
-            }
-            Action::Cancel => self
-                .pending
-                .take()
-                .map(|(attempt, _, _)| Effect::Cancel(attempt)),
-            Action::Stop(key) => {
-                self.previous_kind.remove(&key);
-                Some(Effect::Stop(key))
+            Action::Refresh if !self.busy => SharingCall::Status,
+            Action::Select(kind) if !pending => SharingCall::Select {
+                kind,
+                remember: self.remember,
             },
-            _ => None,
-        }
+            Action::Cancel => SharingCall::Cancel {
+                attempt: self.snapshot.selecting?,
+            },
+            Action::Stop(source)
+                if self
+                    .snapshot
+                    .sources
+                    .iter()
+                    .any(|item| item.source == source) =>
+            {
+                SharingCall::Stop { source }
+            }
+            Action::StopAll => SharingCall::StopAll,
+            _ => return None,
+        };
+        self.serial = self.serial.checked_add(1)?;
+        self.busy = true;
+        self.error = None;
+        Some(Effect {
+            receipt: self.serial,
+            call,
+        })
     }
-    pub fn refreshed(&mut self, receipt: u64, rows: Vec<TargetRow>) -> bool {
-        if self.refresh != Some(receipt) {
+    pub fn receipt(&self) -> u64 {
+        self.serial
+    }
+    pub fn completed(&mut self, receipt: u64, result: Result<SharingSnapshot, String>) -> bool {
+        if receipt != self.serial {
             return false;
         }
-        self.refresh = None;
-        self.rows = rows;
+        self.busy = false;
+        self.apply(result);
         true
     }
-    pub fn refresh_failed(&mut self, receipt: u64, message: String) -> bool {
-        if self.refresh != Some(receipt) {
+    pub fn polled(&mut self, receipt: u64, result: Result<SharingSnapshot, String>) -> bool {
+        if receipt != self.serial || self.busy {
             return false;
         }
-        self.refresh = None;
-        self.message = Some(message);
+        self.apply(result);
         true
     }
-    pub fn completed(&mut self, receipt: u64, result: Result<(), String>) -> bool {
-        if self.pending.as_ref().map(|(id, _, _)| *id) != Some(receipt) {
-            return false;
+    fn apply(&mut self, result: Result<SharingSnapshot, String>) {
+        match result {
+            Ok(snapshot) => {
+                self.snapshot = snapshot;
+                self.error = None;
+            }
+            Err(error) => {
+                self.snapshot = SharingSnapshot::default();
+                self.error = Some(error);
+            }
         }
-        let (_, key, kind) = self.pending.take().unwrap();
-        if result.is_ok() { self.previous_kind.insert(key, kind); }
-        self.message = result.err();
-        true
     }
     pub fn pending(&self) -> bool {
-        self.pending.is_some()
+        self.busy || self.snapshot.selecting.is_some() || self.snapshot.stopping
     }
 }
 
 #[derive(IntoElement)]
 pub(crate) struct Controls {
     state: State,
-    active: Vec<String>,
     send: Rc<dyn Fn(Action, &mut App)>,
 }
 impl Controls {
-    pub fn new(
-        state: State,
-        active: Vec<String>,
-        send: impl Fn(Action, &mut App) + 'static,
-    ) -> Self {
+    pub fn new(state: State, send: impl Fn(Action, &mut App) + 'static) -> Self {
         Self {
             state,
-            active,
             send: Rc::new(send),
         }
     }
@@ -135,132 +132,151 @@ impl RenderOnce for Controls {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let pending = self.state.pending();
         let refresh = self.send.clone();
-        let cancel = self.send.clone();
-        let mut content=div().flex().flex_col().gap_2().p_3().rounded(px(8.0))
-            .bg(cx.theme().surface.sunken).text_size(px(11.0)).text_color(cx.theme().content.primary)
-            .child("Share a source")
-            .child(div().text_color(cx.theme().content.tertiary).child("Choose a screen or app window in the system dialog."))
-            .child(Button::new("share_refresh","Reload connected devices").debug_selector(||"share-refresh".into())
-                .control_size(ControlSize::Sm).variant(ButtonVariant::Secondary).rounded_full().h(px(28.0)).disabled(pending)
-                .on_click(move |_,_,cx|refresh(Action::Refresh,cx)));
-        if pending {
-            content = content.child("Waiting for your selection…").child(
-                Button::new("share_cancel", "Cancel selection")
-                    .debug_selector(|| "share-cancel".into())
-                    .control_size(ControlSize::Sm)
-                    .rounded_full()
-                    .on_click(move |_, _, cx| cancel(Action::Cancel, cx)),
-            );
-        }
-        if self.state.rows.is_empty() {
-            content =
-                content.child("No connected devices yet.");
-        }
-        for row in self.state.rows {
-            let active = self.active.contains(&row.key);
-            let window = self.send.clone();
-            let display = self.send.clone();
-            let control = self.send.clone();
-            let stop = self.send.clone();
-            let window_key = row.key.clone();
-            let display_key = row.key.clone();
-            let control_key = row.key.clone();
-            let fresh = self.send.clone();
-            let fresh_key = row.key.clone();
-            let previous_kind = self.state.previous_kind.get(&row.key).copied();
-            let stop_key = row.key;
-            content = content.child(
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded(px(8.0))
+            .bg(cx.theme().surface.sunken)
+            .text_size(px(11.0))
+            .text_color(cx.theme().content.primary)
+            .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(row.label)
-                    .when(active, |row| row.child("Shared source available"))
-                    .when(active && previous_kind.is_some(), |row| row.child(
-                        Button::new(format!("share_fresh_{fresh_key}"), "Choose another source")
-                            .debug_selector({ let key = fresh_key.clone(); move || format!("share-fresh-{key}") })
-                            .control_size(ControlSize::Sm).variant(ButtonVariant::Secondary)
-                            .rounded_full().h(px(28.0)).disabled(pending)
-                            .on_click(move |_,_,cx| fresh(Action::SelectFresh(fresh_key.clone(), previous_kind.unwrap()), cx))
-                    ))
+                    .items_center()
+                    .justify_between()
+                    .child("Share this computer")
                     .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                Button::new(format!("share_window_{window_key}"), "Window")
-                                    .debug_selector({
-                                        let key = window_key.clone();
-                                        move || format!("share-window-{key}")
-                                    })
-                                    .control_size(ControlSize::Sm)
-                                    .rounded_full()
-                                    .h(px(28.0))
-                                    .disabled(pending)
-                                    .on_click(move |_, _, cx| {
-                                        window(
-                                            Action::Select(window_key.clone(), ShareKind::Window),
-                                            cx,
-                                        )
-                                    }),
-                            )
-                            .child(
-                                Button::new(format!("share_display_{display_key}"), "Display")
-                                    .control_size(ControlSize::Sm)
-                                    .rounded_full()
-                                    .h(px(28.0))
-                                    .disabled(pending)
-                                    .on_click(move |_, _, cx| {
-                                        display(
-                                            Action::Select(display_key.clone(), ShareKind::Display),
-                                            cx,
-                                        )
-                                    }),
-                            )
-                            .child(
-                                Button::new(
-                                    format!("share_control_{control_key}"),
-                                    "Display + control",
-                                )
-                                .debug_selector({
-                                    let key = control_key.clone();
-                                    move || format!("share-control-{key}")
-                                })
-                                .control_size(ControlSize::Sm)
-                                .rounded_full()
-                                .h(px(28.0))
-                                .disabled(pending)
-                                .on_click(move |_, _, cx| {
-                                    control(
-                                        Action::Select(
-                                            control_key.clone(),
-                                            ShareKind::ControlledDisplay,
-                                        ),
-                                        cx,
-                                    )
-                                }),
-                            )
-                            .when(active, |row| {
-                                row.child(
-                                    Button::new(format!("share_stop_{stop_key}"), "Stop")
-                                        .control_size(ControlSize::Sm)
-                                        .rounded_full()
-                                        .h(px(28.0))
-                                        .on_click(move |_, _, cx| {
-                                            stop(Action::Stop(stop_key.clone()), cx)
-                                        }),
-                                )
-                            }),
+                        Button::new("share_refresh", "Check status")
+                            .debug_selector(|| "share-refresh".into())
+                            .control_size(ControlSize::Sm)
+                            .variant(ButtonVariant::Secondary)
+                            .rounded_full()
+                            .h(px(26.0))
+                            .disabled(self.state.busy)
+                            .on_click(move |_, _, cx| refresh(Action::Refresh, cx)),
+                    ),
+            );
+        let mut choices = div().flex().flex_wrap().gap_2();
+        for (id, label, kind) in [
+            ("share-window", "App window", ShareKind::Window),
+            ("share-display", "Screen", ShareKind::Display),
+            (
+                "share-control",
+                "Screen + control",
+                ShareKind::ControlledDisplay,
+            ),
+        ] {
+            let send = self.send.clone();
+            choices = choices.child(
+                Button::new(id, label)
+                    .debug_selector(move || id.into())
+                    .control_size(ControlSize::Sm)
+                    .rounded_full()
+                    .h(px(28.0))
+                    .disabled(pending)
+                    .on_click(move |_, _, cx| send(Action::Select(kind), cx)),
+            );
+        }
+        let remember = self.send.clone();
+        let selected = self.state.remember;
+        panel = panel.child(choices).child(
+            Button::new(
+                "share_remember",
+                if selected {
+                    "Remember selection · On"
+                } else {
+                    "Remember selection · Off"
+                },
+            )
+            .control_size(ControlSize::Sm)
+            .variant(ButtonVariant::Secondary)
+            .rounded_full()
+            .h(px(26.0))
+            .disabled(pending)
+            .on_click(move |_, _, cx| remember(Action::Remember(!selected), cx)),
+        );
+        if self.state.snapshot.selecting.is_some() {
+            let cancel = self.send.clone();
+            panel = panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child("Confirm the system selection…")
+                    .child(
+                        Button::new("share_cancel", "Cancel")
+                            .debug_selector(|| "share-cancel".into())
+                            .control_size(ControlSize::Sm)
+                            .rounded_full()
+                            .h(px(26.0))
+                            .on_click(move |_, _, cx| cancel(Action::Cancel, cx)),
+                    ),
+            );
+        } else if self.state.busy {
+            panel = panel.child("Updating sharing…");
+        }
+        if self.state.snapshot.stopping {
+            panel = panel.child("Stopping sharing…");
+        }
+        for source in &self.state.snapshot.sources {
+            let send = self.send.clone();
+            let id = source.source;
+            panel = panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div().min_w_0().flex_1().child(source.label.clone()).child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(cx.theme().content.secondary)
+                                .child(format!(
+                                    "{}{}",
+                                    if source.supports_input {
+                                        "Control"
+                                    } else {
+                                        "Video only"
+                                    },
+                                    if source.remembered {
+                                        " · remembered"
+                                    } else {
+                                        ""
+                                    }
+                                )),
+                        ),
+                    )
+                    .child(
+                        Button::new(format!("share_stop_{id:?}"), "Stop")
+                            .control_size(ControlSize::Sm)
+                            .rounded_full()
+                            .h(px(26.0))
+                            .on_click(move |_, _, cx| send(Action::Stop(id), cx)),
                     ),
             );
         }
-        if let Some(message) = self.state.message {
-            content = content.child(message);
+        if !self.state.snapshot.sources.is_empty() {
+            let send = self.send.clone();
+            panel = panel.child(
+                Button::new("share_stop_all", "Stop sharing")
+                    .control_size(ControlSize::Sm)
+                    .variant(ButtonVariant::Secondary)
+                    .rounded_full()
+                    .h(px(26.0))
+                    .on_click(move |_, _, cx| send(Action::StopAll, cx)),
+            );
+        } else if !pending {
+            panel = panel.child("No source shared");
         }
-        content
+        if let Some(message) = self.state.error.or(self.state.snapshot.message) {
+            panel = panel.child(message);
+        }
+        panel
     }
 }
-
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 #[cfg(test)]

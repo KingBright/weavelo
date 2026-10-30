@@ -153,9 +153,9 @@ impl PortalSessionState {
         if !valid_handle(&session, "session") {
             return Err(PortalError::Handle);
         }
-        // 1 is application-lifetime restoration. Never request the permanent
-        // permission mode (2) through this boundary.
-        if options.multiple || options.persist_mode > 1 || !options.monitor && !options.window {
+        // Normal local sharing may request mode 2; the OS still grants the selection.
+        // Managed worker/observer entry points separately require mode 0.
+        if options.multiple || options.persist_mode > 2 || !options.monitor && !options.window {
             return Err(PortalError::Capabilities);
         }
         Ok(Self {
@@ -517,7 +517,7 @@ mod tests {
         }
     }
     #[test]
-    fn no_virtual_permanent_or_metadata_cursor_permission() {
+    fn no_virtual_or_metadata_cursor_and_only_supported_persistence() {
         assert_eq!(
             SelectionOptions::from_capabilities(4, 3),
             Err(PortalError::Capabilities)
@@ -533,12 +533,13 @@ mod tests {
         assert!(PortalSessionState::new(7, SESSION.into(), SelectionOptions {
             persist_mode: 1, ..options
         }).is_ok());
+        assert!(PortalSessionState::new(7,SESSION.into(),SelectionOptions {persist_mode:2,..options}).is_ok());
         assert!(
             PortalSessionState::new(
                 7,
                 SESSION.into(),
                 SelectionOptions {
-                    persist_mode: 2,
+                    persist_mode: 3,
                     ..options
                 }
             )

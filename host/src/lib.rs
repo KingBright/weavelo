@@ -20,6 +20,8 @@ pub mod directed_delivery;
 #[allow(dead_code)]
 mod sender;
 pub mod service;
+#[cfg(all(unix, any(test, target_os = "linux")))]
+mod shared_portal_sources;
 #[cfg(target_os = "macos")]
 mod talkback_player;
 #[cfg(target_os = "macos")]
@@ -46,7 +48,7 @@ pub use linux_portal::{
         PickerSources, PortalCallError, PortalCaptureLease, PortalInputError,
         PreparedPortalCapture, SelectedPortalSource, request_local_portal_capture,
         request_local_portal_control_capture, request_local_portal_capture_restorable,
-        PortalSessionRestore, request_registered_portal_control_capture, request_registered_portal_window_capture,
+        PortalSessionRestore, PersistentPortalRestore, request_local_portal_capture_persistent, request_registered_portal_control_capture, request_registered_portal_window_capture,
         with_portal_stage_receipts,
     },
 };

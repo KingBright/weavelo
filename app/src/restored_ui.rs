@@ -430,6 +430,8 @@ struct RestoredDashboard {
     local_share_state: crate::desktop::local_share::State,
     #[cfg(target_os = "linux")]
     local_share_owner: crate::desktop::local_share::linux::Owner,
+    #[cfg(target_os="linux")]
+    local_share_polling: bool,
     local_permissions: Option<Result<crate::sharing_permissions::Status, String>>,
     checking_permissions: bool,
     session_commands: SessionCommandState,
@@ -498,7 +500,7 @@ impl RestoredDashboard {
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
         #[cfg(target_os = "linux")]
-        let local_share_owner = crate::desktop::local_share::linux::Owner::new(runtime.owner.local_portal_shares());
+        let local_share_owner = crate::desktop::local_share::linux::Owner::new(background.clone());
         #[cfg(any(unix, windows))]
         let directed_receive = instance.as_ref().and_then(|instance| {
             match crate::desktop::directed_receive::Adapter::start(instance.state_directory()) {
@@ -553,6 +555,8 @@ impl RestoredDashboard {
             local_share_state: crate::desktop::local_share::State::default(),
             #[cfg(target_os = "linux")]
             local_share_owner,
+            #[cfg(target_os="linux")]
+            local_share_polling: false,
             local_permissions: None,
             checking_permissions: false,
             session_commands: SessionCommandState::default(),
@@ -2349,8 +2353,8 @@ impl Render for RestoredDashboard {
                     self.directed_send.as_ref().map(|sender|format!("To {} · {}",compact_device_id(&sender.target),sender.poll())),
                     #[cfg(target_os = "linux")]
                     &self.local_share_state,
-                    #[cfg(target_os = "linux")]
-                    self.local_share_owner.active_keys(),
+                    self.local_permissions.clone(),
+                    self.checking_permissions,
                     self.input_locked,
                     side_services,
                     self.stream_settings.values().resolution(),
@@ -3465,7 +3469,8 @@ fn slide_over_management_drawer(
     #[cfg(any(unix, windows))] receive_label: Option<String>,
     #[cfg(any(unix, windows))] send_label: Option<String>,
     #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
-    #[cfg(target_os = "linux")] local_share_active: Vec<String>,
+    local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
+    checking_permissions:bool,
     input_locked: bool,
     side_services: SideServiceUiState,
     selected_resolution: (u32, u32),
@@ -3597,9 +3602,9 @@ fn slide_over_management_drawer(
                     }
                     DrawerTab::Files => file_transfer_panel(owner.clone(), cx).into_any_element(),
                     DrawerTab::Security => {
-                        drawer_security_tab(input_locked, side_services,
+                        drawer_security_tab(local_permissions.clone(),checking_permissions,input_locked, side_services,
                             #[cfg(target_os = "linux")] local_share_state,
-                            #[cfg(target_os = "linux")] local_share_active, owner, cx)
+                            owner, cx)
                             .into_any_element()
                     }
                     DrawerTab::Network => drawer_network_telemetry_tab(
@@ -3712,6 +3717,8 @@ impl RestoredDashboard {
     fn refresh_local_permissions(&mut self, cx: &mut Context<Self>) {
         if self.checking_permissions { return; }
         self.checking_permissions=true;
+        #[cfg(target_os="linux")]
+        {self.dispatch_local_share(crate::desktop::local_share::Action::Refresh,cx);}
         let background=self.background.clone();
         let work=tokio::task::spawn_blocking(move || match background {
             Some(client)=>client.sharing_permissions().map_err(|error|error.to_string()),
@@ -3728,36 +3735,35 @@ impl RestoredDashboard {
     }
 
     #[cfg(target_os = "linux")]
-    fn dispatch_local_share(&mut self, action: crate::desktop::local_share::Action, cx: &mut Context<Self>) {
-        use crate::desktop::local_share::Effect;
-        let Some(effect) = self.local_share_state.reduce(action) else { return; };
-        match effect {
-            Effect::Cancel(attempt) => self.local_share_owner.cancel(attempt),
-            Effect::Stop(key) => self.local_share_owner.stop(&key),
-            Effect::Refresh(receipt) => {
-                let future = self.local_share_owner.refresh(receipt);
-                let task = tokio::spawn(future);
-                cx.spawn(async move |view, cx| {
-                    let result = task.await.unwrap_or_else(|_| Err("Viewer refresh stopped".into()));
-                    let _ = view.update(cx, |this, cx| {
-                        match result {
-                            Ok(rows) => { this.local_share_state.refreshed(receipt, rows); }
-                            Err(error) => { this.local_share_state.refresh_failed(receipt, error); }
-                        }
-                        cx.notify();
-                    });
-                }).detach();
-            }
-            Effect::Select { attempt, key, kind, reuse } => {
-                let future = self.local_share_owner.select_source(attempt, key, kind, reuse);
-                let task = tokio::spawn(future);
-                cx.spawn(async move |view, cx| {
-                    let result = task.await.unwrap_or_else(|_| Err("Selection stopped".into()));
-                    let _ = view.update(cx, |this, cx| { this.local_share_state.completed(attempt, result); cx.notify(); });
-                }).detach();
-            }
-        }
+    fn dispatch_local_share(&mut self, action:crate::desktop::local_share::Action,cx:&mut Context<Self>) {
+        let Some(effect)=self.local_share_state.reduce(action) else {cx.notify();return;};
+        let receipt=effect.receipt;
+        let task=tokio::spawn(self.local_share_owner.call(effect.call));
+        cx.spawn(async move |view,cx| {
+            let result=task.await.unwrap_or_else(|_|Err("Sharing request stopped; check status".into()));
+            let _=view.update(cx,|this,cx| {this.local_share_state.completed(receipt,result);cx.notify();});
+        }).detach();
+        self.poll_local_sharing(cx);
         cx.notify();
+    }
+    #[cfg(target_os = "linux")]
+    fn poll_local_sharing(&mut self,cx:&mut Context<Self>) {
+        if self.local_share_polling {return;}
+        self.local_share_polling=true;
+        cx.spawn(async move |view,cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                let next=view.update(cx,|this,_| {
+                    if !this.drawer_open || this.active_tab!=DrawerTab::Security || !this.window_active {
+                        this.local_share_polling=false;return None;
+                    }
+                    Some((this.local_share_state.receipt(),this.local_share_owner.call(crate::sharing_permissions::SharingCall::Status)))
+                });
+                let Ok(Some((receipt,future)))=next else {break;};
+                let result=tokio::spawn(future).await.unwrap_or_else(|_|Err("Sharing status is unavailable".into()));
+                if view.update(cx,|this,cx| {if this.local_share_state.polled(receipt,result) {cx.notify();}}).is_err() {break;}
+            }
+        }).detach();
     }
 
     fn dispatch_stream_settings_action(
@@ -3993,12 +3999,9 @@ fn drawer_device_group_tab(
     content
 }
 
-fn local_permissions_panel(cx: &mut Context<RestoredDashboard>) -> Div {
+fn local_permissions_panel(status:Option<Result<crate::sharing_permissions::Status,String>>,checking:bool,cx: &mut Context<RestoredDashboard>) -> Div {
     use crate::sharing_permissions::{Access, Setting};
     let view=cx.weak_entity();
-    let state=cx.entity().read(cx);
-    let checking=state.checking_permissions;
-    let status=state.local_permissions.clone();
     let mut panel=div().flex().flex_col().gap_2()
         .child(div().flex().items_center().justify_between()
             .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).child("Sharing & permissions"))
@@ -4031,10 +4034,11 @@ fn local_permissions_panel(cx: &mut Context<RestoredDashboard>) -> Div {
 }
 
 fn drawer_security_tab(
+    local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
+    checking_permissions:bool,
     input_locked: bool,
     side_services: SideServiceUiState,
     #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
-    #[cfg(target_os = "linux")] local_share_active: Vec<String>,
     owner: Arc<OriginalOwner>,
     cx: &mut Context<RestoredDashboard>,
 ) -> Div {
@@ -4045,12 +4049,12 @@ fn drawer_security_tab(
     let file_transfer_enabled = side_services.file_transfer.enabled;
     let snapshot = owner.snapshot();
     let input_available = snapshot.supports_input && matches!(snapshot.role, RoleState::Viewing(_));
-    let mut local = local_permissions_panel(cx);
+    let mut local = local_permissions_panel(local_permissions,checking_permissions,cx);
     #[cfg(target_os = "linux")]
     {
         let share_view=cx.weak_entity();
         local=local.child(crate::desktop::local_share::Controls::new(
-            local_share_state.clone(),local_share_active,
+            local_share_state.clone(),
             move |action,cx| {let _=share_view.update(cx,|this,cx|this.dispatch_local_share(action,cx));},
         ));
     }

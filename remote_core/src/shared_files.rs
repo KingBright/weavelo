@@ -10,8 +10,9 @@ use std::{
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 pub type ShareScope = Option<[u8; 32]>;
+pub fn share_scope_for_key(key:&[u8])->[u8;32] {Sha256::digest(key).into()}
 pub fn current_share_scope() -> ShareScope {
-    crate::session_crypto::load_session_psk().map(|key| Sha256::digest(&key).into())
+    crate::session_crypto::load_session_psk().map(|key|share_scope_for_key(&key))
 }
 #[derive(Debug)]
 pub struct SharedFile {

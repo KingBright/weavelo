@@ -27,6 +27,7 @@ OBSERVATION_TIMEOUT_SECONDS = 60
 # callers cannot supply Cargo arguments, alternate profiles or test executables.
 SESSION_CLOCK_TESTS = {
     "host-linux-capture": ("host", "linux_"),
+    "sharing-ui": ("weavelo_app", "desktop::local_share::tests"),
     "committed-text-input": ("remote_core", "workspace_input::tests"),
     "committed-text-native": ("host", "unicode_"),
     "committed-text-protocol": ("protocol", "interaction::"),

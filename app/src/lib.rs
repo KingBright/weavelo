@@ -18,6 +18,8 @@ pub mod desktop;
 mod original_design;
 pub mod preferences;
 mod sharing_permissions;
+#[cfg(target_os="linux")]
+mod local_sharing;
 mod telemetry_display;
 pub mod network_diagnostics;
 

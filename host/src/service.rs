@@ -90,6 +90,12 @@ impl LocalPortalShareTarget {
 }
 #[cfg(all(unix, any(test, target_os = "linux")))]
 pub enum LocalPortalShareCommand {
+    Publish {
+        scope:remote_core::shared_files::ShareScope,
+        captures:Vec<PreparedPortalCapture>,
+        default_display:Option<CaptureSource>,
+        reply:tokio::sync::oneshot::Sender<Result<(),String>>,
+    },
     Targets {
         reply: tokio::sync::oneshot::Sender<Vec<LocalPortalShareTarget>>,
     },
@@ -341,6 +347,10 @@ struct Connection {
     retiring_tasks: Vec<tokio::task::JoinHandle<()>>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     native_capture: HashMap<u32, PreparedPortalCapture>,
+    #[cfg(all(unix, any(test, target_os = "linux")))]
+    shared_sources:Arc<std::sync::Mutex<crate::shared_portal_sources::SharedPortalSources>>,
+    #[cfg(all(unix, any(test, target_os = "linux")))]
+    share_scope:remote_core::shared_files::ShareScope,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
@@ -811,7 +821,9 @@ impl Connection {
         #[cfg(not(all(unix, any(test, target_os = "linux"))))]
         let mut sources = legacy?;
         #[cfg(all(unix, any(test, target_os = "linux")))]
-        let mut sources = Vec::new();
+        let mut sources = if self.share_scope==remote_core::shared_files::current_share_scope() {
+            self.shared_sources.lock().unwrap_or_else(|e|e.into_inner()).catalog(self.share_scope)
+        } else {Vec::new()};
         #[cfg(all(unix, any(test, target_os = "linux")))]
         for capture in self.native_capture.values() {
             if !capture.is_revoked() {
@@ -923,6 +935,10 @@ impl Connection {
             retiring_tasks: Vec::new(),
             #[cfg(all(unix, any(test, target_os = "linux")))]
             native_capture: HashMap::new(),
+            #[cfg(all(unix, any(test, target_os = "linux")))]
+            shared_sources:Arc::default(),
+            #[cfg(all(unix, any(test, target_os = "linux")))]
+            share_scope:None,
         }
     }
 
@@ -1031,9 +1047,27 @@ impl Connection {
         if request.id == 0 || request.id >= 0x1000_0000 {
             return Err("subscription ID outside supported range".into());
         }
+        #[cfg(all(unix, any(test, target_os = "linux")))]
+        let shared_candidate=if self.share_scope==remote_core::shared_files::current_share_scope() {
+            let existing=self.subscriptions.get(&request.id).filter(|sub|sub.request.source==request.source).and_then(|sub|sub.native_capture.as_ref());
+            self.shared_sources.lock().unwrap_or_else(|e|e.into_inner()).for_subscription(request.source,self.share_scope,existing)
+        } else {None};
+        #[cfg(all(unix, any(test, target_os = "linux")))]
+        let native_current=self.subscriptions.get(&request.id).and_then(|sub|sub.native_capture.as_ref())
+            .is_none_or(|capture|!capture.is_revoked() && if capture.is_subscriber() {
+                shared_candidate.as_ref().is_some_and(|parent|capture.same_source(parent))
+            } else {true});
+        #[cfg(all(unix, any(test, target_os = "linux")))]
+        if shared_candidate.is_none() && self.subscriptions.get(&request.id).is_some_and(|sub|
+            sub.request.source==request.source && sub.native_capture.as_ref().is_some_and(PreparedPortalCapture::is_subscriber)) {
+            return Err("The shared source ended or its device network changed; choose an available source".into());
+        }
+        #[cfg(not(all(unix, any(test, target_os = "linux"))))]
+        let native_current=true;
         if let Some(existing) = self.subscriptions.get_mut(&request.id)
             && existing.request.source == request.source
             && existing.request.audio == request.audio
+            && native_current
             && !existing.task.is_finished()
         {
             // Updating rates on an unchanged source must not restart capture,
@@ -1070,7 +1104,11 @@ impl Connection {
             );
             return Err(reason);
         }
-        let sources = if request.source == CaptureSource::MainDisplay {
+        #[cfg(all(unix, any(test, target_os = "linux")))]
+        let shared_info=shared_candidate.as_ref().map(|capture| {let mut info=capture.source_info();info.source=request.source;info});
+        #[cfg(not(all(unix, any(test, target_os = "linux"))))]
+        let shared_info:Option<protocol::session::CaptureSourceInfo>=None;
+        let sources = if let Some(info)=shared_info {vec![info]} else if request.source == CaptureSource::MainDisplay {
             Vec::new()
         } else {
             #[cfg(all(unix, any(test, target_os = "linux")))]
@@ -1101,6 +1139,15 @@ impl Connection {
                 }
             })
             .transpose()?;
+        #[cfg(all(unix, any(test, target_os = "linux")))]
+        let native_capture=match (native_capture,shared_candidate) {
+            (Some(capture),_)=>Some(capture),
+            (None,Some(parent))=>Some(match self.subscriptions.get(&request.id).and_then(|sub|sub.native_capture.as_ref())
+                .filter(|capture|!capture.is_revoked() && capture.same_source(&parent)) {
+                    Some(existing)=>existing.clone(),None=>parent.fork().map_err(|e|e.to_string())?,
+                }),
+            (None,None)=>None,
+        };
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = &native_capture {
             let info = capture.source_info();
@@ -1936,6 +1983,8 @@ async fn run_host_service_inner(
     let (udp_sender, udp_receiver) = multiplexer.split();
     let injector = LazyInputInjector::default();
     let mut peers = HashMap::<SocketAddr, Connection>::new();
+    #[cfg(all(unix, any(test, target_os = "linux")))]
+    let shared_portal_sources=Arc::new(std::sync::Mutex::new(crate::shared_portal_sources::SharedPortalSources::default()));
     let mut closing = HashMap::<SocketAddr, ClosingTask>::new();
     let mut closed = HashMap::<SocketAddr, ClosedReceipt>::new();
     let mut authenticated = HashMap::<SocketAddr, ([u8; 16], [u8; 16], Instant)>::new();
@@ -1992,6 +2041,12 @@ async fn run_host_service_inner(
                     let scope = remote_core::shared_files::current_share_scope();
                     let key_unchanged = load_session_psk() == psk;
                     match local {
+                        Some(LocalPortalShareCommand::Publish {scope:requested_scope,captures,default_display,reply})=> {
+                            let result=if key_unchanged {
+                                shared_portal_sources.lock().unwrap_or_else(|e|e.into_inner()).publish(requested_scope,captures,default_display,scope)
+                            } else {Err("Device network changed; choose the source again".into())};
+                            let _=reply.send(result);
+                        }
                         Some(LocalPortalShareCommand::Targets { reply }) => {
                             let targets = peers.iter().filter(|_| key_unchanged).flat_map(|(addr,peer)| {
                                 let owner = authenticated.get(addr).and_then(|(nonce,_,_)| PeerOwner::from_authenticated_connection(peer.id, *nonce, scope).ok());
@@ -2008,6 +2063,7 @@ async fn run_host_service_inner(
                         }
                         None => {
                             local_shares = None;
+                            shared_portal_sources.lock().unwrap_or_else(|e|e.into_inner()).clear();
                             for peer in peers.values_mut() { for (_,capture) in peer.native_capture.drain() { capture.revoke(); } }
                         }
                     }
@@ -2019,6 +2075,8 @@ async fn run_host_service_inner(
                 expire_input_owners(&mut peers,&mut input_owner,&injector).await;
             }
             _ = tick.tick() => {
+                #[cfg(all(unix, any(test, target_os = "linux")))]
+                shared_portal_sources.lock().unwrap_or_else(|e|e.into_inner()).reconcile(remote_core::shared_files::current_share_scope());
                 let current_key = load_session_psk();
                 if current_key != psk {
                     for addr in authenticated.keys() { udp_sender.remove_peer_crypto(*addr); }
@@ -2116,6 +2174,8 @@ async fn run_host_service_inner(
                                 if validate_host_video_settings(width, height, fps, bitrate_kbps).is_err() { continue; }
                                 if connection_admission_error(addr, &peers, &closing, &closed).is_some() { continue; }
                                 let peer = peers.entry(addr).or_insert_with(|| Connection::new(session_id, addr, udp_sender.clone(), &config));
+                                #[cfg(all(unix, any(test, target_os = "linux")))]
+                                {peer.shared_sources=shared_portal_sources.clone();peer.share_scope=psk.as_ref().map(|key|remote_core::shared_files::share_scope_for_key(key));}
                                 peer.set_clipboard(config.enable_clipboard_sync);
                                 if !peer.subscriptions.contains_key(&session_id) {
                                     if input_owner.owner.is_some_and(|(owner,_)| owner == addr) { let _ = input_owner.release(&injector).await; }
@@ -2172,7 +2232,10 @@ async fn run_host_service_inner(
                                     let reply = if version != SESSION_VERSION || connection_id == 0 { SessionCommand::Error { request_id: connection_id, reason: "unsupported connection version or ID".into() } }
                                     else if let Some(reason) = connection_admission_error(addr, &peers, &closing, &closed) { SessionCommand::Error { request_id: connection_id, reason: reason.into() } }
                                     else if peers.get(&addr).is_some_and(|p| p.id != connection_id) { SessionCommand::Error { request_id: connection_id, reason: "close the existing connection first".into() } }
-                                    else { closed.remove(&addr); let peer = peers.entry(addr).or_insert_with(|| Connection::new(connection_id, addr, udp_sender.clone(), &config)); peer.versioned_control=true; SessionCommand::Opened { connection_id, version: SESSION_VERSION, max_subscriptions: MAX_SUBSCRIPTIONS as u32, files: peer.files.is_some(), clipboard: config.enable_clipboard_sync, window_capture } };
+                                    else { closed.remove(&addr); let peer = peers.entry(addr).or_insert_with(|| Connection::new(connection_id, addr, udp_sender.clone(), &config));
+                                        #[cfg(all(unix, any(test, target_os = "linux")))]
+                                        {peer.shared_sources=shared_portal_sources.clone();peer.share_scope=psk.as_ref().map(|key|remote_core::shared_files::share_scope_for_key(key));}
+                                        peer.versioned_control=true; SessionCommand::Opened { connection_id, version: SESSION_VERSION, max_subscriptions: MAX_SUBSCRIPTIONS as u32, files: peer.files.is_some(), clipboard: config.enable_clipboard_sync, window_capture } };
                                     input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await;
                                 }
                                 SessionCommand::DeliveryOffer{request_id,source_device_id,target_device_id,ticket,revision} => {
