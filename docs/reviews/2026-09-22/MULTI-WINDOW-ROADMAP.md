@@ -2,6 +2,8 @@
 
 > 历史审查记录：当前大版本实现及未完成项请以 [V2-ACCEPTANCE.md](V2-ACCEPTANCE.md) 为准。
 
+> 2026-10-30 后续规划补充：[主动投送、画板与教学模式](../../plans/ACTIVE-PUSH-WHITEBOARD-TEACHING.md)，覆盖四台电脑与两台手机；本页保留原日期的审查事实。
+
 2026-09-22。检查基线为 `main@969ca10` 加当前工作区修改。工作树只有当前 `main`，此前刷新后的 `origin/main` 与其一致，没有待合并工作树；本轮直接在主干工作区修改，未提交、推送或发布。前序证据见 [整体差距](READINESS.md)、[音视频性能](AV-PERFORMANCE.md) 和 [媒体暂停及后台策略](STREAM-CONTROLS.md)。
 
 ## 结论

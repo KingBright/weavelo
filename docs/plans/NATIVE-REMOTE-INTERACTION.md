@@ -4,6 +4,9 @@ Remote applications should be recognizable and behave predictably as local
 windows. Keep common session, input and geometry logic, with native media and
 OS adapters. Measure performance on the actual machines and both USB phones.
 
+The next delivery phases for active push, a pushable whiteboard, and teaching
+cursors/annotations are tracked in [the cross-device plan](ACTIVE-PUSH-WHITEBOARD-TEACHING.md).
+
 ## Window identity and controls
 
 Show the confirmed application/window and device in the OS window title and
