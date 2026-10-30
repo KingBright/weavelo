@@ -14,7 +14,7 @@
 <h1 class="hero">你的机器，<br>就在手边。</h1>
 <p class="lead">Weavelo 自研低延迟远程桌面客户端。连接策略始终优先 LAN，其次 P2P 直连，只有直连不可用时才回退到 NAS Relay。</p>
 <section class="card" id="current"><div>正在读取版本信息…</div></section>
-<section class="card"><div class="eyebrow">Desktop / Host</div><h2>电脑端下载</h2><div id="desktop">正在读取电脑端安装包…</div><p class="meta">Linux、macOS、Windows 使用同一桌面 GUI，可查看远端、传送文件和控制受支持的来源；屏幕、控制及音频能力以主机的系统授权为准。</p><a href="acceptance-2.0.0-alpha.9.html" style="color:var(--accent2)">本版验收清单与安装注意事项</a></section>
+<section class="card"><div class="eyebrow">Desktop / Host</div><h2>电脑端下载</h2><div id="desktop">正在读取电脑端安装包…</div><p class="meta">Linux、macOS、Windows 使用同一桌面 GUI，可查看远端、传送文件和控制受支持的来源；屏幕、控制及音频能力以主机的系统授权为准。</p><a id="desktop-acceptance" href="#desktop" style="color:var(--accent2)">本版验收清单与安装注意事项</a></section>
 <section class="history"><h2>Android 历史版本</h2><div id="history">正在读取…</div></section>
 <div class="foot">最新 APK 为 Android ARM64 正式签名 Release 构建。版本号含 alpha 时表示预发布版本。安装前可核对页面显示的 SHA-256。</div>
 </main>
@@ -27,6 +27,8 @@ Promise.all([fetch('release.json',{cache:'no-store'}).then(r=>r.json()),fetch('v
  document.getElementById('history').innerHTML=v.releases.map(x=>`<div class="release"><div><strong>v${esc(x.version)}</strong> · ${esc(x.commit)}<div class="meta">${esc(x.published_at)} · ${mb(x.size_bytes)}</div></div><a href="${downloadHref(x.file)}">下载</a></div>`).join('')||'<div class="meta">暂无历史版本</div>';
 }).catch(e=>{document.getElementById('current').textContent='版本信息加载失败：'+e;});
 fetch('desktop-releases.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('not published');return r.json()}).then(d=>{
+ const acceptance=d.acceptance_file;
+ if(typeof acceptance==='string' && /^[A-Za-z0-9._-]+\.html$/.test(acceptance)) document.getElementById('desktop-acceptance').href=acceptance;
  const items=d.releases||[];
  document.getElementById('desktop').innerHTML=items.map(p=>`<div class="release"><div><strong>${esc(p.title)}</strong><div class="meta">${esc(p.version)} · ${mb(p.size_bytes)}</div><div class="meta">${esc(p.validation)}</div><div class="meta">${esc(p.notes)}</div><details><summary>SHA-256</summary><code style="word-break:break-all">${esc(p.sha256)}</code></details></div><a href="${downloadHref(p.file)}">下载</a></div>`).join('');
 }).catch(()=>{document.getElementById('desktop').textContent='电脑端包尚未发布，请稍后刷新。'});

@@ -41,6 +41,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     var requestedFilePicker by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val state by WorkspaceClient.state.collectAsState()
+    val devices by WeaveloClient.devices.collectAsState()
+    val remoteDevice = devices.firstOrNull { it.id == deviceId }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     var localError by remember { mutableStateOf<String?>(null) }
     var receivedFiles by remember { mutableStateOf(false) }
@@ -105,6 +107,15 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }.onFailure { withContext(Dispatchers.Main) { localError = it.message } }
         }
     }
+    LaunchedEffect(sessionKey, foreground, remoteDevice?.endpoint, remoteDevice?.canOpenWorkspace) {
+        val requested = WorkspaceClient.requestedSession()
+        val current = WorkspaceClient.state.value
+        if (foreground && remoteDevice?.canOpenWorkspace == true &&
+            requested?.sessionKey == sessionKey && requested.deviceId == deviceId &&
+            current.sessionKey == sessionKey && !current.connected && !WorkspaceClient.starting) {
+            WorkspaceClient.reconnect()
+        }
+    }
     LaunchedEffect(state.sessionKey, state.connected, state.files, sendFileOnConnect) {
         // Wait for this connection's capability response, not a previous device's state.
         if (sendFileOnConnect && !requestedFilePicker && state.sessionKey == sessionKey && state.connected && state.files) {
@@ -121,7 +132,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     SessionConnectionService.closeWorkspace(context, sessionKey); onClose()
                 })
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(WeaveloClient.devices.value.firstOrNull { it.id == deviceId }?.name ?: "Remote device",
+                    Text(remoteDevice?.name ?: "Remote device",
                         color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                         maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     Text(if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
