@@ -80,9 +80,9 @@ class RemoteControlService : AccessibilityService() {
     }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
     override fun onInterrupt() {
-        runCatching { PublisherClient.action(8,"false") }
-        mutableConnected.value = false
-        reset(-1)
+        // Interrupt current feedback/gestures; the system still owns this binding.
+        // Keep its generation so later fresh input can resume after cancellation.
+        reset(generation)
     }
     override fun onDestroy() {
         running = false; handler.removeCallbacks(poll)
