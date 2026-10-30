@@ -6,10 +6,10 @@ STAGE="${1:?Usage: publish_desktop_nas.sh ARTIFACT_DIRECTORY [--macos-only] [--d
 shift
 MODE=apply
 SCOPE=all
-VERIFY_OPTIONS=()
+VERIFY_OPTIONS=(--desktop)
 for option in "$@"; do
   case "$option" in
-    --macos-only) [[ "$SCOPE" == all ]] || exit 2; SCOPE=macos; VERIFY_OPTIONS=(--macos-only) ;;
+    --macos-only) [[ "$SCOPE" == all ]] || exit 2; SCOPE=macos; VERIFY_OPTIONS=(--desktop --macos-only) ;;
     apply|--dry-run|--verify-only) [[ "$MODE" == apply ]] || exit 2; MODE="$option" ;;
     *) echo "Unknown publication option: $option" >&2; exit 2 ;;
   esac
