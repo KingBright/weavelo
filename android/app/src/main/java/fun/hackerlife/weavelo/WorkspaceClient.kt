@@ -305,7 +305,10 @@ object WorkspaceClient {
             val control = event.optJSONObject("control")
             control?.optJSONObject("Opened")?.let { mutable.value = mutable.value.copy(maxSubscriptions = it.getInt("max_subscriptions"), files = it.getBoolean("files"), clipboardAvailable = it.getBoolean("clipboard")) }
             control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, status = it.getString("reason")) }
-            control?.optJSONObject("TextRejected")?.let { mutable.value=mutable.value.copy(status=it.getString("reason")) }
+            control?.optJSONObject("TextRejected")?.let {
+                val id = it.getJSONObject("binding").getInt("subscription_id")
+                if (mutable.value.panes.any { pane -> pane.id == id }) mutable.value = mutable.value.copy(status = it.getString("reason"))
+            }
             control?.optJSONObject("ClipboardState")?.let { mutable.value = mutable.value.copy(clipboard = it.getBoolean("enabled")) }
             event.optJSONObject("clipboard")?.let { applyClipboard(it) }
             event.optJSONObject("detail")?.takeIf { it.has("clipboard_files") }?.let { applyClipboard(it) }
@@ -350,8 +353,12 @@ object WorkspaceClient {
                 activity()
             }
             control?.optJSONObject("Error")?.let {
-                android.util.Log.w("WeaveloWorkspace", "Request ${it.getInt("request_id")} failed: ${it.getString("reason")}")
-                mutable.value = mutable.value.copy(status = it.getString("reason"))
+                val id = it.getInt("request_id")
+                android.util.Log.w("WeaveloWorkspace", "Request $id failed: ${it.getString("reason")}")
+                // A late settings/unsubscribe reply for a closed pane must not
+                // replace the status of the current screen or its keyboard.
+                if (id in 0..1 || mutable.value.panes.any { pane -> pane.id == id })
+                    mutable.value = mutable.value.copy(status = it.getString("reason"))
             }
             if (event.has("file")) mutable.value = mutable.value.copy(status = event.getString("file").take(220))
             event.optJSONObject("detail")?.let { detail ->

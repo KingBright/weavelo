@@ -61,7 +61,7 @@ if [[ "$SIGN_PREPARED" == 1 ]]; then
 else
     ./scripts/build_android_native.sh
     cd android
-    ./gradlew --no-daemon --no-configuration-cache --max-workers=2 -Pandroid.injected.apk.location="$APK_WORKSPACE" -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx2g -XX:MaxMetaspaceSize=1g' :app:assembleRelease :app:lintRelease :app:testDebugUnitTest
+    ./gradlew --no-daemon --no-configuration-cache --max-workers=2 -Pandroid.injected.apk.location="$APK_WORKSPACE" -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.jvmargs='-Xmx2g -XX:MaxMetaspaceSize=1g' :app:assembleRelease :app:lintRelease :app:testReleaseUnitTest
 fi
 if [[ "$UNSIGNED_ONLY" == 1 ]]; then
     exec python3 -B "$ROOT/scripts/release_artifact_lifecycle.py" hold-unsigned
