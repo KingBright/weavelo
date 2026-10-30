@@ -27,17 +27,27 @@ unsafe extern "system" fn message(window: HWND, message: u32, wparam: WPARAM, lp
         }
         if message==CALLBACK && !state.is_null() {
             let event=lparam as u32 & 0xffff;
+            if event!=WM_MOUSEMOVE && event!=NIN_POPUPOPEN && event!=NIN_POPUPCLOSE {
+                eprintln!("Weavelo tray shell event: {event:#06x}");
+            }
             if event==NIN_SELECT || event==(NIN_SELECT|NINF_KEY) {
                 let _=(*state).actions.send(Action::Open);
             } else if event==WM_CONTEXTMENU {
                 let menu=CreatePopupMenu();
+                if menu.is_null() {eprintln!("Weavelo tray menu: {}",std::io::Error::last_os_error());return 0;}
                 let open=wide("Open Weavelo");let quit=wide("Quit Weavelo");
-                AppendMenuW(menu,MF_STRING,1,open.as_ptr());AppendMenuW(menu,MF_STRING,2,quit.as_ptr());
-                let mut point=POINT{x:0,y:0};GetCursorPos(&mut point);
-                SetForegroundWindow(window);
+                if AppendMenuW(menu,MF_STRING,1,open.as_ptr())==0 || AppendMenuW(menu,MF_STRING,2,quit.as_ptr())==0 {
+                    eprintln!("Weavelo tray menu items: {}",std::io::Error::last_os_error());DestroyMenu(menu);return 0;
+                }
+                // Version 4 carries the icon's screen anchor, including keyboard activation.
+                let point=POINT{x:wparam as i16 as i32,y:(wparam>>16) as i16 as i32};
+                if SetForegroundWindow(window)==0 {eprintln!("Weavelo tray menu foreground request was not accepted");}
+                SetLastError(0);
                 let chosen=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_RIGHTBUTTON,
                     point.x,point.y,0,window,std::ptr::null());
+                let error=if chosen==0 {GetLastError()} else {0};
                 DestroyMenu(menu);PostMessageW(window,WM_NULL,0,0);
+                if error!=0 {eprintln!("Weavelo tray menu: {}",std::io::Error::from_raw_os_error(error as i32));}
                 match chosen {1=>{let _=(*state).actions.send(Action::Open);},2=>{let _=(*state).actions.send(Action::Quit);},_=>{}}
             }
             return 0;
