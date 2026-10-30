@@ -115,7 +115,7 @@ fn run_original_dashboard(
                 crate::product_components::theme::install(
                     product_window_appearance(),
                     weavelo_themes(), cx);
-                open_restored_window(runtime, instance, activation, None, background, exit_group, cx);
+                open_restored_window(runtime, instance, activation, None, background, exit_group, cx).expect("failed to open Weavelo window");
             })
     })?;
     if let Some(error) = startup_error.lock().map_err(|_| "GUI startup error lock poisoned")?.take() {
@@ -150,8 +150,8 @@ fn open_restored_window(
     background: Option<crate::background_service::Client>,
     exit_group: Arc<FrontendExitGroup>,
     cx: &mut App,
-) {
-    if exit_group.stopping.load(Ordering::Acquire) {return;}
+) -> Option<WindowHandle<RestoredDashboard>> {
+    if exit_group.stopping.load(Ordering::Acquire) {return None;}
     let primary = instance.is_some();
     let attached = instance.as_ref().is_some_and(|i| i.is_frontend());
     let options = WindowOptions {
@@ -186,6 +186,7 @@ fn open_restored_window(
                 let _ = weak.update(cx, |this, cx| this.begin_full_exit(cx));
                 false
             } else {
+                let _ = weak.update(cx, |this, _| this.owner.close_received_window());
                 true
             }
         });
@@ -221,6 +222,11 @@ fn open_restored_window(
                     }
                     #[cfg(any(unix, windows))]
                     view.poll_directed_receive(cx);
+                    if view.delivery_closed.as_ref().is_some_and(|closed|closed.load(Ordering::Acquire)) {
+                        let handle=view.window_handle;
+                        cx.defer(move |cx| {let _=handle.update(cx,|_,window,_|window.remove_window());});
+                        return Duration::from_secs(1);
+                    }
                     owned_gui_stage(1);
                     view.window_visible = view.window_handle.update(cx, |_, window, _| window.is_window_visible()).ok().flatten();
                     view.sync_media_pause();
@@ -249,7 +255,7 @@ fn open_restored_window(
         .detach();
         view
     })
-    .expect("failed to open restored Weavelo window");
+    .ok()
 }
 
 fn product_window_appearance() -> WindowAppearance {
@@ -390,6 +396,7 @@ struct RestoredDashboard {
     directed_receive: Option<crate::desktop::directed_receive::Adapter>,
     #[cfg(any(unix, windows))]
     directed_send: Option<crate::desktop::directed_send::SendHandle>,
+    delivery_closed: Option<Arc<AtomicBool>>,
     activation: Arc<AtomicBool>,
     bound_source: Option<(u32, Instant)>,
     quitting: bool,
@@ -517,6 +524,7 @@ impl RestoredDashboard {
             directed_receive,
             #[cfg(any(unix, windows))]
             directed_send: None,
+            delivery_closed: None,
             activation,
             bound_source: None,
             quitting: false,
@@ -705,20 +713,43 @@ impl RestoredDashboard {
     #[cfg(any(unix, windows))]
     fn stop_directed_receive(&mut self) {
         if self.directed_receive.as_mut().and_then(|adapter| adapter.lease.take()).is_some() {
-            self.session_commands.begin();
-            self.invalidate_source_commands();
-            // Lease::drop and its independent watchdog revoke only their exact
-            // pending attempt/connection; a later manual session remains intact.
-            self.pointer_input = PointerInputTracker::default();
+            // Each receive window owns its exact subscription and watchdog.
             self.status = "Directed receive stopped".into();
         }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn open_received_window(&mut self, request: &str, device: &str,
+        capture: protocol::session::CaptureSource, duration: Duration,
+        mut claim: Option<protocol::session::DeliveryClaimProof>, cx: &mut Context<Self>)
+        -> Result<(crate::desktop::directed_receive::ReceiveWindow, WindowHandle<RestoredDashboard>), String>
+    {
+        let handle=open_restored_window(self.runtime.clone(),None,Arc::new(AtomicBool::new(false)),
+            None,self.background.clone(),self.exit_group.clone(),cx).ok_or("Could not open the receiving window")?;
+        let owner=handle.read(cx).map_err(|error|error.to_string())?.owner.clone();
+        let watchdog=match owner.begin_directed_receive(request,device,capture,duration) {
+            Ok(watchdog)=>watchdog, Err(error)=>{let _=handle.update(cx,|_,window,_|window.remove_window());return Err(error.to_string());}
+        };
+        if let Some(proof)=&mut claim {proof.source=capture;}
+        owner.set_receive_claim(request,claim);
+        let close=Arc::new(AtomicBool::new(false));
+        let member=crate::desktop::directed_receive::ReceiveWindow {
+            request_id:request.to_owned(),close:close.clone(),source:capture,owner:Arc::downgrade(&owner),watchdog,
+        };
+        if let Err(error)=handle.update(cx,|this,_,cx| {
+            this.delivery_closed=Some(close);
+            this.start_stream_connection(device.to_owned(),Some(request.to_owned()),cx)
+        }) {
+            let _=handle.update(cx,|_,window,_|window.remove_window());return Err(error.to_string());
+        }
+        Ok((member,handle))
     }
 
     #[cfg(any(unix, windows))]
     fn poll_directed_receive(&mut self, cx: &mut Context<Self>) {
         if let Some(sender)=&self.directed_send {let _=sender.poll();}
         use crate::desktop::directed_receive::{Request, Lease};
-        if self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).is_some_and(|lease| !self.owner.directed_receive_current(&lease.request_id)) {
+        if self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).is_some_and(|lease| !lease.current()) {
             self.stop_directed_receive();
         }
         loop {
@@ -774,45 +805,51 @@ impl RestoredDashboard {
                 Request::Status => serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,"gui_close":crate::desktop::upgrade_quit::GUI_CLOSE_CAPABILITY,
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
-                    "lease":adapter.lease.as_ref().map(|lease| serde_json::json!({"request_id":lease.request_id,
-                        "source_device_id":lease.source,"remaining_ms":lease.expires.saturating_duration_since(Instant::now()).as_millis()})),
+                    "lease":adapter.lease.as_ref().map(|lease|lease.snapshot()),
                     "sessions":self.owner.diagnostic_snapshot(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
                     })).collect::<Vec<_>>()}),
-                Request::Receive { request_id, source_device_id, lease_ms, claim, .. } => {
+                Request::Receive { request_id, source_device_id, sources, lease_ms, claim, .. } => {
                     let tabs = self.owner.session_tabs();
-                    if adapter.lease.is_some() || !tabs.tabs.is_empty() || tabs.connecting.is_some() {
-                        serde_json::json!({"ok":false,"error":"Close the current window's sessions before receiving a directed stream"})
+                    let viewing = self.exit_group.owners().len().saturating_sub(1)
+                        + usize::from(!tabs.tabs.is_empty() || tabs.connecting.is_some());
+                    if adapter.lease.is_some() {
+                        serde_json::json!({"ok":false,"error":"A directed delivery is already open"})
+                    } else if viewing.saturating_add(sources.len()) > protocol::session::MAX_SUBSCRIPTIONS {
+                        serde_json::json!({"ok":false,"error":"Close a viewing window to receive these sources"})
                     } else if !self.owner.snapshot().devices.iter().any(|d| d.device_id == source_device_id && d.is_streamable()) {
                         serde_json::json!({"ok":false,"error":"Source is not a currently available paired streaming device"})
                     } else {
                         let duration = Duration::from_millis(lease_ms);
-                        let watchdog = match self.owner.begin_directed_receive(&request_id, &source_device_id, duration) {
-                            Ok(watchdog) => watchdog,
-                            Err(error) => { let _ = command.reply.send(serde_json::json!({"ok":false,"error":error.to_string()}).into()); continue; }
-                        };
-                        self.owner.set_receive_claim(&request_id,claim);
-                        self.directed_receive.as_mut().unwrap().lease = Some(Lease {
-                            request_id:request_id.clone(),source:source_device_id.clone(), expires:Instant::now()+duration,
-                            owner:Arc::downgrade(&self.owner), watchdog, revision:1,
-                            _upgrade_operation:crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations),
-                        });
-                        // Shared real UI action; only an in-process ownership
-                        // receipt differs from the ordinary pull connect path.
-                        self.start_stream_connection(source_device_id, Some(request_id.clone()), cx);
-                        self.activation.store(true, Ordering::Release);
-                        newly_accepted = true;
-                        serde_json::json!({"ok":true,"state":"accepted","generation":generation,"request_id":request_id,"lease_ms":lease_ms})
+                        let expires = Instant::now() + duration;
+                        let mut members = Vec::new(); let mut handles = Vec::new(); let mut error = None;
+                        for capture in sources {
+                            if command.reply.is_closed() { error=Some("Receive request ended".to_owned()); break; }
+                            match self.open_received_window(&request_id, &source_device_id, capture,
+                                expires.saturating_duration_since(Instant::now()), claim.clone(), cx) {
+                                Ok((member, handle)) => {members.push(member); handles.push(handle);}
+                                Err(reason) => {error=Some(reason);break;}
+                            }
+                        }
+                        if let Some(error) = error {
+                            drop(members);
+                            for handle in handles { let _=handle.update(cx,|_,window,_|window.remove_window()); }
+                            serde_json::json!({"ok":false,"error":error})
+                        } else {
+                            self.directed_receive.as_mut().unwrap().lease = Some(Lease {
+                                request_id:request_id.clone(),source:source_device_id, expires,
+                                windows:members, revision:1,
+                                _upgrade_operation:crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations),
+                            });
+                            newly_accepted = true;
+                            serde_json::json!({"ok":true,"state":"accepted","generation":generation,"request_id":request_id,"lease_ms":lease_ms})
+                        }
                     }
                 }
                 Request::Renew { request_id,revision,lease_ms,.. } => {
                     let accepted=adapter.lease.as_mut().filter(|l|l.request_id==request_id).is_some_and(|lease| {
-                        if revision<lease.revision {return false;}
-                        if revision==lease.revision {return self.owner.directed_receive_current(&request_id);}
-                        let duration=Duration::from_millis(lease_ms);
-                        if !self.owner.renew_directed_receive(&request_id,duration){return false;}
-                        lease.revision=revision;lease.expires=Instant::now()+duration;true
+                        lease.renew(revision, Duration::from_millis(lease_ms))
                     });
                     serde_json::json!({"ok":accepted,"state":if accepted{"accepted"}else{"ended"},"generation":generation,"request_id":request_id})
                 }
@@ -823,7 +860,7 @@ impl RestoredDashboard {
                     } else { serde_json::json!({"ok":false,"error":"Receive lease is no longer current"}) }
                 }
             };
-            let response = if newly_accepted { crate::desktop::directed_receive::Reply::accepted(response, &self.owner) } else { response.into() };
+            let response = if newly_accepted { crate::desktop::directed_receive::Reply::accepted(response, self.directed_receive.as_ref().and_then(|adapter|adapter.lease.as_ref()).map(|lease|lease.owners()).unwrap_or_default()) } else { response.into() };
             if command.reply.send(response).is_err() && newly_accepted {
                 // A lost acknowledgement never leaves a newly accepted lease running.
                 self.stop_directed_receive();
@@ -3930,8 +3967,6 @@ impl RestoredDashboard {
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {
         if self.exit_group.stopping.load(Ordering::Acquire) { return; }
-        #[cfg(any(unix, windows))]
-        if !matches!(action, DeviceListAction::SelectFilter(_) | DeviceListAction::CopyReceiveCommand(_) | DeviceListAction::SendScreen(_)) { self.stop_directed_receive(); }
         let Some(effect) = self.device_list_state.reduce(action) else { cx.notify(); return; };
         match effect {
             DeviceListEffect::ConnectStream(device_id) => self.start_stream_connection(device_id, None, cx),

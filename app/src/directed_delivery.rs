@@ -84,7 +84,6 @@ async fn receive(
     owner_mode: crate::background_service::OwnerMode,
     offer: &Arc<Incoming>,
 ) -> Result<(), Error> {
-    if offer.sources.len() != 1 {return Err("This receiver requires the multi-window update".into());}
     let directory = if owner_mode == crate::background_service::OwnerMode::Background { profile.join("gui-state") } else { profile.to_owned() };
     let mut status = ipc(directory.clone(), Request::Status).await;
     if status.is_err() {
@@ -155,6 +154,7 @@ async fn receive(
             generation: generation.clone(),
             request_id: request_id.clone(),
             source_device_id: offer.source.clone(),
+            sources: offer.sources.clone(),
             deadline_ms: crate::unix_now_ms() + 5_000,
             lease_ms,
             claim: Some(DeliveryClaimProof {
@@ -239,43 +239,46 @@ async fn receive(
     result
 }
 
+fn same_receive(status:&serde_json::Value,generation:&str,request:&str,source:&str)->bool {
+    status["generation"].as_str()==Some(generation)
+        && status["lease"]["request_id"].as_str()==Some(request)
+        && status["lease"]["source_device_id"].as_str()==Some(source)
+}
+fn window_failed(window:&serde_json::Value,source:&str)->bool {
+    if window["active"]!=true {return true;}
+    window["sessions"]["directed_receive_failed"]==true
+        || window["sessions"]["sessions"].as_array().is_some_and(|sessions|sessions.iter().any(|session|
+            session["device_id"].as_str()==Some(source) && (session["connected"]==false
+                || session["video_error"].as_str().is_some_and(|error|!error.trim().is_empty()))))
+}
 fn receiving_failed(status:&serde_json::Value,generation:&str,request:&str,source:&str)->bool {
-    if status["generation"].as_str()!=Some(generation)||status["lease"]["request_id"].as_str()!=Some(request){return false;}
-    status["sessions"]["directed_receive_failed"]==true || status["sessions"]["sessions"].as_array().is_some_and(|sessions|sessions.iter().any(|s|{
-        s["device_id"].as_str()==Some(source) && (s["connected"]==false || s["video_error"].as_str().is_some_and(|error|!error.trim().is_empty()))
-    }))
+    same_receive(status,generation,request,source)
+        && status["lease"]["windows"].as_array().is_some_and(|windows|
+            windows.is_empty() || windows.iter().all(|window|window_failed(window,source)))
 }
-fn receiving_status(
-    status: &serde_json::Value,
-    generation: &str,
-    request: &str,
-    source: &str,
-) -> bool {
-    status["generation"].as_str() == Some(generation)
-        && status["lease"]["request_id"].as_str() == Some(request)
+fn receiving_status(status:&serde_json::Value,generation:&str,request:&str,source:&str)->bool {
+    same_receive(status,generation,request,source)
         && !receiving_failed(status,generation,request,source)
-        && has_submitted_video(status, source)
+        && has_submitted_video(status,source)
 }
-fn has_submitted_video(status: &serde_json::Value, source: &str) -> bool {
-    status["sessions"]["sessions"]
-        .as_array()
-        .is_some_and(|sessions| {
-            sessions.iter().any(|s| {
-                s["device_id"].as_str() == Some(source)
-                    && s["connected"] == true
-                    && s["decoded_frames"].as_u64().unwrap_or(0) > 0
-                    && s["scene_submitted_frame"] == true
-            })
-        })
+fn has_submitted_video(status:&serde_json::Value,source:&str)->bool {
+    status["lease"]["source_device_id"].as_str()==Some(source)
+        && status["lease"]["windows"].as_array().is_some_and(|windows|windows.iter().any(|window|
+            window["active"]==true && !window_failed(window,source)
+                && window["sessions"]["sessions"].as_array().is_some_and(|sessions|sessions.iter().any(|session|
+                    session["device_id"].as_str()==Some(source) && !window["source"].is_null() && session["source_id"]==window["source"]
+                        && session["connected"]==true && session["decoded_frames"].as_u64().unwrap_or(0)>0
+                        && session["scene_submitted_frame"]==true))))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     fn confirmed_receiver() -> serde_json::Value {
-        serde_json::json!({"generation":"gui","lease":{"request_id":"request","remaining_ms":15_000},
-            "sessions":{"directed_receive_failed":false,"sessions":[{"device_id":"source","connected":true,
-                "peer_responsive":true,"confirmed":true,"error":"","video_error":null,
-                "decoded_frames":0,"scene_submitted_frame":false}]}})
+        serde_json::json!({"generation":"gui","lease":{"request_id":"request","source_device_id":"source","remaining_ms":15_000,
+            "windows":[{"source":"MainDisplay","active":true,"open":true,"sessions":{"directed_receive_failed":false,
+                "sessions":[{"device_id":"source","source_id":"MainDisplay","connected":true,
+                    "peer_responsive":true,"confirmed":true,"error":"","video_error":null,
+                    "decoded_frames":0,"scene_submitted_frame":false}]}}]}})
     }
     #[test]
     fn confirmed_healthy_receiver_without_video_expires_despite_renewals() {
@@ -290,8 +293,8 @@ mod tests {
             assert!(!deadline.observe(&status, "gui", "request", "source", start + Duration::from_secs(second)).unwrap());
         }
         assert_eq!(deadline.observe(&status, "gui", "request", "source", start + FIRST_FRAME_TIMEOUT), Err(FIRST_FRAME_TIMEOUT_REASON));
-        status["sessions"]["sessions"][0]["decoded_frames"] = 1.into();
-        status["sessions"]["sessions"][0]["scene_submitted_frame"] = true.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["decoded_frames"] = 1.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["scene_submitted_frame"] = true.into();
         assert_eq!(deadline.observe(&status, "gui", "request", "source", start + FIRST_FRAME_TIMEOUT), Err(FIRST_FRAME_TIMEOUT_REASON));
     }
     #[test]
@@ -299,9 +302,9 @@ mod tests {
         let start = Instant::now();
         let mut deadline = FirstFrameDeadline::new(start);
         let mut status = confirmed_receiver();
-        status["sessions"]["sessions"][0]["decoded_frames"] = 1.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["decoded_frames"] = 1.into();
         assert!(!deadline.observe(&status, "gui", "request", "source", start).unwrap());
-        status["sessions"]["sessions"][0]["scene_submitted_frame"] = true.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["scene_submitted_frame"] = true.into();
         for (generation, request, source) in [
             ("old-gui", "request", "source"),
             ("gui", "old-request", "source"),
@@ -322,32 +325,53 @@ mod tests {
     }
     #[test]
     fn receiving_requires_same_source_decoded_and_submitted_frame() {
-        let mut status = serde_json::json!({"sessions":{"sessions":[{"device_id":"source","connected":true,"decoded_frames":0,"scene_submitted_frame":false}]}});
+        let mut status = confirmed_receiver();
         status["generation"] = "gui-1".into();
-        status["lease"] = serde_json::json!({"request_id":"request-1"});
+        status["lease"]["request_id"] = "request-1".into();
         assert!(!receiving_status(&status, "gui-1", "request-1", "source"));
         assert!(!has_submitted_video(&status, "source"));
-        status["sessions"]["sessions"][0]["decoded_frames"] = 1.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["decoded_frames"] = 1.into();
         assert!(!has_submitted_video(&status, "source"));
-        status["sessions"]["sessions"][0]["scene_submitted_frame"] = true.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["scene_submitted_frame"] = true.into();
         assert!(has_submitted_video(&status, "source"));
         assert!(receiving_status(&status, "gui-1", "request-1", "source"));
         assert!(!receiving_status(&status, "gui-2", "request-1", "source"));
         assert!(!receiving_status(&status, "gui-1", "request-2", "source"));
         assert!(!has_submitted_video(&status, "different-source"));
-        status["sessions"]["sessions"][0]["connected"] = false.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["connected"] = false.into();
         assert!(!has_submitted_video(&status, "source"));
     }
     #[test]
+    fn one_closed_or_failed_source_does_not_end_other_windows() {
+        let mut status=confirmed_receiver();
+        let mut second=status["lease"]["windows"][0].clone();
+        second["source"]=serde_json::json!({"Window":22});
+        second["sessions"]["sessions"][0]["source_id"]=second["source"].clone();
+        second["sessions"]["sessions"][0]["decoded_frames"]=1.into();
+        second["sessions"]["sessions"][0]["scene_submitted_frame"]=true.into();
+        status["lease"]["windows"].as_array_mut().unwrap().push(second);
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["video_error"]="source closed".into();
+        assert!(!receiving_failed(&status,"gui","request","source"));
+        assert!(receiving_status(&status,"gui","request","source"));
+        status["lease"]["windows"][0]["active"]=false.into();
+        assert!(receiving_status(&status,"gui","request","source"));
+        status["lease"]["windows"][1]["sessions"]["sessions"][0]["source_id"]="MainDisplay".into();
+        assert!(!has_submitted_video(&status,"source"));
+        status["lease"]["windows"][1]["active"]=false.into();
+        assert!(receiving_failed(&status,"gui","request","source"));
+    }
+    #[test]
     fn normal_status_and_audio_warning_do_not_end_video_delivery() {
-        let mut status=serde_json::json!({"generation":"gui","lease":{"request_id":"r"},"sessions":{"directed_receive_failed":false,"sessions":[{"device_id":"source","connected":true,"error":"","video_error":null,"decoded_frames":1,"scene_submitted_frame":true}]}});
+        let mut status=confirmed_receiver();status["lease"]["request_id"]="r".into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["decoded_frames"]=1.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["scene_submitted_frame"]=true.into();
         assert!(!receiving_failed(&status,"gui","r","source"));assert!(receiving_status(&status,"gui","r","source"));
-        status["sessions"]["sessions"][0]["error"]="Audio unavailable: device disconnected".into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["error"]="Audio unavailable: device disconnected".into();
         assert!(!receiving_failed(&status,"gui","r","source"));assert!(receiving_status(&status,"gui","r","source"));
-        status["sessions"]["sessions"][0]["video_error"]="decoder failed".into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["video_error"]="decoder failed".into();
         assert!(receiving_failed(&status,"gui","r","source"));assert!(!receiving_status(&status,"gui","r","source"));
         assert!(!receiving_failed(&status,"gui","r","other-source"));assert!(!receiving_failed(&status,"gui","old-request","source"));
-        status["sessions"]["sessions"][0]["video_error"]=serde_json::Value::Null;status["sessions"]["sessions"][0]["connected"]=false.into();
+        status["lease"]["windows"][0]["sessions"]["sessions"][0]["video_error"]=serde_json::Value::Null;status["lease"]["windows"][0]["sessions"]["sessions"][0]["connected"]=false.into();
         assert!(receiving_failed(&status,"gui","r","source"));
     }
 

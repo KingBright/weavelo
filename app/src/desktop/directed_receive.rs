@@ -43,6 +43,7 @@ pub(crate) enum Request {
         generation: String,
         request_id: String,
         source_device_id: String,
+        sources: Vec<protocol::session::CaptureSource>,
         deadline_ms: u64,
         lease_ms: u64,
         #[serde(default)]
@@ -65,7 +66,7 @@ pub(crate) struct Reply {
     pixels: Option<std::sync::Arc<Vec<u8>>>,
     on_written: Option<oneshot::Sender<()>>,
     revoke_on_drop: Option<(
-        std::sync::Weak<super::original_owner::OriginalOwner>,
+        Vec<std::sync::Weak<super::original_owner::OriginalOwner>>,
         String,
     )>,
 }
@@ -82,7 +83,7 @@ impl From<serde_json::Value> for Reply {
 impl Reply {
     pub fn accepted(
         body: serde_json::Value,
-        owner: &std::sync::Arc<super::original_owner::OriginalOwner>,
+        owners: Vec<std::sync::Weak<super::original_owner::OriginalOwner>>,
     ) -> Self {
         let request = body["request_id"]
             .as_str()
@@ -92,7 +93,7 @@ impl Reply {
             body,
             pixels: None,
             on_written: None,
-            revoke_on_drop: Some((std::sync::Arc::downgrade(owner), request)),
+            revoke_on_drop: Some((owners, request)),
         }
     }
     pub fn observation(output: super::computer_use_ipc::Output) -> Self {
@@ -108,9 +109,9 @@ impl Reply {
 }
 impl Drop for Reply {
     fn drop(&mut self) {
-        if let Some((owner, request)) = self.revoke_on_drop.take() {
-            if let Some(owner) = owner.upgrade() {
-                owner.cancel_directed_receive(&request);
+        if let Some((owners, request)) = self.revoke_on_drop.take() {
+            for owner in owners {
+                if let Some(owner) = owner.upgrade() { owner.cancel_directed_receive(&request); }
             }
         }
     }
@@ -133,15 +134,49 @@ pub(crate) struct Lease {
     pub request_id: String,
     pub source: String,
     pub expires: Instant,
-    pub owner: std::sync::Weak<super::original_owner::OriginalOwner>,
-    pub watchdog: tokio::task::JoinHandle<()>,
+    pub windows: Vec<ReceiveWindow>,
     pub revision: u64,
 }
-impl Drop for Lease {
-    fn drop(&mut self) {
-        if let Some(owner) = self.owner.upgrade() {
-            owner.cancel_directed_receive(&self.request_id);
+pub(crate) struct ReceiveWindow {
+    pub request_id: String,
+    pub close: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub source: protocol::session::CaptureSource,
+    pub owner: std::sync::Weak<super::original_owner::OriginalOwner>,
+    pub watchdog: tokio::task::JoinHandle<()>,
+}
+impl Lease {
+    pub fn owners(&self) -> Vec<std::sync::Weak<super::original_owner::OriginalOwner>> {
+        self.windows.iter().map(|window| window.owner.clone()).collect()
+    }
+    pub fn current(&self) -> bool {
+        Instant::now() < self.expires && self.windows.iter().any(|window|
+            window.owner.upgrade().is_some_and(|owner| owner.directed_receive_current(&self.request_id)))
+    }
+    pub fn renew(&mut self, revision: u64, duration: Duration) -> bool {
+        if revision < self.revision || !self.current() {return false;}
+        if revision == self.revision {return true;}
+        let mut renewed=false;
+        for owner in self.windows.iter().filter_map(|window| window.owner.upgrade()) {
+            renewed |= owner.renew_directed_receive(&self.request_id, duration);
         }
+        if renewed {self.revision=revision;self.expires=Instant::now()+duration;}
+        renewed
+    }
+    pub fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"request_id":self.request_id,"source_device_id":self.source,
+            "remaining_ms":self.expires.saturating_duration_since(Instant::now()).as_millis(),
+            "windows":self.windows.iter().map(|window| {
+                let owner=window.owner.upgrade();
+                serde_json::json!({"source":window.source,"open":owner.is_some(),
+                    "active":owner.as_ref().is_some_and(|owner|owner.directed_receive_current(&self.request_id)),
+                    "sessions":owner.map(|owner|owner.diagnostic_snapshot())})
+            }).collect::<Vec<_>>()})
+    }
+}
+impl Drop for ReceiveWindow {
+    fn drop(&mut self) {
+        self.close.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(owner) = self.owner.upgrade() { owner.cancel_directed_receive(&self.request_id); }
         self.watchdog.abort();
     }
 }
@@ -243,6 +278,7 @@ impl Adapter {
                 generation,
                 request_id,
                 source_device_id,
+                sources,
                 deadline_ms,
                 lease_ms,
                 ..
@@ -254,6 +290,7 @@ impl Adapter {
                     *deadline_ms,
                     now_ms,
                 )?;
+                protocol::session::validate_delivery_sources(sources)?;
                 if source_device_id.is_empty()
                     || source_device_id.len() > 256
                     || source_device_id.chars().any(char::is_control)
@@ -368,7 +405,7 @@ pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Val
             let generation = status["generation"].as_str().ok_or("Missing GUI generation")?.to_string();
             let now = crate::unix_now_ms();
             Request::Receive { generation, request_id: format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()),
-                source_device_id: source.clone(), deadline_ms: now.saturating_add(ADMISSION_MS), lease_ms: seconds*1000, claim:None }
+                source_device_id: source.clone(), sources:vec![protocol::session::CaptureSource::MainDisplay], deadline_ms: now.saturating_add(ADMISSION_MS), lease_ms: seconds*1000, claim:None }
         }
         [cmd, generation, id] if cmd == "--gui-stop-receive" => Request::Stop { generation: generation.clone(), request_id: id.clone(), deadline_ms: crate::unix_now_ms().saturating_add(ADMISSION_MS) },
         _ => return Err("Usage: --gui-status-json | --gui-receive SOURCE_DEVICE_ID [1..120 seconds] [--receiver RECEIVER_DEVICE_ID] | --gui-stop-receive GENERATION REQUEST_ID".into()),
@@ -433,6 +470,7 @@ mod tests {
             generation: adapter.generation.clone(),
             request_id: "request-1".into(),
             source_device_id: "paired-peer".into(),
+            sources:vec![protocol::session::CaptureSource::MainDisplay],
             deadline_ms: 200,
             lease_ms: 1_000, claim:None,
         };
@@ -442,6 +480,7 @@ mod tests {
             generation: adapter.generation.clone(),
             request_id: "request-2".into(),
             source_device_id: "paired-peer".into(),
+            sources:vec![protocol::session::CaptureSource::MainDisplay],
             deadline_ms: 200,
             lease_ms: 120_001, claim:None,
         };
@@ -496,6 +535,30 @@ mod tests {
         assert_eq!(request.await.unwrap().unwrap()["state"], "test-gui");
     }
     #[tokio::test]
+    async fn receive_group_renews_remaining_windows_and_releases_only_its_owners() {
+        use protocol::session::{CaptureSource,DeliveryClaimProof};
+        use std::sync::{Arc,atomic::{AtomicBool,AtomicUsize,Ordering}};
+        let backend=Arc::new(crate::UnifiedServiceOwner::start(crate::UnifiedServiceOwnerConfig::default()).await.unwrap());
+        let first=super::super::original_owner::OriginalOwner::new(backend.clone());
+        let second=super::super::original_owner::OriginalOwner::new(backend);
+        let counter=Arc::new(AtomicUsize::new(0)); let mut windows=Vec::new(); let mut flags=Vec::new();
+        for (owner,source) in [(&first,CaptureSource::Window(11)),(&second,CaptureSource::Display(22))] {
+            let watchdog=owner.begin_directed_receive("group","source",source,Duration::from_secs(15)).unwrap();
+            owner.set_receive_claim("group",Some(DeliveryClaimProof {ticket:[8;32],target_device_id:"receiver".into(),request_id:1,source}));
+            let close=Arc::new(AtomicBool::new(false));flags.push(close.clone());
+            windows.push(ReceiveWindow {request_id:"group".into(),close,source,owner:Arc::downgrade(owner),watchdog});
+        }
+        let mut lease=Lease {_upgrade_operation:super::super::upgrade_quit::Operation::begin(&counter),
+            request_id:"group".into(),source:"source".into(),expires:Instant::now()+Duration::from_secs(15),windows,revision:1};
+        first.close_received_window();
+        assert!(!first.directed_receive_current("group")); assert!(lease.current());
+        assert!(lease.renew(2,Duration::from_secs(30))); assert!(second.directed_receive_current("group"));
+        let expires=lease.expires;assert!(lease.renew(2,Duration::from_secs(60)));assert_eq!(lease.expires,expires);
+        assert!(!lease.renew(1,Duration::from_secs(60)));
+        drop(lease);assert!(!second.directed_receive_current("group"));
+        assert!(flags.iter().all(|flag|flag.load(Ordering::Acquire)));assert_eq!(counter.load(Ordering::Acquire),0);
+    }
+    #[tokio::test]
     async fn unconsumed_accepted_reply_revokes_even_after_successful_oneshot_send() {
         let backend = std::sync::Arc::new(
             crate::UnifiedServiceOwner::start(crate::UnifiedServiceOwnerConfig::default())
@@ -504,12 +567,12 @@ mod tests {
         );
         let owner = super::super::original_owner::OriginalOwner::new(backend);
         let timer = owner
-            .begin_directed_receive("ack-race", "source", Duration::from_secs(30))
+            .begin_directed_receive("ack-race", "source", protocol::session::CaptureSource::MainDisplay, Duration::from_secs(30))
             .unwrap();
         let (tx, rx) = oneshot::channel();
         let reply = Reply::accepted(
             serde_json::json!({"ok":true,"state":"accepted","request_id":"ack-race"}),
-            &owner,
+            vec![std::sync::Arc::downgrade(&owner)],
         );
         assert!(tx.send(reply).is_ok());
         assert!(owner.directed_receive_current("ack-race"));
@@ -518,9 +581,9 @@ mod tests {
         assert!(!owner.directed_receive_current("ack-race"));
         timer.abort();
         let timer = owner
-            .begin_directed_receive("written", "source", Duration::from_secs(30))
+            .begin_directed_receive("written", "source", protocol::session::CaptureSource::MainDisplay, Duration::from_secs(30))
             .unwrap();
-        let mut written = Reply::accepted(serde_json::json!({"request_id":"written"}), &owner);
+        let mut written = Reply::accepted(serde_json::json!({"request_id":"written"}), vec![std::sync::Arc::downgrade(&owner)]);
         written.written();
         drop(written);
         assert!(owner.directed_receive_current("written"));
@@ -532,11 +595,11 @@ mod tests {
         let dir=private_fixture();let mut adapter=Adapter::start(dir.path()).unwrap();
         for index in 0..1024u64 {
             let now=100+index*10;
-            let request=Request::Receive{generation:adapter.generation.clone(),request_id:format!("request-{index}"),source_device_id:"source".into(),deadline_ms:now+5,lease_ms:1000,claim:None};
+            let request=Request::Receive{generation:adapter.generation.clone(),request_id:format!("request-{index}"),source_device_id:"source".into(),sources:vec![protocol::session::CaptureSource::MainDisplay],deadline_ms:now+5,lease_ms:1000,claim:None};
             adapter.admit(&request,now).unwrap();
         }
         assert!(adapter.seen.len()<=2);
-        let old=Request::Receive{generation:adapter.generation.clone(),request_id:"request-0".into(),source_device_id:"source".into(),deadline_ms:105,lease_ms:1000,claim:None};
+        let old=Request::Receive{generation:adapter.generation.clone(),request_id:"request-0".into(),source_device_id:"source".into(),sources:vec![protocol::session::CaptureSource::MainDisplay],deadline_ms:105,lease_ms:1000,claim:None};
         assert!(adapter.admit(&old,100).is_err());
     }
 

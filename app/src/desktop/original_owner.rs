@@ -137,6 +137,7 @@ struct DirectedReceiveBinding {
     attempt: Option<u64>,
     connection: Option<u32>,
     claim: Option<protocol::session::DeliveryClaimProof>,
+    capture: CaptureSource,
 }
 struct Pool {
     sessions: Vec<ViewSession>,
@@ -556,13 +557,13 @@ impl OriginalOwner {
         };
         super::original_presenter::acknowledge_paint(&mut e.session, frame);
     }
-    pub(crate) fn begin_directed_receive(self: &Arc<Self>, request_id: &str, source: &str, duration: std::time::Duration) -> Result<tokio::task::JoinHandle<()>, Error> {
+    pub(crate) fn begin_directed_receive(self: &Arc<Self>, request_id: &str, source: &str, capture: CaptureSource, duration: std::time::Duration) -> Result<tokio::task::JoinHandle<()>, Error> {
         let expires = Instant::now() + duration;
         let mut pool = self.pool.lock().unwrap();
         if pool.directed_receive.is_some() || !pool.tabs.can_change_network(pool.sessions.len()) {
             return Err("Close this window's current sessions before receiving".into());
         }
-        pool.directed_receive = Some(DirectedReceiveBinding { request_id: request_id.into(), scope: remote_core::shared_files::current_share_scope(), source: source.into(), expires, cancel: tokio::sync::watch::channel(()).0, attempt: None, connection: None, claim:None });
+        pool.directed_receive = Some(DirectedReceiveBinding { request_id: request_id.into(), scope: remote_core::shared_files::current_share_scope(), source: source.into(), expires, cancel: tokio::sync::watch::channel(()).0, attempt: None, connection: None, claim:None, capture });
         drop(pool);
         let owner = Arc::downgrade(self);
         let request = request_id.to_string();
@@ -589,6 +590,12 @@ impl OriginalOwner {
     pub(crate) fn cancel_directed_receive(&self, request: &str) {
         self.pool.lock().unwrap().cancel_receive(request);
         let _ = self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+    pub(crate) fn close_received_window(&self) {
+        let mut pool = self.pool.lock().unwrap();
+        if let Some(request) = pool.directed_receive.as_ref().map(|binding| binding.request_id.clone()) {
+            pool.cancel_receive(&request);
+        }
     }
     pub(crate) fn directed_receive_current(&self, request: &str) -> bool {
         self.pool.lock().unwrap().directed_receive.as_ref().is_some_and(|b| b.request_id == request && Instant::now() < b.expires)
@@ -822,6 +829,9 @@ impl OriginalOwner {
         if let Some(proof) = &receive_claim {
             session.source = proof.source;
             session.request.source = proof.source;
+        } else if let Some(binding) = p.directed_receive.as_ref().filter(|binding| Some(binding.request_id.as_str()) == receive) {
+            session.source = binding.capture;
+            session.request.source = binding.capture;
         }
         #[cfg(any(all(target_os = "windows", feature = "native-windows-video"), all(target_os = "linux", feature = "native-linux-video")))]
         {
@@ -1580,7 +1590,7 @@ impl OriginalOwner {
                 "decoder_status":s.media.as_ref().and_then(|m|m.decode_status.try_lock().ok().map(|v|v.clone())),
                 "decoder_needs_keyframe":s.stats.video_recovery.is_waiting(),
                 "native_frame":native,"device_id":s.key,"name":s.name,"connection_id":s.conn.id,"subscription_id":s.video_id,"activity_revision":s.activity_revision,"target":s.conn.target.to_string(),"route":s.route,
-                "source":format!("{:?}",s.source),"decoded_frames":s.stats.video_frames_decoded.load(std::sync::atomic::Ordering::Relaxed),
+                "source":format!("{:?}",s.source),"source_id":s.source,"decoded_frames":s.stats.video_frames_decoded.load(std::sync::atomic::Ordering::Relaxed),
                 "decode_errors":s.stats.video_decode_errors.load(std::sync::atomic::Ordering::Relaxed),"confirmed":s.confirmed,
                 "scene_submitted_frame":s.uploaded_at.is_some(),"input_locked":s.locked,"error":s.error,"video_error":s.video_error,
                 "clipboard_sync_supported":s.conn.clipboard_available,"clipboard_sync_enabled":s.clipboard_enabled,
@@ -1721,7 +1731,7 @@ mod restoration_regression_tests {
 
     fn bind_receive(pool: &mut Pool, request: &str, expires: Instant) {
         pool.directed_receive = Some(DirectedReceiveBinding { request_id: request.into(), source: "a".into(),
-            scope: remote_core::shared_files::current_share_scope(), expires, cancel: tokio::sync::watch::channel(()).0, attempt: None, connection: None, claim:None });
+            scope: remote_core::shared_files::current_share_scope(), expires, cancel: tokio::sync::watch::channel(()).0, attempt: None, connection: None, claim:None, capture:CaptureSource::MainDisplay });
     }
     #[test]
     fn directed_receive_failure_belongs_only_to_its_exact_source_and_attempt(){
@@ -1782,7 +1792,7 @@ mod restoration_regression_tests {
     async fn watchdog_cancels_without_any_gui_poll() {
         let backend = Arc::new(crate::UnifiedServiceOwner::start(crate::UnifiedServiceOwnerConfig::default()).await.unwrap());
         let owner = OriginalOwner::new(backend);
-        let timer = owner.begin_directed_receive("watchdog", "a", std::time::Duration::from_millis(30)).unwrap();
+        let timer = owner.begin_directed_receive("watchdog", "a", CaptureSource::MainDisplay, std::time::Duration::from_millis(30)).unwrap();
         let attempt = {
             let mut pool = owner.pool.lock().unwrap();
             let attempt = begin(&mut pool, "a", values());
