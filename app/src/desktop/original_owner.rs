@@ -1187,6 +1187,12 @@ impl OriginalOwner {
         result
     }
 
+    pub(crate) fn retry_viewing_input(&self) -> bool {
+        let mut pool = self.pool.lock().unwrap();
+        self.revoke_computer_use();
+        let Some(entry) = pool.active_mut() else { return false; };
+        entry.session.retry_input()
+    }
     pub fn queue_viewing_input(&self, event: InputEvent) -> bool {
         let mut p = self.pool.lock().unwrap();
         self.revoke_computer_use();

@@ -444,10 +444,20 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     }
     fn fail_input(&mut self, reason: String) {
         self.release_input();
-        self.locked = true;
         self.input_error = Some(reason.clone());
         self.error = reason;
-        self.status = "Application control paused; video remains available. Correct the host condition and enable control again.".into();
+        self.status = "Control paused; click the video to retry when the host is ready.".into();
+    }
+    pub(crate) fn retry_input(&mut self) -> bool {
+        if self.locked { return false; }
+        let Some(reason) = self.input_error.take() else { return false; };
+        if !self.can_input() {
+            self.input_error = Some(reason);
+            return false;
+        }
+        if self.error == reason { self.clear_transient_error(); }
+        self.status = "Remote control resumed".into();
+        true
     }
     pub fn release_input(&mut self) {
         if (!self.keys.is_empty() || !self.mouse.is_empty() || self.modifiers != 0)
@@ -493,6 +503,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         let recovery = self.stats.video_recovery.snapshot();
         if self.video_error.is_some() || !self.connected {
             "Video/connection unavailable: control disabled"
+        } else if self.input_error.is_some() {
+            "Control paused; click the video to retry when the host is ready"
         } else if !self.confirmed || self.pending.is_some() {
             "Waiting for the host to confirm this source"
         } else if !self.supports_input {
@@ -529,6 +541,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     pub fn can_input(&self) -> bool {
         let recovery = self.stats.video_recovery.snapshot();
         self.video_error.is_none()
+            && self.input_error.is_none()
             && !recovery.waiting
             && self.connected
             && self.confirmed
@@ -1143,7 +1156,7 @@ pub(crate) mod static_input_tests {
             id: 991, source_revision: 0,
             event: protocol::InputEvent::MouseMoveAbsolute { x: 10, y: 20 },
         }));
-        assert!(session.locked);
+        assert!(!session.locked);
         assert!(session.input_failed());
         assert_eq!(session.error, "input binding unavailable");
         assert!(received.try_recv().is_err());
@@ -1163,7 +1176,7 @@ pub(crate) mod static_input_tests {
             reason: "INPUT_UNAVAILABLE: selected application is inactive".into(),
         }).unwrap();
         session.poll();
-        assert!(session.locked);
+        assert!(!session.locked);
         assert!(session.input_failed());
         assert_eq!(session.error, "selected application is inactive");
         session.set_input_locked(false);
@@ -1183,6 +1196,58 @@ pub(crate) mod static_input_tests {
         session.set_input_locked(false);
         assert_eq!(session.error, "Capture failed");
         assert_eq!(session.video_error.as_deref(), Some("Capture failed"));
+        recorder.abort();
+    }
+
+    #[tokio::test]
+    async fn paused_input_keeps_intent_and_retries_only_with_current_frame_and_grant() {
+        let (mut session, mut received, recorder, _temp) = recorder_session().await;
+        let (video, _) = tokio::sync::mpsc::channel(1);
+        session.conn.subscribe(session.request.clone(), video, session.stats.clone(), session.host_stats.clone()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !session.conn.input_ready(session.video_id, 0) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        // Synthetic paint eligibility; this test never captures or injects OS input.
+        session.confirmed = true;
+        session.supports_input = true;
+        session.first_frame_after = Instant::now() - Duration::from_secs(1);
+        session.uploaded_at = Some(Instant::now());
+        session.uploaded_epoch = Some(session.stats.video_recovery.snapshot().epoch);
+        assert!(session.can_input());
+        session.keys.insert(4);
+        session.mouse.insert(0);
+        session.modifiers = protocol::input_modifiers::SHIFT;
+        session.fail_input("temporary host input failure".into());
+        assert!(!session.locked, "a temporary failure must preserve the user's control intent");
+        assert!(session.keys.is_empty() && session.mouse.is_empty() && session.modifiers == 0);
+        assert!(!session.can_input());
+        session.input(InputEvent::MouseMoveAbsolute { x: 1, y: 2 });
+        session.input(InputEvent::MouseDown(0));
+        assert!(received.try_recv().is_err(), "paused input must not continue the old gesture");
+        session.uploaded_at = None;
+        assert!(!session.retry_input(), "a click cannot invent a presented frame");
+        assert!(session.input_failed());
+        session.uploaded_at = Some(Instant::now());
+        session.error = "File destination is unavailable".into();
+        assert!(session.retry_input());
+        assert_eq!(session.error, "File destination is unavailable");
+        assert!(session.can_input());
+        // The resumed click starts with its current position, with no old keys or buttons.
+        for event in [InputEvent::MouseMoveAbsolute { x: 44500, y: 26000 }, InputEvent::MouseDown(0), InputEvent::MouseUp(0)] {
+            session.input(event.clone());
+            let packet = tokio::time::timeout(Duration::from_secs(2), received.recv()).await.unwrap().unwrap();
+            assert_eq!(packet.binding.connection_id, session.conn.id);
+            assert_eq!(packet.binding.subscription_id, session.video_id);
+            assert_eq!(packet.binding.source_revision, session.source_revision());
+            let protocol::realtime_input::InputPayload::Event(actual) = packet.payload else { panic!("expected only fresh input events"); };
+            assert_eq!(actual, event);
+        }
+        session.fail_input("another temporary failure".into());
+        session.set_input_locked(true);
+        assert!(!session.retry_input(), "a fresh click must respect an explicit user lock");
+        assert!(session.locked);
         recorder.abort();
     }
 

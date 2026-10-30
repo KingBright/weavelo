@@ -640,7 +640,7 @@ impl RestoredDashboard {
                 .unwrap_or_else(|| Arc::new(Mutex::new(None)));
         }
         self.input_locked = state.locked;
-        if state.input_failed && state.locked {
+        if state.input_failed {
             self.toolbar_revealed = true;
             self.last_toolbar_activity = Instant::now();
         }
@@ -1127,7 +1127,7 @@ impl RestoredDashboard {
         }
     }
 
-    fn queue_pointer_move(&mut self, position: Point<Pixels>) {
+    fn queue_pointer_move(&mut self, position: Point<Pixels>, from_press: bool) -> bool {
         let cursor_y = f32::from(position.y);
         if should_reveal_toolbar(cursor_y) {
             self.last_toolbar_activity = Instant::now();
@@ -1135,22 +1135,30 @@ impl RestoredDashboard {
                 self.toolbar_revealed = true;
             }
         }
+        let Some(event) = self.pointer_event_at(position) else { return false; };
+        if from_press && self.owner.retry_viewing_input() {
+            self.pointer_input = PointerInputTracker::default();
+        }
+        self.owner.queue_viewing_input(event)
+    }
+
+    fn pointer_event_at(&self, position: Point<Pixels>) -> Option<protocol::InputEvent> {
         if self.input_locked
             || !self.capture_supports_input
             || self.drawer_open
             || self.show_apps_menu
         {
-            return;
+            return None;
         }
         let Some(frame) = self.current_frame.as_ref() else {
-            return;
+            return None;
         };
         let Some(bounds) = *self
             .video_surface_bounds
             .lock()
             .expect("video surface bounds lock")
         else {
-            return;
+            return None;
         };
         #[cfg(feature="gpui-native-video")]
         if let Some(geometry) = native_frame_geometry(frame) {
@@ -1165,12 +1173,9 @@ impl RestoredDashboard {
                 ViewportScaleMode::AspectFit => VideoFit::Contain,
                 ViewportScaleMode::Fill => VideoFit::Cover,
             };
-            if let Some(event)=native_pointer_event(geometry,viewport,fit,[f32::from(position.x),f32::from(position.y)]) {
-                self.owner.queue_viewing_input(event);
-            }
-            return;
+            return native_pointer_event(geometry,viewport,fit,[f32::from(position.x),f32::from(position.y)]);
         }
-        if let Some(event) = absolute_pointer_event(
+        absolute_pointer_event(
             (f32::from(position.x), f32::from(position.y)),
             (
                 f32::from(bounds.origin.x),
@@ -1180,9 +1185,7 @@ impl RestoredDashboard {
             ),
             (frame.width(), frame.height()),
             self.scale_mode,
-        ) {
-            self.owner.queue_viewing_input(event);
-        }
+        )
     }
 
     fn queue_pointer_button(&mut self, button: MouseButton, pressed: bool) {
@@ -2481,7 +2484,7 @@ fn full_video_surface(
         }))
         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
             let was_revealed = this.toolbar_revealed;
-            this.queue_pointer_move(event.position);
+            this.queue_pointer_move(event.position, false);
             if !was_revealed && this.toolbar_revealed {
                 cx.notify();
             }
@@ -2500,8 +2503,9 @@ fn full_video_surface(
             this.ime_anchor=Some(event.position);
             if let Some(input)=&this.remote_text {input.update(cx,|input,_|input.anchor=Some(event.position));}
             window.focus(&this.input_focus);
-            this.queue_pointer_move(event.position);
-            this.queue_pointer_button(event.button, true);
+            if this.queue_pointer_move(event.position, true) {
+                this.queue_pointer_button(event.button, true);
+            }
             cx.stop_propagation();
         }))
         .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
