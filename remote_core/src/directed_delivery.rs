@@ -10,6 +10,74 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
+use protocol::session::DeliveryClaimProof;
+use crate::workspace_session::{WorkspaceConnection,WorkspaceEvents};
+type Error=Box<dyn std::error::Error+Send+Sync>;
+
+/// Retry the exact command/revision; newer revisions never substitute for a
+/// lost first offer. Only this connection's matching receipt completes it.
+pub async fn exchange(
+    conn: &WorkspaceConnection,
+    events: &mut WorkspaceEvents,
+    command: SessionCommand,
+    request: u64,
+    revision: u64,
+) -> Result<DeliveryState, Error> {
+    for _ in 0..4 {
+        conn.control(command.clone()).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(750);
+        loop {
+            match tokio::time::timeout_at(deadline, events.control.recv()).await {
+                Ok(Some(SessionCommand::DeliveryReceipt {
+                    request_id,
+                    revision: got,
+                    state,
+                    reason,
+                })) if request_id == request
+                    && (got == revision
+                        || matches!(state, DeliveryState::Cancelled | DeliveryState::Rejected)) =>
+                {
+                    if state == DeliveryState::Rejected {
+                        return Err(format!("Target rejected delivery: {reason}").into());
+                    }
+                    return Ok(state);
+                }
+                Ok(Some(SessionCommand::Closed { .. })) | Ok(None) => {
+                    return Err("Control connection closed".into());
+                }
+                Ok(Some(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+    Err("Target did not acknowledge directed delivery; it may need an update".into())
+}
+pub async fn claim(
+    conn: &WorkspaceConnection,
+    events: &mut WorkspaceEvents,
+    proof: &DeliveryClaimProof,
+) -> Result<(), Error> {
+    validate_delivery_sources(&proof.sources)?;
+    let state = exchange(
+        conn,
+        events,
+        SessionCommand::DeliveryClaim {
+            request_id: proof.request_id,
+            target_device_id: proof.target_device_id.clone(),
+            ticket: proof.ticket,
+            sources: proof.sources.clone(),
+        },
+        proof.request_id,
+        0,
+    )
+    .await?;
+    if state != DeliveryState::Claimed {
+        return Err("Source did not accept this sending intention".into());
+    }
+    Ok(())
+}
+
+
 pub const LEASE: Duration = Duration::from_secs(15);
 const LIMIT: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

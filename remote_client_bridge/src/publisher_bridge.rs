@@ -3,6 +3,7 @@
 //! silently switch to arbitrary third-party application windows.
 use protocol::{ControlMessage, RtpHeader, RtpPacket, session::*};
 use remote_core::{
+    directed_delivery::{Broker, Incoming, Peer as DeliveryPeer},
     file_transfer_runtime::*,
     net::{MultiplexedPacket, UdpMultiplexer, UdpSender},
     scheduled_sender::ScheduledDataSender,
@@ -66,6 +67,9 @@ pub struct MobilePublisher {
     input: Arc<Mutex<crate::publisher_input::PublisherInput>>,
     capabilities: watch::Sender<remote_core::discovery::DiscoveryCapabilities>,
     task: tokio::task::JoinHandle<()>,
+    delivery: Arc<Broker>,
+    incoming: Mutex<mpsc::Receiver<Arc<Incoming>>>,
+    deliveries: Mutex<HashMap<String,Arc<Incoming>>>,
 }
 impl Drop for MobilePublisher {
     fn drop(&mut self) {
@@ -98,6 +102,7 @@ struct Peer {
     files: mpsc::Sender<protocol::DataEnvelope>,
     cancel: broadcast::Sender<()>,
     tasks: Vec<tokio::task::AbortHandle>,
+    delivery_owner: Option<(DeliveryPeer,[u8;32])>,
 }
 impl Drop for Peer {
     fn drop(&mut self) {
@@ -108,6 +113,36 @@ impl Drop for Peer {
     }
 }
 impl MobilePublisher {
+    pub fn set_device_identity(&self, identity:String) { self.delivery.set_identity(identity); }
+    pub fn next_delivery(&self) -> Option<serde_json::Value> {
+        let scope=remote_core::shared_files::current_share_scope();
+        let mut deliveries=self.deliveries.lock().unwrap();
+        deliveries.retain(|_,offer|offer.alive() && offer.peer.scope==scope);
+        let mut incoming=self.incoming.lock().unwrap();
+        while let Ok(offer)=incoming.try_recv() {
+            if !offer.alive() || offer.peer.scope!=scope {continue;}
+            let nonce=offer.peer.nonce.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+            let id=format!("{}-{}-{nonce}",offer.peer.connection,offer.request);
+            let result=serde_json::json!({"id":id,"source_device_id":offer.source,"target_device_id":offer.target,
+                "sources":offer.sources,"remaining_ms":offer.snapshot().1.saturating_duration_since(Instant::now()).as_millis(),
+                "claim":DeliveryClaimProof {ticket:offer.ticket,target_device_id:offer.target.clone(),request_id:offer.request,sources:offer.sources.clone()}});
+            deliveries.insert(id,offer);return Some(result);
+        }
+        None
+    }
+    pub fn delivery_alive(&self,id:&str)->bool {
+        self.deliveries.lock().unwrap().get(id).is_some_and(|offer|
+            offer.alive() && offer.peer.scope==remote_core::shared_files::current_share_scope())
+    }
+    pub fn delivery_state(&self,id:&str,state:DeliveryState,reason:&str)->Result<(),String> {
+        if !matches!(state,DeliveryState::Accepted|DeliveryState::Receiving|DeliveryState::Rejected|DeliveryState::Cancelled) {
+            return Err("Invalid receiving state".into());
+        }
+        let deliveries=self.deliveries.lock().unwrap();
+        let offer=deliveries.get(id).filter(|offer|offer.alive() && offer.peer.scope==remote_core::shared_files::current_share_scope())
+            .ok_or("Sending intent ended")?;
+        offer.finish(state,&reason.chars().take(256).collect::<String>());Ok(())
+    }
     pub async fn start(
         bind: SocketAddr,
         directory: PathBuf,
@@ -155,11 +190,14 @@ impl MobilePublisher {
         let (capabilities, _) = watch::channel(crate::inbound_capabilities(address.port(), capture_enabled));
         let input = Arc::new(Mutex::new(crate::publisher_input::PublisherInput::default()));
         let shared_input = input.clone();
+        let (delivery,incoming)=Broker::new();
+        let peer_delivery=delivery.clone();
+        let scope=Some(remote_core::shared_files::share_scope_for_key(&key));
         let advertised_lifetime = AdvertisedPublisher(capabilities.clone(), input.clone());
         let task = tokio::spawn(async move {
             let _advertised_lifetime = advertised_lifetime;
             let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
-            let mut authenticated: HashMap<SocketAddr, ([u8;16], Instant)> = HashMap::new();
+            let mut authenticated: HashMap<SocketAddr, ([u8;16], [u8;16], Instant)> = HashMap::new();
             let mut handshakes=remote_core::session_auth::ServerHandshake::default();
             let mut maintenance = tokio::time::interval(Duration::from_secs(1));
             let mut input_watchdog = tokio::time::interval(Duration::from_millis(protocol::realtime_input::INPUT_WATCHDOG_INTERVAL_MS));
@@ -218,8 +256,17 @@ impl MobilePublisher {
                         }
                     }
                     _ = maintenance.tick() => {
+                        peer_delivery.reconcile(|owner|peers.get(&owner.addr).is_some_and(|peer|peer.id==owner.connection)
+                            && authenticated.get(&owner.addr).is_some_and(|(_,nonce,_)|*nonce==owner.nonce));
+                        let ended=peers.iter().filter(|(_,peer)|peer.delivery_owner.is_some_and(|(owner,ticket)|!peer_delivery.claim_alive(owner,ticket)))
+                            .map(|(addr,_)|*addr).collect::<Vec<_>>();
+                        for addr in ended {
+                            shared_input.lock().unwrap().revoke_peer(addr);
+                            if peers.remove(&addr).is_some_and(|peer|peer.subscription.is_some()) {*shared.lock().unwrap()=CaptureDemand::default();}
+                            authenticated.remove(&addr);sender.remove_peer_crypto(addr);
+                        }
                         handshakes.expire(remote_core::session_auth::AuthTime::now());
-                        authenticated.retain(|addr, (_, at)| {
+                        authenticated.retain(|addr, (_, _, at)| {
                             let expired = peers.get(addr).map_or_else(
                                 || at.elapsed() > Duration::from_secs(30),
                                 |p| p.seen.elapsed() > Duration::from_secs(30),
@@ -243,6 +290,7 @@ impl MobilePublisher {
                         let permission = *permission_rx.borrow();
                         if !permission.enabled || frame.epoch != permission.epoch || (frame.audio && !permission.audio) { continue; }
                         let Some(p) = peers.values_mut().find(|p| p.subscription.is_some()) else { continue; };
+                        if p.delivery_owner.is_some_and(|(owner,ticket)|!peer_delivery.claim_alive(owner,ticket)) {continue;}
                         let Some(subscription) = &p.subscription else { continue; };
                         let wanted = shared.lock().unwrap().clone();
                         if (frame.audio && !wanted.audio) || (!frame.audio && !wanted.active) { continue; }
@@ -261,7 +309,7 @@ impl MobilePublisher {
                                 if let Ok(response)=handshakes.receive(&key,&message,addr,remote_core::session_auth::AuthTime::now(),allow_new){
                                     if let Some(established)=response.established{
                                         sender.install_peer_crypto(addr,established.crypto);
-                                        authenticated.insert(addr,(established.session_id,Instant::now()));
+                                        authenticated.insert(addr,(established.session_id,established.client_nonce,Instant::now()));
                                     }
                                     let _=sender.send_control(&ControlMessage::SessionHandshake(Box::new(response.message)),addr).await;
                                 }
@@ -271,7 +319,7 @@ impl MobilePublisher {
                             }
                             MultiplexedPacket::Control(ControlMessage::SessionReject{..},_)=>{}
                             MultiplexedPacket::ClockProbe(probe,host_recv_us,addr)=>{
-                                if authenticated.get(&addr).is_some_and(|(id,_)|*id==probe.session_id) && let Some(p)=peers.get_mut(&addr){
+                                if authenticated.get(&addr).is_some_and(|(id,..)|*id==probe.session_id) && let Some(p)=peers.get_mut(&addr){
                                     p.seen=Instant::now();
                                     let reply=protocol::session_auth::ClockReply{probe,host_recv_us,host_send_us:remote_core::timing::quanta_now_us()};
                                     let _=sender.send_control(&ControlMessage::ClockReply(reply),addr).await;
@@ -280,6 +328,13 @@ impl MobilePublisher {
                             MultiplexedPacket::ClockReply(..)=>{}
                             MultiplexedPacket::Control(message, addr) => {
                                 if !authenticated.contains_key(&addr) { continue; }
+                                if let Some(p) = peers.get(&addr)
+                                    && p.delivery_owner.is_some_and(|(owner,ticket)| !peer_delivery.claim_alive(owner,ticket)
+                                        || authenticated.get(&addr).is_none_or(|(_,nonce,_)|*nonce!=owner.nonce)) {
+                                    shared_input.lock().unwrap().revoke_peer(addr);
+                                    if peers.remove(&addr).is_some_and(|peer|peer.subscription.is_some()) {*shared.lock().unwrap()=CaptureDemand::default();}
+                                    authenticated.remove(&addr);sender.remove_peer_crypto(addr);continue;
+                                }
                                 if let Some(p) = peers.get_mut(&addr) { p.seen = Instant::now(); }
                                 match message {
                                     ControlMessage::Session(command) => match *command {
@@ -288,6 +343,25 @@ impl MobilePublisher {
                                             peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone()));
                                             reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:1, files:true, clipboard:false, window_capture:false }).await;
                                         }
+                                        SessionCommand::DeliveryOffer {request_id,source_device_id,target_device_id,ticket,revision,sources} if peers.contains_key(&addr) => {
+                                            let peer=&peers[&addr];let (_,nonce,_)=authenticated[&addr];
+                                            let owner=DeliveryPeer {addr,connection:peer.id,nonce,scope};
+                                            reply(&sender,addr,peer_delivery.offer(owner,request_id,source_device_id,target_device_id,ticket,revision,sources)).await;
+                                        }
+                                        SessionCommand::DeliveryClaim {request_id,target_device_id,ticket,sources} if peers.contains_key(&addr) => {
+                                            let peer=peers.get_mut(&addr).unwrap();let (_,nonce,_)=authenticated[&addr];
+                                            let owner=DeliveryPeer {addr,connection:peer.id,nonce,scope};
+                                            let response=if peer.delivery_owner.is_some_and(|binding|binding!=(owner,ticket))
+                                                || (peer.delivery_owner.is_none() && peer.subscription.is_some()) {
+                                                SessionCommand::DeliveryReceipt {request_id,revision:0,state:DeliveryState::Rejected,reason:"Connection belongs to another activity".into()}
+                                            } else {peer_delivery.claim(owner,request_id,&target_device_id,ticket,sources)};
+                                            if matches!(response,SessionCommand::DeliveryReceipt {state:DeliveryState::Claimed,..}) {peer.delivery_owner=Some((owner,ticket));}
+                                            reply(&sender,addr,response).await;
+                                        }
+                                        SessionCommand::DeliveryCancel {request_id} if peers.contains_key(&addr) => {
+                                            let peer=&peers[&addr];let (_,nonce,_)=authenticated[&addr];
+                                            reply(&sender,addr,peer_delivery.cancel(DeliveryPeer {addr,connection:peer.id,nonce,scope},request_id)).await;
+                                        }
                                         SessionCommand::ListSources { request_id, .. } if peers.contains_key(&addr) => {
                                             let (width, height) = *geometry.lock().unwrap();
                                             let permission = *permission_rx.borrow();
@@ -295,6 +369,12 @@ impl MobilePublisher {
                                             reply(&sender, addr, SessionCommand::Sources { source_icons: Vec::new(), icons: Vec::new(),  request_id, sources:available_sources(permission, width, height, supports_input) }).await;
                                         }
                                         SessionCommand::Subscribe(request) if peers.contains_key(&addr) => {
+                                            let peer=&peers[&addr];
+                                            if let Some((owner,ticket))=peer.delivery_owner
+                                                && (!peer_delivery.allows_source(owner,ticket,request.source)
+                                                    || authenticated.get(&addr).is_none_or(|(_,nonce,_)|*nonce!=owner.nonce)) {
+                                                reply(&sender,addr,SessionCommand::Error {request_id:request.id,reason:"Sending intent ended or source changed".into()}).await;continue;
+                                            }
                                             let permission = *permission_rx.borrow();
                                             if !permission.enabled {
                                                 reply(&sender, addr, SessionCommand::Error { request_id: request.id, reason: "Screen sharing is not authorized on this device; files remain available".into() }).await;
@@ -388,7 +468,7 @@ impl MobilePublisher {
             permission,
             input,
             capabilities,
-            task,
+            task,delivery,incoming:Mutex::new(incoming),deliveries:Mutex::new(HashMap::new()),
         })
     }
     /// Detach or attach media without replacing the authenticated file connection.
@@ -523,6 +603,7 @@ impl Peer {
             while event_rx.recv().await.is_some() {}
         });
         Self {
+            delivery_owner:None,
             addr,
             id,
             seen: Instant::now(),
@@ -547,6 +628,46 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn directed_offer_uses_the_authenticated_peer_and_exact_source_set() {
+        let key = b"mobile-directed-offer-test".to_vec();
+        let publisher = MobilePublisher::start_with_key(
+            "127.0.0.1:0".parse().unwrap(),
+            std::env::temp_dir().join(format!("weavelo-directed-{}", std::process::id())),
+            key.clone(), false,
+        ).await.unwrap();
+        publisher.set_device_identity("phone".into());
+        let client = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client.local_addr().unwrap();
+        let (sender, receiver) = client.split();
+        remote_core::session_auth::authenticate_with_key(&sender, &receiver, publisher.address, &key).await.unwrap();
+        command(&sender, publisher.address, SessionCommand::Open { connection_id: 19, version: SESSION_VERSION }).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::Opened { connection_id: 19, .. }));
+        let sources = vec![CaptureSource::Window(41), CaptureSource::Window(42)];
+        let offer = SessionCommand::DeliveryOffer {
+            request_id: 7, source_device_id: "desktop".into(), target_device_id: "phone".into(),
+            ticket: [23; 32], revision: 1, sources: sources.clone(),
+        };
+        command(&sender, publisher.address, offer.clone()).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::DeliveryReceipt { state: DeliveryState::Pending, .. }));
+        let incoming = publisher.incoming.lock().unwrap().try_recv().unwrap();
+        assert_eq!(incoming.peer.addr, client_addr);
+        assert_eq!(incoming.peer.connection, 19);
+        assert_eq!(incoming.peer.scope, Some(remote_core::shared_files::share_scope_for_key(&key)));
+        assert_eq!(incoming.sources, sources);
+        incoming.finish(DeliveryState::Receiving, "");
+        command(&sender, publisher.address, offer).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::DeliveryReceipt { state: DeliveryState::Receiving, .. }));
+        assert!(publisher.incoming.lock().unwrap().try_recv().is_err()); // renewal is not a second launch
+        command(&sender, publisher.address, SessionCommand::DeliveryOffer {
+            request_id: 7, source_device_id: "desktop".into(), target_device_id: "phone".into(),
+            ticket: [23; 32], revision: 2, sources: vec![CaptureSource::MainDisplay],
+        }).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::DeliveryReceipt { state: DeliveryState::Rejected, .. }));
+        command(&sender, publisher.address, SessionCommand::DeliveryCancel { request_id: 7 }).await;
+        assert!(matches!(reply(&receiver).await, SessionCommand::DeliveryReceipt { state: DeliveryState::Cancelled, .. }));
+        assert!(!incoming.alive());
+    }
     async fn command(sender: &UdpSender, target: SocketAddr, command: SessionCommand) {
         sender
             .send_control(&ControlMessage::Session(Box::new(command)), target)

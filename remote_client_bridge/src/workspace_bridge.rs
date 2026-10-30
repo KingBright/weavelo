@@ -130,11 +130,15 @@ impl Drop for MobileWorkspace {
 
 impl MobileWorkspace {
     pub async fn connect(endpoint: SocketAddr, receive_dir: PathBuf) -> Result<Self, String> {
+        Self::connect_with_claim(endpoint,receive_dir,None).await
+    }
+    pub async fn connect_with_claim(endpoint:SocketAddr,receive_dir:PathBuf,claim:Option<protocol::session::DeliveryClaimProof>)->Result<Self,String> {
         let clipboard_directory = receive_dir
             .parent()
             .unwrap_or(&receive_dir)
             .join("clipboard");
         let (connection, mut events) = WorkspaceConnection::connect(endpoint, receive_dir).await?;
+        if let Some(proof)=&claim {remote_core::directed_delivery::claim(&connection,&mut events,proof).await.map_err(|error|error.to_string())?;}
         let connection = Arc::new(connection);
         let queues = Arc::new(Mutex::new(Queues::default()));
         let clipboard = MobileClipboard {

@@ -71,6 +71,9 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 )?));
             }
             let publisher = node.as_ref().unwrap();
+            let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(crate::bridge_device_group_dir()).load()
+                .map_err(|error|error.to_string())?.ok_or("Missing device identity")?;
+            publisher.set_device_identity(identity.node_id);
             if operation == 0 {
                 publisher.set_capture_available(true, value["audio"].as_bool().unwrap_or(false));
                 publisher.set_input_service_available(INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed));
@@ -141,12 +144,26 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 |p| p.input_dispatch(),
             );
         }
+        if operation==16 {
+            let publisher=PUBLISHER.lock().unwrap().clone();
+            return serde_json::to_string(&publisher.and_then(|publisher|publisher.next_delivery())).map_err(|error|error.to_string());
+        }
+        if operation==18 {
+            let publisher=PUBLISHER.lock().unwrap().clone();
+            return Ok(publisher.is_some_and(|publisher|publisher.delivery_alive(&value)).to_string());
+        }
         let publisher = PUBLISHER
             .lock()
             .unwrap()
             .clone()
             .ok_or("screen sharing is not running")?;
         match operation {
+            17 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Update {id:String,state:protocol::session::DeliveryState,reason:String}
+                let update:Update=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                publisher.delivery_state(&update.id,update.state,&update.reason)?;Ok(String::new())
+            }
             2 if publisher.is_finished() => {
                 Err("Screen sharing ended; request a new system authorization".into())
             }
@@ -268,8 +285,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
                     .as_str()
                     .ok_or("missing receive directory")?
                     .into();
+                let claim=value.get("claim").filter(|value|!value.is_null()).map(|value|
+                    serde_json::from_value::<protocol::session::DeliveryClaimProof>(value.clone()).map_err(|error|error.to_string())).transpose()?;
                 let workspace = client.runtime().block_on(
-                    crate::workspace_bridge::MobileWorkspace::connect(endpoint, directory),
+                    crate::workspace_bridge::MobileWorkspace::connect_with_claim(endpoint, directory,claim),
                 )?;
                 *WORKSPACE.lock().unwrap() = Some(Arc::new(workspace));
                 refresh_network_ownership();
