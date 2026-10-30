@@ -771,7 +771,8 @@ private fun SecurityTabContent(
                     }
                 }
                 Text(
-                    text = "Make this phone's screen available to authorized mesh devices for remote viewing and troubleshooting.",
+                    text = if (publishing) "Paired devices can reconnect while this sharing session stays on. Stop sharing to end access."
+                        else "Being online does not share your screen. Tap Share screen and confirm Android screen capture. Paired devices can then view this phone without another prompt until sharing stops.",
                     color = ColorTextSecondary,
                     fontSize = 11.sp
                 )

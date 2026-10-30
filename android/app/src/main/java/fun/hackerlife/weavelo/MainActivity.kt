@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
             var publishControl by remember { mutableStateOf(false) }
             val projection = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
                 if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl)
+                else PublisherClient.status("Screen sharing was not started. Confirm Android screen capture to make this phone viewable.", false)
             }
             fun requestProjection(audio: Boolean, control: Boolean = false) {
                 publishAudio = audio; publishControl = control

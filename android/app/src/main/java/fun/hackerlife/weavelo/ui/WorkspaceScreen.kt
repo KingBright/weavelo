@@ -295,6 +295,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val transform = remember(pane.id, sessionKey, generation) { mutableStateOf(ViewportTransform()) }
     var measured by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var surfaceToken by remember { mutableLongStateOf(0L) }
+    var videoStatus by remember(pane.id, sessionKey, generation) { mutableStateOf<String?>("Waiting for video…") }
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
     val currentError by rememberUpdatedState(onError)
@@ -341,6 +342,12 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
         },
         overlay = {
+            videoStatus?.let { message ->
+                Text(message, color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
+                        .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp))
+            }
             MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
                 enabled = pane.input && token != 0L,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
@@ -366,6 +373,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     override fun surfaceCreated(holder: SurfaceHolder) {
                         val token = WorkspaceClient.nextSurfaceToken()
                         surfaceToken = token
+                        videoStatus = "Waiting for video…"
                         clearTouches()
                         WorkspaceClient.surface(pane.id, sessionKey, generation, token, "begin")
                         val running = AtomicBoolean(true)
@@ -383,9 +391,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                 var lastRequest = System.nanoTime()
                                 var reportedFirstFrame = false
                                 var framesBeforeReset = 0L
+                                val started = System.nanoTime()
+                                var startupReported = false
+                                var receivedPackets = 0L
+                                var submittedPackets = 0L
                                 while (running.get()) {
                                     if (pending == null) {
                                         pending = WorkspaceClient.nativeMedia(pane.id, false)
+                                        if (pending != null) receivedPackets++
                                         pendingSince = System.nanoTime()
                                     }
                                     val bytes = pending
@@ -393,7 +406,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                         val keyframe = bytes[0].toInt() != 0
                                         val pts = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
                                         if (waiting && !keyframe) pending = null
-                                        else if (codec.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false }
+                                        else if (codec.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false; submittedPackets++ }
                                     }
                                     if (pending != null && System.nanoTime() - pendingSince > 250_000_000) {
                                         pending = null; waiting = true
@@ -406,9 +419,20 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                     }
                                     codec.drain()
                                     if (!reportedFirstFrame && codec.outputFrames > framesBeforeReset) {
+                                        post { if (running.get() && surfaceToken == token) videoStatus = null }
                                         WorkspaceClient.surface(pane.id, sessionKey, generation, token, "ready")
                                         android.util.Log.i("WeaveloWorkspace", "First decoded frame for subscription ${pane.id}")
                                         reportedFirstFrame = true
+                                    }
+                                    if (!startupReported && codec.outputFrames == 0L && System.nanoTime() - started > 10_000_000_000L) {
+                                        startupReported = true
+                                        val message = when {
+                                            receivedPackets == 0L -> "Waiting for video from this device."
+                                            submittedPackets == 0L -> "Video arrived, but the decoder is not accepting it."
+                                            else -> "Video arrived, but the decoder has not produced a frame."
+                                        }
+                                        android.util.Log.w("WeaveloWorkspace", "Video startup stalled: subscription=${pane.id}, received=$receivedPackets, submitted=$submittedPackets, surface=${holder.surface.isValid}")
+                                        post { if (running.get() && surfaceToken == token) videoStatus = message }
                                     }
                                     if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
                                     Thread.sleep(4)
