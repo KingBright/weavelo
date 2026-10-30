@@ -1230,9 +1230,18 @@ mod tests {
 #[derive(Default)]
 pub struct VirtualKeyboard {
     held_modifiers: u8,
+    grant: Option<protocol::realtime_input::InputBinding>,
 }
 
 impl VirtualKeyboard {
+    pub fn event_for_grant(&mut self, grant: protocol::realtime_input::InputBinding, name: &str, pressed: bool) -> Vec<InputEvent> {
+        if self.grant != Some(grant) {
+            *self = Self::default();
+            self.grant = Some(grant);
+            if !pressed { return Vec::new(); }
+        }
+        self.event(name, pressed)
+    }
     pub fn event(&mut self, name: &str, pressed: bool) -> Vec<InputEvent> {
         let Some(InputEvent::Key {
             key_code,
@@ -1278,6 +1287,16 @@ impl VirtualKeyboard {
 #[cfg(test)]
 mod virtual_keyboard_tests {
     use super::*;
+    #[test]
+    fn renewed_grant_never_replays_modifiers_or_a_late_key_release() {
+        let mut keys=VirtualKeyboard::default();
+        let old=protocol::realtime_input::InputBinding{connection_id:1,subscription_id:7,source_revision:0,epoch:[1;16]};
+        let new=protocol::realtime_input::InputBinding{epoch:[2;16],..old};
+        keys.event_for_grant(old,"ctrl",true);
+        assert!(keys.event_for_grant(new,"ctrl",false).is_empty());
+        assert!(matches!(keys.event_for_grant(new,"enter",true).as_slice(),[InputEvent::Key{modifiers:0,pressed:true,..}]));
+        assert!(matches!(keys.event_for_grant(new,"enter",false).as_slice(),[InputEvent::Key{modifiers:0,pressed:false,..}]));
+    }
     #[test]
     fn held_ctrl_survives_a_key_pair() {
         let mut keys = VirtualKeyboard::default();

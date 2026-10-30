@@ -483,13 +483,31 @@ impl RemoteBridgeClient {
         for event in events { live.connection.try_bound_input(binding, Some(event)); }
     }
 
-    pub fn commit_text(&self,token:u64,text:&str) -> Result<(),String> {
+    pub fn text_input_owner(&self) -> Option<String> {
+        let _lifecycle=self.lifecycle.try_lock().ok()?;
+        let live=self.live.try_lock().ok()?;
+        let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready())?;
+        serde_json::to_string(&live.connection.text_input_owner(live.session_id,0)?).ok()
+    }
+    pub fn commit_text(&self,owner:&str,text:&str) -> Result<(),String> {
+        let owner=serde_json::from_str(owner).map_err(|_|"invalid text input owner")?;
         let _lifecycle=self.lifecycle.try_lock().map_err(|_|"connection is busy")?;
         let live=self.live.try_lock().map_err(|_|"connection is busy")?;
         let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready()).ok_or("input is unavailable")?;
-        let binding=live.connection.input_binding(live.session_id,0).ok_or("input is unavailable")?;
-        if token==0 || token!=self.manual_token(binding) {return Err("text input source changed".into());}
-        live.connection.try_commit_text(binding,text)
+        if live.connection.text_input_owner(live.session_id,0)!=Some(owner) {return Err("text input source changed".into());}
+        live.connection.try_commit_text_for_owner(owner,text,Duration::ZERO)
+    }
+    pub fn text_key(&self,owner:&str,key:&str,pressed:bool) -> Result<(),String> {
+        let owner=serde_json::from_str(owner).map_err(|_|"invalid text input owner")?;
+        let _lifecycle=self.lifecycle.try_lock().map_err(|_|"connection is busy")?;
+        let live=self.live.try_lock().map_err(|_|"connection is busy")?;
+        let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready()).ok_or("input is unavailable")?;
+        if live.connection.text_input_owner(live.session_id,0)!=Some(owner) {return Err("text input source changed".into());}
+        let binding=live.connection.text_input_binding(owner).ok_or("input is unavailable")?;
+        for event in self.virtual_keys.lock().unwrap().event_for_grant(binding,key,pressed) {
+            if !live.connection.try_bound_input(binding,Some(event)) {return Err("input queue is full".into());}
+        }
+        Ok(())
     }
     pub fn send_bound_virtual_key(&self,token:u64,key_name:&str,pressed:bool) {
         self.virtual_key(Some(token),key_name,pressed)

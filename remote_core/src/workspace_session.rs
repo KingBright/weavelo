@@ -2,6 +2,7 @@
 //! shared audio/file services. Media never owns the connection lifetime.
 use crate::Statistics;
 use crate::workspace_input::InputState;
+pub use crate::workspace_input::TextInputOwner;
 use crate::client_session::{
     AudioIngressEvent, EnvelopeIngress, MediaPacketHandler, SharedHostStats, VideoPacket,
 };
@@ -264,10 +265,27 @@ impl WorkspaceConnection {
     }
     /// Mobile serial dispatch retains the age at the original IME callback.
     pub fn try_commit_text_aged(&self,binding:protocol::realtime_input::InputBinding,text:&str,age:Duration)->Result<(),String> {
-        use std::sync::atomic::Ordering;
         let queued = Instant::now().checked_sub(age).ok_or("invalid text input age")?;
         let mut input = self.input.lock().unwrap();
         let requests = input.text_aged(binding, text, age)?;
+        self.enqueue_text(requests, queued)
+    }
+    pub fn text_input_owner(&self, id: u32, revision: u32) -> Option<TextInputOwner> {
+        self.input.lock().unwrap().text_owner(id, revision)
+    }
+    pub fn text_input_binding(&self, owner: TextInputOwner) -> Option<protocol::realtime_input::InputBinding> {
+        self.input.lock().unwrap().text_binding(owner)
+    }
+    /// Resolve a fresh transport grant only for the same immutable UI owner.
+    /// The event's original age and exact wire grant remain unchanged on retry.
+    pub fn try_commit_text_for_owner(&self, owner: TextInputOwner, text: &str, age: Duration) -> Result<(), String> {
+        let queued = Instant::now().checked_sub(age).ok_or("invalid text input age")?;
+        let mut input = self.input.lock().unwrap();
+        let requests = input.text_for_owner(owner, text, age)?;
+        self.enqueue_text(requests, queued)
+    }
+    fn enqueue_text(&self, requests: Vec<protocol::interaction::TextCommit>, queued: Instant) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
         let count = requests.len();
         self.text_pending.try_update(Ordering::AcqRel,Ordering::Acquire,|n|n.checked_add(count).filter(|sum|*sum<=crate::committed_text::MAX_TEXT_EVENTS)).map_err(|_|"text input queue is full")?;
         if self.commands.try_send(Command::Text(requests,queued)).is_err() {
@@ -705,9 +723,10 @@ impl Actor {
             self.pending.remove(&key);
         }
         if let SessionCommand::Subscribed {
-            id, audio_owner, ..
+            id, audio_owner, supports_input
         } = command
         {
+            if !supports_input { self.input.lock().unwrap().invalidate_text_owner(*id); }
             if let Some(view) = self.subscriptions.get_mut(id) {
                 view.accepted = true;
                 view.audio_owner = *audio_owner;
@@ -1804,8 +1823,11 @@ mod tests {
         let (requests,click)={
             let mut input=actor.input.lock().unwrap();input.source(7,0);
             let SessionCommand::RequestInputBinding{request,..}=input.requests(actor.id).remove(0) else {panic!()};
+            input.grant(actor.id,InputBinding{epoch:[8;16],..binding},request,1000);
+            let composition=input.text_owner(7,0).unwrap();
+            let SessionCommand::RequestInputBinding{request,..}=input.requests(actor.id).remove(0) else {panic!()};
             input.grant(actor.id,binding,request,1000);
-            let requests=input.text(binding,"你好🙂").unwrap();
+            let requests=input.text_for_owner(composition,"你好🙂",Duration::ZERO).unwrap();
             let SessionCommand::RealtimeInput(click)=input.seal_bound(binding,Some(protocol::InputEvent::MouseDown(0))).unwrap() else {panic!()};
             (requests,click)
         };

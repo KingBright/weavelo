@@ -3,17 +3,29 @@ use protocol::session::SessionCommand;
 use std::collections::HashMap;
 use std::time::Instant;
 
+/// Local composition ownership survives transport lease renewal, never a source
+/// replacement, input suspension or explicit release. This is not a wire grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TextInputOwner {
+    pub connection_id: u32,
+    pub subscription_id: u32,
+    pub source_revision: u32,
+    pub generation: u64,
+}
+
 #[derive(Default)]
 pub(crate) struct InputState {
     slots: HashMap<u32, Slot>,
     next_request: u64,
     next_text: u64,
+    next_owner: u64,
 }
 struct Slot {
     enabled: bool,
     revision: u32,
     request: u64,
     lease: Option<Lease>,
+    owner: u64,
 }
 struct Lease {
     binding: InputBinding,
@@ -46,6 +58,7 @@ impl Lease {
 }
 impl InputState {
     pub(crate) fn source(&mut self, id: u32, revision: u32) {
+        self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
         self.slots.insert(
             id,
             Slot {
@@ -53,11 +66,16 @@ impl InputState {
                 revision,
                 request: 0,
                 lease: None,
+                owner: self.next_owner,
             },
         );
     }
     pub(crate) fn remove(&mut self, id: u32) {
         self.slots.remove(&id);
+    }
+    pub(crate) fn invalidate_text_owner(&mut self, id: u32) {
+        self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
+        if let Some(slot) = self.slots.get_mut(&id) { slot.owner = self.next_owner; }
     }
     pub(crate) fn ready(&self, id: u32, revision: u32) -> bool {
         self.slots.get(&id).is_some_and(|slot| {
@@ -71,6 +89,20 @@ impl InputState {
     }
     pub(crate) fn binding(&self, id: u32, revision: u32) -> Option<InputBinding> {
         self.ready(id, revision).then(|| self.slots[&id].lease.as_ref().unwrap().binding)
+    }
+    pub(crate) fn text_owner(&self, id: u32, revision: u32) -> Option<TextInputOwner> {
+        let binding = self.binding(id, revision)?;
+        Some(TextInputOwner { connection_id: binding.connection_id, subscription_id: id,
+            source_revision: revision, generation: self.slots[&id].owner })
+    }
+    pub(crate) fn text_binding(&self, owner: TextInputOwner) -> Option<InputBinding> {
+        (self.text_owner(owner.subscription_id, owner.source_revision) == Some(owner))
+            .then(|| self.binding(owner.subscription_id, owner.source_revision)).flatten()
+    }
+    pub(crate) fn text_for_owner(&mut self, owner: TextInputOwner, text: &str, age: std::time::Duration)
+        -> Result<Vec<protocol::interaction::TextCommit>, String> {
+        let binding = self.text_binding(owner).ok_or("text input source changed")?;
+        self.text_aged(binding, text, age)
     }
     pub(crate) fn seal_bound(
         &mut self,
@@ -206,7 +238,11 @@ impl InputState {
                 source_revision,
                 event,
             } => (id, Some(source_revision), Some(event), false),
-            SessionCommand::ReleaseInput { id } => (id, None, None, true),
+            SessionCommand::ReleaseInput { id } => {
+                self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
+                if let Some(slot) = self.slots.get_mut(&id) { slot.owner = self.next_owner; }
+                (id, None, None, true)
+            }
             SessionCommand::SwitchSource {
                 id,
                 request_id,
@@ -228,6 +264,8 @@ impl InputState {
                 if let Some(slot) = self.slots.get_mut(&id) {
                     slot.enabled = video;
                     if !video {
+                        self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
+                        slot.owner = self.next_owner;
                         slot.lease = None;
                         slot.request = 0;
                     }
@@ -323,6 +361,39 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn composition_survives_lease_renewal_but_keeps_the_commit_age() {
+        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
+        let owner=state.text_owner(7,0).unwrap();let old=state.binding(7,0).unwrap();
+        grant(&mut state,2);
+        assert_eq!(state.text_owner(7,0),Some(owner));
+        assert!(state.text_aged(old,"old wire grant",std::time::Duration::ZERO).is_err());
+        let commits=state.text_for_owner(owner,"你好🙂",std::time::Duration::from_millis(160)).unwrap();
+        assert_eq!(commits[0].binding.epoch,[2;16]);
+        let lease=state.slots[&7].lease.as_ref().unwrap();
+        let now=lease.host_ms+lease.received.elapsed().as_millis() as u64;
+        assert!(now.saturating_sub(commits[0].created_host_ms)>=160);
+        assert!(state.text_for_owner(owner,"expired",std::time::Duration::from_millis(251)).is_err());
+    }
+    #[test]
+    fn composition_never_adopts_replaced_suspended_released_or_foreign_owners() {
+        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
+        let initial=state.text_owner(7,0).unwrap();
+        let mut foreign=initial;foreign.connection_id+=1;
+        assert!(state.text_for_owner(foreign,"wrong peer",std::time::Duration::ZERO).is_err());
+        state.source(7,0);grant(&mut state,2);
+        assert!(state.text_for_owner(initial,"reused source ID",std::time::Duration::ZERO).is_err());
+        let owner=state.text_owner(7,0).unwrap();
+        state.seal(SessionCommand::SetActivity{id:7,revision:1,video:false,audio:false}).unwrap();
+        state.seal(SessionCommand::SetActivity{id:7,revision:2,video:true,audio:true}).unwrap();grant(&mut state,3);
+        assert!(state.text_for_owner(owner,"resumed",std::time::Duration::ZERO).is_err());
+        let owner=state.text_owner(7,0).unwrap();
+        state.seal(SessionCommand::ReleaseInput{id:7}).unwrap();
+        assert!(state.text_for_owner(owner,"released",std::time::Duration::ZERO).is_err());
+        let owner=state.text_owner(7,0).unwrap();state.invalidate_text_owner(7);
+        assert!(state.text_for_owner(owner,"permission revoked",std::time::Duration::ZERO).is_err());
+        state.remove(7);assert!(state.text_owner(7,0).is_none());
+    }
     #[test]
     fn queued_text_preserves_its_original_age_and_source_epoch() {
         let mut state=InputState::default();state.source(7,0);grant(&mut state,1);

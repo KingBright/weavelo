@@ -111,7 +111,9 @@ impl WorkspaceTouch {
         (token!=0 && token==self.surface && self.attached && self.frame_ready && self.visible && self.supported)
             .then_some(current).flatten()
     }
-    pub fn key_events(&mut self,name:&str,pressed:bool)->Vec<InputEvent> {self.keyboard.event(name,pressed)}
+    pub fn key_events(&mut self,binding:InputBinding,name:&str,pressed:bool)->Vec<InputEvent> {
+        self.keyboard.event_for_grant(binding,name,pressed)
+    }
     pub fn touch(
         &mut self,
         token: u64,

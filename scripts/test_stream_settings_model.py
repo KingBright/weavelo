@@ -85,6 +85,8 @@ SESSION_CLOCK_TESTS = {
     "bridge-startup": ("remote_client_bridge", "startup_diagnostics::tests"),
     "bridge-auth": ("remote_client_bridge", "publisher_bridge::tests"),
     "bridge-input": ("remote_client_bridge", "publisher_input::tests"),
+    "bridge-workspace-input": ("remote_client_bridge", "workspace_touch::tests"),
+    "bridge-keyboard": ("remote_client_bridge", "virtual_keyboard_tests"),
     "bridge-telemetry": ("remote_client_bridge", "tests::telemetry_defaults_are_zero_not_marketing_numbers"),
     "bridge-keepalive": ("remote_client_bridge", "tests::paused_session_uses_sparse_shared_keepalive_and_stops_input_grants"),
 }
@@ -136,7 +138,8 @@ def validation_command(cargo, target, mode):
                     "shared-file-publication": ["--no-default-features", "--features", "gpui-restoration"],
                     "pairing-image": ["--features", "pairing-image"],
                     "bridge-invitation": ["--features", "android"], "bridge-network": ["--features", "android"],
-                    "bridge-discovery": ["--features", "android"], "bridge-input": ["--features", "android"]}.get(mode, [])
+                    "bridge-discovery": ["--features", "android"], "bridge-input": ["--features", "android"],
+                    "bridge-workspace-input": ["--features", "android"], "bridge-keyboard": ["--features", "android"]}.get(mode, [])
         kind = ["--test", "background_readonly_cli"] if mode == "background-readonly-cli" else ["--lib"]
         return [cargo, "test", *shared, "-p", package, *kind, *features,
                 test_filter, "--", "--nocapture", *(["--ignored", "--test-threads=1"] if mode == "computer-use-process" else [])]

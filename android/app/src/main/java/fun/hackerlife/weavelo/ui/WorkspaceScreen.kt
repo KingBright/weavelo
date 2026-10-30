@@ -256,7 +256,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
     val currentError by rememberUpdatedState(onError)
-    LaunchedEffect(measured) {
+    LaunchedEffect(measured, pane.accepted) {
+        if (!pane.accepted) return@LaunchedEffect
         delay(250)
         // Negotiate only visible video pixels. Letterboxing/IME/toolbars are not video.
         VideoDimensions.fitEncoder(pane.source.width, pane.source.height,

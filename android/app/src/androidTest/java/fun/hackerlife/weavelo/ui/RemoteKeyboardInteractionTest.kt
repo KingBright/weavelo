@@ -6,6 +6,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteKeyboardInteractionTest {
+    @Test fun hidingTheKeyboardDiscardsCompositionAndLateCallbacks() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val text=mutableListOf<String>();val keys=mutableListOf<String>()
+            val view=RemoteImeView(instrumentation.targetContext,{text.add(it)},{key,_->keys.add(key)})
+            val connection=view.onCreateInputConnection(EditorInfo())
+            connection.setComposingText("未提交🙂",1)
+            view.discardInput()
+            assertFalse(connection.commitText("late",1))
+            connection.finishComposingText()
+            assertFalse(connection.deleteSurroundingText(1,0))
+            assertFalse(connection.performEditorAction(EditorInfo.IME_ACTION_DONE))
+            assertTrue(text.isEmpty());assertTrue(keys.isEmpty())
+        }
+    }
     @Test fun nativeCompositionCommitsCjkAndWholeEmojiOnce() {
         val instrumentation=InstrumentationRegistry.getInstrumentation()
         instrumentation.runOnMainSync {

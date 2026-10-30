@@ -79,6 +79,8 @@ class ServiceContractEntryTests(unittest.TestCase):
         'bridge-startup': ('remote_client_bridge', 'startup_diagnostics::tests'),
         'bridge-auth': ('remote_client_bridge', 'publisher_bridge::tests'),
         'bridge-input': ('remote_client_bridge', 'publisher_input::tests'),
+        'bridge-workspace-input': ('remote_client_bridge', 'workspace_touch::tests'),
+        'bridge-keyboard': ('remote_client_bridge', 'virtual_keyboard_tests'),
         'bridge-telemetry': ('remote_client_bridge', 'tests::telemetry_defaults_are_zero_not_marketing_numbers'),
         'bridge-keepalive': ('remote_client_bridge', 'tests::paused_session_uses_sparse_shared_keepalive_and_stops_input_grants'),
     }
@@ -161,7 +163,8 @@ class ServiceContractEntryTests(unittest.TestCase):
                             'shared-file-publication': ['--no-default-features', '--features', 'gpui-restoration'],
                             'pairing-image': ['--features', 'pairing-image'],
                             'bridge-invitation': ['--features', 'android'], 'bridge-network': ['--features', 'android'],
-                            'bridge-discovery': ['--features', 'android'], 'bridge-input': ['--features', 'android']}.get(mode, [])
+                            'bridge-discovery': ['--features', 'android'], 'bridge-input': ['--features', 'android'],
+                            'bridge-workspace-input': ['--features', 'android'], 'bridge-keyboard': ['--features', 'android']}.get(mode, [])
                 native = (['--profile','release','--target','aarch64-apple-darwin','-j','2']
                           if mode == 'desktop-identity' and runner.sys.platform == 'darwin' else [])
                 self.assertEqual(validation_command('/existing/cargo', Path('/existing/target'), mode), [

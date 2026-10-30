@@ -393,21 +393,24 @@ impl MobileWorkspace {
         let touches=self.touches.lock().unwrap();
         let touch=touches.get(&request.id).ok_or("video surface is unavailable")?;
         let binding=touch.keyboard_binding(request.token,self.connection.input_binding(request.id,touch.revision)).ok_or("remote keyboard is unavailable")?;
-        serde_json::to_string(&binding).map_err(|e|e.to_string())
+        let owner=self.connection.text_input_owner(request.id,binding.source_revision).ok_or("remote keyboard is unavailable")?;
+        serde_json::to_string(&owner).map_err(|e|e.to_string())
     }
     pub fn keyboard(&self,json:&str)->Result<(),String> {
-        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,binding:protocol::realtime_input::InputBinding,
+        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,binding:remote_core::workspace_session::TextInputOwner,
             text:Option<String>,key:Option<String>,#[serde(default)]pressed:bool,#[serde(default)]age_ms:u64}
         let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
         let mut touches=self.touches.lock().unwrap();
         let touch=touches.get_mut(&request.id).ok_or("video surface is unavailable")?;
-        if touch.keyboard_binding(request.token,self.connection.input_binding(request.id,touch.revision))!=Some(request.binding) {
+        if request.binding.subscription_id!=request.id || request.binding.source_revision!=touch.revision {
             return Err("remote keyboard source changed".into());
         }
-        if let Some(text)=request.text {self.connection.try_commit_text_aged(request.binding,&text,std::time::Duration::from_millis(request.age_ms))}
+        let binding=self.connection.text_input_binding(request.binding).ok_or("remote keyboard source changed")?;
+        if touch.keyboard_binding(request.token,Some(binding))!=Some(binding) {return Err("remote keyboard surface changed".into());}
+        if let Some(text)=request.text {self.connection.try_commit_text_for_owner(request.binding,&text,std::time::Duration::from_millis(request.age_ms))}
         else if let Some(key)=request.key {
-            for event in touch.key_events(&key,request.pressed) {
-                if !self.connection.try_bound_input(request.binding,Some(event)) {return Err("remote keyboard queue is full".into());}
+            for event in touch.key_events(binding,&key,request.pressed) {
+                if !self.connection.try_bound_input(binding,Some(event)) {return Err("remote keyboard queue is full".into());}
             }
             Ok(())
         } else {Err("missing remote keyboard event".into())}

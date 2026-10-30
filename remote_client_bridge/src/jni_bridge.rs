@@ -502,9 +502,23 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendTouch
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeCommitText(
-    mut env:JNIEnv,_:JClass,token:jni::sys::jlong,text:JString) -> jboolean {
+    mut env:JNIEnv,_:JClass,owner:JString,text:JString) -> jboolean {
+    let Ok(owner)=env.get_string(&owner) else {return 0;};
     let Ok(text)=env.get_string(&text) else {return 0;};
-    client().commit_text(token as u64,&String::from(text)).is_ok() as jboolean
+    client().commit_text(&String::from(owner),&String::from(text)).is_ok() as jboolean
+}
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeTextInputOwner(env:JNIEnv,_:JClass) -> jni::sys::jstring {
+    client().text_input_owner().and_then(|owner|env.new_string(owner).ok()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeTextKey(
+    mut env:JNIEnv,_:JClass,owner:JString,key:JString,pressed:jboolean) -> jboolean {
+    let Ok(owner)=env.get_string(&owner) else {return 0;};
+    let Ok(key)=env.get_string(&key) else {return 0;};
+    client().text_key(&String::from(owner),&String::from(key),pressed!=0).is_ok() as jboolean
 }
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]

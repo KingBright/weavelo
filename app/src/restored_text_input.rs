@@ -4,7 +4,7 @@ use crate::product_components::TextEditState;
 use std::ops::Range;
 
 pub(super) struct RemoteTextInput {
-    pub binding: protocol::realtime_input::InputBinding,
+    pub binding: remote_core::workspace_session::TextInputOwner,
     view: SourceViewBinding,
     owner: Arc<OriginalOwner>,
     focus: FocusHandle,
@@ -15,7 +15,7 @@ impl RemoteTextInput {
     pub fn new(
         owner: Arc<OriginalOwner>,
         view: SourceViewBinding,
-        binding: protocol::realtime_input::InputBinding,
+        binding: remote_core::workspace_session::TextInputOwner,
         focus: FocusHandle,
         anchor: Option<Point<Pixels>>,
     ) -> Self {

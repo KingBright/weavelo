@@ -2215,7 +2215,7 @@ impl Render for RestoredDashboard {
             && self.input_focus.is_focused(window) && !show_drawer && !self.show_apps_menu,
             &mut self.input_ready_since, Instant::now());
         let text_binding=if self.text_mode && input_ready && !self.input_locked {
-            self.owner.text_input_binding()
+            self.owner.text_input_owner()
         } else {None};
         if let Some((view,binding))=text_binding {
             if self.remote_text.as_ref().is_none_or(|input|input.read(cx).binding!=binding) {

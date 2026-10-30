@@ -1164,21 +1164,21 @@ impl OriginalOwner {
         result
     }
 
-    pub(crate) fn text_input_binding(&self) -> Option<(SourceViewBinding,protocol::realtime_input::InputBinding)> {
+    pub(crate) fn text_input_owner(&self) -> Option<(SourceViewBinding,remote_core::workspace_session::TextInputOwner)> {
         let pool=self.pool.lock().unwrap();
         let session=&pool.active()?.session;
         if !session.can_input() {return None;}
         Some((SourceViewBinding::new(&session.conn,remote_core::shared_files::current_share_scope()),
-            session.conn.input_binding(session.video_id,session.source_revision())?))
+            session.conn.text_input_owner(session.video_id,session.source_revision())?))
     }
-    pub(crate) fn commit_viewing_text(&self,view:&SourceViewBinding,binding:protocol::realtime_input::InputBinding,text:&str) -> Result<(),String> {
+    pub(crate) fn commit_viewing_text(&self,view:&SourceViewBinding,binding:remote_core::workspace_session::TextInputOwner,text:&str) -> Result<(),String> {
         let mut pool=self.pool.lock().unwrap();
         let session=&mut pool.active_mut().ok_or("remote connection closed")?.session;
         if !session.can_input() || !view.matches(&session.conn,remote_core::shared_files::current_share_scope())
-            || session.conn.input_binding(session.video_id,session.source_revision())!=Some(binding) {
+            || session.conn.text_input_owner(session.video_id,session.source_revision())!=Some(binding) {
             return Err("text input source changed; focus the current remote picture".into());
         }
-        let result=session.conn.try_commit_text(binding,text);
+        let result=session.conn.try_commit_text_for_owner(binding,text,std::time::Duration::ZERO);
         if let Err(error)=&result {session.error=error.clone();}
         result
     }

@@ -14,7 +14,8 @@ import java.util.concurrent.Executors
 // Each source has its own subscription; audio owners may be shared by same-app windows.
 data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null)
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
-    val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false)
+    val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
+    val accepted: Boolean = false)
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
@@ -134,7 +135,7 @@ object WorkspaceClient {
         if (!ownership.release(owner, preserveForForeground)) return@guarded
         closeNative()
         mutable.value = if (preserveForForeground) mutable.value.copy(connected = false,
-            panes = mutable.value.panes.map { it.copy(input = false) }, status = "Connection sleeping; reopen to reconnect")
+            panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, status = "Connection sleeping; reopen to reconnect")
             else WorkspaceState(status = "Disconnected")
     }
     private fun connectNative() {
@@ -144,7 +145,7 @@ object WorkspaceClient {
         action(0, JSONObject().put("endpoint", target).put("directory", directory.absolutePath).toString())
         retainingConnection = true
         pendingShareList = 0L
-        mutable.value = mutable.value.copy(connected = true, connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
+        mutable.value = mutable.value.copy(connected = true, connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
     }
     private fun closeNative() { polling?.cancel(); polling = null; if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
@@ -197,6 +198,7 @@ object WorkspaceClient {
     fun settings(id: Int, sessionKey: String, generation: Long, width: Int? = null, height: Int? = null, fps: Int? = null, kbps: Int? = null) = guarded {
         if (!currentView(id, sessionKey, generation, false)) return@guarded
         val pane = mutable.value.panes.find { it.id == id } ?: return@guarded
+        if (!pane.accepted) return@guarded
         val updated = pane.copy(width = width ?: pane.width, height = height ?: pane.height, fps = fps ?: pane.fps, kbps = kbps ?: pane.kbps)
         require(updated.fps > 0 && updated.kbps > 0) { "Frame rate and bitrate must be positive" }
         if (updated == pane) return@guarded
@@ -272,7 +274,7 @@ object WorkspaceClient {
     }
     fun keyboardBinding(id: Int, sessionKey: String, generation: Long, token: Long): String? = synchronized(this) {
         if (!currentView(id,sessionKey,generation,true)) return@synchronized null
-        runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("epoch") } }.getOrNull()
+        runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("generation") } }.getOrNull()
     }
     fun keyboard(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
         text: String? = null, key: String? = null, pressed: Boolean = false, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
@@ -343,11 +345,14 @@ object WorkspaceClient {
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map {
-                    if (it.id == subscribed.getInt("id")) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input")) else it
+                    if (it.id == subscribed.getInt("id")) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input"), accepted = true) else it
                 })
                 activity()
             }
-            control?.optJSONObject("Error")?.let { mutable.value = mutable.value.copy(status = it.getString("reason")) }
+            control?.optJSONObject("Error")?.let {
+                android.util.Log.w("WeaveloWorkspace", "Request ${it.getInt("request_id")} failed: ${it.getString("reason")}")
+                mutable.value = mutable.value.copy(status = it.getString("reason"))
+            }
             if (event.has("file")) mutable.value = mutable.value.copy(status = event.getString("file").take(220))
             event.optJSONObject("detail")?.let { detail ->
                 val response = detail.optJSONObject("shared_response")

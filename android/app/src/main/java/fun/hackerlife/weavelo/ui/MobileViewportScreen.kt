@@ -50,6 +50,7 @@ fun MobileViewportScreen(
     var heldModifiers by remember { mutableStateOf(emptySet<String>()) }
     val virtualKeys = remember { StickyKeyController(WeaveloClient::sendVirtualKey) }
     var showKeyboard by remember { mutableStateOf(false) }
+    var textInputToken by remember { mutableStateOf<WeaveloClient.TextInputToken?>(null) }
     val viewportTransform = remember { mutableStateOf(ViewportTransform()) }
     var transform by viewportTransform
     val sessionState by WeaveloClient.sessionState.collectAsState()
@@ -74,7 +75,7 @@ fun MobileViewportScreen(
             virtualKeys.releaseAll()
             heldModifiers = emptySet()
         }
-        if (!inputEnabled) showKeyboard = false
+        if (!inputEnabled) { showKeyboard = false; textInputToken = null }
     }
 
     // Observe native identity even if a quick reconnect remains STREAMING
@@ -88,6 +89,11 @@ fun MobileViewportScreen(
                 virtualKeys.forgetAll()
                 heldModifiers = emptySet()
                 inputSessionToken = current
+            }
+            val composingOwner = textInputToken
+            val observedOwner = if (showKeyboard && composingOwner != null) WeaveloClient.textInputToken() else null
+            if (observedOwner != null && observedOwner != composingOwner) {
+                showKeyboard=false; textInputToken=null
             }
             if (!inputEnabled) break
             delay(100)
@@ -302,11 +308,11 @@ fun MobileViewportScreen(
                 }
         )
 
-        val keyboardToken = inputSessionToken
+        val keyboardToken = textInputToken
         RemoteKeyboard(identity = keyboardToken ?: "no-input", visible = showKeyboard,
             enabled = inputEnabled && keyboardToken != null,
-            onText = { text -> keyboardToken?.let { WeaveloClient.commitText(it,text) } },
-            onKey = { key, pressed -> keyboardToken?.let { WeaveloClient.sendBoundVirtualKey(it,key,pressed) } })
+            onText = { text -> keyboardToken?.let { if (!WeaveloClient.commitText(it,text)) playbackError="Text input source changed; reopen the keyboard" } },
+            onKey = { key, pressed -> keyboardToken?.let { if (!WeaveloClient.textKey(it,key,pressed)) playbackError="Keyboard input is unavailable" } })
 
         playbackError?.let { message ->
             Text(message, color = Color.White,
@@ -398,7 +404,8 @@ fun MobileViewportScreen(
                 enabled = inputEnabled,
                 active = showKeyboard
             ) {
-                showKeyboard = !showKeyboard
+                if (showKeyboard) { showKeyboard=false; textInputToken=null }
+                else { textInputToken=WeaveloClient.textInputToken(); showKeyboard=textInputToken!=null }
             }
 
             TouchIslandIconButton(text = "DISCONNECT", active = false, isDestructive = true) {

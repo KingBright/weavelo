@@ -20,7 +20,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 /** This editor owns composition only. It never reads or replaces a remote field. */
 internal class RemoteImeView(context: Context, private val commit: (String) -> Unit,
     private val key: (String, Boolean) -> Unit) : View(context) {
+    var acceptingInput = true
     private var currentInput: InputConnection? = null
+    fun discardInput() { acceptingInput=false; currentInput?.finishComposingText() }
     init { isFocusable = true; isFocusableInTouchMode = true }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = currentInput?.sendKeyEvent(event) == true || super.onKeyDown(keyCode,event)
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = currentInput?.sendKeyEvent(event) == true || super.onKeyUp(keyCode,event)
@@ -33,19 +35,21 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
             private val composing = SpannableStringBuilder().apply { android.text.Selection.setSelection(this,0) }
             override fun getEditable(): Editable = composing
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean =
-                (text?.length ?: 0) <= 65536 && super.setComposingText(text,newCursorPosition)
+                acceptingInput && (text?.length ?: 0) <= 65536 && super.setComposingText(text,newCursorPosition)
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                if (!acceptingInput) return false
                 if ((text?.length ?: 0) > 65536) return false
                 if (!text.isNullOrEmpty()) commit(text.toString())
                 composing.clear(); removeComposingSpans(composing)
                 return true
             }
             override fun finishComposingText(): Boolean {
-                if (getComposingSpanStart(composing) >= 0 && composing.isNotEmpty()) commit(composing.toString())
+                if (acceptingInput && getComposingSpanStart(composing) >= 0 && composing.isNotEmpty()) commit(composing.toString())
                 composing.clear(); removeComposingSpans(composing)
                 return true
             }
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                if (!acceptingInput) return false
                 if (composing.isNotEmpty()) return deleteLocal(beforeLength,afterLength,false)
                 if (beforeLength !in 0..64 || afterLength !in 0..64) return false
                 repeat(beforeLength) { key("backspace", true); key("backspace", false) }
@@ -53,7 +57,7 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
                 return true
             }
             override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
-                if (composing.isNotEmpty()) deleteLocal(beforeLength,afterLength,true)
+                if (!acceptingInput) false else if (composing.isNotEmpty()) deleteLocal(beforeLength,afterLength,true)
                 else deleteSurroundingText(beforeLength, afterLength)
             private fun deleteLocal(before: Int, after: Int, codePoints: Boolean): Boolean {
                 if (before < 0 || after < 0) return false
@@ -68,6 +72,7 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
                 return true
             }
             override fun sendKeyEvent(event: KeyEvent): Boolean {
+                if (!acceptingInput) return false
                 val name = when (event.keyCode) {
                     KeyEvent.KEYCODE_DEL -> "backspace"; KeyEvent.KEYCODE_FORWARD_DEL -> "delete"
                     KeyEvent.KEYCODE_ENTER -> "enter"; KeyEvent.KEYCODE_TAB -> "tab"
@@ -88,7 +93,7 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
                 }
                 return false
             }
-            override fun performEditorAction(actionCode: Int): Boolean {key("enter",true);key("enter",false);return true}
+            override fun performEditorAction(actionCode: Int): Boolean {if (!acceptingInput) return false;key("enter",true);key("enter",false);return true}
         }
         currentInput=connection
         return connection
@@ -108,11 +113,15 @@ internal fun RemoteKeyboard(identity: Any, visible: Boolean, enabled: Boolean,
         LaunchedEffect(editor, visible, enabled) {
             val view=editor ?: return@LaunchedEffect
             val imm=context.getSystemService(InputMethodManager::class.java)
+            view.acceptingInput=visible && enabled
             if (visible && enabled) {view.requestFocus();imm.showSoftInput(view,InputMethodManager.SHOW_IMPLICIT)}
-            else {imm.hideSoftInputFromWindow(view.windowToken,0);view.clearFocus()}
+            else {view.discardInput();imm.hideSoftInputFromWindow(view.windowToken,0);view.clearFocus()}
         }
         DisposableEffect(editor) {
-            onDispose { editor?.let { context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(it.windowToken,0);it.clearFocus() } }
+            // The initial null -> View recomposition must not dispose the new
+            // editor by reading the mutable state from the old effect.
+            val owned = editor
+            onDispose { owned?.let { it.discardInput();context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(it.windowToken,0);it.clearFocus() } }
         }
     }
 }

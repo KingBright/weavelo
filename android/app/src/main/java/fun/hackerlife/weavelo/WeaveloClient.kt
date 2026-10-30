@@ -453,13 +453,22 @@ object WeaveloClient {
     private external fun nativeInputIntentToken(): Long
     private external fun nativeRefreshInputIntent(token: Long): Boolean
     private external fun nativeSendTouch(token: Long, actionCode: Int, pointerId: Int, normX: Float, normY: Float, pressure: Float)
-    @Synchronized fun commitText(token: InputIntentToken, text: String): Boolean =
+    data class TextInputToken(val generation: Long, val owner: String)
+    private external fun nativeTextInputOwner(): String?
+    private external fun nativeTextKey(owner: String, key: String, pressed: Boolean): Boolean
+    @Synchronized fun textInputToken(): TextInputToken? =
+        if (isNativeLoaded && !backgrounded && !_mediaPaused.value && !_mediaPausePending.value)
+            nativeTextInputOwner()?.let { TextInputToken(connectionGeneration,it) } else null
+    @Synchronized fun commitText(token: TextInputToken, text: String): Boolean =
         isNativeLoaded && !backgrounded && !_mediaPaused.value && !_mediaPausePending.value &&
-            token.generation == connectionGeneration && nativeCommitText(token.session, text)
+            token.generation == connectionGeneration && nativeCommitText(token.owner, text)
+    @Synchronized fun textKey(token: TextInputToken, key: String, pressed: Boolean): Boolean =
+        isNativeLoaded && !backgrounded && !_mediaPaused.value && !_mediaPausePending.value &&
+            token.generation == connectionGeneration && nativeTextKey(token.owner,key,pressed)
     @Synchronized fun sendBoundVirtualKey(token: InputIntentToken, key: String, pressed: Boolean) {
         if (isNativeLoaded && !backgrounded && token.generation == connectionGeneration) nativeSendBoundVirtualKey(token.session,key,pressed)
     }
-    private external fun nativeCommitText(token: Long, text: String): Boolean
+    private external fun nativeCommitText(owner: String, text: String): Boolean
     private external fun nativeSendBoundVirtualKey(token: Long, key: String, pressed: Boolean)
     private external fun nativeSendVirtualKey(keyName: String, pressed: Boolean)
     private external fun nativeSetTouchMode(modeCode: Int)
