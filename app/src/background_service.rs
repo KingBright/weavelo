@@ -127,6 +127,7 @@ impl Service {
         let limit = Arc::new(Semaphore::new(8));
         let profile=profile.to_owned();
         let registration_lock=Arc::new(tokio::sync::Mutex::new(()));
+        let shutdown_serial=Arc::new(tokio::sync::Mutex::new(()));
         let closing=Arc::new(Mutex::new(false));let closed=closing.clone();let broker=runtime.owner.delivery.clone();
         let stopped = Arc::new(tokio::sync::Notify::new()); let finished = stopped.clone();
         let task = tokio::spawn(async move {
@@ -135,7 +136,7 @@ impl Service {
                 while children.try_join_next().is_some() {}
                 let Ok(permit) = limit.clone().try_acquire_owned() else { continue; };
                 let guard = guard.clone(); let runtime = runtime.clone(); let generation = generation.clone(); let executable_sha256 = executable_sha256.clone();
-                let profile=profile.clone();let registration_lock=registration_lock.clone();let closed=closed.clone(); let finished=finished.clone();
+                let profile=profile.clone();let registration_lock=registration_lock.clone();let shutdown_serial=shutdown_serial.clone();let closed=closed.clone(); let finished=finished.clone();
                 children.spawn(async move {
                     let _guard = guard;
                     let _permit = permit;
@@ -161,16 +162,16 @@ impl Service {
                                 socket.write_all(&frame(&serde_json::to_vec(&Response::Rejected("Active background work prevents upgrade shutdown".into()))?)?).await?;
                                 return Ok::<(), Error>(());
                             }
-                            let admitted = admit_shutdown(owner_mode, expected, hash, &generation, &executable_sha256, &closed);
-                            let response = match admitted {
-                                Err(error) => Response::Rejected(error),
-                                Ok(()) => match if idle_only { runtime.owner.shutdown_host_if_idle().await } else { runtime.owner.shutdown_host().await } {
+                            let admitted = admit_shutdown(owner_mode, expected, hash, &generation, &executable_sha256, &closed, &shutdown_serial);
+                            let response = match &admitted {
+                                Err(error) => Response::Rejected(error.clone()),
+                                Ok(_) => match if idle_only { runtime.owner.shutdown_host_if_idle().await } else { runtime.owner.shutdown_host().await } {
                                     Ok(()) => Response::StopPrepared { generation: generation.clone(), executable_sha256: executable_sha256.clone(), pid: std::process::id(), cleanup_verified: true },
                                     Err(error) => Response::Rejected(error),
                                 },
                             };
                             let success = matches!(response, Response::StopPrepared { .. });
-                            if idle_only && matches!(&response, Response::Rejected(reason) if reason == "Active or pending host connections prevent upgrade shutdown") { *closed.lock().unwrap() = false; }
+                            if idle_only && admitted.as_ref().is_ok_and(|(_, was_closing)| !*was_closing) && matches!(&response, Response::Rejected(reason) if reason == "Active or pending host connections prevent upgrade shutdown") { *closed.lock().unwrap() = false; }
                             let write = socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await;
                             // An interrupted caller gets an unknown result, never a false success.
                             // A completed cleanup exits normally even if the reply socket was lost.
@@ -195,7 +196,7 @@ impl Service {
                             if *closing {Response::Rejected("GUI owner stopped".into())}
                             else if verified {runtime.owner.delivery.verified_gui_generation(&gui);answer(request,&runtime,generation,executable_sha256,owner_mode)}
                             else {Response::Rejected("Sending GUI generation or executable changed".into())}
-                        } else {let closing=closed.lock().unwrap();if *closing{Response::Rejected("GUI owner stopped".into())}else{answer(request,&runtime,generation,executable_sha256,owner_mode)}};
+                        } else {let closing=closed.lock().unwrap();if *closing && !shutdown_observation(&request){Response::Rejected("Background shutdown pending; inspect status or retry cleanup".into())}else{answer(request,&runtime,generation,executable_sha256,owner_mode)}};
                         socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await?;
                         Ok::<(), Error>(())
                     }).await;
@@ -245,13 +246,20 @@ fn upgrade_quit_background_replacement_is_refused_before_stop() {
     assert_eq!(stops,0);
     assert!(upgrade_quit_background_owner(("101-1","image",101),("101-1","image",101)).is_ok());
 }
-fn admit_shutdown(mode: OwnerMode, expected: &str, hash: &str, generation: &str, actual_hash: &str, closing: &Mutex<bool>) -> Result<(), String> {
+fn shutdown_observation(request: &Request) -> bool {
+    matches!(request, Request::Snapshot | Request::NetworkDiagnostics {..} | Request::InspectConnection {..})
+}
+
+fn admit_shutdown<'a>(mode: OwnerMode, expected: &str, hash: &str, generation: &str, actual_hash: &str, closing: &Mutex<bool>, serial: &'a tokio::sync::Mutex<()>) -> Result<(tokio::sync::MutexGuard<'a, ()>, bool), String> {
     if mode != OwnerMode::Background || expected != generation || hash != actual_hash {
         return Err("Shutdown requires the exact background owner generation and executable".into());
     }
+    let attempt = serial.try_lock().map_err(|_| "Background shutdown is running; observe its outcome")?;
     let mut state = closing.lock().map_err(|_| "Shutdown state unavailable")?;
-    if *state { return Err("Background shutdown already requested; outcome must be observed".into()); }
-    *state = true; Ok(())
+    let was_closing = *state;
+    *state = true;
+    // A failed cleanup keeps new work blocked, but the exact owner may retry.
+    Ok((attempt, was_closing))
 }
 
 fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: String, executable_sha256: String, owner_mode:OwnerMode) -> Response {
@@ -695,13 +703,25 @@ mod service_contract_tests {
     #[test]
     fn shutdown_requires_exact_background_owner_and_never_accepts_a_replacement() {
         let closing = Mutex::new(false);
+        let serial = tokio::sync::Mutex::new(());
         for (mode, generation, hash) in [(OwnerMode::Standalone,"g","h"),
             (OwnerMode::Background,"old","h"),(OwnerMode::Background,"g","wrong")] {
-            assert!(admit_shutdown(mode,generation,hash,"g","h",&closing).is_err());
+            assert!(admit_shutdown(mode,generation,hash,"g","h",&closing,&serial).is_err());
             assert!(!*closing.lock().unwrap());
         }
-        admit_shutdown(OwnerMode::Background,"g","h","g","h",&closing).unwrap();
-        assert!(admit_shutdown(OwnerMode::Background,"g","h","g","h",&closing).is_err());
+        let first = admit_shutdown(OwnerMode::Background,"g","h","g","h",&closing,&serial).unwrap();
+        assert!(!first.1);
+        assert!(admit_shutdown(OwnerMode::Background,"g","h","g","h",&closing,&serial).is_err());
+        drop(first); // Simulate a completed attempt that did not confirm cleanup.
+        assert!(*closing.lock().unwrap());
+        assert!(shutdown_observation(&Request::Snapshot));
+        assert!(shutdown_observation(&Request::InspectConnection {connection_id: 1}));
+        assert!(shutdown_observation(&Request::NetworkDiagnostics {generation:"g".into(),executable_sha256:"h".into()}));
+        assert!(!shutdown_observation(&Request::CreateGroup));
+        assert!(!shutdown_observation(&Request::JoinGroup("invite".into())));
+        assert!(admit_shutdown(OwnerMode::Background,"old","h","g","h",&closing,&serial).is_err());
+        let retry = admit_shutdown(OwnerMode::Background,"g","h","g","h",&closing,&serial).unwrap();
+        assert!(retry.1);
         for (generation, hash, pid, clean) in [("old","h",42,true),("g","bad",42,true),
             ("g","h",43,true),("g","h",42,false)] {
             assert!(validate_stop_receipt(Response::StopPrepared { generation:generation.into(),

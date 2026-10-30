@@ -1233,10 +1233,7 @@ impl OriginalOwner {
         self.revoke_computer_use();
 
         if let Some(e) = p.active_mut() {
-            if locked {
-                e.session.release_input();
-            }
-            e.session.locked = locked;
+            e.session.set_input_locked(locked);
         }
     }
     pub fn release_input(&self) {

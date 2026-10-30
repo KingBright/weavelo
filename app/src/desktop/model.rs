@@ -43,6 +43,7 @@ pub struct SessionState<Texture, Pan: Default> {
     pub activity_revision: u64,
     pub status: String,
     pub error: String,
+    input_error: Option<String>,
     pub video_error: Option<String>,
     pub connected: bool,
     pub files: Vec<SharedFileInfo>,
@@ -87,6 +88,7 @@ pub(crate) type OriginalGuiSession =
 
 impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     fn clear_transient_error(&mut self) {
+        self.input_error = None;
         self.error = match self.media.as_ref().map(|media| &media.status) {
             Some(client::ClientMediaRuntimeStatus::AudioUnavailable { reason }) =>
                 format!("Audio unavailable: {reason}"),
@@ -155,6 +157,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             activity_revision: 0,
             status: "Authenticated device connection".into(),
             error: String::new(),
+            input_error: None,
             video_error: None,
             connected: true,
             files: Vec::new(),
@@ -428,6 +431,21 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             let _ = conn.control(SessionCommand::SetClipboard { enabled }).await;
         });
     }
+    pub fn set_input_locked(&mut self, locked: bool) {
+        if locked {
+            self.release_input();
+        } else if self.input_error.take().is_some_and(|error| self.error == error) {
+            self.clear_transient_error();
+        }
+        self.locked = locked;
+    }
+    fn fail_input(&mut self, reason: String) {
+        self.release_input();
+        self.locked = true;
+        self.input_error = Some(reason.clone());
+        self.error = reason;
+        self.status = "Application control paused; video remains available. Correct the host condition and enable control again.".into();
+    }
     pub fn release_input(&mut self) {
         if (!self.keys.is_empty() || !self.mouse.is_empty() || self.modifiers != 0)
             && !self
@@ -691,18 +709,16 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.error = reason;
                 }
                 SessionCommand::TextRejected {binding,reason,..} if binding.connection_id==self.conn.id && binding.subscription_id==self.video_id && binding.source_revision==self.source_revision() => {
-                    self.release_input();self.locked=true;self.error=reason;
+                    self.fail_input(reason);
                 }
                 SessionCommand::Error { request_id, reason }
                     if request_id == self.video_id && reason.starts_with("INPUT_UNAVAILABLE:") =>
                 {
-                    self.release_input();
-                    self.locked = true;
-                    self.error = reason
+                    let reason = reason
                         .trim_start_matches("INPUT_UNAVAILABLE:")
                         .trim()
                         .to_owned();
-                    self.status="Application control paused; video remains available. Correct the host condition and enable control again.".into();
+                    self.fail_input(reason);
                 }
                 SessionCommand::Error { request_id, reason } => {
                     // Cleanup uses the same numeric ID as the video request. Once
@@ -1115,6 +1131,37 @@ pub(crate) mod static_input_tests {
             events,
         );
         (session, recorded_rx, recorder, temp)
+    }
+
+    #[tokio::test]
+    async fn retry_control_clears_only_its_previous_input_failure() {
+        let (mut session, _received, recorder, _temp) = recorder_session().await;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        session.events.control = receiver;
+        sender.send(SessionCommand::Error {
+            request_id: session.video_id,
+            reason: "INPUT_UNAVAILABLE: selected application is inactive".into(),
+        }).unwrap();
+        session.poll();
+        assert!(session.locked);
+        assert_eq!(session.error, "selected application is inactive");
+        session.set_input_locked(false);
+        assert!(session.error.is_empty());
+        assert!(!session.locked);
+        // Retrying the UI does not invent the source/frame/input authorization.
+        assert!(!session.can_input());
+
+        session.fail_input("selected application is inactive".into());
+        session.error = "File destination is unavailable".into();
+        session.set_input_locked(false);
+        assert_eq!(session.error, "File destination is unavailable");
+        session.video_error = Some("Capture failed".into());
+        session.error = "Capture failed".into();
+        session.set_input_locked(true);
+        session.set_input_locked(false);
+        assert_eq!(session.error, "Capture failed");
+        assert_eq!(session.video_error.as_deref(), Some("Capture failed"));
+        recorder.abort();
     }
 
     #[tokio::test]
