@@ -84,6 +84,7 @@ async fn receive(
     owner_mode: crate::background_service::OwnerMode,
     offer: &Arc<Incoming>,
 ) -> Result<(), Error> {
+    if offer.sources.len() != 1 {return Err("This receiver requires the multi-window update".into());}
     let directory = if owner_mode == crate::background_service::OwnerMode::Background { profile.join("gui-state") } else { profile.to_owned() };
     let mut status = ipc(directory.clone(), Request::Status).await;
     if status.is_err() {
@@ -158,6 +159,7 @@ async fn receive(
             lease_ms,
             claim: Some(DeliveryClaimProof {
                 ticket: offer.ticket,
+                source: offer.sources[0],
                 target_device_id: offer.target.clone(),
                 request_id: offer.request,
             }),

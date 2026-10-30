@@ -55,6 +55,7 @@ pub(crate) async fn claim(
             request_id: proof.request_id,
             target_device_id: proof.target_device_id.clone(),
             ticket: proof.ticket,
+            source: proof.source,
         },
         proof.request_id,
         0,
@@ -187,6 +188,7 @@ mod sender {
                 generation: generation.clone(),
                 connection: conn.id,
                 sequence,
+                sources: vec![protocol::session::CaptureSource::MainDisplay],
             },
         )
         .await?;
@@ -220,6 +222,7 @@ mod sender {
                     target_device_id: target.clone(),
                     ticket,
                     revision,
+                    sources: vec![protocol::session::CaptureSource::MainDisplay],
                 };
                 let state = exchange(&conn, &mut events, command, request, revision).await?;
                 *status.lock().unwrap() = match state {

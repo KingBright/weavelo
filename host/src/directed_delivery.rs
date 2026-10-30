@@ -1,6 +1,6 @@
 //! Bounded, in-memory directed intent. Wire identity always comes from the
 //! authenticated host connection; a ticket is not a node-ID assertion.
-use protocol::session::{DeliveryState, SessionCommand};
+use protocol::session::{CaptureSource, DeliveryState, SessionCommand, validate_delivery_sources};
 use remote_core::shared_files::ShareScope;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -27,6 +27,7 @@ pub enum LocalIntent {
         generation: String,
         connection: u32,
         sequence: u64,
+        sources: Vec<CaptureSource>,
     },
     Renew {
         ticket: [u8; 32],
@@ -45,7 +46,8 @@ struct Ticket {
     _connection: u32,
     revision: u64,
     expires: Instant,
-    claimed: Option<Peer>,
+    sources: Vec<CaptureSource>,
+    claimed: HashMap<Peer, CaptureSource>,
     cancel: tokio::sync::watch::Sender<bool>,
 }
 impl Drop for Ticket {
@@ -70,6 +72,7 @@ pub struct Incoming {
     pub source: String,
     pub target: String,
     pub ticket: [u8; 32],
+    pub sources: Vec<CaptureSource>,
     inner: Mutex<IncomingState>,
 }
 struct IncomingState {
@@ -182,9 +185,10 @@ impl Broker {
                 generation,
                 connection,
                 sequence,
+                sources,
             } => {
                 register(
-                    &mut s, ticket, target, generation, connection, sequence, scope, now,
+                    &mut s, ticket, target, generation, connection, sequence, sources, scope, now,
                 )?;
             }
             LocalIntent::Renew {
@@ -214,11 +218,12 @@ impl Broker {
         target: String,
         ticket: [u8; 32],
         revision: u64,
+        sources: Vec<CaptureSource>,
     ) -> SessionCommand {
         let mut s = self.state.lock().unwrap();
         let key = (peer, request);
         if let Some(offer) = s.incoming.get(&key) {
-            if offer.source != source || offer.target != target || offer.ticket != ticket {
+            if offer.source != source || offer.target != target || offer.ticket != ticket || offer.sources != sources {
                 return receipt(
                     request,
                     revision,
@@ -243,6 +248,7 @@ impl Broker {
             return offer.receipt();
         }
         if peer.scope.is_none()
+            || validate_delivery_sources(&sources).is_err()
             || s.identity.as_deref() != Some(&target)
             || source.is_empty()
             || source.len() > 256
@@ -265,6 +271,7 @@ impl Broker {
             source,
             target,
             ticket,
+            sources,
             inner: Mutex::new(IncomingState {
                 revision,
                 expires: Instant::now() + LEASE,
@@ -284,12 +291,14 @@ impl Broker {
         request: u64,
         target: &str,
         ticket: [u8; 32],
+        source: CaptureSource,
     ) -> SessionCommand {
         self.claim_in_scope(
             peer,
             request,
             target,
             ticket,
+            source,
             remote_core::shared_files::current_share_scope(),
         )
     }
@@ -299,6 +308,7 @@ impl Broker {
         request: u64,
         target: &str,
         ticket: [u8; 32],
+        source: CaptureSource,
         scope: ShareScope,
     ) -> SessionCommand {
         let mut s = self.state.lock().unwrap();
@@ -308,11 +318,13 @@ impl Broker {
                 if t.target != target
                     || t.scope != peer.scope
                     || Instant::now() >= t.expires
-                    || t.claimed.is_some_and(|p| p != peer)
+                    || !t.sources.contains(&source)
+                    || t.claimed.get(&peer).is_some_and(|selected| *selected != source)
+                    || t.claimed.iter().any(|(p, selected)| *p != peer && *selected == source)
                 {
                     return false;
                 }
-                t.claimed = Some(peer);
+                t.claimed.insert(peer, source);
                 true
             });
         receipt(
@@ -348,7 +360,7 @@ impl Broker {
             .unwrap()
             .tickets
             .get(&ticket)
-            .filter(|t| t.claimed == Some(peer) && Instant::now() < t.expires)
+            .filter(|t| t.claimed.contains_key(&peer) && Instant::now() < t.expires)
             .map(|t| t.cancel.subscribe())
     }
     pub fn claim_alive(&self, peer: Peer, ticket: [u8; 32]) -> bool {
@@ -358,15 +370,27 @@ impl Broker {
             .tickets
             .get(&ticket)
             .is_some_and(|t| {
-                t.claimed == Some(peer)
+                t.claimed.contains_key(&peer)
                     && t.scope == remote_core::shared_files::current_share_scope()
                     && Instant::now() < t.expires
             })
     }
+    pub fn allows_source(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource) -> bool {
+        self.allows_source_in_scope(peer, ticket, source, remote_core::shared_files::current_share_scope())
+    }
+    fn allows_source_in_scope(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource, scope: ShareScope) -> bool {
+        self.state.lock().unwrap().tickets.get(&ticket).is_some_and(|t| {
+            t.claimed.get(&peer) == Some(&source)
+                && t.scope == scope
+                && Instant::now() < t.expires
+        })
+    }
     pub fn reconcile(&self, live: impl Fn(Peer) -> bool) {
+        self.reconcile_in_scope(live, remote_core::shared_files::current_share_scope());
+    }
+    fn reconcile_in_scope(&self, live: impl Fn(Peer) -> bool, scope: ShareScope) {
         let mut s = self.state.lock().unwrap();
         let now = Instant::now();
-        let scope = remote_core::shared_files::current_share_scope();
         for o in s.incoming.values() {
             if !live(o.peer) || o.peer.scope != scope || !o.alive() {
                 o.finish(
@@ -382,7 +406,7 @@ impl Broker {
             .tickets
             .iter()
             .filter(|(_, t)| {
-                now >= t.expires || t.scope != scope || t.claimed.is_some_and(|p| !live(p))
+                now >= t.expires || t.scope != scope
             })
             .map(|(k, _)| *k)
             .collect::<Vec<_>>();
@@ -399,9 +423,11 @@ fn register(
     generation: String,
     connection: u32,
     sequence: u64,
+    sources: Vec<CaptureSource>,
     scope: ShareScope,
     now: Instant,
 ) -> Result<(), String> {
+    validate_delivery_sources(&sources)?;
     if s.identity.is_none()
         || scope.is_none()
         || ticket == [0; 32]
@@ -430,7 +456,8 @@ fn register(
             _connection: connection,
             revision: 1,
             expires: now + LEASE,
-            claimed: None,
+            sources,
+            claimed: HashMap::new(),
             cancel: tokio::sync::watch::channel(false).0,
         },
     );
@@ -473,7 +500,8 @@ mod tests {
             _connection: 8,
             revision: 1,
             expires: Instant::now() + LEASE,
-            claimed: None,
+            sources: vec![CaptureSource::MainDisplay],
+            claimed: HashMap::new(),
             cancel: tokio::sync::watch::channel(false).0,
         }
     }
@@ -496,7 +524,7 @@ mod tests {
         let token = [8; 32];
         b.state.lock().unwrap().tickets.insert(token, ticket());
         assert!(matches!(
-            b.claim_in_scope(peer(), 1, "receiver", token, peer().scope),
+            b.claim_in_scope(peer(), 1, "receiver", token, CaptureSource::MainDisplay, peer().scope),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Claimed,
                 ..
@@ -506,7 +534,7 @@ mod tests {
         let mut other = peer();
         other.nonce = [9; 16];
         assert!(matches!(
-            b.claim_in_scope(other, 1, "receiver", token, peer().scope),
+            b.claim_in_scope(other, 1, "receiver", token, CaptureSource::MainDisplay, peer().scope),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Rejected,
                 ..
@@ -523,6 +551,44 @@ mod tests {
         assert!(b.claim_cancel(peer(), token).is_none());
     }
     #[tokio::test]
+    async fn delivery_windows_have_distinct_sources_and_close_independently() {
+        let (broker, _) = Broker::new();
+        let token = [8; 32]; let first = peer();
+        let mut second = first; second.connection += 1; second.nonce = [9; 16];
+        let mut item = ticket(); item.sources = vec![CaptureSource::Window(11), CaptureSource::Display(22)];
+        broker.state.lock().unwrap().tickets.insert(token, item);
+        let claim = |peer, source| matches!(broker.claim_in_scope(peer, 1, "receiver", token, source, first.scope),
+            SessionCommand::DeliveryReceipt { state: DeliveryState::Claimed, .. });
+        assert!(claim(first, CaptureSource::Window(11)));
+        assert!(claim(first, CaptureSource::Window(11))); // Retry keeps the exact binding.
+        assert!(!claim(first, CaptureSource::Display(22)));
+        assert!(!claim(second, CaptureSource::Window(11)));
+        assert!(!claim(second, CaptureSource::Window(33)));
+        assert!(claim(second, CaptureSource::Display(22)));
+        let mut cancel = broker.claim_cancel(second, token).unwrap();
+        broker.reconcile_in_scope(|p| p == second, first.scope);
+        assert!(!*cancel.borrow());
+        assert!(broker.allows_source_in_scope(second, token, CaptureSource::Display(22), first.scope));
+        assert!(!broker.allows_source_in_scope(second, token, CaptureSource::Window(11), first.scope));
+        // A closed window's source cannot be reclaimed by another connection.
+        let mut third = second; third.connection += 1;
+        assert!(!claim(third, CaptureSource::Window(11)));
+        broker.reconcile_in_scope(|_| true, Some([6; 32]));
+        cancel.changed().await.unwrap(); assert!(*cancel.borrow());
+    }
+    #[tokio::test]
+    async fn offer_renewal_cannot_replace_its_source_selection() {
+        let (broker, mut rx) = Broker::new(); broker.set_identity("receiver".into());
+        let offer = |revision, sources| broker.offer(peer(), 1, "source".into(), "receiver".into(), [8;32], revision, sources);
+        assert!(matches!(offer(1, vec![]), SessionCommand::DeliveryReceipt {state:DeliveryState::Rejected,..}));
+        assert!(matches!(offer(1, vec![CaptureSource::Window(1);2]), SessionCommand::DeliveryReceipt {state:DeliveryState::Rejected,..}));
+        assert!(matches!(offer(1, vec![CaptureSource::Window(1),CaptureSource::Window(2)]), SessionCommand::DeliveryReceipt {state:DeliveryState::Pending,..}));
+        let incoming=rx.recv().await.unwrap(); let deadline=incoming.snapshot().1;
+        assert!(matches!(offer(2, vec![CaptureSource::Window(2),CaptureSource::Window(1)]), SessionCommand::DeliveryReceipt {state:DeliveryState::Rejected,..}));
+        assert_eq!(incoming.snapshot().1, deadline); assert_eq!(incoming.snapshot().0, 1);
+        assert!(incoming.alive()); assert!(rx.try_recv().is_err());
+    }
+    #[tokio::test]
     async fn terminal_offer_is_not_resurrected_by_retry_or_new_revision() {
         let (b, mut rx) = Broker::new();
         b.set_identity("receiver".into());
@@ -534,6 +600,7 @@ mod tests {
                 "receiver".into(),
                 [8; 32],
                 revision,
+                vec![CaptureSource::MainDisplay],
             )
         };
         assert!(matches!(
@@ -583,10 +650,10 @@ mod tests {
     async fn another_offer_cannot_displace_current_receiver() {
         let (b, mut rx) = Broker::new();
         b.set_identity("receiver".into());
-        b.offer(peer(), 1, "source".into(), "receiver".into(), [8; 32], 1);
+        b.offer(peer(), 1, "source".into(), "receiver".into(), [8; 32], 1, vec![CaptureSource::MainDisplay]);
         let first = rx.recv().await.unwrap();
         assert!(matches!(
-            b.offer(peer(), 2, "other".into(), "receiver".into(), [9; 32], 1),
+            b.offer(peer(), 2, "other".into(), "receiver".into(), [9; 32], 1, vec![CaptureSource::MainDisplay]),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Rejected,
                 ..
@@ -613,6 +680,7 @@ mod tests {
                 "gui-1".into(),
                 8,
                 sequence,
+                vec![CaptureSource::MainDisplay],
                 peer().scope,
                 Instant::now(),
             )
@@ -633,6 +701,7 @@ mod tests {
                 "gui-1".into(),
                 8,
                 1,
+                vec![CaptureSource::MainDisplay],
                 peer().scope,
                 Instant::now()
             )
@@ -647,6 +716,7 @@ mod tests {
                 "gui-1".into(),
                 8,
                 1025,
+                vec![CaptureSource::MainDisplay],
                 peer().scope,
                 Instant::now()
             )
@@ -659,6 +729,7 @@ mod tests {
             "gui-2".into(),
             8,
             1,
+            vec![CaptureSource::MainDisplay],
             peer().scope,
             Instant::now(),
         )

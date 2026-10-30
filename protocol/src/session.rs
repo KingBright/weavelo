@@ -1,7 +1,7 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 4;
+pub const SESSION_VERSION: u32 = 5;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -10,6 +10,17 @@ pub enum CaptureSource {
     MainDisplay,
     Display(u32),
     Window(u32),
+}
+
+/// The ordered source selection is immutable for the lifetime of a delivery.
+pub fn validate_delivery_sources(sources: &[CaptureSource]) -> Result<(), &'static str> {
+    if sources.is_empty() || sources.len() > MAX_SUBSCRIPTIONS {
+        return Err("Choose between one and eight sources");
+    }
+    if sources.iter().enumerate().any(|(index, source)| sources[..index].contains(source)) {
+        return Err("A delivery cannot contain duplicate sources");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -147,8 +158,8 @@ pub enum SessionCommand {
     InputHandled { binding: crate::realtime_input::InputBinding, sequence: u64 },
     // Directed delivery uses this same authenticated control connection. The
     // opaque ticket is an intent capability, never a new device identity.
-    DeliveryOffer { request_id: u64, source_device_id: String, target_device_id: String, ticket: [u8; 32], revision: u64 },
-    DeliveryClaim { request_id: u64, target_device_id: String, ticket: [u8; 32] },
+    DeliveryOffer { request_id: u64, source_device_id: String, target_device_id: String, ticket: [u8; 32], revision: u64, sources: Vec<CaptureSource> },
+    DeliveryClaim { request_id: u64, target_device_id: String, ticket: [u8; 32], source: CaptureSource },
     DeliveryCancel { request_id: u64 },
     DeliveryReceipt { request_id: u64, revision: u64, state: DeliveryState, reason: String },
     CommitText(crate::interaction::TextCommit),
@@ -157,7 +168,7 @@ pub enum SessionCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeliveryClaimProof { pub ticket:[u8;32], pub target_device_id:String, pub request_id:u64 }
+pub struct DeliveryClaimProof { pub ticket:[u8;32], pub target_device_id:String, pub request_id:u64, pub source:CaptureSource }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeliveryState { Pending, Accepted, Claimed, Cancelled, Rejected, Receiving }
@@ -179,6 +190,18 @@ pub fn fit_capture_size(source: (u32, u32), target: (u32, u32)) -> (u32, u32) {
 mod tests {
     use super::*;
     #[test]
+    fn delivery_selection_is_bounded_unique_and_required_on_the_wire() {
+        assert!(validate_delivery_sources(&[]).is_err());
+        assert!(validate_delivery_sources(&vec![CaptureSource::MainDisplay; 2]).is_err());
+        let sources: Vec<_> = (1..=8).map(CaptureSource::Window).collect();
+        assert!(validate_delivery_sources(&sources).is_ok());
+        let mut too_many = sources; too_many.push(CaptureSource::Display(3));
+        assert!(validate_delivery_sources(&too_many).is_err());
+        let mut old = 27u32.to_le_bytes().to_vec();
+        old.extend(bincode::serialize(&(1u64, "a", "b", [1u8; 32], 1u64)).unwrap());
+        assert!(bincode::deserialize::<SessionCommand>(&old).is_err());
+    }
+    #[test]
     fn fits_both_axes_for_portrait_landscape_and_odd_sizes() {
         assert_eq!(fit_capture_size((1080, 1920), (1920, 1080)), (606, 1080));
         assert_eq!(fit_capture_size((3440, 1440), (1280, 720)), (1280, 534));
@@ -190,8 +213,8 @@ mod tests {
         let existing=[(SessionCommand::ReleaseInput{id:7},0u32),(SessionCommand::Open{connection_id:9,version:SESSION_VERSION},7),
             (SessionCommand::Close{connection_id:9},18),(SessionCommand::RequestInputBinding{connection_id:9,id:7,source_revision:0,request:1},23)];
         for(command,index)in existing {let bytes=bincode::serialize(&command).unwrap();assert_eq!(&bytes[..4],&index.to_le_bytes());}
-        let commands=[SessionCommand::DeliveryOffer{request_id:17,source_device_id:"source".into(),target_device_id:"target".into(),ticket:[3;32],revision:1},
-            SessionCommand::DeliveryClaim{request_id:17,target_device_id:"target".into(),ticket:[3;32]},
+        let commands=[SessionCommand::DeliveryOffer{request_id:17,source_device_id:"source".into(),target_device_id:"target".into(),ticket:[3;32],revision:1,sources:vec![CaptureSource::Display(7),CaptureSource::Window(9)]},
+            SessionCommand::DeliveryClaim{request_id:17,target_device_id:"target".into(),ticket:[3;32],source:CaptureSource::Display(7)},
             SessionCommand::DeliveryCancel{request_id:17},
             SessionCommand::DeliveryReceipt{request_id:17,revision:2,state:DeliveryState::Receiving,reason:String::new()}];
         for(index,command)in commands.into_iter().enumerate(){

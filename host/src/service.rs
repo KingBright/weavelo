@@ -2238,21 +2238,21 @@ async fn run_host_service_inner(
                                         peer.versioned_control=true; SessionCommand::Opened { connection_id, version: SESSION_VERSION, max_subscriptions: MAX_SUBSCRIPTIONS as u32, files: peer.files.is_some(), clipboard: config.enable_clipboard_sync, window_capture } };
                                     input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await;
                                 }
-                                SessionCommand::DeliveryOffer{request_id,source_device_id,target_device_id,ticket,revision} => {
+                                SessionCommand::DeliveryOffer{request_id,source_device_id,target_device_id,ticket,revision,sources} => {
                                     let owner=peers.get(&addr).and_then(|p|authenticated.get(&addr).map(|(nonce,_,_)|crate::directed_delivery::Peer{addr,connection:p.id,nonce:*nonce,scope:remote_core::shared_files::current_share_scope()}));
                                     let reply=match (&delivery,owner) {
-                                        (Some(broker),Some(owner)) if load_session_psk()==psk => broker.offer(owner,request_id,source_device_id,target_device_id,ticket,revision),
+                                        (Some(broker),Some(owner)) if load_session_psk()==psk => broker.offer(owner,request_id,source_device_id,target_device_id,ticket,revision,sources),
                                         _=>SessionCommand::DeliveryReceipt{request_id,revision,state:protocol::session::DeliveryState::Rejected,reason:"Directed delivery unavailable".into()},
                                     };
                                     input_owner.during_control(&injector,send_session(&udp_sender,addr,reply)).await;
                                 }
-                                SessionCommand::DeliveryClaim{request_id,target_device_id,ticket} => {
+                                SessionCommand::DeliveryClaim{request_id,target_device_id,ticket,source} => {
                                     let owner=peers.get(&addr).and_then(|p|authenticated.get(&addr).map(|(nonce,_,_)|crate::directed_delivery::Peer{addr,connection:p.id,nonce:*nonce,scope:remote_core::shared_files::current_share_scope()}));
                                     let reply=match (&delivery,owner) {
                                         (Some(broker),Some(owner)) if load_session_psk()==psk => {
                                             let reply=if peers.get(&addr).is_some_and(|p|p.delivery_owner.is_some_and(|binding|binding!=(owner,ticket)) || (p.delivery_owner.is_none()&&!p.subscriptions.is_empty())) {
                                                 SessionCommand::DeliveryReceipt{request_id,revision:0,state:protocol::session::DeliveryState::Rejected,reason:"Connection already belongs to another activity".into()}
-                                            } else {broker.claim(owner,request_id,&target_device_id,ticket)};
+                                            } else {broker.claim(owner,request_id,&target_device_id,ticket,source)};
                                             if matches!(reply,SessionCommand::DeliveryReceipt{state:protocol::session::DeliveryState::Claimed,..}) {
                                                 let p=peers.get_mut(&addr).unwrap();p.delivery_owner=Some((owner,ticket));p.delivery_cancel=broker.claim_cancel(owner,ticket);
                                             }
@@ -2282,6 +2282,16 @@ async fn run_host_service_inner(
                                 }
                                 SessionCommand::Subscribe(request) => {
                                     let id = request.id;
+                                    if let Some(peer) = peers.get(&addr)
+                                        && let Some((owner, ticket)) = peer.delivery_owner
+                                        && (!delivery.as_ref().is_some_and(|broker| broker.allows_source(owner, ticket, request.source))
+                                            || peer.subscriptions.keys().any(|existing| *existing != id))
+                                    {
+                                        input_owner.during_control(&injector, send_session(&udp_sender, addr, SessionCommand::Error {
+                                            request_id: id, reason: "This delivery window is bound to its selected source".into(),
+                                        })).await;
+                                        continue;
+                                    }
                                     if let Some(peer)=peers.get_mut(&addr) {
                                         if !peer.accepts_initial_subscribe(&request) {
                                             input_owner.during_control(&injector,send_session(&udp_sender,addr,SessionCommand::Error{request_id:id,reason:"use SwitchSource or a new subscription ID to replace a capture".into()})).await;
@@ -2315,6 +2325,15 @@ async fn run_host_service_inner(
                                     }
                                 }
                                 SessionCommand::SwitchSource { id, request_id, source } => {
+                                    if let Some(peer) = peers.get(&addr)
+                                        && let Some((owner, ticket)) = peer.delivery_owner
+                                        && !delivery.as_ref().is_some_and(|broker| broker.allows_source(owner, ticket, source))
+                                    {
+                                        input_owner.during_control(&injector, send_session(&udp_sender, addr, SessionCommand::Error {
+                                            request_id, reason: "Start a new delivery to change the selected sources".into(),
+                                        })).await;
+                                        continue;
+                                    }
                                     if let Some(peer)=peers.get_mut(&addr) {
                                         retire_input_before_control(peer,&mut input_owner,&injector,addr,&SessionCommand::SwitchSource{id,request_id,source}).await;
                                     }

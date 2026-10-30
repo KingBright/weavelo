@@ -819,6 +819,10 @@ impl OriginalOwner {
         };
         let mut session =
             OriginalGuiSession::new(key.into(), device.display_name, route, conn, events);
+        if let Some(proof) = &receive_claim {
+            session.source = proof.source;
+            session.request.source = proof.source;
+        }
         #[cfg(any(all(target_os = "windows", feature = "native-windows-video"), all(target_os = "linux", feature = "native-linux-video")))]
         {
             session.prefer_native_video = true;
@@ -842,10 +846,11 @@ impl OriginalOwner {
             e.session.release_input();
         }
         if let Some(binding) = p.directed_receive.as_mut() { binding.connection = Some(session.conn.id); }
+        let source_seen = session.source;
         p.sessions.push(ViewSession {
             session,
             frame: Arc::new(Mutex::new(None)),
-            source_seen: CaptureSource::MainDisplay,
+            source_seen,
             frame_observer: None,
             sources: Arc::new(Vec::new()),
         });
