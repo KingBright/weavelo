@@ -97,11 +97,14 @@ impl WindowsVideoEncoder {
         if let Some(source) = &self.source {
             loop {
                 if let Some(selection)=&self.selection {let _=crate::windows_sources::resolve(selection.source)?;}
-                let (nalu, is_keyframe) = source.pull_access_unit().await?;
+                let (mut nalu, is_keyframe) = source.pull_access_unit().await?;
                 if self.awaiting_initial_keyframe && !is_keyframe {
                     continue;
                 }
                 if is_keyframe {
+                    if self.selection.as_ref().is_some_and(|s|s.encoder==crate::windows_capture_plan::Encoder::Amd) {
+                        remote_core::hevc_sequence::set_srgb_transfer(&mut nalu)?;
+                    }
                     self.awaiting_initial_keyframe = false;
                 }
                 let encoded_at_us = remote_core::timing::quanta_now_us();

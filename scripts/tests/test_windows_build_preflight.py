@@ -32,6 +32,7 @@ class WindowsCurrentDeliveryTests(unittest.TestCase):
         self.addCleanup(stack.close)
         stack.enter_context(patch.object(windows, '__file__', str(self.repo/'scripts/build_windows_current.py')))
         stack.enter_context(patch.object(sys, 'platform', 'win32'))
+        stack.enter_context(patch.object(windows.shutil, 'which', return_value='fixture/rc.exe'))
         stack.enter_context(patch.object(windows.gate, 'git', return_value=b'main'))
         stack.enter_context(patch.object(windows.gate, 'build_environment', return_value={'PATH':'fixture'}))
         stack.enter_context(patch.object(windows.gate, 'toolchain_digest', return_value='d'*64))
@@ -190,6 +191,7 @@ class WindowsPackagingPreflightTests(unittest.TestCase):
     def test_policy_refusal_occurs_before_source_scan_or_compiler(self):
         with patch.object(sys,'argv',['build_windows_current.py','--expected-commit','a'*40,'--ffmpeg','C:/private/ffmpeg.exe']), \
              patch.object(sys,'platform','win32'), \
+             patch.object(windows.shutil,'which',return_value='fixture/rc.exe'), \
              patch.object(windows.gate,'git',return_value=b'main'), \
              patch.object(windows.gate,'build_environment',return_value={}), \
              patch.object(windows,'packaging_preflight',side_effect=windows.gate.IdentityRejected('Restricted')), \

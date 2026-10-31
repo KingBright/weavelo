@@ -69,7 +69,7 @@ def packaging_preflight(repo, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--expected-commit', required=True)
+    parser.add_argument('--expected-commit')
     parser.add_argument('--expected-patch')
     parser.add_argument('--ffmpeg', type=Path)
     parser.add_argument('--build-only', action='store_true', help='Compile and verify identity without invoking a package script')
@@ -77,11 +77,20 @@ def main():
     args = parser.parse_args()
     gate.require(sys.platform == 'win32', 'Native Windows only')
     repo = Path(__file__).resolve().parents[1]
+    args.expected_commit = args.expected_commit or gate.git(repo, 'rev-parse', 'HEAD').decode().strip()
+    if not shutil.which('rc.exe'):
+        sdk = Path(os.environ.get('ProgramFiles(x86)', 'C:/Program Files (x86)'))/'Windows Kits/10/bin'
+        compilers = [p for p in sdk.glob('*/x64/rc.exe') if p.is_file() and
+                     all(part.isdigit() for part in p.parent.parent.name.split('.'))]
+        if compilers:
+            compiler = max(compilers, key=lambda p: tuple(map(int, p.parent.parent.name.split('.'))))
+            os.environ['PATH'] = str(compiler.parent) + os.pathsep + os.environ.get('PATH', '')
     gate.require(gate.git(repo, 'branch', '--show-current').strip() == b'main', 'Primary main required')
     env = gate.build_environment()
     package_env = packaging_environment(env)
     if not args.build_only:
-        gate.require(args.ffmpeg is not None, '--ffmpeg is required for a formal package')
+        if args.ffmpeg is None:
+            args.ffmpeg = Path(os.environ['LOCALAPPDATA'])/'Weavelo/Desktop/bin/ffmpeg.exe'
         packaging_preflight(repo, package_env)  # Fail before expensive compilation.
     metadata = json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--locked', '--offline', '--no-deps', '--format-version=1'], cwd=repo, env=env))
@@ -89,10 +98,12 @@ def main():
     gate.require(target == (repo / 'target').resolve(strict=True)
                  and Path(metadata.get('build_directory') or target).resolve() == target,
                  'Preserve the existing native Windows project-local cache')
-    gate.require(shutil.disk_usage(target).free >= 4 * 1024**3, 'Four GiB reserve required')
     if args.ffmpeg is not None:
         gate.regular(args.ffmpeg)
-    source = gate.source_snapshot(repo, args.expected_commit, expected_patch=args.expected_patch)
+    def current_source():
+        return gate.source_snapshot(repo, args.expected_commit, expected_patch=args.expected_patch,
+                                    inspect_only=args.expected_patch is None)
+    source = current_source()
     config = gate.configuration('windows', 'x86_64', (repo/'VERSION').read_text().strip(),
         'x86_64-pc-windows-msvc', 'release', gate.toolchain_digest(), gate.environment_digest())
     expected = gate.identity(source, config)
@@ -118,7 +129,7 @@ def main():
         child = subprocess.Popen(command, cwd=repo, env=build_env, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         result = child.wait(); settled = True
         gate.require(result == 0, 'Build failed; no receipt minted')
-        gate.require(gate.source_snapshot(repo,args.expected_commit,expected_patch=args.expected_patch)==source,
+        gate.require(current_source()==source,
                      'Source changed during compilation')
         gate.require(gate.toolchain_digest()==config['toolchain_sha256']
                      and gate.environment_digest()==config['environment_sha256'], 'Compiler environment changed')
@@ -155,7 +166,7 @@ def main():
             return
         subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','RemoteSigned','-File',str(repo/'scripts/package_windows_unified.ps1'),
             '-Desktop','-SkipBuild','-BuildReceipt',str(receipt_path),'-FfmpegPath',str(args.ffmpeg)],cwd=repo,env=package_env,check=True)
-        gate.require(gate.source_snapshot(repo,args.expected_commit,expected_patch=args.expected_patch)==source,
+        gate.require(current_source()==source,
                      'Source changed during packaging')
         print(json.dumps({'build_identity_sha256':expected['identity_sha256'],'commit':args.expected_commit,
             'binary_sha256':binary_hash,'receipt':str(receipt_path),

@@ -1,4 +1,4 @@
-//! Bounded HEVC SPS prefix reader for decoder initialization. This does not decode
+//! Shared bounded HEVC SPS reader and explicit source-color metadata repair. This does not decode
 //! pixels, guess a GUI size, or replace the decoder's authoritative output metadata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SequenceInfo {
@@ -21,6 +21,7 @@ pub struct VideoSignal {
 struct Bits<'a> {
     data: &'a [u8],
     at: usize,
+    transfer_at: Option<usize>,
 }
 impl Bits<'_> {
     fn read(&mut self, n: usize) -> Result<u32, &'static str> {
@@ -76,6 +77,50 @@ fn start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
 }
 /// Parse the first SPS in one bounded Annex B access unit. No SPS is a normal None.
 pub fn sequence_info(bytes: &[u8]) -> Result<Option<SequenceInfo>, &'static str> {
+    Ok(sequence_details(bytes)?.map(|sps| sps.info))
+}
+
+struct ParsedSps {
+    info: SequenceInfo,
+    header: usize,
+    end: usize,
+    transfer_at: Option<usize>,
+    rbsp: Vec<u8>,
+}
+
+/// The caller must have independently verified an SDR sRGB source. Repair only
+/// an explicit BT.709 transfer tag; preserve range, matrix, geometry and VCL data.
+pub fn set_srgb_transfer(bytes: &mut Vec<u8>) -> Result<bool, &'static str> {
+    let mut cursor=0;
+    let mut changed=false;
+    while let Some(mut sps)=sequence_details(&bytes[cursor..])? {
+        let signal=sps.info.signal.ok_or("SPS color metadata is missing")?;
+        if signal.primaries!=Some(1) || signal.matrix!=Some(1) || !matches!(signal.transfer,Some(1|13)) {
+            return Err("SPS does not describe the verified SDR color space");
+        }
+        if signal.transfer==Some(13) {cursor+=sps.end;continue;}
+        let at=sps.transfer_at.ok_or("SPS transfer offset is missing")?;
+        for bit in 0..8 {
+            let position=at+bit;
+            let mask=1<<(7-position%8);
+            sps.rbsp[position/8]=(sps.rbsp[position/8]&!mask)|((((13>>(7-bit))&1)as u8)<<(7-position%8));
+        }
+        let mut escaped=Vec::with_capacity(sps.rbsp.len()+8);
+        let mut zeros=0;
+        for byte in sps.rbsp {
+            if zeros>=2 && byte<=3 {escaped.push(3);zeros=0;}
+            escaped.push(byte);zeros=if byte==0 {zeros+1}else{0};
+        }
+        let start=cursor+sps.header+2;
+        let next=start+escaped.len();
+        bytes.splice(start..cursor+sps.end,escaped);
+        cursor=next;
+        changed=true;
+    }
+    Ok(changed)
+}
+
+fn sequence_details(bytes: &[u8]) -> Result<Option<ParsedSps>, &'static str> {
     if bytes.len() > 16 * 1024 * 1024 {
         return Err("access unit too large");
     }
@@ -112,7 +157,7 @@ pub fn sequence_info(bytes: &[u8]) -> Result<Option<SequenceInfo>, &'static str>
             rbsp.push(v);
             zeros = if v == 0 { zeros + 1 } else { 0 };
         }
-        let mut b = Bits { data: &rbsp, at: 0 };
+        let mut b = Bits { data: &rbsp, at: 0, transfer_at: None };
         b.skip(4)?;
         let layers = b.read(3)? as usize;
         if layers > 6 {
@@ -175,7 +220,7 @@ pub fn sequence_info(bytes: &[u8]) -> Result<Option<SequenceInfo>, &'static str>
             .filter(|v| *v > 0)
             .ok_or("invalid vertical crop")?;
         let (signal, pixel_aspect, chroma_location) = read_signal_tail(&mut b, layers)?;
-        return Ok(Some(SequenceInfo {
+        let info=SequenceInfo {
             signal,
             pixel_aspect,
             chroma_location,
@@ -183,7 +228,9 @@ pub fn sequence_info(bytes: &[u8]) -> Result<Option<SequenceInfo>, &'static str>
             visible: [x, y, vw, vh],
             bit_depth: (8 + luma) as u8,
             chroma_format: chroma as u8,
-        }));
+        };
+        let transfer_at=b.transfer_at;
+        return Ok(Some(ParsedSps {info,header,end,transfer_at,rbsp}));
     }
     Ok(None)
 }
@@ -192,13 +239,16 @@ mod tests {
     use super::*;
     #[test]
     fn reads_existing_encoded_fixture() {
-        let info = sequence_info(include_bytes!("../tests/fixtures/desktop-test.h265"))
+        let info = sequence_info(include_bytes!("../../client/tests/fixtures/desktop-test.h265"))
             .unwrap()
             .unwrap();
         assert_eq!(&info.visible[2..], &[128, 72]);
         assert_eq!(info.bit_depth, 8);
     }
     fn fixture(w: u32, h: u32, crop: [u32; 4], depth: u32) -> Vec<u8> {
+        fixture_transfer(w,h,crop,depth,1)
+    }
+    fn fixture_transfer(w: u32, h: u32, crop: [u32; 4], depth: u32, transfer:u32) -> Vec<u8> {
         let mut bits = Vec::new();
         let put = |bits: &mut Vec<bool>, v: u32, n: usize| {
             for i in (0..n).rev() {
@@ -246,7 +296,7 @@ mod tests {
         put(&mut bits, 5, 3);
         put(&mut bits, 0, 1);
         put(&mut bits, 1, 1);
-        for value in [1, 1, 1] {
+        for value in [1, transfer, 1] {
             put(&mut bits, value, 8);
         } // limited BT.709
         put(&mut bits, 1, 1);
@@ -319,6 +369,45 @@ mod tests {
     #[test]
     fn non_parameter_units_are_not_used_as_dimensions() {
         assert_eq!(sequence_info(&[0, 0, 1, 2, 1, 0x80]).unwrap(), None);
+    }
+    #[test]
+    fn srgb_repair_preserves_geometry_range_and_compressed_picture() {
+        let mut bytes=fixture(1920,1088,[0,0,0,4],2);
+        let picture=[0,0,0,1,0x26,1,0xaa,0xbb,0xff];
+        bytes.extend(picture);
+        let before=sequence_info(&bytes).unwrap().unwrap();
+        assert!(set_srgb_transfer(&mut bytes).unwrap());
+        let mut after=sequence_info(&bytes).unwrap().unwrap();
+        assert_eq!(after.signal.as_ref().unwrap().transfer,Some(13));
+        after.signal.as_mut().unwrap().transfer=Some(1);
+        assert_eq!(before,after);
+        assert!(bytes.ends_with(&picture));
+        assert!(!set_srgb_transfer(&mut bytes).unwrap());
+    }
+    #[test]
+    fn srgb_repair_handles_each_sps_and_rejects_unspecified_color() {
+        let first=fixture(640,480,[0;4],0);
+        let second=fixture(1920,1088,[0,0,0,4],2);
+        let mut bytes=[first,second].concat();
+        assert!(set_srgb_transfer(&mut bytes).unwrap());
+        let first=sequence_details(&bytes).unwrap().unwrap();
+        assert_eq!(first.info.signal.unwrap().transfer,Some(13));
+        assert_eq!(sequence_info(&bytes[first.end..]).unwrap().unwrap().signal.unwrap().transfer,Some(13));
+        let mut unknown=fixture_transfer(640,480,[0;4],0,2);
+        let original=unknown.clone();
+        assert!(set_srgb_transfer(&mut unknown).is_err());
+        assert_eq!(unknown,original);
+    }
+    #[test]
+    fn native_amf_sps_needs_no_encoder_extradata_to_preserve_full_range_srgb() {
+        // Actual owned 578x384 WGC/AMF fixture. AMF's separate initialization
+        // extradata omits VPS; the on-wire SPS is sufficient for this repair.
+        let mut bytes=vec![0,0,0,1,66,1,1,1,96,0,0,3,0,176,0,0,3,0,0,3,0,156,160,5,2,1,129,193,7,203,146,66,149,146,227,255,0,1,0,1,110,2,2,2,8,0,0,3,0,8,0,0,3,0,246,32];
+        assert_eq!(sequence_info(&bytes).unwrap().unwrap().visible,[0,0,578,384]);
+        assert!(set_srgb_transfer(&mut bytes).unwrap());
+        assert_eq!(sequence_info(&bytes).unwrap().unwrap().signal,Some(VideoSignal {
+            full_range:true,primaries:Some(1),transfer:Some(13),matrix:Some(1),
+        }));
     }
 }
 
@@ -441,11 +530,9 @@ fn read_signal_tail(
         let full_range = b.read(1)? != 0;
         let described = b.read(1)? != 0;
         let (primaries, transfer, matrix) = if described {
-            (
-                Some(b.read(8)? as u8),
-                Some(b.read(8)? as u8),
-                Some(b.read(8)? as u8),
-            )
+            let primaries=Some(b.read(8)? as u8);
+            b.transfer_at=Some(b.at);
+            (primaries,Some(b.read(8)? as u8),Some(b.read(8)? as u8))
         } else {
             (None, None, None)
         };

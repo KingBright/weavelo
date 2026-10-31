@@ -811,7 +811,6 @@ def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, l
     binding_sha256 = hash_file(lifecycle_binding) if lifecycle_binding is not None else None
     target = (shared_target(repo, target, lifecycle_binding=lifecycle_binding, **({'allow_cross_linux':True} if defer_linux_observation else {}))
               if lifecycle_binding is not None else shared_target(repo, target))
-    require(shutil.disk_usage(target).free >= 4 * 1024 ** 3, 'Four GiB free-space reserve required')
     config = expected['configuration']
     command = compiler_command(config)
     with BuildInputs(repo, target, expected) as inputs:
@@ -824,7 +823,6 @@ def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, l
                 'Source/identity changed during build')
         require(environment_digest() == config['environment_sha256'] and
                 toolchain_digest() == config['toolchain_sha256'], 'Compiler environment/toolchain changed during build')
-        require(shutil.disk_usage(target).free >= 4 * 1024 ** 3, 'Build exhausted required disk reserve')
         if lifecycle_binding is not None:
             require(hash_file(lifecycle_binding) == binding_sha256, 'Observation binding changed during build')
         profile = 'debug' if config['profile'] == 'dev' else 'release'

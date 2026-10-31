@@ -1639,7 +1639,7 @@ mod tests {
 #[cfg(all(target_os = "windows", feature = "native-windows-video"))]
 pub mod windows_hevc;
 
-pub mod hevc_sequence;
+pub use remote_core::hevc_sequence;
 
 #[cfg(all(target_os = "windows", feature = "native-windows-video"))]
 pub mod windows_playback;

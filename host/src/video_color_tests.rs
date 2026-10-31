@@ -6,8 +6,7 @@ use screencapturekit::{
     cv::CVPixelBuffer,
 };
 use std::time::Duration;
-#[path = "../../client/src/hevc_sequence.rs"]
-mod hevc_sequence;
+use remote_core::hevc_sequence;
 
 #[link(name = "CoreVideo", kind = "framework")]
 unsafe extern "C" {
