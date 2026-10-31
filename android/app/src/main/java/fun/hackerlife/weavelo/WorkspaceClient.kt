@@ -19,7 +19,8 @@ data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int,
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
-    val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0)
+    val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
+    val incomingEnded: Boolean = false)
 
 object WorkspaceClient {
     private external fun nativeAction(operation: Int, payload: String): String
@@ -74,8 +75,12 @@ object WorkspaceClient {
         ?: java.util.UUID.randomUUID().toString()
 
     fun resumeOnForeground(context: Context) {
-        ownership.request()?.let { SessionConnectionService.openWorkspace(context, it) }
+        ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(context, it) }
     }
+
+    private fun canOpenRequest(request: WorkspaceSessionRequest): Boolean = request.incomingId?.let {
+        DirectedDelivery.alive(it) && !(mutable.value.sessionKey == request.sessionKey && mutable.value.incomingEnded)
+    } ?: true
 
     // Called only by the foreground Service. All native work remains serialized;
     // the polling Job is a child of the Service rather than the UI/global scope.
@@ -83,7 +88,7 @@ object WorkspaceClient {
         pendingStarts.incrementAndGet()
         guarded {
             try {
-                if (!ownerScope.isActive) return@guarded
+                if (!ownerScope.isActive || !canOpenRequest(request)) return@guarded
                 val previous = ownership.request()
                 val sameSession = previous == request && mutable.value.sessionKey == request.sessionKey
                 val reuse = ownership.attach(owner, request, active && !asleep && !forceReconnect)
@@ -157,20 +162,20 @@ object WorkspaceClient {
         incomingInitialized = false; incomingEnded = false
         retainingConnection = true
         pendingShareList = 0L
-        mutable.value = mutable.value.copy(connected = true, maxSubscriptions = capabilities.getInt("max_subscriptions"),
+        mutable.value = mutable.value.copy(connected = true, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
             connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
     }
     private fun closeNative() { polling?.cancel(); polling = null; if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
-        ownership.request()?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
+        ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
     }
     fun backgrounded(value: Boolean) = guarded {
         if (!active || background == value) return@guarded
         background = value
         if (value) backgroundAt = SystemClock.elapsedRealtime()
         if (!value && asleep) {
-            ownership.request()?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it) }
+            ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it) }
         }
         if (!value) pendingClipboard?.let { applyClipboard(it); pendingClipboard = null }
         activity()
@@ -333,7 +338,7 @@ object WorkspaceClient {
     private fun endIncoming(reason: String, rejected: Boolean = false) {
         incomingEnded = true
         mutable.value.panes.forEach { command("Unsubscribe", JSONObject().put("id", it.id)) }
-        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), status = reason)
+        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), incomingEnded = true, status = reason)
         ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason, rejected) }
     }
     private fun drainEvents() {

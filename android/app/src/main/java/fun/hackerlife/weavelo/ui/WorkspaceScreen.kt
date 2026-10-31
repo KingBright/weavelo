@@ -110,12 +110,12 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }.onFailure { withContext(Dispatchers.Main) { localError = it.message } }
         }
     }
-    LaunchedEffect(sessionKey, foreground, state.connected, remoteDevice?.endpoint, remoteDevice?.canOpenWorkspace) {
+    LaunchedEffect(sessionKey, foreground, state.connected, state.incomingEnded, remoteDevice?.endpoint, remoteDevice?.canOpenWorkspace) {
         val requested = WorkspaceClient.requestedSession()
         val current = WorkspaceClient.state.value
         if (foreground && remoteDevice?.canOpenWorkspace == true &&
             requested?.sessionKey == sessionKey && requested.deviceId == deviceId &&
-            current.sessionKey == sessionKey && !current.connected && !WorkspaceClient.starting) {
+            current.sessionKey == sessionKey && !current.connected && !current.incomingEnded && !WorkspaceClient.starting) {
             WorkspaceClient.reconnect()
         }
     }
@@ -138,7 +138,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     Text(remoteDevice?.name ?: "Remote device",
                         color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                         maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                    Text(if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
+                    Text(if (state.incomingEnded) "Sharing ended" else if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
                         style = MaterialTheme.typography.labelSmall)
                 }
                 MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected) {
@@ -151,7 +151,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 Box {
                     MobileAction(MobileSymbol.More, "Connection actions") { actionsOpen = true }
                     DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
-                if (!state.connected) TextButton(onClick = { actionsOpen = false;  WorkspaceClient.reconnect() }) { Text("Reconnect") }
+                if (!state.connected && !state.incomingEnded) TextButton(onClick = { actionsOpen = false;  WorkspaceClient.reconnect() }) { Text("Reconnect") }
                 TextButton(onClick = { actionsOpen = false;  WorkspaceClient.layout(!state.grid) }) { Text(if (state.grid) "Use tabs" else "Show together") }
                 TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected && state.files) { Text("Send file") }
                 TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected) { Text("Share file with network") }

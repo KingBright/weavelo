@@ -18,11 +18,47 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+fn file_status(event:&FileTransferEvent)->String {
+    let progress=|done:u64,total:u64| (u128::from(done.min(total))*100).checked_div(u128::from(total)).unwrap_or(0);
+    match event {
+        FileTransferEvent::IncomingProgress {received_bytes,total_size,..}=>format!("Receiving file · {}%",progress(*received_bytes,*total_size)),
+        FileTransferEvent::OutgoingProgress {sent_bytes,total_size,..}=>format!("Sending file · {}%",progress(*sent_bytes,*total_size)),
+        FileTransferEvent::IncomingStarted {..}=>"Receiving file".into(),
+        FileTransferEvent::OutgoingStarted {..}|FileTransferEvent::OutgoingGroupStarted {..}=>"Sending files".into(),
+        FileTransferEvent::IncomingCompleted {..}|FileTransferEvent::IncomingGroupCompleted {..}=>"File received".into(),
+        FileTransferEvent::OutgoingCompleted {..}|FileTransferEvent::OutgoingGroupCompleted {..}=>"File sent".into(),
+        FileTransferEvent::IncomingCancelled {..}|FileTransferEvent::IncomingGroupCancelled {..}
+            |FileTransferEvent::OutgoingCancelled {..}|FileTransferEvent::OutgoingGroupCancelled {..}=>"Transfer cancelled".into(),
+        FileTransferEvent::SharedResponse {..}=>"Shared files updated".into(),
+        FileTransferEvent::IncomingClipboardReady {..}=>"Clipboard updated".into(),
+        FileTransferEvent::Drained=>"Transfers complete".into(),
+        FileTransferEvent::Error {..}=>"File transfer failed".into(),
+    }
+}
+
 #[derive(Default)]
 struct Queues {
     events: VecDeque<serde_json::Value>,
     video: HashMap<u32, VecDeque<EncodedVideoNalu>>,
     audio: HashMap<u32, VecDeque<EncodedAudioPacket>>,
+}
+impl Queues {
+    fn push_file(&mut self,event:FileTransferEvent) {
+        let detail=match &event {
+            FileTransferEvent::SharedResponse {request_id,response}=>serde_json::json!({"shared_request_id":request_id,"shared_response":response}),
+            FileTransferEvent::IncomingClipboardReady {paths,..}=>serde_json::json!({"clipboard_files":paths}),
+            FileTransferEvent::IncomingCompleted {path,..}=>serde_json::json!({"path":path}),
+            FileTransferEvent::Error {message,..}=>serde_json::json!({"error":message}),
+            FileTransferEvent::IncomingProgress {transfer_id,..}=>serde_json::json!({"progress":{"incoming":true,"id":transfer_id}}),
+            FileTransferEvent::OutgoingProgress {transfer_id,..}=>serde_json::json!({"progress":{"incoming":false,"id":transfer_id}}),
+            _=>serde_json::Value::Null,
+        };
+        let coalesce=detail.get("progress").is_some()
+            && self.events.back().is_some_and(|last|last.get("detail")==Some(&detail));
+        let value=serde_json::json!({"file":file_status(&event),"detail":detail});
+        if coalesce {*self.events.back_mut().unwrap()=value;}
+        else {if self.events.len()==128 {self.events.pop_front();}self.events.push_back(value);}
+    }
 }
 
 #[derive(Clone)]
@@ -214,16 +250,7 @@ impl MobileWorkspace {
                         state.events.push_back(serde_json::json!({"control":event}));
                     }
                     Some(event) = events.files.recv() => {
-                        let detail = match &event {
-                            FileTransferEvent::SharedResponse { request_id, response } => serde_json::json!({"shared_request_id":request_id,"shared_response":response}),
-                            FileTransferEvent::IncomingClipboardReady { paths, .. } => serde_json::json!({"clipboard_files":paths}),
-                            FileTransferEvent::IncomingCompleted { path, .. } => serde_json::json!({"path": path}),
-                            FileTransferEvent::Error { message, .. } => serde_json::json!({"error":message}),
-                            _ => serde_json::Value::Null,
-                        };
-                        let mut state = state.lock().unwrap();
-                        if state.events.len() == 128 { state.events.pop_front(); }
-                        state.events.push_back(serde_json::json!({"file":format!("{event:?}"),"detail":detail}));
+                        state.lock().unwrap().push_file(event);
                     }
                     Some(event) = events.audio.recv() => match event {
                         AudioIngressEvent::PayloadActivity { stream_id, .. } => {
@@ -594,5 +621,37 @@ impl MobileWorkspace {
         data.extend_from_slice(&packet.channels.to_le_bytes());
         data.extend(packet.data);
         Some(data)
+    }
+}
+
+#[cfg(test)]
+mod file_status_tests {
+    use super::*;
+    fn progress(done:u64,total:u64)->FileTransferEvent {
+        FileTransferEvent::IncomingProgress {transfer_id:9,file_object_id:7,received_chunks:1,
+            total_chunks:1,received_bytes:done,total_size:total}
+    }
+    #[test]
+    fn file_progress_does_not_flood_control_or_lose_completion_paths() {
+        let mut queues=Queues::default();
+        queues.push_file(FileTransferEvent::IncomingStarted {transfer_id:9,file_object_id:7,group:None,
+            name:"fixture.bin".into(),size_bytes:4096,path:PathBuf::from("private/fixture.bin")});
+        for done in 0..=4096 {queues.push_file(progress(done,4096));}
+        assert_eq!(queues.events.len(),2);
+        assert_eq!(queues.events[1]["file"],"Receiving file · 100%");
+        queues.events.push_back(serde_json::json!({"control":{"Unsubscribed":{"id":7}}}));
+        queues.push_file(progress(4096,4096));
+        queues.push_file(FileTransferEvent::IncomingCompleted {transfer_id:9,file_object_id:7,group:None,
+            path:PathBuf::from("private/fixture.bin"),size_bytes:4096});
+        assert_eq!(queues.events.len(),5);
+        assert_eq!(queues.events[2]["control"]["Unsubscribed"]["id"],7);
+        assert_eq!(queues.events[4]["file"],"File received");
+        assert_eq!(queues.events[4]["detail"]["path"],"private/fixture.bin");
+    }
+    #[test]
+    fn file_percentages_are_bounded_without_overflow_or_debug_text() {
+        assert_eq!(file_status(&progress(u64::MAX,u64::MAX)),"Receiving file · 100%");
+        assert_eq!(file_status(&progress(u64::MAX,1)),"Receiving file · 100%");
+        assert_eq!(file_status(&progress(0,0)),"Receiving file · 0%");
     }
 }
