@@ -495,6 +495,11 @@ impl PreparedPortalCapture {
         info.supports_input = self.input_available();
         info
     }
+    pub(crate) fn matches_subscription_source(&self, source: CaptureSource) -> bool {
+        let actual = self.source_info().source;
+        actual == source || (source == CaptureSource::MainDisplay
+            && self.is_subscriber() && matches!(actual, CaptureSource::Display(_)))
+    }
     /// This process-local route never uses the global desktop/uinput injector.
     /// The caller must first check authenticated peer, source ID and revision.
     pub fn input_available(&self) -> bool {

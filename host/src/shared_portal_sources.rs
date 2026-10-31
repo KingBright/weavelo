@@ -132,6 +132,11 @@ mod tests {
             .unwrap()
             .fork()
             .unwrap();
+        assert!(viewer.matches_subscription_source(CaptureSource::MainDisplay));
+        assert!(viewer.matches_subscription_source(a.source_info().source));
+        assert!(!viewer.matches_subscription_source(CaptureSource::Window(77)));
+        assert!(!viewer.matches_subscription_source(b.source_info().source));
+        assert!(!a.matches_subscription_source(CaptureSource::MainDisplay));
         catalog
             .publish(
                 scope,

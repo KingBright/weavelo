@@ -1101,7 +1101,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
 
     #[cfg(target_os = "linux")]
     let mut video_capturer = match &native_capture {
-        Some(capture) if capture.source_info().source == source => {
+        Some(capture) if capture.matches_subscription_source(source) => {
             LinuxVideoCapturer::from_owned_mailbox(capture.mailbox(), fps)?
         }
         Some(_) => return Err("native capture source does not match the subscription".into()),

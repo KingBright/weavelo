@@ -57,6 +57,9 @@ impl Default for Budgets {
 
 trait Link {
     fn connection_id(&self) -> u32;
+    fn commit_text(&mut self, _text: &str) -> Result<()> {
+        Err("bound committed text is unavailable".into())
+    }
     async fn send(&mut self, command: SessionCommand) -> Result<()>;
     async fn subscribe(&mut self, source: CaptureSource) -> Result<()>;
     async fn next(&mut self, wait: Duration) -> Option<SessionCommand>;
@@ -73,6 +76,10 @@ struct Wire {
 }
 impl Link for Wire {
     fn connection_id(&self) -> u32 { self.conn.id }
+    fn commit_text(&mut self, text: &str) -> Result<()> {
+        let owner = self.conn.text_input_owner(ID, 0).ok_or("current text input owner unavailable")?;
+        self.conn.try_commit_text_for_owner(owner, text, Duration::ZERO)
+    }
     async fn send(&mut self, command: SessionCommand) -> Result<()> { self.conn.control(command).await }
     async fn subscribe(&mut self, source: CaptureSource) -> Result<()> {
         let media = client::ClientMediaRuntime::start_video_only(self.stats.clone()).map_err(|e|e.to_string())?;
@@ -179,11 +186,27 @@ fn suite_events() -> Vec<InputEvent> {
 }
 
 #[derive(Clone, Copy)]
-enum InputProbe { Click, Suite, TitlebarDrag }
+enum InputProbe { Click, Suite, TitlebarDrag, CommittedText }
 
 async fn operation_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,owned:&mut bool,report:&mut Value,mode:InputProbe)->Result<()> {
     if matches!(mode,InputProbe::Click) {return operation(link,target,budgets,owned,report).await;}
     prepare_input(link,target,budgets,owned,report).await?;
+    if matches!(mode, InputProbe::CommittedText) {
+        for event in [InputEvent::MouseMoveAbsolute{x:32768,y:32768}, InputEvent::MouseDown(0), InputEvent::MouseUp(0)] {
+            link.send(SessionCommand::SourceInput{id:ID,source_revision:0,event}).await?;
+            report["input_commands_enqueued"] = json!(report["input_commands_enqueued"].as_u64().unwrap_or(0)+1);
+            settle(link, budgets.pause).await?;
+        }
+        for text in ["a", "a", "我", "🙂"] {
+            link.commit_text(text)?;
+            report["text_commits_enqueued"] = json!(report["text_commits_enqueued"].as_u64().unwrap_or(0)+1);
+            settle(link, budgets.pause).await?;
+        }
+        settle(link, Duration::from_millis(200)).await?;
+        report["requested_sequence"] = json!("aa我🙂");
+        report["input_sequence_enqueued"] = true.into();
+        return Ok(());
+    }
     let (label,events,pause)=match mode {
         InputProbe::Suite => ("drag_scroll_abc_shift_a",suite_events(),budgets.pause),
         InputProbe::TitlebarDrag => {
@@ -194,7 +217,7 @@ async fn operation_mode<L:Link>(link:&mut L,target:Target,budgets:Budgets,owned:
             events.push(InputEvent::MouseUp(0));
             ("titlebar_drag_right_one_tenth",events,Duration::from_millis(20))
         }
-        InputProbe::Click => unreachable!(),
+        InputProbe::Click | InputProbe::CommittedText => unreachable!(),
     };
     report["requested_sequence"]=json!(label);
     for event in events {
@@ -370,9 +393,10 @@ pub fn main_cli(args:&[String]) {
     }
     let hold_loss=args.get(1).is_some_and(|mode|matches!(mode.as_str(),"hold-loss"|"hold-focus"));
     let suite=args.get(1).is_some_and(|mode|mode=="input-suite");
+    let text=args.get(1).is_some_and(|mode|mode=="text-input");
     let titlebar=args.get(1).is_some_and(|mode|mode=="titlebar-drag");
     let catalog=args.get(1).is_some_and(|mode|mode=="catalog-window");
-    if args.len()!=7 || !matches!(args[1].as_str(),"catalog-window"|"input-window"|"input-suite"|"titlebar-drag"|"hold-loss"|"hold-focus") { eprintln!("usage: probe catalog-window|input-window|input-suite|titlebar-drag|hold-loss|hold-focus LOOPBACK_TARGET FIXTURE_PID WINDOW_ID_OR_ZERO FIXTURE_NONCE NEW_ABSOLUTE_OUTPUT_JSON");std::process::exit(2); }
+    if args.len()!=7 || !matches!(args[1].as_str(),"catalog-window"|"input-window"|"input-suite"|"text-input"|"titlebar-drag"|"hold-loss"|"hold-focus") { eprintln!("usage: probe catalog-window|input-window|input-suite|text-input|titlebar-drag|hold-loss|hold-focus LOOPBACK_TARGET FIXTURE_PID WINDOW_ID_OR_ZERO FIXTURE_NONCE NEW_ABSOLUTE_OUTPUT_JSON");std::process::exit(2); }
     let checked=(||->Result<_>{
         let address=args[2].parse::<SocketAddr>().map_err(|_|"invalid route")?;
         if !address.ip().is_loopback() || address.port()==0 { return Err("must use the existing viewer-local loopback route".into()); }
@@ -412,7 +436,7 @@ pub fn main_cli(args:&[String]) {
                 let mut link=Wire{conn,events,stats:Statistics::new(),media:None};
                 if catalog {discover_window(&mut link,target,Budgets::default()).await}
                 else if hold_loss {drive_hold_loss(&mut link,target,Budgets::default(),rx,&output,args[1]=="hold-focus").await}
-                else if suite || titlebar {drive_mode(&mut link,target,Budgets::default(),rx,if titlebar {InputProbe::TitlebarDrag}else{InputProbe::Suite}).await}
+                else if suite || titlebar || text {drive_mode(&mut link,target,Budgets::default(),rx,if text {InputProbe::CommittedText}else if titlebar {InputProbe::TitlebarDrag}else{InputProbe::Suite}).await}
                 else {drive(&mut link,target,Budgets::default(),rx).await}
             },
             Ok(Err(e))=>json!({"error":e,"input_commands_enqueued":0,"target_effect_verified":false,"connection_opened":false}),
@@ -432,6 +456,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     struct Fake {
+        text: Vec<String>,
         sent:Vec<SessionCommand>,replies:VecDeque<SessionCommand>,ready:bool,frames:u64,
         release_ack:bool,unsubscribe_ack:bool,close_ack:bool,wrong_close:bool,
         input_failure:bool,cancel_on_key:Option<watch::Sender<bool>>,catalog_pid:i32,catalog_nonce:String,
@@ -439,10 +464,14 @@ mod tests {
         cancel_on_close:Option<watch::Sender<bool>>,
     }
     impl Default for Fake {
-        fn default()->Self{Self{sent:vec![],replies:VecDeque::new(),ready:true,frames:4,release_ack:true,unsubscribe_ack:true,close_ack:true,wrong_close:false,input_failure:false,cancel_on_key:None,catalog_pid:123,catalog_nonce:NONCE.into(),wrong_ack_ids:false,late_input_error:false,drop_first_release:false,release_sends:0,cancel_on_close:None}}
+        fn default()->Self{Self{text:vec![],sent:vec![],replies:VecDeque::new(),ready:true,frames:4,release_ack:true,unsubscribe_ack:true,close_ack:true,wrong_close:false,input_failure:false,cancel_on_key:None,catalog_pid:123,catalog_nonce:NONCE.into(),wrong_ack_ids:false,late_input_error:false,drop_first_release:false,release_sends:0,cancel_on_close:None}}
     }
     impl Link for Fake {
         fn connection_id(&self)->u32{44}
+        fn commit_text(&mut self, text: &str) -> Result<()> {
+            self.text.push(text.into());
+            Ok(())
+        }
         async fn send(&mut self,c:SessionCommand)->Result<()> {
             self.sent.push(c.clone());
             match c {
@@ -478,6 +507,25 @@ mod tests {
     fn has_close(fake:&Fake)->bool{fake.sent.iter().any(|c|matches!(c,SessionCommand::Close{connection_id:44}))}
     #[tokio::test] async fn opaque_window_catalog_has_no_capture_or_input(){let mut f=Fake::default();let mut t=target();t.window=0;let r=discover_window(&mut f,t,short()).await;assert_eq!(r["source"]["source"],json!(CaptureSource::Window(77)));assert_eq!(r["cleanup_complete"],true);assert_eq!(input_count(&f),0);assert!(f.sent.iter().all(|c|matches!(c,SessionCommand::ListSources{..}|SessionCommand::Close{..})));}
     #[test] fn automatic_window_selection_rejects_ambiguity(){let mut t=target();t.window=0;let s=CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {NONCE}"),application:"fixture".into(),process_id:Some(123),width:540,height:380,supports_input:true};let mut second=s.clone();second.source=CaptureSource::Window(78);assert!(t.select(&[s,second]).unwrap_err().contains("ambiguous"));}
+    #[tokio::test]
+    async fn committed_text_probe_preserves_intentional_repeats_cjk_and_emoji_and_cleans_up() {
+        let mut f = Fake::default();
+        let (_tx, rx) = watch::channel(false);
+        let budgets = Budgets { operation: Duration::from_secs(1), ..short() };
+        let r = drive_mode(&mut f, target(), budgets, rx, InputProbe::CommittedText).await;
+        assert_eq!(r["operation_succeeded"], true);
+        assert_eq!(r["cleanup_complete"], true);
+        assert_eq!(f.text, ["a", "a", "我", "🙂"]);
+        assert_eq!(input_count(&f), 3);
+        assert_eq!(r["target_effect_verified"], false);
+        for mut f in [Fake { ready: false, ..Fake::default() }, Fake { catalog_pid: 999, ..Fake::default() }] {
+            let (_tx, rx) = watch::channel(false);
+            let r = drive_mode(&mut f, target(), budgets, rx, InputProbe::CommittedText).await;
+            assert_eq!(r["operation_succeeded"], false);
+            assert_eq!(r["cleanup_complete"], true);
+            assert!(f.text.is_empty());
+        }
+    }
     #[tokio::test] async fn normal_exit_releases_input_unsubscribes_and_confirms_exact_closed(){let mut f=Fake::default();let r=run(&mut f).await;assert_eq!(r["operation_succeeded"],true);assert_eq!(r["cleanup_complete"],true);assert_eq!(input_count(&f),5);assert_eq!(r["target_effect_verified"],false);assert!(has_close(&f));}
     #[tokio::test] async fn denied_live_readiness_never_sends_input_but_cleans_capture(){let mut f=Fake{ready:false,..Fake::default()};let r=run(&mut f).await;assert_eq!(input_count(&f),0);assert_eq!(r["cleanup_complete"],true);assert_eq!(r["operation_succeeded"],false);}
     #[tokio::test] async fn wrong_fixture_pid_never_subscribes_or_sends_input(){let mut f=Fake{catalog_pid:999,..Fake::default()};let r=run(&mut f).await;assert_eq!(input_count(&f),0);assert!(r.get("subscribed_acknowledged").is_none());assert_eq!(r["cleanup_complete"],true);}
