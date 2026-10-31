@@ -22,7 +22,7 @@ mod windows_sources {
         pub fn current_bounds(&self)->Result<Rect,String>{Ok(self.bounds)}
         pub fn same_size(&self)->Result<Rect,String>{Ok(self.bounds)}
     }
-    pub fn resolve(source:CaptureSource)->Result<Selection,String>{Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle:1,window:false})}
+    pub fn resolve(source:CaptureSource)->Result<Selection,String>{Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle:1,window:matches!(source,CaptureSource::Window(_))})}
     pub struct PhysicalCoordinates;
     impl PhysicalCoordinates {pub fn enter()->Result<Self,String>{Ok(Self)}}
 }
@@ -40,6 +40,8 @@ struct Calls {
     fail_attempt: Option<usize>,
     pause_first_until: Option<std::time::Instant>,
     posted: Vec<Posted>,
+    foreground_blocked: bool,
+    covered: bool,
 }
 static CALLS: Mutex<Calls> = Mutex::new(Calls {
     attempts: 0,
@@ -48,6 +50,8 @@ static CALLS: Mutex<Calls> = Mutex::new(Calls {
     fail_attempt: None,
     pause_first_until: None,
     posted: Vec::new(),
+    foreground_blocked: false,
+    covered: false,
 });
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -133,10 +137,10 @@ mod recording_api {
                 pub const SM_CXVIRTUALSCREEN:i32=78;pub const SM_CYVIRTUALSCREEN:i32=79;
                 pub const GA_ROOT:u32=2;
                 pub unsafe fn GetSystemMetrics(index:i32)->i32{match index{78=>1920,79=>1080,_=>0}}
-                pub unsafe fn GetForegroundWindow()->HWND {1usize as HWND}
+                pub unsafe fn GetForegroundWindow()->HWND {if super::super::super::super::CALLS.lock().unwrap().foreground_blocked {2usize as HWND}else{1usize as HWND}}
                 pub unsafe fn GetAncestor(window:HWND,_flags:u32)->HWND {window}
-                pub unsafe fn SetForegroundWindow(_window:HWND)->i32{1}
-                pub unsafe fn WindowFromPoint(_point:POINT)->HWND {1usize as HWND}
+                pub unsafe fn SetForegroundWindow(_window:HWND)->i32{if super::super::super::super::CALLS.lock().unwrap().foreground_blocked {0}else{1}}
+                pub unsafe fn WindowFromPoint(_point:POINT)->HWND {if super::super::super::super::CALLS.lock().unwrap().covered {2usize as HWND}else{1usize as HWND}}
                 pub unsafe fn GetCursorPos(point:*mut POINT)->i32 {unsafe{(*point).x=0;(*point).y=0;}1}
             }
             pub mod Input {
@@ -146,6 +150,28 @@ mod recording_api {
             }
         }
     }
+}
+
+#[test]
+fn blocked_background_activation_allows_hit_tested_click_but_never_unfocused_keys() {
+    let _serial=SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap()=Calls{foreground_blocked:true,..Default::default()};
+    let input=actual::WindowsInputInjector::for_source(protocol::session::CaptureSource::Window(77),(1920,1080),(1920,1080)).unwrap();
+    input.inject_input(InputEvent::MouseMoveAbsolute{x:32768,y:32768}).unwrap();
+    input.inject_input(InputEvent::MouseDown(0)).unwrap();
+    input.inject_input(InputEvent::MouseUp(0)).unwrap();
+    assert!(input.inject_input(InputEvent::Key{key_code:0,pressed:true,modifiers:0}).is_err());
+    assert!(input.inject_input(InputEvent::MouseScroll{delta_x:0,delta_y:1}).is_err());
+    assert_eq!(CALLS.lock().unwrap().posted.len(),3);
+}
+
+#[test]
+fn rejected_activation_never_clicks_a_covering_window() {
+    let _serial=SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap()=Calls{foreground_blocked:true,covered:true,..Default::default()};
+    let input=actual::WindowsInputInjector::for_source(protocol::session::CaptureSource::Window(77),(1920,1080),(1920,1080)).unwrap();
+    assert!(input.inject_input(InputEvent::MouseMoveAbsolute{x:32768,y:32768}).is_err());
+    assert!(CALLS.lock().unwrap().posted.is_empty());
 }
 
 #[test]

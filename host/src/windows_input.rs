@@ -62,9 +62,10 @@ impl WindowsInputInjector {
             if unsafe{GetAncestor(GetForegroundWindow(),GA_ROOT)}!=hwnd {
                 if !pointer{return Err("The selected window is not focused".into());}
                 check_deadline(deadline)?;
-                if unsafe{SetForegroundWindow(hwnd)}==0 || unsafe{GetAncestor(GetForegroundWindow(),GA_ROOT)}!=hwnd {
-                    return Err("Windows did not activate the selected application window".into());
-                }
+                // Windows may reject background activation. A hit-tested native
+                // click can still activate this window; motion must not revoke
+                // control. Keyboard and wheel input still require actual focus.
+                unsafe{SetForegroundWindow(hwnd)};
             }
             if let InputEvent::MouseMoveAbsolute{x,y}=&event {
                 let (vx,vy)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,*x,*y)?;
