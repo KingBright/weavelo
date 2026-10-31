@@ -18,7 +18,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 const SOCKET: &str = "background.sock";
 pub const ROLE_MARKER: &str = "background-service.enabled";
 const LIMIT: usize = 256 * 1024;
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const READ_ONLY_SCHEMA: u32 = 2;
 const TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -41,6 +41,7 @@ struct Snapshot {
     pid: u32,
     peers: DiscoveryPeerSnapshot,
     pairing: MeshPairingSnapshot,
+    outgoing_streams: usize,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -350,7 +351,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::CaptureSources{..}|Request::Sharing{..}|Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
-    Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing })
+    Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing, outgoing_streams: host::lifecycle::active_video_streams() })
 }
 
 fn answer_negotiation(expected: String, hash: String, offer: Offer, generation: String, executable_sha256: String) -> Response {
@@ -518,6 +519,7 @@ impl Client {
     }
     fn unavailable(&self) {
         let mut cached = self.cached.lock().unwrap();
+        cached.outgoing_streams = 0;
         *self.contract.lock().unwrap() = None;
         *self.network.lock().unwrap() = None;
         // Invalidate once per outage, not on every poll.
@@ -527,6 +529,12 @@ impl Client {
         }
         cached.pairing.message = "Background service is unavailable; waiting for it to recover.".into();
         cached.pairing.message_kind = MeshPairingMessageKind::Error;
+    }
+    pub(crate) fn outgoing_streams(&self) -> usize {
+        self.cached.lock().unwrap().outgoing_streams
+    }
+    pub(crate) fn profile_directory(&self) -> &Path {
+        &self.profile
     }
     fn pairing_command(&self, command: Request) -> MeshPairingSnapshot {
         let _ = self.exchange(command);
@@ -847,6 +855,7 @@ mod service_contract_tests {
             generation: "service-1".into(),
             executable_sha256: "fixture-trusted-hash".into(),
             pid: 123,
+            outgoing_streams: 0,
             peers: DiscoveryPeerSnapshot::default(),
             pairing: MeshPairingSnapshot {
                 network_name: "fixture".into(),
@@ -861,8 +870,8 @@ mod service_contract_tests {
         }
     }
 
-    // Frozen pre-negotiation DTO: adding even an optional field to the legacy
-    // Snapshot is a breaking change for already installed strict readers.
+    // Negative fixture for retired strict readers. GUI and background owners
+    // upgrade together; an older reader must never silently ignore activity.
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     #[allow(dead_code)]
@@ -882,10 +891,14 @@ mod service_contract_tests {
     }
 
     #[test]
-    fn legacy_snapshot_and_requests_keep_their_exact_wire_shape() {
-        let encoded = serde_json::to_vec(&Response::Snapshot(snapshot())).unwrap();
-        let LegacyResponse::Snapshot(legacy) = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(legacy.schema, 2);
+    fn current_snapshot_exports_activity_and_requests_keep_their_exact_wire_shape() {
+        let mut current = snapshot();
+        current.outgoing_streams = 2;
+        let encoded = serde_json::to_vec(&Response::Snapshot(current)).unwrap();
+        assert!(serde_json::from_slice::<LegacyResponse>(&encoded).is_err());
+        let Response::Snapshot(decoded) = serde_json::from_slice(&encoded).unwrap() else { panic!("wrong response"); };
+        assert_eq!(decoded.schema, SCHEMA);
+        assert_eq!(decoded.outgoing_streams, 2);
         let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         let keys: std::collections::BTreeSet<_> = value["Snapshot"]
             .as_object()
@@ -903,7 +916,8 @@ mod service_contract_tests {
                 "executable_sha256",
                 "pid",
                 "peers",
-                "pairing"
+                "pairing",
+                "outgoing_streams"
             ]
             .into_iter()
             .collect()

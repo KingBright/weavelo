@@ -40,8 +40,8 @@ impl Selection {
 
 impl RestoredDashboard {
     pub(super) fn begin_delivery_selection(&mut self, device:String,cx:&mut Context<Self>) {
-        if self._instance.is_none() {self.status="Send from the main device window".into();cx.notify();return;}
-        if self.directed_send.as_ref().is_some_and(|sender|!sender.is_finished()) {
+        if self.background.is_none() {self.status="Sharing service is unavailable".into();cx.notify();return;}
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|!sender.is_finished()) {
             self.status="Stop the current delivery before choosing another target".into();cx.notify();return;
         }
         let name=self.owner.snapshot().devices.iter().find(|item|item.device_id==device)
@@ -109,22 +109,23 @@ impl RestoredDashboard {
         self.source_selection=Some(selection);cx.notify();
     }
     pub(super) fn confirm_source_selection(&mut self,cx:&mut Context<Self>) {
-        let Some(selection)=self.source_selection.take() else {return;};
+        let Some(mut selection)=self.source_selection.take() else {return;};
+        let delivery=selection.is_delivery();
         let result=(|| -> Result<(),String> {
             if selection.loading || selection.scope!=current_share_scope() {return Err("The source selection changed; try again".into());}
             protocol::session::validate_delivery_sources(&selection.selected)?;
             let sources=selection.selected.iter().map(|id|selection.sources.iter().find(|source|source.source==*id)
                 .cloned().ok_or("The source list changed".to_owned())).collect::<Result<Vec<_>,_>>()?;
-            match selection.target {
-                Target::Send(device)=>self.send_screen(device,selection.selected),
+            match &selection.target {
+                Target::Send(device)=>self.send_screen(device.clone(),selection.selected.clone()),
                 Target::Open(binding)=>{
-                    let device=self.owner.validate_source_selection(&binding,&sources)?;
+                    let device=self.owner.validate_source_selection(binding,&sources)?;
                     if self.exit_group.owners().len().saturating_sub(1)+sources.len()>MAX_SUBSCRIPTIONS {
                         return Err("Close a viewing window to open these sources".into());
                     }
                     let mut sources=sources.into_iter();
                     let first=sources.next().ok_or("Choose a source")?;
-                    if !self.start_capture_source_switch(Some(binding),first.clone(),first.title.clone(),cx) {
+                    if !self.start_capture_source_switch(Some(binding.clone()),first.clone(),first.title.clone(),cx) {
                         return Err("The source list changed; choose the sources again".into());
                     }
                     for source in sources {
@@ -137,7 +138,10 @@ impl RestoredDashboard {
                 }
             }
         })();
-        if let Err(error)=result {self.status=error;}
+        if let Err(error)=result {
+            if delivery {selection.loading=false;selection.error=Some(error.clone());self.source_selection=Some(selection);}
+            self.status=error;
+        }
         cx.notify();
     }
 }

@@ -325,11 +325,22 @@ pub fn should_auto_hide_toolbar(
     !toolbar_hovered && !menu_open && now.saturating_duration_since(last_activity) >= hide_delay
 }
 
+#[derive(Clone, Copy, Default, serde::Serialize)]
+struct StreamActivity {
+    sharing: usize,
+    receiving: usize,
+    can_stop_sending: bool,
+    can_stop_receiving: bool,
+}
+
 /// Only the existing views in this GUI process; no persistent registry or IPC authority.
 #[derive(Default)]
 struct FrontendExitGroup {
     stopping: AtomicBool,
     upgrade_operations: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(any(unix, windows))]
+    directed_send: Arc<Mutex<Option<crate::desktop::directed_send::SendHandle>>>,
+    gui_generation: Mutex<Option<String>>,
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
 }
@@ -399,7 +410,7 @@ struct RestoredDashboard {
     #[cfg(any(unix, windows))]
     directed_receive: Option<crate::desktop::directed_receive::Adapter>,
     #[cfg(any(unix, windows))]
-    directed_send: Option<crate::desktop::directed_send::SendHandle>,
+    directed_send: Arc<Mutex<Option<crate::desktop::directed_send::SendHandle>>>,
     delivery_closed: Option<Arc<AtomicBool>>,
     activation: Arc<AtomicBool>,
     bound_source: Option<(u32, Instant)>,
@@ -467,6 +478,22 @@ struct RestoredDashboard {
 }
 
 impl RestoredDashboard {
+    #[cfg(any(unix, windows))]
+    fn stream_activity(&self) -> StreamActivity {
+        StreamActivity {
+            sharing: self.background.as_ref().map_or(0, |background| background.outgoing_streams()),
+            receiving: self.exit_group.owners().iter().map(|owner| owner.receiving_streams()).sum(),
+            can_stop_sending: self.directed_send.lock().unwrap().is_some(),
+            can_stop_receiving: self.directed_receive.as_ref().is_some_and(|adapter| adapter.lease.is_some()),
+        }
+    }
+    #[cfg(any(unix, windows))]
+    fn sending_snapshot(&self) -> Option<serde_json::Value> {
+        self.directed_send.lock().unwrap().as_ref().map(|sender|serde_json::json!({
+            "request_id":sender.request_id,"target":sender.target,
+            "finished":sender.is_finished(),"status":sender.poll(),
+        }))
+    }
     fn new(
         runtime: Arc<UnifiedRuntimeHandle>,
         instance: Option<Instance>,
@@ -519,6 +546,10 @@ impl RestoredDashboard {
                 Err(error) => { eprintln!("GUI receive adapter unavailable: {error}"); None }
             }
         });
+        #[cfg(any(unix, windows))]
+        if let Some(adapter) = &directed_receive {
+            *exit_group.gui_generation.lock().unwrap() = Some(adapter.generation.clone());
+        }
         Self {
             native_window_title: "Weavelo".into(),
             runtime,
@@ -527,7 +558,7 @@ impl RestoredDashboard {
             #[cfg(any(unix, windows))]
             directed_receive,
             #[cfg(any(unix, windows))]
-            directed_send: None,
+            directed_send: exit_group.directed_send.clone(),
             source_selection: None,
             source_query_inflight: false,
             delivery_closed: None,
@@ -753,9 +784,9 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn poll_directed_receive(&mut self, cx: &mut Context<Self>) {
-        if self.directed_send.as_ref().is_some_and(|sender| sender.is_finished()) {
-            self.directed_send.take();
-        } else if let Some(sender)=&self.directed_send {let _=sender.poll();}
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|sender| sender.is_finished()) {
+            self.directed_send.lock().unwrap().take();
+        } else if let Some(sender)=self.directed_send.lock().unwrap().as_ref() {let _=sender.poll();}
         use crate::desktop::directed_receive::{Request, Lease};
         if self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).is_some_and(|lease| !lease.current()) {
             self.stop_directed_receive();
@@ -804,14 +835,14 @@ impl RestoredDashboard {
             if let Request::Send {request_id,target_device_id,sources,..}=command.request {
                 let result=self.send_screen_request(target_device_id,sources,request_id.clone());
                 let response=match result {
-                    Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.as_ref().unwrap().cancellation()),
+                    Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().as_ref().unwrap().cancellation()),
                     Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
                 };
                 let _=command.reply.send(response);continue;
             }
             if let Request::StopSend {request_id,..}=command.request {
-                let current=self.directed_send.as_ref().is_some_and(|sender|sender.request_id==request_id);
-                if current {self.directed_send.take();}
+                let current=self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|sender.request_id==request_id);
+                if current {self.directed_send.lock().unwrap().take();}
                 let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
             }
             let mut newly_accepted = false;
@@ -827,7 +858,8 @@ impl RestoredDashboard {
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "lease":adapter.lease.as_ref().map(|lease|lease.snapshot()),
-                    "sending":self.directed_send.as_ref().map(|sender|serde_json::json!({"request_id":sender.request_id,"target":sender.target,"finished":sender.is_finished(),"status":sender.poll()})),
+                    "sending":self.sending_snapshot(),
+                    "stream_activity":self.stream_activity(),
                     "sessions":self.owner.diagnostic_snapshot(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
@@ -899,7 +931,7 @@ impl RestoredDashboard {
 
     fn save_device_name(&mut self, use_default: bool, cx: &mut Context<Self>) {
         #[cfg(any(unix, windows))]
-        if self.directed_send.as_ref().is_some_and(|send| !send.is_finished()) {
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|send| !send.is_finished()) {
             self.pairing_image_status("Finish the file transfer before changing this device name.",
                 MeshPairingMessageKind::Warning);
             cx.notify();
@@ -946,7 +978,7 @@ impl RestoredDashboard {
     fn create_mesh_group(&mut self) {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
-        if self.directed_send.as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
         if !self.owner.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
@@ -967,7 +999,7 @@ impl RestoredDashboard {
     fn join_mesh_group_from_payload(&mut self, invite_code: &str) {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
-        if self.directed_send.as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
         if !self.owner.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
@@ -992,7 +1024,7 @@ impl RestoredDashboard {
 
     fn scan_pairing_image(&mut self, cx: &mut Context<Self>) {
         #[cfg(any(unix, windows))]
-        if self.directed_send.as_ref().is_some_and(|s| !s.is_finished()) {
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s| !s.is_finished()) {
             self.pairing_image_status("Stop sending before changing the device network.", MeshPairingMessageKind::Warning);
             return;
         }
@@ -1877,7 +1909,7 @@ impl RestoredDashboard {
         for owner in self.exit_group.owners() {owner.set_input_locked(true);owner.release_input();}
         self.pointer_input=PointerInputTracker::default();
         self.session_commands.begin();self.invalidate_source_commands();
-        self.stop_directed_receive();self.directed_send.take();
+        self.stop_directed_receive();self.directed_send.lock().unwrap().take();
         let group=self.exit_group.clone();
         cx.spawn(async move |view,cx| {
             if let Err(error)=group.close_verified().await {
@@ -1906,7 +1938,7 @@ impl RestoredDashboard {
         #[cfg(any(unix, windows))]
         self.stop_directed_receive();
         #[cfg(any(unix, windows))]
-        self.directed_send.take();
+        self.directed_send.lock().unwrap().take();
         self.status = "Releasing connections and stopping Weavelo…".into();
         let group = self.exit_group.clone(); let runtime = self.runtime.clone(); let background = self.background.clone();
         cx.spawn(async move |view, cx| {
@@ -2408,9 +2440,7 @@ impl Render for RestoredDashboard {
                     self.active_tab,
                     &self.device_list_state,
                     #[cfg(any(unix, windows))]
-                    self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).map(|lease| format!("Receiving · {}", compact_device_id(&lease.source))),
-                    #[cfg(any(unix, windows))]
-                    self.directed_send.as_ref().map(|sender|format!("Sending · {}",compact_device_id(&sender.target))),
+                    self.stream_activity(),
                     #[cfg(target_os = "linux")]
                     &self.local_share_state,
                     self.local_permissions.clone(),
@@ -3533,8 +3563,7 @@ fn slide_over_management_drawer(
     pairing_image_pending: bool,
     active_tab: DrawerTab,
     device_list_state: &DeviceListState,
-    #[cfg(any(unix, windows))] receive_label: Option<String>,
-    #[cfg(any(unix, windows))] send_label: Option<String>,
+    #[cfg(any(unix, windows))] activity: StreamActivity,
     #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
     local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
     checking_permissions:bool,
@@ -3658,8 +3687,7 @@ fn slide_over_management_drawer(
                         role,
                         mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()),
                         device_list_state,
-                        #[cfg(any(unix, windows))] receive_label,
-                        #[cfg(any(unix, windows))] send_label,
+                        #[cfg(any(unix, windows))] activity,
                         owner.clone(),
                         cx,
                     )
@@ -3719,10 +3747,17 @@ fn drawer_tab_button(
     .child(label)
 }
 
+fn stream_activity_badge(symbol: IconName, label: String) -> Div {
+    div().flex().items_center().gap_1().h(px(22.)).px_2().rounded_full()
+        .bg(color_glass_card()).border_1().border_color(color_border_fine())
+        .text_size(px(10.)).text_color(color_accent_emerald())
+        .child(icon(symbol).size(px(12.)).color(color_accent_emerald()))
+        .child(label)
+}
+
 fn drawer_devices_tab(
     devices: &[AppDevice], role: &RoleState, local_name: Option<String>, state: &DeviceListState,
-    #[cfg(any(unix, windows))] receive_label: Option<String>,
-    #[cfg(any(unix, windows))] send_label: Option<String>,
+    #[cfg(any(unix, windows))] activity: StreamActivity,
     owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>,
 ) -> Div {
     let view = cx.weak_entity();
@@ -3741,23 +3776,31 @@ fn drawer_devices_tab(
                 }))))
     });
     #[cfg(any(unix, windows))]
-    let content = if let Some(label) = receive_label {
-        let stop = cx.weak_entity();
-        content.child(div().flex().items_center().gap_2().h(px(28.)).text_size(px(10.)).child(div().flex_1().truncate().child(label)).child(
-            command_button("stop_directed_receive", ActionVariantKind::Neutral, cx)
-                .size(px(24.)).rounded_full().tooltip(tooltip("Stop receiving").build()).child("×")
-                .on_click(move |_, _, cx| { let _ = stop.update(cx, |this, cx| { this.stop_directed_receive(); cx.notify(); }); })
-        ))
-    } else { content };
-    #[cfg(any(unix, windows))]
-    let content = if let Some(label) = send_label {
-        let stop=cx.weak_entity();
-        content.child(div().flex().items_center().gap_2().h(px(28.)).text_size(px(10.)).child(div().flex_1().truncate().child(label)).child(
-            command_button("stop_directed_send",ActionVariantKind::Neutral,cx)
-                .size(px(24.)).rounded_full().tooltip(tooltip("Stop sending").build()).child("×")
-                .on_click(move|_,_,cx|{let _=stop.update(cx,|this,cx|{this.directed_send.take();this.status="Stopping directed delivery".into();cx.notify();});})
-        ))
-    } else {content};
+    let content = content.when(activity.sharing > 0 || activity.receiving > 0, |content| {
+        content.child(div().flex().items_center().gap_2()
+            .when(activity.sharing > 0, |row| {
+                let stop = cx.weak_entity();
+                row.child(stream_activity_badge(IconName::Sharing, format!("Sharing · {}", activity.sharing))
+                    .when(activity.can_stop_sending, |badge| badge.child(
+                        command_button("stop_directed_send", ActionVariantKind::Neutral, cx)
+                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop sending").build()).child("×")
+                            .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
+                                this.directed_send.lock().unwrap().take();cx.notify();
+                            }); })
+                    )))
+            })
+            .when(activity.receiving > 0, |row| {
+                let stop = cx.weak_entity();
+                row.child(stream_activity_badge(IconName::Receiving, format!("Receiving · {}", activity.receiving))
+                    .when(activity.can_stop_receiving, |badge| badge.child(
+                        command_button("stop_directed_receive", ActionVariantKind::Neutral, cx)
+                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop receiving").build()).child("×")
+                            .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
+                                this.stop_directed_receive();cx.notify();
+                            }); })
+                    )))
+            }))
+    });
     let permissions = cx.weak_entity();
     content.child(command_button("sharing-permissions", ActionVariantKind::Neutral, cx)
         .h(px(28.0)).text_size(px(11.0)).child("Sharing & permissions")
@@ -4014,16 +4057,14 @@ impl RestoredDashboard {
     fn send_screen_request(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>,request_id:String)->Result<(),String>{
         protocol::session::validate_delivery_sources(&sources).map_err(str::to_owned)?;
         if self.exit_group.stopping.load(Ordering::Acquire) {return Err("GUI exit is already requested".into());}
-        if self.directed_send.as_ref().is_some_and(|s|!s.is_finished()){return Err("Stop the current delivery before choosing another target".into());}
-        let instance=self._instance.as_ref().ok_or("Send from the main device window")?;
-        let directory=instance.state_directory();
-        let profile=if instance.is_frontend(){directory.parent().ok_or("Missing profile")?}else{directory}.to_owned();
+        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){return Err("Stop the current delivery before choosing another target".into());}
+        let profile=self.background.as_ref().ok_or("Sharing service is unavailable")?.profile_directory().to_owned();
         let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(&profile).load().map_err(|e|e.to_string())?.ok_or("Missing device identity")?;
         if device_id==identity.node_id {return Err("Choose another device to receive the screen".into());}
-        let generation=self.directed_receive.as_ref().ok_or("GUI generation is unavailable")?.generation.clone();
+        let generation=self.exit_group.gui_generation.lock().unwrap().clone().ok_or("GUI generation is unavailable")?;
         let routes=self.runtime.owner.discovery_snapshot_rx().map(|rx|crate::desktop::model::candidate_routes(&rx.borrow(),&device_id)).unwrap_or_default();
         if routes.is_empty(){return Err("Target is not currently available".into());}
-        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
+        *self.directed_send.lock().unwrap()=Some(crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
         self.status="Contacting target to receive this screen".into();Ok(())
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {

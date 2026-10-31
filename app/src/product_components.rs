@@ -25,6 +25,8 @@ pub mod assets {
                     Some(include_bytes!("product_components/icons/server.svg"))
                 }
                 "weavelo-icons/display.svg" => Some(include_bytes!("product_components/icons/display.svg")),
+                "weavelo-icons/sharing.svg" => Some(include_bytes!("product_components/icons/sharing.svg")),
+                "weavelo-icons/receiving.svg" => Some(include_bytes!("product_components/icons/receiving.svg")),
                 "weavelo-icons/window.svg" => Some(include_bytes!("product_components/icons/window.svg")),
                 "weavelo-icons/maximize-off.svg" => {
                     Some(include_bytes!("product_components/icons/maximize-off.svg"))
@@ -65,6 +67,8 @@ pub mod assets {
             for icon in [
                 "server.svg",
                 "display.svg",
+                "sharing.svg",
+                "receiving.svg",
                 "window.svg",
                 "maximize-off.svg",
                 "maximize-on.svg",
@@ -117,6 +121,8 @@ pub fn button(id: impl Into<ElementId>) -> Button {
 pub enum IconName {
     Server,
     Display,
+    Sharing,
+    Receiving,
     Window,
     Maximize(bool),
     Minimize,
@@ -132,6 +138,8 @@ pub fn icon(name: IconName) -> ProductIcon {
     let file = match name {
         IconName::Server => "server.svg",
         IconName::Display => "display.svg",
+        IconName::Sharing => "sharing.svg",
+        IconName::Receiving => "receiving.svg",
         IconName::Window => "window.svg",
         IconName::Maximize(false) => "maximize-off.svg",
         IconName::Maximize(true) => "maximize-on.svg",

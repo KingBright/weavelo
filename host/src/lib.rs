@@ -1046,7 +1046,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         native_capture,
     } = config;
     // Native resources drop before this guard, including cancellation paths.
-    let _worker = lifecycle::WorkerGuard::new(resources.clone());
+    let _worker = lifecycle::VideoStreamGuard::new(resources.clone());
     #[cfg(all(unix, test, not(target_os = "linux")))]
     if native_capture.is_some() {
         return Err("native Linux streaming requires a Linux runtime".into());

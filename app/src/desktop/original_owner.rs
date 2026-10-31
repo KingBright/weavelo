@@ -510,6 +510,11 @@ impl OriginalOwner {
             has_media: e.session.media.is_some(),
         }))
     }
+    pub(crate) fn receiving_streams(&self) -> usize {
+        self.pool.lock().unwrap().sessions.iter()
+            .filter(|entry| entry.session.connected && entry.session.media.is_some() && entry.session.video_error.is_none())
+            .count()
+    }
     #[cfg(test)]
     pub fn sessions(&self) -> Vec<(u32, String, bool)> {
         self.session_tabs().tabs.into_iter()

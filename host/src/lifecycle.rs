@@ -8,9 +8,12 @@ use std::{
     },
 };
 
+static ACTIVE_VIDEO_STREAMS: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Default)]
 pub(crate) struct Resources {
     pub workers: AtomicUsize,
+    pub video_streams: AtomicUsize,
     pub native_streams: AtomicUsize,
     pub native_stops_pending: AtomicUsize,
     pub native_stops_completed: AtomicU64,
@@ -89,12 +92,33 @@ impl Drop for WorkerGuard {
     }
 }
 
+pub(crate) struct VideoStreamGuard(WorkerGuard);
+impl VideoStreamGuard {
+    pub fn new(resources: Arc<Resources>) -> Self {
+        resources.video_streams.fetch_add(1, SeqCst);
+        ACTIVE_VIDEO_STREAMS.fetch_add(1, SeqCst);
+        Self(WorkerGuard::new(resources))
+    }
+}
+impl Drop for VideoStreamGuard {
+    fn drop(&mut self) {
+        self.0.0.video_streams.fetch_sub(1, SeqCst);
+        ACTIVE_VIDEO_STREAMS.fetch_sub(1, SeqCst);
+    }
+}
+
+/// Scalar activity only: file connections and remembered portal grants are idle.
+pub fn active_video_streams() -> usize {
+    ACTIVE_VIDEO_STREAMS.load(SeqCst)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ConnectionLifecycleSnapshot {
     pub connection_id: u32,
     pub state: String,
     pub observed_at_ms: u64,
     pub active_capture_workers: usize,
+    pub active_video_streams: usize,
     pub native_streams: usize,
     pub native_stops_pending: usize,
     pub native_stops_completed: u64,
@@ -167,6 +191,7 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 state: r.state.clone(),
                 observed_at_ms: r.at,
                 active_capture_workers: x.workers.load(SeqCst),
+                active_video_streams: x.video_streams.load(SeqCst),
                 native_streams: x.native_streams.load(SeqCst),
                 native_stops_pending: x.native_stops_pending.load(SeqCst),
                 native_stops_completed: x.native_stops_completed.load(SeqCst),
@@ -182,6 +207,29 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn video_activity_clears_cancelled_streams_independently_of_other_channels() {
+        let resources = Arc::new(Resources::default());
+        let file_worker = WorkerGuard::new(resources.clone());
+        let other_stream = VideoStreamGuard::new(resources.clone());
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let observed = resources.clone();
+        let task = tokio::spawn(async move {
+            let _stream = VideoStreamGuard::new(observed);
+            ready.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        started.await.unwrap();
+        assert_eq!(resources.video_streams.load(SeqCst), 2);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(resources.video_streams.load(SeqCst), 1);
+        drop(other_stream);
+        assert_eq!(resources.video_streams.load(SeqCst), 0);
+        assert_eq!(resources.workers.load(SeqCst), 1);
+        drop(file_worker);
+        assert_eq!(resources.workers.load(SeqCst), 0);
+    }
     #[test]
     fn connection_diagnostics_keep_unobserved_sender_unknown_and_export_observed_counters() {
         let resources=Arc::new(Resources::default());
