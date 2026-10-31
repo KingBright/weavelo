@@ -328,9 +328,30 @@ impl Manager {
         }
         .map_err(portal_message)?;
         let token = lease.take_persistent_restoration();
-        let capture = host::prepare_pipewire_capture(lease)
-            .await
-            .map_err(portal_message)?;
+        let capture = match host::prepare_pipewire_capture(lease).await {
+            Ok(capture) => capture,
+            Err(error) => {
+                // A failed frame negotiation does not undo the user's real OS
+                // grant. Keep its rotated token for the next normal restoration.
+                let _serial = self.publication.lock().await;
+                let current = scope == current_share_scope()
+                    && !self.closing.load(Ordering::Acquire)
+                    && !matches!(
+                        error,
+                        host::PortalCallError::Cancelled | host::PortalCallError::Revoked
+                    )
+                    && self.state.lock().unwrap().pending.as_ref().is_some_and(|pending| {
+                        pending.id == id && pending.scope == scope && !*pending.cancel.borrow()
+                    });
+                if current && let Some(grant) = token
+                    && let Some(store) = self.store.lock().unwrap().as_mut()
+                    && store.put(scope, store::Record { id, kind, grant }).is_ok()
+                {
+                    return Err(format!("{}; permission remembered", portal_message(error)));
+                }
+                return Err(portal_message(error));
+            }
+        };
         if control && let Err(reason) = capture.input_status() {
             self.state.lock().unwrap().message = Some(format!("Video only: {reason}"));
         }

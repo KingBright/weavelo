@@ -131,7 +131,6 @@ impl Controls {
 impl RenderOnce for Controls {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let pending = self.state.pending();
-        let refresh = self.send.clone();
         let mut panel = div()
             .flex()
             .flex_col()
@@ -141,23 +140,7 @@ impl RenderOnce for Controls {
             .bg(cx.theme().surface.sunken)
             .text_size(px(11.0))
             .text_color(cx.theme().content.primary)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child("Share this computer")
-                    .child(
-                        Button::new("share_refresh", "Check status")
-                            .debug_selector(|| "share-refresh".into())
-                            .control_size(ControlSize::Sm)
-                            .variant(ButtonVariant::Secondary)
-                            .rounded_full()
-                            .h(px(26.0))
-                            .disabled(self.state.busy)
-                            .on_click(move |_, _, cx| refresh(Action::Refresh, cx)),
-                    ),
-            );
+            .child(div().child("Share this computer"));
         let mut choices = div().flex().flex_wrap().gap_2();
         for (id, label, kind) in [
             ("share-window", "App window", ShareKind::Window),
