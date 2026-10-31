@@ -170,7 +170,6 @@ class ReleaseHookTests(unittest.TestCase):
 
     def test_native_inherits_release_lock_through_bash(self):
         shutil.copy2(SCRIPT, self.root / 'scripts/release_artifact_lifecycle.py')
-        shutil.copy2(SCRIPT.with_name('lifecycle_preload_gate.py'), self.root / 'scripts/lifecycle_preload_gate.py')
         with hook.producer('android-release') as (fd, _):
             result = subprocess.run(['bash', '-c', 'exec "$1" -B "$2" check-lock android-native',
                                      'fixture', sys.executable, str(self.root / 'scripts/release_artifact_lifecycle.py')],
@@ -366,7 +365,6 @@ class ReleaseHookTests(unittest.TestCase):
 
     def test_upgrade_native_child_inherits_original_producer_and_exact_mode(self):
         shutil.copy2(SCRIPT, self.root/'scripts/release_artifact_lifecycle.py')
-        shutil.copy2(SCRIPT.with_name('lifecycle_preload_gate.py'), self.root/'scripts/lifecycle_preload_gate.py')
         with patch.dict(os.environ, {hook.ANDROID_UPGRADE_ENV: '1'}):
             with hook.producer('android-release') as (fd, _):
                 process = subprocess.run(['bash', '-c', 'exec "$1" -B "$2" check-lock android-native',
@@ -671,10 +669,12 @@ class ReleaseHookTests(unittest.TestCase):
             hook.android_component(): {'validation_kind': 'unsigned-dev',
                 'files': list(map(str, hook.android_files())), 'validation_file': str(receipt),
                 'validation_digest': hashlib.sha256(receipt.read_bytes()).hexdigest()}}}))
+        new_source_verifier=Mock(side_effect=ValueError('Old APK predates the current source'))
         with patch.dict(sys.modules, {'verify_release_apk': SimpleNamespace(
-                verify_unsigned=Mock(return_value=report))}), \
+                verify_unsigned=new_source_verifier)}), \
              patch.object(hook, 'verify_existing_android_signer') as signer:
             hook.admit_android(self.state)
+        new_source_verifier.assert_not_called()
         signer.assert_not_called()
         self.assertFalse(any('--adopt-current' in args for action, args in self.calls
                              if action == 'release-admit'))

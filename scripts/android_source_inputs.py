@@ -19,7 +19,7 @@ PRODUCT_FILES = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
                  'deploy/desktop/product-identity.json')
 PRODUCER_FILES = ('scripts/android_source_inputs.py', 'scripts/build_android_native.sh',
                   'scripts/build_android_release.sh', 'scripts/release_artifact_lifecycle.py',
-                  'scripts/verify_release_apk.py', 'scripts/lifecycle_preload_gate.py',
+                  'scripts/verify_release_apk.py',
                   'scripts/cmake/android-arm64.cmake', 'scripts/cmake/android-x86_64.cmake')
 GENERATED = ('android/.gradle', 'android/.kotlin', 'android/build', 'android/app/build',
              'android/app/src/main/jniLibs')

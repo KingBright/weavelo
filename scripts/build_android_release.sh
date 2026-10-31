@@ -21,16 +21,6 @@ else
     APK_NAME=app-release.apk
     APK_WORKSPACE_NAME=.weavelo-android-package.pending
 fi
-if [[ -z "${WEAVELO_RELEASE_LOCK_FD:-}" ]]; then
-    exec python3 -B "$ROOT/scripts/release_artifact_lifecycle.py" run android-release "$@"
-fi
-python3 -B "$ROOT/scripts/release_artifact_lifecycle.py" check-lock android-release
-# Existing signing material: location/service/alias are intentionally not recreated.
-SIGN_DIR="${WEAVELO_ANDROID_SIGNING_DIR:-$HOME/Library/Application Support/RemotePlay/Signing}"
-KEYSTORE="${WEAVELO_ANDROID_KEYSTORE:-$SIGN_DIR/remoteplay-release.p12}"
-ALIAS="${WEAVELO_ANDROID_KEY_ALIAS:-remoteplay}"
-SERVICE="com.remoteplay.android.release.signing"
-ACCOUNT="${USER:-remoteplay}"
 SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
 if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/java" ]] || "$JAVA_HOME/bin/java" -version 2>&1 | grep -qiE 'OpenJ9|Semeru'; then
     HOTSPOT17="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
@@ -42,6 +32,16 @@ fi
 [ -x "${JAVA_HOME:-}/bin/java" ] || { echo "HotSpot JDK 17 is required for Android release builds" >&2; exit 1; }
 [ -d "$SDK/build-tools" ] || { echo "Android SDK not found: $SDK" >&2; exit 1; }
 export ANDROID_HOME="$SDK" ANDROID_SDK_ROOT="$SDK"
+if [[ -z "${WEAVELO_RELEASE_LOCK_FD:-}" ]]; then
+    exec python3 -B "$ROOT/scripts/release_artifact_lifecycle.py" run android-release "$@"
+fi
+python3 -B "$ROOT/scripts/release_artifact_lifecycle.py" check-lock android-release
+# Existing signing material: location/service/alias are intentionally not recreated.
+SIGN_DIR="${WEAVELO_ANDROID_SIGNING_DIR:-$HOME/Library/Application Support/RemotePlay/Signing}"
+KEYSTORE="${WEAVELO_ANDROID_KEYSTORE:-$SIGN_DIR/remoteplay-release.p12}"
+ALIAS="${WEAVELO_ANDROID_KEY_ALIAS:-remoteplay}"
+SERVICE="com.remoteplay.android.release.signing"
+ACCOUNT="${USER:-remoteplay}"
 if [[ "$UNSIGNED_ONLY" == 1 ]]; then
     # Local preparation only: never read signing credentials or publish current.
     unset WEAVELO_ANDROID_KEYSTORE WEAVELO_ANDROID_KEYSTORE_PASSWORD WEAVELO_ANDROID_KEY_ALIAS WEAVELO_ANDROID_KEY_PASSWORD

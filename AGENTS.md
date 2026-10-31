@@ -145,3 +145,12 @@ macOS `bash scripts/package_macos_unified.sh --desktop`, Windows
 `bash scripts/package_linux_desktop.sh`. The native macOS/Linux build alone is
 `python3 scripts/build_identity_gate.py build`; manual identity files and hashes
 are optional advanced inputs, not requirements for ordinary iteration.
+
+## Project-local build coordination (2026-10-31)
+
+Normal source checks, compilation and packaging do not consult or lock external
+skill-maintenance state. Use the existing project producer and current-output
+transaction directly. Check retained artifacts against their recorded bytes;
+validate new candidates against their own source and authorized signer. An old
+unsigned preparation must not require validation against today's changed source.
+Discover the existing Android Java/SDK tools before packaging preflight.

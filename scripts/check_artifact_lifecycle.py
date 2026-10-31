@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RP observe-only lifecycle check. Delegates to installed helper; never builds or cleans."""
+"""Weavelo read-only lifecycle observation through the existing project helper."""
 import argparse
 import hashlib
 import json
@@ -7,7 +7,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-import lifecycle_preload_gate as gate
 
 AUTHORITY = "docs/plans/ARTIFACT-LIFECYCLE-ADOPTION.json"
 BINDING = ".rust-storage/adoption.json"
@@ -30,12 +29,10 @@ def observe_only(binding):
 
 
 def invoke(helper, arguments):
-    with gate.admission():
-        return _invoke(helper, arguments)
+    return _invoke(helper, arguments)
 
 
 def _invoke(helper, arguments):
-    gate.require_admitted()
     command = [sys.executable, "-B", str(helper), *arguments]
     run = subprocess.run(command, capture_output=True, text=True, timeout=30)
     if run.returncode:
@@ -84,12 +81,10 @@ def metadata_bytes(path, root, label):
 
 
 def check(action, root, authority, binding_path, helper):
-    with gate.admission():
-        return _check(action, root, authority, binding_path, helper)
+    return _check(action, root, authority, binding_path, helper)
 
 
 def _check(action, root, authority, binding_path, helper):
-    gate.require_admitted()
     if action not in {"check", "dry-run"}:
         raise Refusal("only check and dry-run are supported")
     root = root.resolve()
@@ -150,7 +145,7 @@ def main():
         report = check(args.action, root, authority, binding, helper)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
-    except (Refusal, gate.Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (Refusal, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(json.dumps({"mode": "refused", "error": str(error), "candidates": []}), file=sys.stderr)
         return 2
 
