@@ -285,11 +285,43 @@ class ReleaseHookTests(unittest.TestCase):
 
     def test_mac_target_override_refused_before_child(self):
         with patch.object(hook.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+             patch.object(hook, 'macos_build_environment', return_value={}), \
              patch.object(hook, 'macos_output_root', side_effect=hook.Refusal('target override')), \
              patch.object(hook.subprocess, 'Popen') as child:
             with self.assertRaises(hook.Refusal): hook.run('macos', [])
             child.assert_not_called()
         self.assertEqual(self.calls, [])
+
+    def test_normal_macos_entry_builds_before_taking_the_package_mutex(self):
+        events=[]
+        @contextmanager
+        def producer(kind):
+            events.append('package')
+            yield 5, self.state
+        def build():
+            events.append('build')
+            return {'WEAVELO_BUILD_RECEIPT':'current-receipt'}
+        child=Mock(wait=Mock(return_value=0))
+        with patch.object(hook.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+             patch.object(hook, 'macos_build_environment', side_effect=build), \
+             patch.object(hook, 'producer', side_effect=producer), \
+             patch.object(hook.subprocess, 'Popen', return_value=child) as start:
+            self.assertEqual(hook.run('macos',['--desktop']),0)
+        self.assertEqual(events,['build','package'])
+        self.assertEqual(start.call_args.kwargs['env']['WEAVELO_BUILD_RECEIPT'],'current-receipt')
+
+    def test_macos_package_derives_source_and_hashes_from_its_compiler_receipt(self):
+        receipt=self.root/'current-build.json'
+        value={'build_identity':{'configuration':{'platform':'macos','target':'aarch64-apple-darwin'},
+                                'source':{'commit':'a'*40},'identity_sha256':'b'*64},
+               'build_storage':{'target_directory':str(self.root/'cache')},'compiler_binary_sha256':'c'*64}
+        receipt.write_text(json.dumps(value))
+        with patch.dict(os.environ,{'WEAVELO_BUILD_RECEIPT':str(receipt)},clear=True):
+            env=hook.macos_build_environment()
+        self.assertEqual(env['WEAVELO_EXPECTED_COMMIT'],'a'*40)
+        self.assertEqual(env['WEAVELO_PREBUILT_SHA256'],'c'*64)
+        self.assertEqual(env['WEAVELO_PREBUILT_BINARY'],str(self.root/'cache/aarch64-apple-darwin/release/weavelo'))
+        self.assertEqual(env['WEAVELO_BUILD_RECEIPT_SHA256'],hashlib.sha256(receipt.read_bytes()).hexdigest())
 
     def test_existing_current_adoption_verifies_original_pair_without_copy(self):
         apk, receipt, _ = self.apk(); before = [p.read_bytes() for p in (apk, receipt)]

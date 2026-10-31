@@ -138,3 +138,10 @@ with unrelated projects' global cleanup/build locks; retain only the local
 serialization needed to publish one correct current output. Routine compatible
 builds, publication and upgrades continue directly. Keep signing identities,
 credentials, actual OS consent, active transfers and unrelated files intact.
+
+Normal delivery entries derive current source and compiler metadata automatically:
+macOS `bash scripts/package_macos_unified.sh --desktop`, Windows
+`python scripts/build_windows_current.py`, and native Linux
+`bash scripts/package_linux_desktop.sh`. The native macOS/Linux build alone is
+`python3 scripts/build_identity_gate.py build`; manual identity files and hashes
+are optional advanced inputs, not requirements for ordinary iteration.

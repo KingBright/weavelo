@@ -748,12 +748,47 @@ def stop_child_group(child):
         child.wait()
 
 
+def native_build_inputs(platform):
+    """Derive package inputs from the actual compiler receipt, without handoff pins."""
+    import build_identity_gate as identity
+    explicit = os.environ.get('WEAVELO_BUILD_RECEIPT') if platform == 'macos' else None
+    if explicit:
+        path = Path(explicit)
+        receipt = identity.read_json(path)
+    else:
+        path, receipt = identity.automatic_build(ROOT)
+    config = receipt['build_identity']['configuration']
+    require(config['platform'] == platform, 'Compiler artifact belongs to another platform')
+    binary = Path(receipt['build_storage']['target_directory'])/config['target']/'release/weavelo'
+    return path, receipt, binary
+
+
+def macos_build_environment():
+    import build_identity_gate as identity
+    path, receipt, binary = native_build_inputs('macos')
+    values = {'WEAVELO_BUILD_RECEIPT': str(path), 'WEAVELO_BUILD_RECEIPT_SHA256': identity.hash_file(path),
+              'WEAVELO_EXPECTED_COMMIT': receipt['build_identity']['source']['commit'],
+              'WEAVELO_EXPECTED_IDENTITY_SHA256': receipt['build_identity']['identity_sha256'],
+              'WEAVELO_PREBUILT_BINARY': str(binary), 'WEAVELO_PREBUILT_SHA256': receipt['compiler_binary_sha256']}
+    return {key: os.environ.get(key) or value for key, value in values.items()}
+
+
 def run(kind, arguments):
+    build_env = {}
     if kind == 'macos' and arguments != ['--prepare-desktop']:
         require(arguments in ([], ['--desktop']), 'Unknown macOS packaging mode')
         check = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/macos_release_guard.py'), 'preflight',
                                 *(['--desktop'] if arguments == ['--desktop'] else [])])
         require(check.returncode == 0, 'Signing preflight failed before release lifecycle changes')
+        # Compile before acquiring the packaging producer, using its normal lock.
+        build_env = macos_build_environment()
+    if kind == 'linux-desktop' and not arguments:
+        import build_identity_gate as identity
+        path, receipt, binary = native_build_inputs('linux')
+        arguments = ['--binary', str(binary), '--binary-sha256', receipt['compiler_binary_sha256'],
+                     '--build-receipt', str(path), '--build-receipt-sha256', identity.hash_file(path),
+                     '--expected-commit', receipt['build_identity']['source']['commit'],
+                     '--expected-identity-sha256', receipt['build_identity']['identity_sha256']]
     with producer(kind) as (fd, state):
         if kind == 'android-release':
             state['admission'] = admit_android(state)
@@ -763,7 +798,7 @@ def run(kind, arguments):
                 require(not any(arg.startswith('--source-commit=') for arg in arguments),
                         'Prepared signing retains its recorded build source')
             write_state(fd, state)
-        env = dict(os.environ, **{LOCK_ENV: str(fd), PID_ENV: str(state['producer_pid'])})
+        env = dict(os.environ, **build_env, **{LOCK_ENV: str(fd), PID_ENV: str(state['producer_pid'])})
         command = ['bash', str(ROOT / 'scripts' / ENTRIES[kind]), *arguments]
         child = subprocess.Popen(command, env=env, pass_fds=(fd,), start_new_session=True)
         try:

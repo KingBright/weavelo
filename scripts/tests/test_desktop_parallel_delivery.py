@@ -166,6 +166,7 @@ class ParallelDesktopTests(unittest.TestCase):
 
     def test_signed_desktop_mode_retains_preflight_and_explicit_preparation_uses_original_producer(self):
         with patch.object(lifecycle,'producer',side_effect=RuntimeError('original producer')), \
+             patch.object(lifecycle,'macos_build_environment',return_value={}), \
              patch.object(lifecycle.subprocess,'run') as run:
             run.return_value.returncode=0
             with self.assertRaisesRegex(RuntimeError,'original producer'):lifecycle.run('macos',['--desktop'])

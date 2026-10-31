@@ -188,6 +188,25 @@ def write_new(path: Path, data: dict) -> str:
     return digest(raw)
 
 
+def write_current_receipt(path: Path, data: dict) -> str:
+    """Replace the one current build receipt while its compiler producer is held."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        previous = read_json(path)
+        require(previous.get('kind') == 'observed-build' and
+                previous.get('build_storage', {}).get('source_directory') ==
+                data.get('build_storage', {}).get('source_directory'), 'Preserve unrelated output metadata')
+    raw = json.dumps(data, sort_keys=True, indent=2, allow_nan=False).encode()+b'\n'
+    fd, name = tempfile.mkstemp(prefix='.'+path.name+'.', suffix='.pending', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as out:
+            out.write(raw); out.flush(); os.fsync(out.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+    return digest(raw)
+
+
 def git(repo: Path, *args: str) -> bytes:
     process = subprocess.run(['git', '--no-optional-locks', '-C', str(repo), *args], capture_output=True, timeout=30)
     require(process.returncode == 0, 'Git source identity could not be determined')
@@ -782,13 +801,13 @@ def _process_integration(repo: Path, expected: dict, worker: Path, worker_sha: s
             'original_identity_producer': True, 'log': name,
             'real_screen': False, 'os_input': False, 'release_authorized': False}
 
-def observed_build(repo: Path, expected: dict, target: Path | None = None, *, lifecycle_binding: Path | None = None, defer_linux_observation: bool = False) -> dict:
+def observed_build(repo: Path, expected: dict, target: Path | None = None, *, lifecycle_binding: Path | None = None, defer_linux_observation: bool = False, receipt_output: Path | None = None) -> dict:
     with lifecycle_admission():
         return _observed_build(repo, expected, target, lifecycle_binding=lifecycle_binding,
-                               defer_linux_observation=defer_linux_observation)
+                               defer_linux_observation=defer_linux_observation, receipt_output=receipt_output)
 
 
-def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, lifecycle_binding: Path | None = None, defer_linux_observation: bool = False) -> dict:
+def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, lifecycle_binding: Path | None = None, defer_linux_observation: bool = False, receipt_output: Path | None = None) -> dict:
     require_lifecycle_admitted()
     """Only this fixed build path may mint a build receipt; no loose-binary import.
 
@@ -838,7 +857,7 @@ def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, l
                                      'observation_binding':{'path':str(lifecycle_binding),'sha256':binding_sha256}},
                     'environment_record':compiler_environment_record(), 'release_authorized':False}
         info = product_info(binary, expected, value)
-        return {'schema': 2, 'kind': 'observed-build', 'build_identity': expected,
+        result = {'schema': 2, 'kind': 'observed-build', 'build_identity': expected,
                 'compiler_binary_sha256': value, 'compiler_binary_bytes': binary.stat().st_size,
                 'product_info': info, 'build_command': command, 'fresh_target': False,
                 'build_storage': {'mode': 'shared-incremental', 'target_directory': str(target),
@@ -846,6 +865,30 @@ def _observed_build(repo: Path, expected: dict, target: Path | None = None, *, l
                                   **({'observation_binding': {'path': str(lifecycle_binding), 'sha256': binding_sha256}}
                                      if lifecycle_binding is not None else {})},
                 'visual_acceptance': 'not_evaluated', 'stream_acceptance': 'not_evaluated'}
+        if receipt_output is not None:
+            write_current_receipt(receipt_output, result)
+        return result
+
+
+def automatic_build(repo: Path, target: Path | None = None, output: Path | None = None,
+                    lifecycle_binding: Path | None = None) -> tuple[Path, dict]:
+    """Normal native build: current main, existing cache, one current receipt."""
+    import platform
+    repo = repo.resolve()
+    require(git(repo, 'branch', '--show-current').strip() == b'main', 'Use the primary main checkout')
+    system = 'macos' if sys.platform == 'darwin' else 'linux' if sys.platform.startswith('linux') else None
+    require(system is not None, 'Use build_windows_current.py on Windows')
+    machine = platform.machine().lower()
+    architecture = {'arm64':'aarch64', 'aarch64':'aarch64', 'x86_64':'x86_64', 'amd64':'x86_64'}[machine]
+    triple = architecture + ('-apple-darwin' if system == 'macos' else '-unknown-linux-gnu')
+    commit = git(repo, 'rev-parse', 'HEAD').decode().strip()
+    source = source_snapshot(repo, commit, inspect_only=True)
+    config = configuration(system, architecture, (repo/'VERSION').read_text().strip(), triple,
+                           'release', toolchain_digest(), environment_digest())
+    cache = shared_target(repo, target, lifecycle_binding=lifecycle_binding) if lifecycle_binding is not None else shared_target(repo, target)
+    output = output or cache/'package'/system/(system+'-current-build-receipt.json')
+    result = observed_build(repo, identity(source, config), cache, lifecycle_binding=lifecycle_binding, receipt_output=output)
+    return output, result
 
 
 def files_in(root: Path) -> list[dict]:
@@ -1135,12 +1178,12 @@ def main() -> None:
     prepare.add_argument('--configuration', type=Path, required=True)
     prepare.add_argument('--output', type=Path, required=True)
     build = commands.add_parser('build')
-    build.add_argument('--repo', type=Path, required=True)
-    build.add_argument('--identity', type=Path, required=True)
-    build.add_argument('--identity-sha256', required=True, help='SHA-256 of the prepared JSON file from independent handoff')
+    build.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
+    build.add_argument('--identity', type=Path)
+    build.add_argument('--identity-sha256')
     build.add_argument('--target', type=Path, help='Must resolve to the existing platform cache contract')
     build.add_argument('--lifecycle-binding', type=Path, help='Linux only: refreshed observation binding; original authority/cache/budgets remain fixed')
-    build.add_argument('--output', type=Path, required=True)
+    build.add_argument('--output', type=Path)
     build.add_argument('--defer-linux-observation', action='store_true', help='Compile a real identity-bearing Linux release; explicitly no runtime receipt')
     integration = commands.add_parser('process-integration')
     integration.add_argument('--repo', type=Path, required=True)
@@ -1210,9 +1253,15 @@ def main() -> None:
                                          args.worker, args.worker_sha256, args.output)
             result = {'integration_receipt_sha256': write_new(args.output, result), 'integration': result}
         elif args.command == 'build':
-            result = observed_build(args.repo, read_json(args.identity, args.identity_sha256), args.target,
-                                    lifecycle_binding=args.lifecycle_binding, defer_linux_observation=args.defer_linux_observation)
-            result = {'build_receipt_sha256': write_new(args.output, result), 'build': result}
+            if args.identity is None:
+                require(not args.defer_linux_observation, 'Deferred cross builds require an explicit target identity')
+                path, receipt = automatic_build(args.repo, args.target, args.output, args.lifecycle_binding)
+                result = {'build_receipt_path': str(path), 'build_receipt_sha256': hash_file(path), 'build': receipt}
+            else:
+                result = observed_build(args.repo, read_json(args.identity, args.identity_sha256), args.target,
+                                        lifecycle_binding=args.lifecycle_binding, defer_linux_observation=args.defer_linux_observation)
+                require(args.output is not None, 'An explicit identity build needs its output path')
+                result = {'build_receipt_sha256': write_new(args.output, result), 'build': result}
         elif args.command in ('candidate-manifest','observe-linux'):
             compiled = read_json(args.compiled_receipt,args.compiled_receipt_sha256)
             if args.command == 'candidate-manifest':

@@ -60,6 +60,36 @@ class BuildIdentityGateTests(unittest.TestCase):
                 'RUSTUP_UPDATE_ROOT': 'https://mirror.example.invalid/rustup'}, clear=True):
             self.assertEqual(gate.build_environment(), {'PATH': '/existing/tools'})
 
+    def test_native_build_derives_current_source_and_keeps_one_receipt_without_handoff_hashes(self):
+        self.run_git('branch', '-M', 'main')
+        (self.repo/'VERSION').write_text('2.0.0-alpha.9')
+        (self.repo/'main.rs').write_text('fn main() { /* current edit */ }\n')
+        cache = self.root/'existing-cache'; cache.mkdir()
+        with patch.object(gate.sys, 'platform', 'darwin'), patch('platform.machine', return_value='arm64'), \
+             patch.object(gate, 'toolchain_digest', return_value='d'*64), \
+             patch.object(gate, 'environment_digest', return_value='e'*64), \
+             patch.object(gate, 'shared_target', return_value=cache), \
+             patch.object(gate, 'observed_build', return_value={'kind':'synthetic'}) as compiler:
+            path, result = gate.automatic_build(self.repo)
+        self.assertEqual(path, cache/'package/macos/macos-current-build-receipt.json')
+        self.assertEqual(compiler.call_args.args[1]['source']['commit'], self.commit)
+        self.assertEqual(compiler.call_args.args[1]['source']['state'], 'patch')
+        self.assertEqual(compiler.call_args.kwargs['receipt_output'], path)
+        self.assertEqual(result, {'kind':'synthetic'})
+
+    def test_current_receipt_replaces_its_own_metadata_without_leaving_generations(self):
+        path = self.root/'current-receipt.json'
+        value = {'kind':'observed-build','build_storage':{'source_directory':str(self.repo)},'value':1}
+        gate.write_current_receipt(path, value)
+        value['value']=2
+        gate.write_current_receipt(path, value)
+        self.assertEqual(json.loads(path.read_text()), value)
+        self.assertEqual(list(self.root.glob('.current-receipt.json.*')), [])
+        before=path.read_bytes()
+        value['build_storage']['source_directory']='other-project'
+        with self.assertRaises(gate.IdentityRejected): gate.write_current_receipt(path,value)
+        self.assertEqual(path.read_bytes(),before)
+
     def test_changed_or_missing_linux_sdk_binding_stops_before_the_producer(self):
         sdk = {'WEAVELO_VERIFIED_FFMPEG_INCLUDE': '/verified/ffmpeg-8.1.2',
                'LIBRARY_PATH': '/existing/opus/lib64'}
