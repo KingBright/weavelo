@@ -110,6 +110,9 @@ impl LinuxVideoEncoder {
     }
 
     pub fn set_paused(&mut self, paused: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.paused == paused {
+            return Ok(());
+        }
         self.paused = paused;
         if self.native_generation.is_some() {
             if paused {
@@ -335,6 +338,29 @@ mod lifecycle_tests {
             }
         }
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn live_settings_acknowledgement_does_not_require_another_initial_keyframe() {
+        let mut encoder = LinuxVideoEncoder::from_owned_frames(9, 64, 64, 30, 2000).unwrap();
+        for sequence in 0..6 {
+            let owned = frame(PixelFormat::Nv12, known_color(), sequence);
+            let captured = LinuxVideoFrame::from_owned(owned);
+            encoder.submit_frame(captured).await.unwrap();
+            wait_for_writer(encoder.native.as_ref().unwrap()).await;
+        }
+        encoder.native.as_ref().unwrap().finish_input();
+        for sequence in 0..6 {
+            // A settings watch can fire repeatedly without a pause transition.
+            encoder.update_settings(64, 64, 30, 2000).unwrap();
+            encoder.set_paused(false).unwrap();
+            let chunk = tokio::time::timeout(
+                Duration::from_secs(5), encoder.pull_encoded_chunk(),
+            ).await.unwrap().unwrap();
+            assert_eq!(chunk.native_stamp.unwrap().sequence, Some(sequence));
+            assert_eq!(chunk.is_keyframe, sequence == 0);
+        }
+    }
+
     #[test]
     fn paused_settings_update_never_starts_ffmpeg() {
         let mut encoder = LinuxVideoEncoder {

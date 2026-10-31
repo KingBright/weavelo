@@ -8,6 +8,24 @@ use std::process::{Child, Command, Stdio};
 use tokio::sync::Notify;
 use zbus::message::Header;
 
+#[test]
+fn monitor_reselection_matches_logical_geometry_not_session_local_node_ids() {
+    let first = SelectedPortalSource {
+        generation: 1, kind: SourceKind::Monitor, node_id: 77,
+        pipewire_serial: Some(100), logical_size: Some((1920, 1080)),
+        logical_position: Some((0, 0)), embedded_cursor: true,
+    };
+    let second = SelectedPortalSource { generation: 2, node_id: 88,
+        pipewire_serial: Some(101), ..first };
+    assert!(first.same_monitor(&second));
+    assert!(!first.same_monitor(&SelectedPortalSource { logical_position: Some((1920, 0)), ..second }));
+    assert!(!first.same_monitor(&SelectedPortalSource { logical_size: None, ..second }));
+    assert!(!first.same_monitor(&SelectedPortalSource { logical_position: None, ..second }));
+    assert!(!first.same_monitor(&SelectedPortalSource { kind: SourceKind::Window, ..second }));
+    let window = SelectedPortalSource { kind: SourceKind::Window, ..first };
+    assert!(!window.same_monitor(&window));
+}
+
 #[derive(Clone, Copy)]
 enum Behavior {
     EarlyResponse,

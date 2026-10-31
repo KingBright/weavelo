@@ -99,6 +99,17 @@ pub struct SelectedPortalSource {
     pub embedded_cursor: bool,
 }
 
+impl SelectedPortalSource {
+    pub fn same_monitor(&self, other: &Self) -> bool {
+        self.kind == SourceKind::Monitor
+            && other.kind == SourceKind::Monitor
+            && self.logical_position.is_some()
+            && self.logical_size.is_some()
+            && self.logical_position == other.logical_position
+            && self.logical_size == other.logical_size
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Timeouts {
     operation: Duration,

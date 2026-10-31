@@ -100,15 +100,7 @@ impl Manager {
                     let info = source.capture.source_info();
                     SharedSource {
                         source: info.source,
-                        label: format!(
-                            "{} {}",
-                            if source.kind == ShareKind::Window {
-                                "Window"
-                            } else {
-                                "Display"
-                            },
-                            source.id
-                        ),
+                        label: info.title,
                         kind: source.kind,
                         supports_input: info.supports_input,
                         remembered: source.remembered,
@@ -355,18 +347,29 @@ impl Manager {
         if control && let Err(reason) = capture.input_status() {
             self.state.lock().unwrap().message = Some(format!("Video only: {reason}"));
         }
-        capture
-            .set_label(format!(
-                "{} {}",
-                if kind == ShareKind::Window {
-                    "Window"
-                } else {
-                    "Display"
-                },
-                id
-            ))
-            .map_err(portal_message)?;
         let _serial = self.publication.lock().await;
+        let label = {
+            let state = self.state.lock().unwrap();
+            let selected = capture.selected_source();
+            state.sources.iter()
+                .find(|source| {
+                    source.scope == scope && !source.capture.is_revoked()
+                        && selected.same_monitor(&source.capture.selected_source())
+                })
+                .map(|source| source.capture.source_info().title)
+                .unwrap_or_else(|| {
+                    let prefix = if kind == ShareKind::Window { "Window" } else { "Display" };
+                    let mut number = 1;
+                    while state.sources.iter().any(|source| {
+                        source.scope == scope && !source.capture.is_revoked()
+                            && source.capture.source_info().title == format!("{prefix} {number}")
+                    }) {
+                        number += 1;
+                    }
+                    format!("{prefix} {number}")
+                })
+        };
+        capture.set_label(label).map_err(portal_message)?;
         let sender = {
             let state = self.state.lock().unwrap();
             state
@@ -484,6 +487,26 @@ impl Manager {
             let _ = self.publish().await;
             return Err("Selection cancelled".into());
         }
+        // A new consent for the same logical monitor replaces its earlier lease.
+        // Publish and remember the replacement before retiring the old grant.
+        let replaced: Vec<_> = {
+            let state = self.state.lock().unwrap();
+            let selected = state.sources.iter()
+                .find(|source| source.id == id)
+                .map(|source| source.capture.selected_source());
+            state.sources.iter()
+                .filter(|source| {
+                    source.id != id && source.scope == scope
+                        && selected.is_some_and(|selected| {
+                            selected.same_monitor(&source.capture.selected_source())
+                        })
+                })
+                .map(|source| source.capture.source_info().source)
+                .collect()
+        };
+        for source in replaced {
+            self.stop_locked(Some(source), remembered).await;
+        }
         Ok(())
     }
     async fn publish(&self) -> Result<(), String> {
@@ -532,6 +555,9 @@ impl Manager {
     }
     async fn stop(&self, source: Option<CaptureSource>, forget: bool) {
         let _serial = self.publication.lock().await;
+        self.stop_locked(source, forget).await;
+    }
+    async fn stop_locked(&self, source: Option<CaptureSource>, forget: bool) {
         let removed = {
             let mut state = self.state.lock().unwrap();
             let mut removed = Vec::new();

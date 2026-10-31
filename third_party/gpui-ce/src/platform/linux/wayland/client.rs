@@ -209,6 +209,7 @@ pub(crate) struct WaylandClientState {
     text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
     pre_edit_text: Option<String>,
     ime_pre_edit: Option<String>,
+    ime_commit_text: Option<String>,
     composing: bool,
     // Surface to Window mapping
     windows: HashMap<ObjectId, WaylandWindowStatePtr>,
@@ -302,6 +303,9 @@ impl WaylandClientStatePtr {
             return;
         };
 
+        state.ime_commit_text = None;
+        state.ime_pre_edit = None;
+        state.composing = false;
         text_input.enable();
         text_input.set_content_type(ContentHint::None, ContentPurpose::Normal);
         if let Some(window) = state.keyboard_focused_window.clone() {
@@ -324,6 +328,8 @@ impl WaylandClientStatePtr {
         let client = self.get_client();
         let mut state = client.borrow_mut();
         state.composing = false;
+        state.ime_pre_edit = None;
+        state.ime_commit_text = None;
         if let Some(text_input) = &state.text_input {
             text_input.disable();
             text_input.commit();
@@ -597,6 +603,7 @@ impl WaylandClient {
             text_input: None,
             pre_edit_text: None,
             ime_pre_edit: None,
+            ime_commit_text: None,
             composing: false,
             outputs: HashMap::default(),
             in_progress_outputs,
@@ -1498,15 +1505,28 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                 this.disable_ime();
             }
             zwp_text_input_v3::Event::CommitString { text } => {
-                state.composing = false;
+                // Text-input v3 events replace pending state until `done`.
+                // Delivering each intermediate commit here can insert text twice.
+                state.ime_commit_text = text;
+            }
+            zwp_text_input_v3::Event::PreeditString { text, .. } => {
+                state.composing = true;
+                state.ime_pre_edit = text;
+            }
+            zwp_text_input_v3::Event::Done { serial } => {
+                let last_serial = state.serial_tracker.get(SerialKind::InputMethod);
+                state.serial_tracker.update(SerialKind::InputMethod, serial);
+                let commit_text = state.ime_commit_text.take();
+                let pre_edit = state.ime_pre_edit.take();
+                state.composing = pre_edit.as_ref().is_some_and(|text| !text.is_empty());
                 let Some(window) = state.keyboard_focused_window.clone() else {
                     return;
                 };
-
-                if let Some(commit_text) = text {
-                    drop(state);
-                    // IBus Intercepts keys like `a`, `b`, but those keys are needed for vim mode.
-                    // We should only send ASCII characters to Zed, otherwise a user could remap a letter like `か` or `相`.
+                drop(state);
+                // The protocol applies old preedit removal, committed text, then
+                // new preedit, exactly once for this transaction.
+                window.handle_ime(ImeInput::DeleteText);
+                if let Some(commit_text) = commit_text.filter(|text| !text.is_empty()) {
                     if commit_text.len() == 1 {
                         window.handle_input(PlatformInput::KeyDown(KeyDownEvent {
                             keystroke: Keystroke {
@@ -1521,20 +1541,7 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                         window.handle_ime(ImeInput::InsertText(commit_text));
                     }
                 }
-            }
-            zwp_text_input_v3::Event::PreeditString { text, .. } => {
-                state.composing = true;
-                state.ime_pre_edit = text;
-            }
-            zwp_text_input_v3::Event::Done { serial } => {
-                let last_serial = state.serial_tracker.get(SerialKind::InputMethod);
-                state.serial_tracker.update(SerialKind::InputMethod, serial);
-                let Some(window) = state.keyboard_focused_window.clone() else {
-                    return;
-                };
-
-                if let Some(text) = state.ime_pre_edit.take() {
-                    drop(state);
+                if let Some(text) = pre_edit {
                     window.handle_ime(ImeInput::SetMarkedText(text));
                     if let Some(area) = window.get_ime_area() {
                         text_input.set_cursor_rectangle(
@@ -1547,10 +1554,6 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
                             text_input.commit();
                         }
                     }
-                } else {
-                    state.composing = false;
-                    drop(state);
-                    window.handle_ime(ImeInput::DeleteText);
                 }
             }
             _ => {}
