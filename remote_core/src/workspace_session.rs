@@ -724,10 +724,15 @@ impl Actor {
                 self.pending.clear();
                 self.subscriptions.clear();
             }
-            SessionCommand::Unsubscribe { id } => {
-                self.subscriptions.remove(id);
+            SessionCommand::Unsubscribe { id } | SessionCommand::Unsubscribed { id } => {
+                if let Some(mut view) = self.subscriptions.remove(id) {
+                    view.handler.suspend_video_source();
+                }
+                self.input.lock().unwrap().remove(*id);
                 self.pending.remove(&(2, *id));
                 self.pending.remove(&(4, *id));
+                self.pending.remove(&(6, *id));
+                self.pending.remove(&(7, *id));
                 self.pending.retain(|_, pending|
                     !matches!(pending.command, SessionCommand::SwitchSource { id: requested, .. } if requested == *id));
             }
@@ -886,6 +891,12 @@ impl Actor {
                 view.handler.reset_video_source();
             }
             self.pending.remove(&key);
+        }
+        if matches!(command, SessionCommand::Unsubscribed { .. }) {
+            // The host can end capture without a local stop request. Retire its
+            // ingress and input requests while keeping the file transport alive.
+            self.prepare_control(command);
+            self.refresh_audio_activity();
         }
         if let SessionCommand::Subscribed {
             id, audio_owner, supports_input
@@ -1829,6 +1840,38 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(25)).await;
         actor.subscriptions.get_mut(&7).unwrap().handler.drain_video();
         assert!(ours.try_recv().is_err(),"old queued 12/13 reached the decoder after switch");
+    }
+
+    #[tokio::test]
+    async fn host_ended_subscription_retires_its_ingress_and_input_without_other_channels() {
+        let (mut actor, _audio) = source_switch_actor().await;
+        let mut ended = source_switch_view(&mut actor, 7);
+        let mut other = source_switch_view(&mut actor, 8);
+        let (files, _file_receiver) = mpsc::channel(2);
+        actor.files_tx = files.clone();
+        actor.input.lock().unwrap().source(7, 0);
+        assert!(actor.input.lock().unwrap().requests(actor.id).iter().any(|command|
+            matches!(command, SessionCommand::RequestInputBinding { id:7, .. })));
+        actor.request(SessionCommand::ListSources { request_id:7, known_icons:Vec::new() }).await;
+        actor.request(SessionCommand::SetActivity { id:7, revision:1, video:true, audio:true }).await;
+        actor.request(SessionCommand::SwitchSource { id:7, request_id:100, source:CaptureSource::Display(88) }).await;
+
+        assert!(actor.accept_control(&SessionCommand::Unsubscribed { id:7 }));
+        assert!(!actor.subscriptions.contains_key(&7));
+        assert!(!actor.source_switch_pending(7));
+        assert!(!actor.audio_groups.contains_key(&7));
+        assert!(actor.audio_groups[&8]);
+        assert!(actor.pending.contains_key(&(1, 7)), "catalog request with the same numeric ID is unrelated");
+        assert!(!actor.pending.contains_key(&(4, 7)));
+        assert!(!actor.input.lock().unwrap().requests(actor.id).iter().any(|command|
+            matches!(command, SessionCommand::RequestInputBinding { id:7, .. })));
+        actor.packet(source_video(7, 11), FrameTimingCheckpoints::default()).await;
+        assert!(ended.try_recv().is_err());
+        actor.packet(source_video(8, 11), FrameTimingCheckpoints::default()).await;
+        assert!(other.try_recv().is_ok());
+        assert!(files.same_channel(&actor.files_tx) && !files.is_closed());
+        assert!(actor.accept_control(&SessionCommand::Unsubscribed { id:7 }));
+        assert!(!actor.accept_control(&SessionCommand::Subscribed { id:7, audio_owner:Some(7), supports_input:true }));
     }
 
     #[tokio::test]

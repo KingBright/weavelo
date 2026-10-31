@@ -141,11 +141,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     Text(if (state.incomingEnded) "Sharing ended" else if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
                         style = MaterialTheme.typography.labelSmall)
                 }
-                MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected) {
+                MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                     pickerGeneration = state.connectionGeneration; sourcePicker = true
                 }
-                MobileAction(MobileSymbol.Refresh, "Refresh screens and windows", state.connected) {
+                MobileAction(MobileSymbol.Refresh, "Refresh screens and windows", state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                 }
                 Box {
@@ -234,12 +234,13 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 Column(horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
                     Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
-                    Text("Choose a screen", color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
-                    Text(if (state.sources.isEmpty()) "This device has not shared a screen yet. You can still exchange files."
+                    Text(if (state.incomingEnded) "Sharing ended" else "Choose a screen", color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
+                    Text(if (state.incomingEnded) "You can still exchange files."
+                        else if (state.sources.isEmpty()) "This device has not shared a screen yet. You can still exchange files."
                         else "Open a display or application window. File transfers stay independent.",
                         color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    Button(onClick = {
+                    if (!state.incomingEnded) Button(onClick = {
                         WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                         pickerGeneration = state.connectionGeneration; sourcePicker = true
                     }, enabled = state.connected) {
