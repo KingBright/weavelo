@@ -314,9 +314,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
                 let workspace = client.runtime().block_on(
                     crate::workspace_bridge::MobileWorkspace::connect_with_claim(endpoint, directory,claim),
                 )?;
+                let capabilities=workspace.capabilities().to_string();
                 *WORKSPACE.lock().unwrap() = Some(Arc::new(workspace));
                 refresh_network_ownership();
-                return Ok(String::new());
+                return Ok(capabilities);
             }
             if operation == 1 {
                 WORKSPACE.lock().unwrap().take();

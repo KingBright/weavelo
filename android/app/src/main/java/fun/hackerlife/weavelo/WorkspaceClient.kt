@@ -153,11 +153,13 @@ object WorkspaceClient {
         val target = resolveNetworkEndpoint(deviceId, endpoint, WeaveloClient.devices.value)
         val payload = JSONObject().put("endpoint", target).put("directory", directory.absolutePath)
         ownership.request()?.incomingId?.let { payload.put("claim", DirectedDelivery.claim(it)) }
-        action(0, payload.toString())
+        val capabilities = JSONObject(action(0, payload.toString()))
         incomingInitialized = false; incomingEnded = false
         retainingConnection = true
         pendingShareList = 0L
-        mutable.value = mutable.value.copy(connected = true, connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
+        mutable.value = mutable.value.copy(connected = true, maxSubscriptions = capabilities.getInt("max_subscriptions"),
+            files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
+            connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
     }
     private fun closeNative() { polling?.cancel(); polling = null; if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {

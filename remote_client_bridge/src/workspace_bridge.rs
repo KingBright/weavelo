@@ -259,6 +259,12 @@ impl MobileWorkspace {
         })
     }
 
+    /// Negotiated capabilities remain available after directed claim consumes handshake events.
+    pub fn capabilities(&self) -> serde_json::Value {
+        serde_json::json!({"max_subscriptions":self.connection.max_subscriptions,
+            "files":self.connection.files_available,"clipboard":self.connection.clipboard_available})
+    }
+
     pub async fn command(&self, json: &str) -> Result<(), String> {
         let command: SessionCommand = serde_json::from_str(json).map_err(|e| e.to_string())?;
         {

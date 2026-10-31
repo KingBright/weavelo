@@ -1586,6 +1586,11 @@ mod tests {
         mpsc::UnboundedReceiver<(ControlMessage, SocketAddr)>,
         SocketAddr,
     ) {
+        test_host_with_files(client, false)
+    }
+
+    fn test_host_with_files(client: &RemoteBridgeClient, files: bool) ->
+        (remote_core::net::UdpSender, mpsc::UnboundedReceiver<(ControlMessage, SocketAddr)>, SocketAddr) {
         let host = client
             .runtime()
             .block_on(UdpMultiplexer::bind("127.0.0.1:0"))
@@ -1596,9 +1601,19 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         client.runtime().spawn(async move {
             let mut close_seen = std::collections::HashSet::new();
+            let key=remote_core::session_crypto::load_session_psk();
+            let mut handshakes=remote_core::session_auth::ServerHandshake::default();
             while let Ok(remote_core::net::MultiplexedPacket::Control(message, peer)) =
                 receiver.recv().await
             {
+                if let ControlMessage::SessionHandshake(message)=&message {
+                    if let Some(key)=&key {
+                        let response=handshakes.receive(key,message,peer,remote_core::session_auth::AuthTime::now(),true).unwrap();
+                        if let Some(established)=response.established {reply.install_peer_crypto(peer,established.crypto);}
+                        reply.send_control(&ControlMessage::SessionHandshake(Box::new(response.message)),peer).await.unwrap();
+                    }
+                    continue;
+                }
                 let response = match &message {
                     ControlMessage::Session(command) => match **command {
                         SessionCommand::Open {
@@ -1608,9 +1623,12 @@ mod tests {
                             connection_id,
                             version,
                             max_subscriptions: 8,
-                            files: false,
+                            files,
                             clipboard: false,
                             window_capture: true,
+                        }),
+                        SessionCommand::DeliveryClaim { request_id, .. } => Some(SessionCommand::DeliveryReceipt {
+                            request_id, revision:0, state:protocol::session::DeliveryState::Claimed, reason:String::new(),
                         }),
                         SessionCommand::Subscribe(ref request) => {
                             Some(SessionCommand::Subscribed {
@@ -2021,6 +2039,33 @@ mod tests {
             .unwrap();
             binding
         })
+    }
+
+    #[test]
+    fn claimed_workspace_retains_actual_file_capabilities_after_handshake_event_is_consumed() {
+        const CHILD:&str="WEAVELO_CLAIM_CAPABILITIES_FIXTURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","tests::claimed_workspace_retains_actual_file_capabilities_after_handshake_event_is_consumed","--nocapture"])
+                .env(CHILD,"1").output().unwrap();
+            assert!(output.status.success(),"isolated capability fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
+        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-claimed-capabilities-fixture");
+        let client=RemoteBridgeClient::new();
+        let (_sender,_receiver,address)=test_host_with_files(&client,true);
+        let directory=std::env::temp_dir().join(format!("weavelo-claimed-capabilities-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        client.runtime().block_on(async {
+            let claim=protocol::session::DeliveryClaimProof {request_id:17,target_device_id:"fixture-target".into(),
+                ticket:[9;32],sources:vec![CaptureSource::MainDisplay]};
+            let workspace=tokio::time::timeout(std::time::Duration::from_secs(3),
+                workspace_bridge::MobileWorkspace::connect_with_claim(address,directory.clone(),Some(claim))).await.unwrap().unwrap();
+            assert_eq!(workspace.capabilities(),serde_json::json!({"max_subscriptions":8,"files":true,"clipboard":false}));
+            drop(workspace);
+        });
+        if directory.exists(){std::fs::remove_dir_all(directory).unwrap();}
     }
 
     #[test]

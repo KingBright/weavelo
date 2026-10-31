@@ -204,21 +204,27 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
             }
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
-            val rows = visible.chunked(if (state.grid && visible.size > 1) 2 else 1)
-            rows.forEach { row ->
-                Row(Modifier.weight(1f).fillMaxWidth()) {
-                    row.forEach { pane ->
-                        key(pane.id, state.connectionGeneration) {
-                            Column(Modifier.weight(1f).fillMaxHeight().padding(3.dp)) {
-                                Row(Modifier.fillMaxWidth()) {
-                                    TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
-                                    MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
-                                }
-                                pane.audioOwner?.let { owner ->
-                                    Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it }, modifier = Modifier.height(24.dp))
-                                }
-                                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                    if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration, onError = { localError = it })
+            if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                val columns = workspaceGridColumns(maxWidth.value, maxHeight.value,
+                    visible.map { it.source.width.toFloat() / it.source.height.coerceAtLeast(1) })
+                val rows = visible.chunked(columns)
+                Column(Modifier.fillMaxSize()) {
+                    rows.forEach { row ->
+                        Row(Modifier.weight(1f).fillMaxWidth()) {
+                            row.forEach { pane ->
+                                key(pane.id, state.connectionGeneration) {
+                                    Column(Modifier.weight(1f).fillMaxHeight().padding(3.dp)) {
+                                        Row(Modifier.fillMaxWidth()) {
+                                            TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                            MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
+                                        }
+                                        pane.audioOwner?.let { owner ->
+                                            Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it }, modifier = Modifier.height(24.dp))
+                                        }
+                                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                            if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration, onError = { localError = it })
+                                        }
+                                    }
                                 }
                             }
                         }
