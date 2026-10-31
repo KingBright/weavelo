@@ -42,6 +42,7 @@ struct Calls {
     posted: Vec<Posted>,
     foreground_blocked: bool,
     covered: bool,
+    raise_uncovers: bool,
 }
 static CALLS: Mutex<Calls> = Mutex::new(Calls {
     attempts: 0,
@@ -52,6 +53,7 @@ static CALLS: Mutex<Calls> = Mutex::new(Calls {
     posted: Vec::new(),
     foreground_blocked: false,
     covered: false,
+    raise_uncovers: false,
 });
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -136,10 +138,17 @@ mod recording_api {
                 pub const SM_XVIRTUALSCREEN:i32=76;pub const SM_YVIRTUALSCREEN:i32=77;
                 pub const SM_CXVIRTUALSCREEN:i32=78;pub const SM_CYVIRTUALSCREEN:i32=79;
                 pub const GA_ROOT:u32=2;
+                pub const HWND_TOP:HWND=core::ptr::null_mut();
+                pub const SWP_NOMOVE:u32=2;pub const SWP_NOSIZE:u32=1;pub const SWP_NOACTIVATE:u32=16;
                 pub unsafe fn GetSystemMetrics(index:i32)->i32{match index{78=>1920,79=>1080,_=>0}}
                 pub unsafe fn GetForegroundWindow()->HWND {if super::super::super::super::CALLS.lock().unwrap().foreground_blocked {2usize as HWND}else{1usize as HWND}}
                 pub unsafe fn GetAncestor(window:HWND,_flags:u32)->HWND {window}
                 pub unsafe fn SetForegroundWindow(_window:HWND)->i32{if super::super::super::super::CALLS.lock().unwrap().foreground_blocked {0}else{1}}
+                pub unsafe fn SetWindowPos(_window:HWND,_after:HWND,_x:i32,_y:i32,_w:i32,_h:i32,flags:u32)->i32{
+                    assert_eq!(flags,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+                    let mut calls=super::super::super::super::CALLS.lock().unwrap();
+                    if calls.raise_uncovers{calls.covered=false;}1
+                }
                 pub unsafe fn WindowFromPoint(_point:POINT)->HWND {if super::super::super::super::CALLS.lock().unwrap().covered {2usize as HWND}else{1usize as HWND}}
                 pub unsafe fn GetCursorPos(point:*mut POINT)->i32 {unsafe{(*point).x=0;(*point).y=0;}1}
             }
@@ -172,6 +181,17 @@ fn rejected_activation_never_clicks_a_covering_window() {
     let input=actual::WindowsInputInjector::for_source(protocol::session::CaptureSource::Window(77),(1920,1080),(1920,1080)).unwrap();
     assert!(input.inject_input(InputEvent::MouseMoveAbsolute{x:32768,y:32768}).is_err());
     assert!(CALLS.lock().unwrap().posted.is_empty());
+}
+
+#[test]
+fn selected_window_can_be_raised_without_requiring_foreground_activation() {
+    let _serial=SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap()=Calls{foreground_blocked:true,covered:true,raise_uncovers:true,..Default::default()};
+    let input=actual::WindowsInputInjector::for_source(protocol::session::CaptureSource::Window(77),(1920,1080),(1920,1080)).unwrap();
+    input.inject_input(InputEvent::MouseMoveAbsolute{x:32768,y:32768}).unwrap();
+    input.inject_input(InputEvent::MouseDown(0)).unwrap();
+    input.inject_input(InputEvent::MouseUp(0)).unwrap();
+    assert_eq!(CALLS.lock().unwrap().posted.len(),3);
 }
 
 #[test]

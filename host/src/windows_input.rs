@@ -66,6 +66,9 @@ impl WindowsInputInjector {
                 // click can still activate this window; motion must not revoke
                 // control. Keyboard and wheel input still require actual focus.
                 unsafe{SetForegroundWindow(hwnd)};
+                // Raise only the selected window without moving, resizing or
+                // changing its topmost policy. The hit test below remains final.
+                unsafe{SetWindowPos(hwnd,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)};
             }
             if let InputEvent::MouseMoveAbsolute{x,y}=&event {
                 let (vx,vy)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,*x,*y)?;
