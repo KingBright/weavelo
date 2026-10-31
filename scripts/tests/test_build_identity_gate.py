@@ -60,6 +60,13 @@ class BuildIdentityGateTests(unittest.TestCase):
                 'RUSTUP_UPDATE_ROOT': 'https://mirror.example.invalid/rustup'}, clear=True):
             self.assertEqual(gate.build_environment(), {'PATH': '/existing/tools'})
 
+    def test_normal_logging_environment_never_blocks_and_compiler_flags_are_recorded(self):
+        with patch.dict(os.environ, {'PATH':'/existing/tools','RUST_LOG':'debug',
+                'RUSTFLAGS':'-C opt-level=3','PRIVATE_TOKEN':'synthetic-secret'}, clear=True):
+            expected={'PATH':'/existing/tools','RUSTFLAGS':'-C opt-level=3'}
+            self.assertEqual(gate.build_environment(),expected)
+            self.assertEqual(gate.environment_digest(),gate.digest(gate.canonical(expected)))
+
     def test_native_build_derives_current_source_and_keeps_one_receipt_without_handoff_hashes(self):
         self.run_git('branch', '-M', 'main')
         (self.repo/'VERSION').write_text('2.0.0-alpha.9')

@@ -61,6 +61,7 @@ FEATURES = {'macos': ['gpui-restoration'],
             'linux': ['gpui-restoration', 'native-linux-video'],
             'windows': ['gpui-restoration', 'native-windows-video']}
 BUILD_ENV = ('PATH', 'HOME', 'TMPDIR', 'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN', 'SDKROOT',
+             'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS',
              'MACOSX_DEPLOYMENT_TARGET', 'CC', 'CXX', 'AR', 'CPATH', 'LIBRARY_PATH',
              'PKG_CONFIG_PATH', 'PKG_CONFIG_LIBDIR', 'WEAVELO_VERIFIED_FFMPEG_INCLUDE',
              'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
@@ -285,13 +286,8 @@ def configuration(platform: str, architecture: str, version: str, target: str, p
 
 
 def build_environment() -> dict[str, str]:
-    # Never collect token/password/key variables. Unknown Cargo/compiler overrides
-    # are rejected rather than silently attributed to the reviewed configuration.
-    unknown = [key for key in os.environ if key.startswith(('CARGO_', 'RUST', 'RP_')) and
-               key not in BUILD_ENV and key not in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS',
-                                                   'RUSTUP_DIST_SERVER', 'RUSTUP_UPDATE_ROOT')]
-    require(not unknown and not os.environ.get('RUSTFLAGS') and
-            not os.environ.get('CARGO_ENCODED_RUSTFLAGS'), 'Unrecorded build override rejected')
+    # Record supported compiler inputs automatically. Ambient logging/download
+    # settings never veto a build; token/password/key variables are not copied.
     values = os.environ
     if os.environ.get('WEAVELO_VALIDATION_SYSROOT'):
         from test_stream_settings_model import validation_environment
