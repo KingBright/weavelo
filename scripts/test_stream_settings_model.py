@@ -46,6 +46,7 @@ SESSION_CLOCK_TESTS = {
     "clock-protocol": ("protocol", "session_auth"),
     "clock-media": ("remote_core", "client_session::tests"),
     "clock-workspace": ("remote_core", "workspace_session::"),
+    "clipboard-sync": ("remote_core", "clipboard_sync::"),
     "clock-host-cleared": ("host", "service::failure_admission_tests::cleared_auth_"),
     "host-resubscribe-lifecycle": ("host", "service::failure_admission_tests::resubscribe_allows_capture_source_switch"),
     "host-capture-lifecycle": ("host", "linux_capture::lifecycle_tests::"),

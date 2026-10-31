@@ -7,6 +7,10 @@ const DEVICE_GROUP_ENSURE_ARG: &str = "--device-group-ensure";
 const TRACE_ANALYZE_ARG: &str = "--trace-analyze";
 
 pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
+    #[cfg(target_os = "windows")]
+    if std::env::args().skip(1).eq(["--native-clipboard-worker"]) {
+        return remote_platform::run_windows_clipboard_worker().await;
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     #[cfg(target_os = "windows")]
     set_windows_application_identity()?;

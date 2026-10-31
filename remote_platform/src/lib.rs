@@ -14,4 +14,7 @@ pub use linux_clipboard::LinuxClipboardProvider;
 mod windows_clipboard;
 
 #[cfg(target_os = "windows")]
-pub use windows_clipboard::WindowsClipboardProvider;
+mod windows_clipboard_worker;
+
+#[cfg(target_os = "windows")]
+pub use windows_clipboard_worker::{WindowsClipboardProvider, run_windows_clipboard_worker};

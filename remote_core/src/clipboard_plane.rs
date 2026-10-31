@@ -13,7 +13,7 @@ pub enum ClipboardItemClass {
     File,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClipboardSyncPolicy {
     pub allow_text: bool,
     pub allow_images: bool,

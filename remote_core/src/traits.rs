@@ -204,6 +204,9 @@ pub trait ClipboardProvider {
 
     fn capabilities(&self) -> ClipboardBackendCapabilities;
 
+    /// A stable native change counter, when the platform supplies one.
+    fn clipboard_revision(&self) -> Option<u64> { None }
+
     async fn read_clipboard(
         &mut self,
         policy: ClipboardSyncPolicy,

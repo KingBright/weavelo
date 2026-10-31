@@ -92,6 +92,7 @@ pub struct ClipboardSyncEndpoint<P> {
     inbound: HashMap<u64, ClipboardBundleAssembler>,
     last_sent_content_crc32: Option<u32>,
     last_applied_content_crc32: Option<u32>,
+    last_read_revision: Option<u64>,
     completed: std::collections::VecDeque<(u64, u32, u64, Option<u32>)>,
 }
 
@@ -103,6 +104,7 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
             inbound: HashMap::new(),
             last_sent_content_crc32: None,
             last_applied_content_crc32: None,
+            last_read_revision: None,
             completed: std::collections::VecDeque::new(),
         }
     }
@@ -124,6 +126,7 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
     }
     pub fn retry_outgoing(&mut self) {
         self.last_sent_content_crc32 = None;
+        self.last_read_revision = None;
     }
 
     pub fn last_applied_content_crc32(&self) -> Option<u32> {
@@ -134,6 +137,10 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
         &mut self,
         timestamp_ms: u64,
     ) -> Result<Option<ClipboardOutgoingTransfer>, ClipboardSyncError> {
+        let revision = self.provider.clipboard_revision();
+        if revision.is_some() && revision == self.last_read_revision {
+            return Ok(None);
+        }
         let Some(bundle) = self
             .provider
             .read_clipboard(self.config.policy)
@@ -144,6 +151,8 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
         };
 
         let content_crc32 = clipboard_content_crc32(&bundle)?;
+        // Delayed rendering may itself change the counter during a read.
+        self.last_read_revision = revision.filter(|revision| Some(*revision) == self.provider.clipboard_revision());
         if Some(content_crc32) == self.last_sent_content_crc32
             || Some(content_crc32) == self.last_applied_content_crc32
         {
@@ -266,6 +275,62 @@ mod tests {
     use crate::clipboard_provider::MemoryClipboardProvider;
     use crate::traits::ClipboardProvider;
     use protocol::{ClipboardImage, ClipboardItem, ClipboardText};
+
+    struct RevisionProvider {
+        inner: MemoryClipboardProvider,
+        revision: Option<u64>,
+        reads: usize,
+        change_during_read: bool,
+    }
+    #[async_trait::async_trait]
+    impl ClipboardProvider for RevisionProvider {
+        fn capabilities(&self) -> crate::traits::ClipboardBackendCapabilities { self.inner.capabilities() }
+        fn clipboard_revision(&self) -> Option<u64> { self.revision }
+        async fn read_clipboard(&mut self, policy: ClipboardSyncPolicy) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
+            self.reads += 1;
+            if self.change_during_read { self.revision = self.revision.map(|revision| revision + 1); self.change_during_read = false; }
+            self.inner.read_clipboard(policy).await
+        }
+        async fn write_clipboard(&mut self, bundle: &ClipboardBundle, policy: ClipboardSyncPolicy) -> Result<(), Box<dyn Error + Send + Sync>> {
+            self.inner.write_clipboard(bundle, policy).await
+        }
+    }
+    #[tokio::test]
+    async fn unchanged_native_revision_skips_reads_but_failed_delivery_can_retry() {
+        let provider = RevisionProvider { inner: MemoryClipboardProvider::with_bundle(text_bundle(1, "first")), revision: Some(1), reads: 0, change_during_read: false };
+        let mut endpoint = ClipboardSyncEndpoint::new(provider, ClipboardSyncConfig::default());
+        assert!(endpoint.poll_outgoing(1).await.unwrap().is_some());
+        assert!(endpoint.poll_outgoing(2).await.unwrap().is_none());
+        assert_eq!(endpoint.provider().reads, 1);
+        endpoint.retry_outgoing();
+        assert!(endpoint.poll_outgoing(3).await.unwrap().is_some());
+        assert_eq!(endpoint.provider().reads, 2);
+        endpoint.provider_mut().inner.write_clipboard(&text_bundle(2, "second"), ClipboardSyncPolicy::default()).await.unwrap();
+        endpoint.provider_mut().revision = Some(2);
+        assert!(endpoint.poll_outgoing(4).await.unwrap().is_some());
+        assert_eq!(endpoint.provider().reads, 3);
+    }
+    #[tokio::test]
+    async fn delayed_rendering_revision_is_observed_again_before_skipping_reads() {
+        let provider = RevisionProvider { inner: MemoryClipboardProvider::with_bundle(text_bundle(1, "text")), revision: Some(1), reads: 0, change_during_read: true };
+        let mut endpoint = ClipboardSyncEndpoint::new(provider, ClipboardSyncConfig::default());
+        assert!(endpoint.poll_outgoing(1).await.unwrap().is_some());
+        assert!(endpoint.poll_outgoing(2).await.unwrap().is_none());
+        assert!(endpoint.poll_outgoing(3).await.unwrap().is_none());
+        assert_eq!(endpoint.provider().reads, 2);
+    }
+    #[tokio::test]
+    async fn empty_or_unknown_revision_does_not_suppress_later_available_data() {
+        let provider = RevisionProvider { inner: MemoryClipboardProvider::new(), revision: Some(7), reads: 0, change_during_read: false };
+        let mut endpoint = ClipboardSyncEndpoint::new(provider, ClipboardSyncConfig::default());
+        assert!(endpoint.poll_outgoing(1).await.unwrap().is_none());
+        endpoint.provider_mut().inner.write_clipboard(&text_bundle(1, "ready"), ClipboardSyncPolicy::default()).await.unwrap();
+        assert!(endpoint.poll_outgoing(2).await.unwrap().is_some());
+        endpoint.provider_mut().revision = None;
+        assert!(endpoint.poll_outgoing(3).await.unwrap().is_none());
+        assert!(endpoint.poll_outgoing(4).await.unwrap().is_none());
+        assert_eq!(endpoint.provider().reads, 4);
+    }
 
     fn text_bundle(bundle_id: u64, text: &str) -> ClipboardBundle {
         ClipboardBundle::new(

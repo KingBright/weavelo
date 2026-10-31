@@ -8,9 +8,9 @@ use remote_core::{
 use std::{borrow::Cow, error::Error, io::Cursor};
 
 #[derive(Default)]
-pub struct WindowsClipboardProvider;
+pub(super) struct NativeClipboardProvider;
 
-impl WindowsClipboardProvider {
+impl NativeClipboardProvider {
     pub fn new() -> Self {
         Self
     }
@@ -25,7 +25,7 @@ fn available<T>(result: Result<T, arboard::Error>) -> Result<Option<T>, arboard:
 }
 
 #[async_trait]
-impl ClipboardProvider for WindowsClipboardProvider {
+impl ClipboardProvider for NativeClipboardProvider {
     fn platform(&self) -> PlatformKind {
         PlatformKind::Windows
     }
@@ -133,7 +133,7 @@ impl ClipboardProvider for WindowsClipboardProvider {
 }
 
 #[async_trait]
-impl ClipboardFileReferenceProvider for WindowsClipboardProvider {
+impl ClipboardFileReferenceProvider for NativeClipboardProvider {
     fn platform(&self) -> PlatformKind {
         PlatformKind::Windows
     }
