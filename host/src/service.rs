@@ -770,47 +770,39 @@ impl Connection {
             Err("native resources did not confirm successful teardown".into())
         }
     }
-    fn prune_finished_subscriptions(&mut self, retain_for_local_share: bool) {
-        self.subscriptions.retain(|_, subscription| {
+    async fn prune_finished_subscriptions(&mut self, retain_for_local_share: bool) -> Vec<SessionCommand> {
+        let mut finished = Vec::new();
+        for (id, subscription) in &mut self.subscriptions {
             if !subscription.task.is_finished() {
-                return true;
+                continue;
             }
+            self.input_leases.remove(id);
             #[cfg(all(unix, any(test, target_os = "linux")))]
-            if retain_for_local_share {
+            if retain_for_local_share && subscription.native_capture.is_none() {
                 // Retain the bounded (MAX_SUBSCRIPTIONS) request/revision intent
-                // so a local picker can recover a Wayland viewer after the
-                // initial compatibility capture ended. It grants no input or
-                // audio and is removed by unsubscribe/connection expiry.
+                // while waiting for a local system source. A prepared capture
+                // that ended must be retired instead. Waiting grants no input
+                // or audio and ends on unsubscribe/connection expiry.
                 subscription.supports_input = false;
                 subscription.input_target = None;
                 subscription.audio_group = None;
-                return true;
+                continue;
             }
-            use std::future::Future;
-            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-            if !subscription.task_joined
-                && let std::task::Poll::Ready(result) =
-                    std::pin::Pin::new(&mut subscription.task).poll(&mut cx)
-            {
-                if let Err(error) = joined(result) {
-                    self.worker_failure = true;
-                    self.retired.insert(subscription.request.id, Err(error));
-                }
-            }
-            false
-        });
+            finished.push(*id);
+        }
         #[cfg(not(all(unix, any(test, target_os = "linux"))))]
         let _ = retain_for_local_share;
-        #[cfg(all(unix, any(test, target_os = "linux")))]
-        self.native_capture.retain(|id, capture| {
-            if self.subscriptions.contains_key(id) {
-                true
-            } else {
-                capture.revoke();
-                false
-            }
-        });
+        let mut replies = Vec::with_capacity(finished.len());
+        for id in finished {
+            // A terminal capture must retire media through the same native
+            // cleanup as an explicit unsubscribe. Keep files on this connection.
+            replies.push(match self.unsubscribe(id).await {
+                Ok(()) => SessionCommand::Unsubscribed { id },
+                Err(reason) => SessionCommand::Error { request_id: id, reason },
+            });
+        }
         self.refresh_audio();
+        replies
     }
 
     async fn capture_sources(
@@ -2148,7 +2140,10 @@ async fn run_host_service_inner(
                 #[cfg(not(target_os = "linux"))]
                 let retain_for_local_share = false;
                 for (addr, peer) in &mut peers {
-                    peer.prune_finished_subscriptions(retain_for_local_share);
+                    let ended = input_owner.during_control(&injector, peer.prune_finished_subscriptions(retain_for_local_share)).await;
+                    for reply in ended {
+                        input_owner.during_control(&injector, send_session(&udp_sender, *addr, reply)).await;
+                    }
                     *peer.resources.scheduled_data.lock().unwrap()=Some(crate::lifecycle::ScheduledDataObservation {
                         observed_at_ms:now_unix_ms(),stats:peer.sender.stats(),
                     });
@@ -3668,6 +3663,61 @@ mod failure_admission_tests {
         assert!(peer.shutdown().await.is_err());
     }
     #[tokio::test]
+    async fn finished_capture_notifies_once_and_preserves_other_media_and_files() {
+        let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let (sender, _) = mux.split();
+        let addr = "127.0.0.1:39983".parse().unwrap();
+        let config = HostServiceConfig {
+            bind_addr: addr, stats: Statistics::new(), enable_clipboard_sync: false,
+            enable_file_transfer: true, enable_talkback: false,
+        };
+        let mut peer = Connection::new(90017, addr, sender, &config);
+        let files = peer.files.clone().unwrap();
+        let (mut ended, _) = mock_subscription(CaptureSource::MainDisplay);
+        ended.task.abort();
+        let _ = (&mut ended.task).await;
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        ended.task = tokio::spawn(async move { let _ = finished.await; });
+        ended.settings.send_modify(|s| s.paused = false);
+        peer.subscriptions.insert(100, ended);
+        assert!(peer.input_binding(peer.id, 100, 10, 1).is_some());
+        let (mut live, _) = mock_subscription(CaptureSource::Display(77));
+        live.request.id = 101;
+        peer.subscriptions.insert(101, live);
+        finish.send(()).unwrap();
+        while !peer.subscriptions[&100].task.is_finished() { tokio::task::yield_now().await; }
+
+        assert!(matches!(peer.prune_finished_subscriptions(false).await.as_slice(),
+            [SessionCommand::Unsubscribed { id:100 }]));
+        assert!(peer.prune_finished_subscriptions(false).await.is_empty());
+        assert!(!peer.input_leases.contains_key(&100));
+        assert!(!peer.subscriptions.contains_key(&100));
+        assert!(!peer.subscriptions[&101].task.is_finished());
+        assert!(files.same_channel(peer.files.as_ref().unwrap()) && !files.is_closed());
+        peer.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ended_authorized_portal_capture_is_not_retained_as_picker_intent() {
+        let (mut peer, _) = fixture_peer(90018).await;
+        let (_fixture, capture) = crate::linux_portal::runtime::tests::prepared_fixture().await;
+        let (mut sub, _) = mock_subscription(capture.source_info().source);
+        sub.task.abort();
+        let _ = (&mut sub.task).await;
+        sub.task = tokio::spawn(async {});
+        sub.native_capture = Some(capture.clone());
+        peer.native_capture.insert(100, capture);
+        peer.subscriptions.insert(100, sub);
+        while !peer.subscriptions[&100].task.is_finished() { tokio::task::yield_now().await; }
+        assert!(matches!(peer.prune_finished_subscriptions(true).await.as_slice(),
+            [SessionCommand::Unsubscribed { id:100 }]));
+        assert!(peer.subscriptions.is_empty());
+        assert!(peer.native_capture.is_empty());
+        peer.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn pruning_finished_capture_keeps_join_failure_for_close() {
         let (mut peer, _) = fixture_peer(90016).await;
         let (mut sub, _) = mock_subscription(CaptureSource::MainDisplay);
@@ -3676,7 +3726,8 @@ mod failure_admission_tests {
         sub.task = tokio::spawn(async { panic!("pruned capture fixture failure") });
         tokio::task::yield_now().await;
         peer.subscriptions.insert(100, sub);
-        peer.prune_finished_subscriptions(false);
+        let replies = peer.prune_finished_subscriptions(false).await;
+        assert!(matches!(replies.as_slice(), [SessionCommand::Error { request_id:100, .. }]));
         assert!(peer.unsubscribe(100).await.is_err());
         let result = peer.shutdown().await;
         assert!(matches!(
@@ -4047,14 +4098,14 @@ mod failure_admission_tests {
         peer.subscriptions.insert(100, subscription);
         tokio::task::yield_now().await;
         assert!(peer.subscriptions[&100].task.is_finished());
-        peer.prune_finished_subscriptions(true);
+        assert!(peer.prune_finished_subscriptions(true).await.is_empty());
         let retained = &peer.subscriptions[&100];
         assert_eq!(retained.source_revision, 10);
         assert!(!retained.supports_input);
         assert!(retained.input_target.is_none());
         assert!(retained.audio_group.is_none());
         assert!(!peer.can_input(100));
-        peer.prune_finished_subscriptions(false);
+        peer.prune_finished_subscriptions(false).await;
         assert!(peer.subscriptions.is_empty());
     }
 
