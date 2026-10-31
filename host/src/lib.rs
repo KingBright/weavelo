@@ -68,8 +68,10 @@ mod linux_raw_encode;
 pub use linux_pipewire::native::{prepare_pipewire_capture, prepare_pipewire_capture_bounded};
 #[cfg(any(test, target_os = "linux"))]
 pub mod linux_video_encode;
-#[cfg(target_os = "windows")]
-mod windows_capture;
+#[cfg(any(test,target_os="windows"))]
+mod windows_capture_plan;
+#[cfg(target_os="windows")]
+mod windows_sources;
 #[cfg(target_os = "windows")]
 mod windows_input;
 #[cfg(any(target_os = "windows", test))]
@@ -1120,11 +1122,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut native_revoked = native_capture.as_ref().map(|capture| capture.revocation());
 
     #[cfg(target_os = "windows")]
-    let mut video_capturer = crate::windows_capture::WindowsVideoCapturer::new(width, height, fps)?;
-    #[cfg(target_os = "windows")]
     let mut video_encoder =
-        crate::windows_video_encode::WindowsVideoEncoder::new(width, height, fps, bitrate_kbps)?;
+        crate::windows_video_encode::WindowsVideoEncoder::new(width, height, fps, bitrate_kbps, source)?;
 
+    #[cfg(not(target_os="windows"))]
     video_capturer.start().await?;
     println!(
         "Video Capture and Encoding started. Streaming to {}...",
@@ -1185,11 +1186,13 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                         if !new_settings.paused { video_encoder.set_paused(false)?; }
                     }
                     if new_settings.paused != paused {
-                        if new_settings.paused { video_capturer.pause().await?; }
+                        if new_settings.paused {
+                            #[cfg(not(target_os="windows"))] video_capturer.pause().await?;
+                        }
                         else {
                             resume_capture_after_us = remote_core::timing::quanta_now_us();
                             awaiting_resume_keyframe = true;
-                            video_capturer.resume().await?;
+                            #[cfg(not(target_os="windows"))] video_capturer.resume().await?;
                             video_encoder.request_keyframe();
                         }
                         paused = new_settings.paused;
@@ -1205,15 +1208,14 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     }
                     #[cfg(target_os = "linux")]
                     video_capturer.update_resolution_and_fps(new_settings.height, new_settings.fps)?;
-                    #[cfg(target_os = "windows")]
-                    video_capturer.update_resolution_and_fps(
-                        new_settings.width,
-                        new_settings.height,
-                        new_settings.fps,
-                    )?;
+                    #[cfg(target_os="windows")]
+                    if !new_settings.paused && keyframe_requested.swap(false,Relaxed) {video_encoder.request_keyframe();}
                 }
             }
-            frame_res = video_capturer.capture_frame(), if !paused => {
+            frame_res = async {
+                #[cfg(not(target_os="windows"))] {video_capturer.capture_frame().await}
+                #[cfg(target_os="windows")] {std::future::pending::<Result<crate::windows_video_encode::WindowsVideoFrame,Box<dyn Error+Send+Sync>>>().await}
+            }, if !paused => {
                 let frame = frame_res?;
                 stats_video.video_frames_captured.fetch_add(1, Relaxed);
                 resources.captured_frames.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1229,7 +1231,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 if paused || chunk.nalu.is_empty() {
                     continue;
                 }
-                if chunk.timing.capture_ts_us < resume_capture_after_us
+                #[cfg(not(target_os="windows"))] let freshness_ts=chunk.timing.capture_ts_us;
+                #[cfg(target_os="windows")] let freshness_ts=chunk.encoded_at_us;
+                if freshness_ts < resume_capture_after_us
                     || (awaiting_resume_keyframe && !chunk.is_keyframe) { continue; }
                 awaiting_resume_keyframe = false;
                 stats_video.video_frames_encoded.fetch_add(1, Relaxed);
@@ -1242,6 +1246,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
 
                 // 真实的单帧平滑耗时（EMA指数平滑，初始值为首帧耗时）
+                if chunk.encode_cost_ms>0.0 {
                 let cost = chunk.encode_cost_ms.clamp(0.1, 100.0);
                 if current_latency_ms <= 0.01 {
                     current_latency_ms = cost;
@@ -1250,6 +1255,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
                 let d = (cost - current_latency_ms).abs();
                 current_jitter_ms = current_jitter_ms * 0.9 + d * 0.1;
+                }
                 frames_since_update += 1;
 
                 let now_instant = std::time::Instant::now();
@@ -1271,12 +1277,15 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
 
                 let mut timing = chunk.timing;
+                #[cfg(not(target_os="windows"))]
                 if timing.capture_ts_us == 0 {
                     timing.capture_ts_us = (chunk.capture_time_ms as u64) * 1000;
                 }
                 let now_us = remote_core::timing::quanta_now_us();
-                timing.packetize_ts_us = (now_us.saturating_sub(timing.capture_ts_us)) as u32;
-                timing.send_ts_us = timing.packetize_ts_us;
+                if timing.capture_ts_us!=0 {
+                    timing.packetize_ts_us = (now_us.saturating_sub(timing.capture_ts_us)) as u32;
+                    timing.send_ts_us = timing.packetize_ts_us;
+                }
 
                 let packet = RtpPacket {
                     header: protocol::RtpHeader {
@@ -1294,7 +1303,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                         &udp_sender,
                         scheduled_media_sender.as_ref(),
                         &packet,
-                        Some(timing),
+                        (timing.capture_ts_us!=0).then_some(timing),
                         client_addr,
                         use_data_plane_media,
                     )

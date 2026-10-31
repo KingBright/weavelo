@@ -55,9 +55,44 @@ impl Directory {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos",target_os="windows")))]
 fn native_icon(_pid: i32) -> Option<ApplicationIcon> {
     None
+}
+
+#[cfg(target_os="windows")]
+fn native_icon(pid:i32)->Option<ApplicationIcon> {
+    use windows_sys::Win32::{Graphics::Gdi::*,UI::{Shell::*,WindowsAndMessaging::{DrawIconEx,DestroyIcon,DI_NORMAL}}};
+    let path=crate::windows_sources::application_path(pid.try_into().ok()?)?;
+    let name=path.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let mut info:SHFILEINFOW=unsafe{std::mem::zeroed()};
+    if unsafe{SHGetFileInfoW(name.as_ptr(),0,&mut info,std::mem::size_of_val(&info) as u32,SHGFI_ICON|SHGFI_LARGEICON)}==0{return None;}
+    let icon=info.hIcon;
+    if icon.is_null(){return None;}
+    let result=(||unsafe{
+        let dc=CreateCompatibleDC(std::ptr::null_mut());if dc.is_null(){return None;}
+        let mut bitmap_info:BITMAPINFO=std::mem::zeroed();
+        bitmap_info.bmiHeader.biSize=std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bitmap_info.bmiHeader.biWidth=64;bitmap_info.bmiHeader.biHeight=-64;
+        bitmap_info.bmiHeader.biPlanes=1;bitmap_info.bmiHeader.biBitCount=32;bitmap_info.bmiHeader.biCompression=BI_RGB;
+        let mut bits=std::ptr::null_mut();
+        let bitmap=CreateDIBSection(dc,&bitmap_info,DIB_RGB_COLORS,&mut bits,std::ptr::null_mut(),0);
+        if bitmap.is_null()||bits.is_null(){DeleteDC(dc);return None;}
+        let previous=SelectObject(dc,bitmap);std::ptr::write_bytes(bits as *mut u8,0,64*64*4);
+        let okay=DrawIconEx(dc,0,0,icon,64,64,0,std::ptr::null_mut(),DI_NORMAL)!=0;GdiFlush();
+        let mut rgba=okay.then(||std::slice::from_raw_parts(bits as *const u8,64*64*4).to_vec());
+        SelectObject(dc,previous);DeleteObject(bitmap);DeleteDC(dc);
+        let rgba=rgba.as_mut()?;
+        let alpha_present=rgba.chunks_exact(4).any(|pixel|pixel[3]!=0);
+        for pixel in rgba.chunks_exact_mut(4){
+            pixel.swap(0,2);
+            if !alpha_present{pixel[3]=255;}else if pixel[3]>0{
+                for channel in 0..3{pixel[channel]=(u32::from(pixel[channel])*255/u32::from(pixel[3])).min(255) as u8;}
+            }
+        }
+        remote_core::application_icons::encode_rgba(64,64,rgba).ok()
+    })();
+    unsafe{DestroyIcon(icon);}result
 }
 
 #[cfg(target_os = "macos")]

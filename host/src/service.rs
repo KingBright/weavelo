@@ -122,7 +122,7 @@ enum AudioGroupKey {
 }
 
 #[cfg(target_os = "windows")]
-static WINDOWS_VIDEO_CAPTURE_RESERVED: AtomicBool = AtomicBool::new(false);
+static WINDOWS_VIDEO_CAPTURE_RESERVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(target_os = "windows")]
 struct WindowsVideoCaptureReservation;
@@ -131,10 +131,10 @@ struct WindowsVideoCaptureReservation;
 impl WindowsVideoCaptureReservation {
     fn acquire() -> Result<Self, String> {
         WINDOWS_VIDEO_CAPTURE_RESERVED
-            .compare_exchange(false, true, Relaxed, Relaxed)
+            .fetch_update(Relaxed, Relaxed, |count| (count<MAX_SUBSCRIPTIONS).then_some(count+1))
             .map(|_| Self)
             .map_err(|_| {
-                "Windows capture is already in use. This safe build allows one video capture session at a time."
+                "Windows hardware capture is at its simultaneous-source limit. Stop one source and retry."
                     .to_string()
             })
     }
@@ -143,7 +143,7 @@ impl WindowsVideoCaptureReservation {
 #[cfg(target_os = "windows")]
 impl Drop for WindowsVideoCaptureReservation {
     fn drop(&mut self) {
-        WINDOWS_VIDEO_CAPTURE_RESERVED.store(false, Relaxed);
+        WINDOWS_VIDEO_CAPTURE_RESERVED.fetch_sub(1, Relaxed);
     }
 }
 
@@ -154,19 +154,14 @@ fn validate_host_video_settings(
     bitrate_kbps: u32,
 ) -> Result<(), &'static str> {
     protocol::validate_video_settings(width, height, fps, bitrate_kbps)?;
-    #[cfg(target_os = "windows")]
-    {
-        const MAX_PIXELS: u64 = 2560 * 1440;
-        if u64::from(width) * u64::from(height) > MAX_PIXELS || fps > 60 || bitrate_kbps > 20_000 {
-            return Err("Windows safe capture budget is 2560x1440 pixels, 60 fps, and 20000 kbps");
-        }
-    }
     Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InputTarget {
     Desktop,
+    #[cfg(target_os="windows")]
+    Windows { source:CaptureSource, canvas:(u32,u32), width:u32, height:u32 },
     #[cfg(target_os = "macos")]
     Display {
         id: u32,
@@ -265,6 +260,11 @@ struct Subscription {
     native_capture: Option<PreparedPortalCapture>,
 }
 impl Subscription {
+    fn request_keyframe(&self) {
+        self.keyframe.store(true,Relaxed);
+        // Wake the existing settings watch; native capture does not need a polling timer.
+        self.settings.send_modify(|_|{});
+    }
     fn supports_input_now(&self) -> bool {
         self.input_status().is_ok()
     }
@@ -275,6 +275,12 @@ impl Subscription {
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = &self.native_capture {
             return capture.input_status().map_err(|e| e.to_string());
+        }
+        #[cfg(target_os="windows")]
+        if let Some(InputTarget::Windows {source,width,height,..})=self.input_target {
+            let selection=crate::windows_sources::resolve(source)?;
+            let current=selection.current_bounds()?;
+            if (current.width,current.height)!=(width,height){return Err("Source size changed; choose the updated source to resume control".into());}
         }
         #[cfg(target_os = "macos")]
         (self.input_probe)(self.input_target.unwrap())?;
@@ -1076,8 +1082,10 @@ impl Connection {
             sub.request.source==request.source && sub.native_capture.as_ref().is_some_and(PreparedPortalCapture::is_subscriber)) {
             return Err("The shared source ended or its device network changed; choose an available source".into());
         }
-        #[cfg(not(all(unix, any(test, target_os = "linux"))))]
+        #[cfg(all(not(target_os="windows"),not(all(unix, any(test, target_os = "linux")))))]
         let native_current=true;
+        #[cfg(target_os="windows")]
+        let native_current=self.subscriptions.get(&request.id).is_none_or(|subscription| subscription.input_status().is_ok());
         if let Some(existing) = self.subscriptions.get_mut(&request.id)
             && existing.request.source == request.source
             && existing.request.audio == request.audio
@@ -1094,7 +1102,7 @@ impl Connection {
                     v.fps = request.fps;
                     v.bitrate_kbps = request.bitrate_kbps;
                 });
-                existing.keyframe.store(true, Relaxed);
+                existing.request_keyframe();
             }
             return Ok(SessionCommand::Subscribed {
                 id: request.id,
@@ -1181,11 +1189,18 @@ impl Connection {
         let supports_input = selected.map_or(request.source == CaptureSource::MainDisplay, |s| {
             s.supports_input
         });
+        #[cfg(not(target_os="windows"))]
         let input_target = input_target_for(
             request.source,
             selected.and_then(|s| s.process_id),
             supports_input,
         );
+        #[cfg(target_os="windows")]
+        let input_target=if supports_input {
+            let selection=crate::windows_sources::resolve(request.source)?;
+            let canvas=crate::windows_capture_plan::fit(selection.bounds,request.width,request.height)?;
+            Some(InputTarget::Windows {source:selection.source,canvas,width:selection.bounds.width,height:selection.bounds.height})
+        } else {None};
         #[cfg(all(unix, any(test, target_os = "linux")))]
         let input_target = if native_capture.is_some() {
             Some(InputTarget::Portal)
@@ -1437,7 +1452,7 @@ impl Connection {
             subscription.audio_active = audio;
             subscription.settings.send_modify(|s| s.paused = !video);
             if video {
-                subscription.keyframe.store(true, Relaxed);
+                subscription.request_keyframe();
             }
         }
         let reply = SessionCommand::Activity {
@@ -1845,6 +1860,8 @@ impl LazyInputInjector {
                         Box::new(crate::windows_input::WindowsInputInjector::new()?)
                     }
                 }
+                #[cfg(target_os="windows")]
+                InputTarget::Windows {source,canvas,width,height}=>Box::new(crate::windows_input::WindowsInputInjector::for_source(source,canvas,(width,height))?),
                 #[cfg(target_os = "macos")]
                 InputTarget::Display { id } => {
                     Box::new(crate::input_injector::MacInputInjector::for_display(id)?)
@@ -2248,7 +2265,7 @@ async fn run_host_service_inner(
                                     #[cfg(target_os = "linux")]
                                     let window_capture = local_shares.is_some();
                                     #[cfg(not(target_os = "linux"))]
-                                    let window_capture = cfg!(target_os = "macos");
+                                    let window_capture = cfg!(any(target_os = "macos",target_os="windows"));
                                     let reply = if version != SESSION_VERSION || connection_id == 0 { SessionCommand::Error { request_id: connection_id, reason: "unsupported connection version or ID".into() } }
                                     else if let Some(reason) = connection_admission_error(addr, &peers, &closing, &closed) { SessionCommand::Error { request_id: connection_id, reason: reason.into() } }
                                     else if peers.get(&addr).is_some_and(|p| p.id != connection_id) { SessionCommand::Error { request_id: connection_id, reason: "close the existing connection first".into() } }
@@ -2427,7 +2444,7 @@ async fn run_host_service_inner(
                                     s.settings.send_modify(|value| { value.width = width; value.height = height; value.fps = fps; value.bitrate_kbps = bitrate_kbps; });
                                 }
                             }
-                            ControlMessage::RequestKeyframe { session_id } => { if let Some(s) = peers.get(&addr).and_then(|p| p.subscriptions.get(&session_id)) { s.keyframe.store(true, Relaxed); } }
+                            ControlMessage::RequestKeyframe { session_id } => { if let Some(s) = peers.get(&addr).and_then(|p| p.subscriptions.get(&session_id)) { s.request_keyframe(); } }
                             #[cfg(target_os = "macos")]
                             ControlMessage::AudioControl { session_id, target: AudioControlTarget::ViewerTalkbackPlayback, muted, volume_percent } => {
                                 if let Some(peer) = peers.get(&addr) && peer.id == session_id && let Some(tx) = &peer.talkback_settings {
@@ -3877,23 +3894,20 @@ mod failure_admission_tests {
     }
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_capture_reservation_is_exclusive_and_released() {
-        WINDOWS_VIDEO_CAPTURE_RESERVED.store(false, Relaxed);
-        let first = WindowsVideoCaptureReservation::acquire().unwrap();
+    fn windows_capture_reservations_are_bounded_and_released() {
+        assert_eq!(WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed),0);
+        let mut slots=(0..MAX_SUBSCRIPTIONS).map(|_|WindowsVideoCaptureReservation::acquire().unwrap()).collect::<Vec<_>>();
         assert!(WindowsVideoCaptureReservation::acquire().is_err());
-        drop(first);
-        let second = WindowsVideoCaptureReservation::acquire().unwrap();
-        drop(second);
-        assert!(!WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed));
+        drop(slots.pop());slots.push(WindowsVideoCaptureReservation::acquire().unwrap());
+        drop(slots);assert_eq!(WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed),0);
     }
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_safe_capture_budget_rejects_resource_spikes() {
-        assert!(validate_host_video_settings(2560, 1440, 60, 20_000).is_ok());
-        assert!(validate_host_video_settings(3840, 2160, 30, 12_000).is_err());
-        assert!(validate_host_video_settings(1920, 1080, 120, 12_000).is_err());
-        assert!(validate_host_video_settings(1920, 1080, 60, 40_000).is_err());
+    fn windows_native_settings_keep_the_common_protocol_bounds() {
+        assert!(validate_host_video_settings(3840,2160,60,40000).is_ok());
+        assert!(validate_host_video_settings(1920,1080,120,12000).is_ok());
+        assert!(validate_host_video_settings(u32::MAX,2160,60,40000).is_err());
     }
 
     #[tokio::test]

@@ -19,6 +19,22 @@ from scripts.test_stream_settings_model import (validation_command, validation_e
 
 
 class ServiceContractEntryTests(unittest.TestCase):
+    def test_source_snapshot_records_deletion_without_hiding_changes_during_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"retired.rs"
+            path.write_text("old source")
+            before=runner.source_digest(path)
+            path.unlink()
+            self.assertIsNone(runner.source_digest(path))
+            self.assertNotEqual(before,runner.source_digest(path))
+
+    def test_reappearing_deleted_source_changes_the_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"retired.rs"
+            before=runner.source_digest(path)
+            path.write_bytes(b"")
+            self.assertNotEqual(before,runner.source_digest(path))
+
     SESSION_CLOCK_CASES = {
         "host-linux-capture": ("host", "linux_"),
         "sharing-ui": ("weavelo_app", "desktop::local_share::tests"),

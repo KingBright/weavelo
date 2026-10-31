@@ -6,6 +6,7 @@ pub(crate) fn ffmpeg_input_format(command: &Command) -> &'static str {
     let mut args = command.get_args();
     let mut format = None;
     while let Some(arg) = args.next() {
+        if arg=="-filter_complex" && args.next().is_some_and(|value|value.to_string_lossy().starts_with("gfxcapture=")) {return "windows-graphics-capture";}
         if arg == "-i" {
             return match format.and_then(|value: &std::ffi::OsStr| value.to_str()) {
                 Some("x11grab") => "x11grab",
@@ -31,6 +32,13 @@ mod tests {
         command.env("WAYLAND_DISPLAY", "wayland-0");
         command.args(["-f", "x11grab", "-i", ":0", "-f", "hevc", "pipe:1"]);
         assert_eq!(ffmpeg_input_format(&command), "x11grab");
+    }
+
+    #[test]
+    fn native_windows_source_is_a_hardware_filter_graph() {
+        let mut command=Command::new("fixture-ffmpeg");
+        command.args(["-filter_complex","gfxcapture=hwnd=4294967297","-c:v","hevc_amf","-f","hevc","pipe:1"]);
+        assert_eq!(ffmpeg_input_format(&command),"windows-graphics-capture");
     }
 
     #[test]

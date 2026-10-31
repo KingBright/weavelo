@@ -34,7 +34,20 @@ impl FfmpegHevcSource {
         fps: u32,
         bitrate_kbps: u32,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let mut command = capture_command(width, height, fps, bitrate_kbps)?;
+        Self::spawn(capture_command(width, height, fps, bitrate_kbps)?,width,height,fps,bitrate_kbps)
+    }
+
+    #[cfg(target_os="windows")]
+    pub(crate) fn start_native(selection:&crate::windows_sources::Selection,width:u32,height:u32,fps:u32,kbps:u32)->Result<Self,Box<dyn Error+Send+Sync>> {
+        let program=crate::capture_readiness::ffmpeg_program()?;
+        let bounds=selection.current_bounds()?;
+        crate::capture_readiness::require_srgb_capture_profile(&selection.monitor)?;
+        let canvas=crate::windows_capture_plan::fit(bounds,width,height)?;
+        let command=crate::windows_capture_plan::command(&program,selection.handle,selection.window,canvas,fps,kbps,selection.encoder);
+        Self::spawn(command,canvas.0,canvas.1,fps,kbps)
+    }
+
+    fn spawn(mut command:Command,width:u32,height:u32,fps:u32,bitrate_kbps:u32)->Result<Self,Box<dyn Error+Send+Sync>> {
         let backend = crate::capture_backend::ffmpeg_input_format(&command);
         // Keep startup/codec failures in the host's existing diagnostic log.
         command
@@ -42,7 +55,7 @@ impl FfmpegHevcSource {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         let mut child = command.spawn().map_err(|err| {
-            format!("ffmpeg HEVC pipeline failed to start ({err}). Install ffmpeg with libx265.")
+            format!("Native HEVC pipeline failed to start: {err}")
         })?;
         let stdout = child
             .stdout
@@ -154,39 +167,18 @@ fn capture_command_using(
 ) -> Result<Command, Box<dyn Error + Send + Sync>> {
     let mut cmd = Command::new(program);
     cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]);
-    #[cfg(target_os = "windows")]
-    let capture_rect = crate::capture_readiness::capture_display_rect()?;
+    #[cfg(target_os="windows")]
+    {
+        let selection=crate::windows_sources::resolve(protocol::session::CaptureSource::MainDisplay)?;
+        crate::capture_readiness::require_srgb_capture_profile(&selection.monitor)?;
+        let canvas=crate::windows_capture_plan::fit(selection.bounds,width,height)?;
+        return Ok(crate::windows_capture_plan::command(program,selection.handle,selection.window,canvas,fps,bitrate_kbps,selection.encoder));
+    }
     #[cfg(target_os = "linux")]
     let x11_display = {
         crate::linux_capture_geometry::require_current_x11_desktop()?;
         std::env::var("DISPLAY").ok()
     };
-    #[cfg(target_os = "windows")]
-    crate::capture_readiness::require_srgb_capture_profile(&capture_rect)?;
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
-        cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
-        let capture_size = format!("{}x{}", capture_rect.width, capture_rect.height);
-        let offset_x = capture_rect.x.to_string();
-        let offset_y = capture_rect.y.to_string();
-        cmd.args([
-            "-f",
-            "gdigrab",
-            "-framerate",
-            &fps.to_string(),
-            "-video_size",
-            &capture_size,
-            "-offset_x",
-            &offset_x,
-            "-offset_y",
-            &offset_y,
-            "-i",
-            "desktop",
-        ]);
-    }
     #[cfg(target_os = "linux")]
     {
         if let Some(display) = &x11_display {
@@ -220,36 +212,6 @@ fn capture_command_using(
         let _ = (width, height, fps);
         return Err("ffmpeg HEVC capture is only implemented for Linux and Windows".into());
     }
-    #[cfg(target_os = "windows")]
-    {
-        // Capture only the primary physical desktop rectangle. The encoded output
-        // may be smaller, but Weavelo never changes display modes or touches a
-        // virtual display owned by another remote desktop application.
-        let target_width = width.min(capture_rect.width).max(2);
-        let target_height = height.min(capture_rect.height).max(2);
-        cmd.args([
-            "-vf",
-            &format!(
-                "scale=w={target_width}:h={target_height}:force_original_aspect_ratio=decrease:force_divisible_by=2:in_range=pc:out_range=tv:out_color_matrix=bt709"
-            ),
-            "-filter_threads",
-            "1",
-            "-threads",
-            "2",
-        ]);
-        // The source ICC was verified above. Convert its full-range RGB samples
-        // to limited BT.709 YUV, then declare the same matrix and sRGB transfer.
-        cmd.args([
-            "-color_range",
-            "tv",
-            "-colorspace",
-            "bt709",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "iec61966-2-1",
-        ]);
-    }
     let bitrate = format!("{bitrate_kbps}k");
     let keyint = fps.max(1).to_string();
     let mut encoder_options =
@@ -262,8 +224,6 @@ fn capture_command_using(
         cmd.args(["-color_range", "tv", "-colorspace", "bt709"]);
         encoder_options.push_str(":colormatrix=bt709:range=limited");
     }
-    #[cfg(target_os = "windows")]
-    encoder_options.push_str(":pools=2:frame-threads=1:colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=limited");
     cmd.args([
         "-pix_fmt",
         "yuv420p",
@@ -445,55 +405,7 @@ mod tests {
         assert!(slot.is_none());
     }
 
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_capture_command_bounds_output_and_worker_threads_without_launching() {
-        let command = capture_command_using(
-            std::path::Path::new("fixture-ffmpeg.exe"),
-            1280,
-            720,
-            30,
-            4000,
-        )
-        .unwrap();
-        let args: Vec<_> = command
-            .get_args()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect();
-        assert!(args.iter().any(|value| value == "-nostdin"));
-        let display = crate::capture_readiness::capture_display_rect().unwrap();
-        let display_size = format!("{}x{}", display.width, display.height);
-        let offset_x = display.x.to_string();
-        let offset_y = display.y.to_string();
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-video_size", display_size.as_str()])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-offset_x", offset_x.as_str()])
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-offset_y", offset_y.as_str()])
-        );
-        assert!(args.iter().any(|value| value
-            == "scale=w=1280:h=720:force_original_aspect_ratio=decrease:force_divisible_by=2:in_range=pc:out_range=tv:out_color_matrix=bt709"));
-        assert!(args.windows(2).any(|pair| pair == ["-colorspace", "bt709"]));
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["-color_trc", "iec61966-2-1"])
-        );
-        assert!(args.iter().any(|value| {
-            value.contains(":colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=limited")
-        }));
-        assert!(args.windows(2).any(|pair| pair == ["-threads", "2"]));
-        assert!(
-            args.iter()
-                .any(|value| value.contains("pools=2:frame-threads=1"))
-        );
-        assert_eq!(command.get_program(), "fixture-ffmpeg.exe");
-    }
+
 
     #[tokio::test]
     async fn bounded_reader_preserves_encoded_references_under_backpressure() {

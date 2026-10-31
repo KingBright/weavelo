@@ -1,4 +1,5 @@
 use crate::windows_keymap::mac_key_to_vk;
+use super::windows_sources as native_sources;
 use protocol::{InputEvent, input_modifiers};
 use remote_core::InputInjector;
 use std::collections::BTreeSet;
@@ -17,7 +18,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput, VIRTUAL_KEY,
 };
 
 pub struct WindowsInputInjector {
@@ -26,17 +27,67 @@ pub struct WindowsInputInjector {
     modifiers: AtomicU8,
     pressed_keys: Mutex<BTreeSet<VIRTUAL_KEY>>,
     unicode_up: Mutex<Option<u16>>,
+    source: Option<(native_sources::Selection,(u32,u32))>,
 }
 
 impl WindowsInputInjector {
     pub fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let selection=native_sources::resolve(protocol::session::CaptureSource::MainDisplay)?;
+        let bounds=selection.bounds;
+        Self::for_source(selection.source,(bounds.width,bounds.height),(bounds.width,bounds.height))
+    }
+    pub fn for_source(source:protocol::session::CaptureSource,canvas:(u32,u32),expected:(u32,u32))->InputResult<Self> {
+        let selection=native_sources::resolve(source)?;
+        let bounds=selection.current_bounds()?;
+        if (bounds.width,bounds.height)!=expected{return Err("Source geometry changed before control was enabled".into());}
         Ok(Self {
             pressed: AtomicU8::new(0),
             cleanup_unconfirmed: AtomicBool::new(false),
             modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
             unicode_up: Mutex::new(None),
+            source:Some((selection,canvas)),
         })
+    }
+
+    fn prepare_source(&self,event:InputEvent,deadline:Option<Instant>)->InputResult<InputEvent> {
+        use windows_sys::Win32::{Foundation::{HWND,POINT},UI::WindowsAndMessaging::*};
+        let Some((source,canvas))=&self.source else {return Ok(event);};
+        let bounds=source.same_size()?;
+        let desktop=crate::windows_capture_plan::Rect{x:unsafe{GetSystemMetrics(SM_XVIRTUALSCREEN)},y:unsafe{GetSystemMetrics(SM_YVIRTUALSCREEN)},
+            width:unsafe{GetSystemMetrics(SM_CXVIRTUALSCREEN)}.try_into()?,height:unsafe{GetSystemMetrics(SM_CYVIRTUALSCREEN)}.try_into()?};
+        if source.window {
+            let hwnd=source.handle as usize as HWND;
+            let pointer=matches!(&event,InputEvent::MouseMoveAbsolute{..}|InputEvent::MouseDown(_)|InputEvent::MouseUp(_));
+            if unsafe{GetAncestor(GetForegroundWindow(),GA_ROOT)}!=hwnd {
+                if !pointer{return Err("The selected window is not focused".into());}
+                check_deadline(deadline)?;
+                if unsafe{SetForegroundWindow(hwnd)}==0 || unsafe{GetAncestor(GetForegroundWindow(),GA_ROOT)}!=hwnd {
+                    return Err("Windows did not activate the selected application window".into());
+                }
+            }
+            if let InputEvent::MouseMoveAbsolute{x,y}=&event {
+                let (vx,vy)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,*x,*y)?;
+                let point=POINT{x:desktop.x+(f64::from(vx)/65535.0*f64::from(desktop.width-1)).round() as i32,
+                    y:desktop.y+(f64::from(vy)/65535.0*f64::from(desktop.height-1)).round() as i32};
+                if unsafe{GetAncestor(WindowFromPoint(point),GA_ROOT)}!=hwnd {return Err("The selected window is covered at this pointer position".into());}
+            } else if matches!(&event,InputEvent::MouseDown(_)|InputEvent::MouseUp(_)|InputEvent::MouseScroll{..}) {
+                let mut point=POINT{x:0,y:0};
+                if unsafe{GetCursorPos(&mut point)}==0 || unsafe{GetAncestor(WindowFromPoint(point),GA_ROOT)}!=hwnd {
+                    return Err("Pointer is no longer inside the selected window".into());
+                }
+            } else if matches!(&event,InputEvent::MouseMove{..}) {
+                return Err("Window control requires a position in the visible content".into());
+            }
+        }
+        check_deadline(deadline)?;
+        match event {
+            InputEvent::MouseMoveAbsolute{x,y}=>{
+                let (x,y)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,x,y)?;
+                Ok(InputEvent::MouseMoveAbsolute{x:x.try_into()?,y:y.try_into()?})
+            }
+            event=>Ok(event),
+        }
     }
 
     fn release_unicode(&self) -> bool {
@@ -135,6 +186,8 @@ impl WindowsInputInjector {
         if self.cleanup_unconfirmed.load(Ordering::Acquire) {
             return Err("Windows input cleanup is unconfirmed; new input is disabled".into());
         }
+        let _coordinates=native_sources::PhysicalCoordinates::enter()?;
+        let event=match self.prepare_source(event,deadline) {Ok(event)=>event,Err(error)=>{self.release_all_input();return Err(error);}};
         match event {
             InputEvent::Text(text) => {
                 if self.modifiers.load(Ordering::Relaxed) & 0x0f != 0 {
@@ -167,7 +220,7 @@ impl WindowsInputInjector {
             InputEvent::MouseMoveAbsolute { x, y } => {
                 // The wire already uses SendInput's 0..65535 absolute range.
                 if !send_mouse(
-                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                     i32::from(x),
                     i32::from(y),
                     0,

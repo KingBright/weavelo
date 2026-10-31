@@ -13,6 +13,19 @@ mod actual {
         input.pressed_keys.lock().unwrap()
     }
 }
+// The native handle/geometry APIs are recorded here; no desktop API is invoked.
+mod windows_sources {
+    use protocol::session::CaptureSource;
+    use crate::windows_capture_plan::Rect;
+    #[derive(Clone)] pub struct Selection {pub source:CaptureSource,pub bounds:Rect,pub handle:u64,pub window:bool}
+    impl Selection {
+        pub fn current_bounds(&self)->Result<Rect,String>{Ok(self.bounds)}
+        pub fn same_size(&self)->Result<Rect,String>{Ok(self.bounds)}
+    }
+    pub fn resolve(source:CaptureSource)->Result<Selection,String>{Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle:1,window:false})}
+    pub struct PhysicalCoordinates;
+    impl PhysicalCoordinates {pub fn enter()->Result<Self,String>{Ok(Self)}}
+}
 #[derive(Debug, PartialEq, Eq)]
 enum Posted {
     Mouse(u32),
@@ -81,6 +94,7 @@ mod recording_api {
     pub const MOUSEEVENTF_MIDDLEUP: u32 = 64;
     pub const MOUSEEVENTF_WHEEL: u32 = 0x800;
     pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
+    pub const MOUSEEVENTF_VIRTUALDESK:u32=0x4000;
     pub unsafe fn SendInput(count: u32, inputs: *mut INPUT, _size: i32) -> u32 {
         let mut calls = super::CALLS.lock().unwrap();
         calls.attempts += 1;
@@ -108,7 +122,23 @@ mod recording_api {
         accepted
     }
     pub mod Win32 {
+        pub mod Foundation {
+            pub type HWND=*mut core::ffi::c_void;
+            pub struct POINT {pub x:i32,pub y:i32}
+        }
         pub mod UI {
+            pub mod WindowsAndMessaging {
+                use super::super::Foundation::{HWND,POINT};
+                pub const SM_XVIRTUALSCREEN:i32=76;pub const SM_YVIRTUALSCREEN:i32=77;
+                pub const SM_CXVIRTUALSCREEN:i32=78;pub const SM_CYVIRTUALSCREEN:i32=79;
+                pub const GA_ROOT:u32=2;
+                pub unsafe fn GetSystemMetrics(index:i32)->i32{match index{78=>1920,79=>1080,_=>0}}
+                pub unsafe fn GetForegroundWindow()->HWND {1usize as HWND}
+                pub unsafe fn GetAncestor(window:HWND,_flags:u32)->HWND {window}
+                pub unsafe fn SetForegroundWindow(_window:HWND)->i32{1}
+                pub unsafe fn WindowFromPoint(_point:POINT)->HWND {1usize as HWND}
+                pub unsafe fn GetCursorPos(point:*mut POINT)->i32 {unsafe{(*point).x=0;(*point).y=0;}1}
+            }
             pub mod Input {
                 pub mod KeyboardAndMouse {
                     pub use super::super::super::super::*;

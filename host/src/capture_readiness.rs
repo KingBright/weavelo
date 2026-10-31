@@ -29,6 +29,10 @@ struct DisplayCandidate {
 }
 
 pub(crate) fn capture_display_rect() -> Result<WindowsCaptureRect, String> {
+    physical_display_rects()?.into_iter().next().ok_or("No physical display is available".into())
+}
+
+pub(crate) fn physical_display_rects() -> Result<Vec<WindowsCaptureRect>, String> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Graphics::Gdi::{
         DEVMODEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE,
@@ -79,14 +83,10 @@ pub(crate) fn capture_display_rect() -> Result<WindowsCaptureRect, String> {
         });
     }
 
-    candidates
-        .into_iter()
-        .filter(|candidate| !candidate.virtual_display)
-        .min_by_key(|candidate| !candidate.primary)
-        .map(|candidate| candidate.rect)
-        .ok_or_else(|| {
-            "Windows screen capture unavailable: no physical desktop display is attached; virtual or indirect displays are intentionally excluded.".into()
-        })
+    candidates.sort_by_key(|candidate|!candidate.primary);
+    let displays=candidates.into_iter().filter(|candidate|!candidate.virtual_display).map(|candidate|candidate.rect).collect::<Vec<_>>();
+    if displays.is_empty(){return Err("Windows screen capture unavailable: no physical display is attached".into());}
+    Ok(displays)
 }
 
 /// The GDI capture surface must have the actual registered sRGB profile before

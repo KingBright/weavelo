@@ -104,16 +104,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
     #[cfg(target_os = "windows")]
     {
         crate::capture_readiness::ffmpeg_program()?;
-        let display = crate::capture_readiness::capture_display_rect()?;
-        return Ok(vec![CaptureSourceInfo {
-            source: CaptureSource::MainDisplay,
-            title: format!("Physical display ({})", display.adapter),
-            application: String::new(),
-            process_id: None,
-            width: display.width,
-            height: display.height,
-            supports_input: true,
-        }]);
+        return crate::windows_sources::list().map_err(Into::into);
     }
     #[cfg(target_os = "macos")]
     {

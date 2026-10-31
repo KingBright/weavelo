@@ -250,6 +250,15 @@ def validation_environment(mode):
     return env
 
 
+def source_digest(path):
+    # A tracked deletion is a source change too. Preserve its absence in the
+    # before/after snapshot instead of blocking ordinary removal of old code.
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
 def requires_workspace_source_guard(mode):
     return (mode in SESSION_CLOCK_TESTS or mode in PLATFORM_CHECKS or mode in ("pairing-fixture", "pairing-join", "lifecycle-linux-native-build", "nas-relay-linux-build") or mode.startswith("media-lifecycle") or
             mode in ("service-contract", "media-acceptance-build", "session-confirmation", "host-control", "source-catalog", "input-loss-build", "input-loss-tests", "gui-input-status"))
@@ -455,7 +464,7 @@ def execute_guarded_command(command, root, target, env, observation, sources, ha
                 except Exception as failure:
                     error = f"post-observation failed: {failure}"
                 try:
-                    sources_unchanged = hashes == [hashlib.sha256(path.read_bytes()).hexdigest() for path in sources]
+                    sources_unchanged = hashes == [source_digest(path) for path in sources]
                 except OSError as failure:
                     error = f"source verification failed: {failure}"
                 child_code = process.returncode if process is not None else None
@@ -573,7 +582,7 @@ def guarded_run(args, root, parser):
             sources.append(path)
     if args.lifecycle_helper:
         sources.extend(args.lifecycle_helper.parent / name for name in ("rust_scope.py", "rust_adopt.py", "rust_release.py"))
-    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in sources]
+    hashes = [source_digest(path) for path in sources]
     print(f"Using existing target: {target}", flush=True)
     print("Project-specific run; observation coverage remains false; no cleanup", flush=True)
     return execute_guarded_command(command, root, target, env, observation, sources, hashes, args.mode)
