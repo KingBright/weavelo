@@ -51,6 +51,9 @@ impl Default for FileTransferRuntimeConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTransferCommand {
+    /// Finish queued and active transfers, then emit Drained and stop. This is
+    /// process-local lifecycle control, never a network command.
+    Drain,
     SharedRequest {
         request_id: u64,
         request: protocol::shared_files::SharedFileRequest,
@@ -85,6 +88,7 @@ pub struct FileTransferGroupFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileTransferEvent {
+    Drained,
     SharedResponse {
         request_id: u64,
         response: protocol::shared_files::SharedFileResponse,
@@ -331,17 +335,25 @@ pub async fn run_file_transfer_runtime(
     let mut share_retry = tokio::time::interval(std::time::Duration::from_millis(500));
     share_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut draining = false;
     loop {
-        config.active.store(
-            !send_tasks.is_empty()
+        let active = !send_tasks.is_empty()
                 || exchange.pending()
                 || !command_rx.is_empty()
+                || !inbound_rx.is_empty()
                 || !inbound.incoming_files.is_empty()
                 || !inbound.manifest_assemblers.is_empty()
-                || !inbound.incoming_groups.is_empty(),
-            Relaxed,
-        );
+                || !inbound.incoming_groups.is_empty();
+        config.active.store(active, Relaxed);
+        // Incoming completion precedes delivery of its final ACK. Retain its
+        // duplicate-ACK responder for the sender's existing retry deadline.
+        let receipt_deadline = inbound.receipt_deadline.filter(|until|*until > tokio::time::Instant::now());
+        if draining && !active && receipt_deadline.is_none() {
+            emit_event(&event_tx, FileTransferEvent::Drained);
+            return Ok(());
+        }
         tokio::select! {
+            _ = tokio::time::sleep_until(receipt_deadline.unwrap_or_else(tokio::time::Instant::now)), if draining && receipt_deadline.is_some() => {}
             _ = cancel_rx.recv() => {
                 return Ok(());
             }
@@ -358,6 +370,7 @@ pub async fn run_file_transfer_runtime(
                 }
                 let clipboard = matches!(&command, FileTransferCommand::SendClipboardFiles { .. });
                 match command {
+                    FileTransferCommand::Drain => { draining = true; }
                     FileTransferCommand::SharedRequest { request_id, request } => { exchange.request(request_id, request).await?; }
                     FileTransferCommand::SendFile { path, mime_type } => {
                         let spec = next_file_transfer_spec(&config, &allocator);
@@ -985,6 +998,7 @@ struct InboundFileTransfers {
     pending_receive_config: Option<(PathBuf, FileReceivePolicy)>,
     completed_files: HashMap<u64, protocol::FileTransferManifest>,
     completed_order: VecDeque<u64>,
+    receipt_deadline: Option<tokio::time::Instant>,
 }
 
 impl InboundFileTransfers {
@@ -1001,6 +1015,7 @@ impl InboundFileTransfers {
             pending_receive_config: None,
             completed_files: HashMap::new(),
             completed_order: VecDeque::new(),
+            receipt_deadline: None,
         }
     }
 
@@ -1304,6 +1319,7 @@ impl InboundFileTransfers {
     }
 
     fn remember_completed(&mut self, manifest: protocol::FileTransferManifest) {
+        self.receipt_deadline = Some(tokio::time::Instant::now() + crate::file_delivery::DEADLINE);
         self.completed_order.push_back(manifest.file_object_id);
         self.completed_files
             .insert(manifest.file_object_id, manifest);
@@ -1788,7 +1804,7 @@ mod tests {
         let (source_command_tx, source_command_rx) = mpsc::channel(8);
         let (source_inbound_tx, source_inbound_rx) = mpsc::channel(8);
         let (source_event_tx, mut source_event_rx) = mpsc::unbounded_channel();
-        let (_target_command_tx, target_command_rx) = mpsc::channel(8);
+        let (target_command_tx, target_command_rx) = mpsc::channel(8);
         let (target_inbound_tx, target_inbound_rx) = mpsc::channel(128);
         let (target_event_tx, mut target_event_rx) = mpsc::unbounded_channel();
         let (cancel_tx, _) = broadcast::channel(4);
@@ -1843,6 +1859,7 @@ mod tests {
             }
         });
         let udp_router = tokio::spawn(async move {
+            let mut draining_receiver = false;
             let mut lost_manifest = false;
             let mut lost_chunk = false;
             loop {
@@ -1873,6 +1890,10 @@ mod tests {
                     if target_inbound_tx.send(envelope.clone()).await.is_err() {
                         break;
                     }
+                    if !draining_receiver && envelope.header.kind == ContentKind::FileManifest {
+                        target_command_tx.send(FileTransferCommand::Drain).await.unwrap();
+                        draining_receiver = true;
+                    }
                     if inject_faults
                         && !(envelope.header.kind == ContentKind::FileChunk
                             && envelope
@@ -1894,6 +1915,9 @@ mod tests {
             })
             .await
             .expect("send command should queue");
+        // Closing a media view immediately after queuing a file must retain
+        // both the queued command and its retransmissions until completion.
+        source_command_tx.send(FileTransferCommand::Drain).await.unwrap();
 
         let mut outgoing_completed = false;
         while !outgoing_completed {
@@ -1911,6 +1935,8 @@ mod tests {
                 outgoing_completed = true;
             }
         }
+
+        assert!(matches!(timeout(Duration::from_secs(2), source_event_rx.recv()).await.unwrap(), Some(FileTransferEvent::Drained)));
 
         let received_path = loop {
             let event = timeout(Duration::from_secs(2), target_event_rx.recv())
@@ -1950,6 +1976,7 @@ mod tests {
             "Lost final acknowledgement and duplicate data must not create another numbered copy"
         );
 
+        assert!(!target_runtime.is_finished(), "Receiver must retain final-ACK retries after its view closes");
         let _ = cancel_tx.send(());
         udp_router.abort();
         reply_router.abort();

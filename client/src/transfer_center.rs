@@ -295,7 +295,7 @@ impl TransferCenterState {
                 );
                 self.update_detail_for_transfer(*transfer_id, message.clone());
             }
-            FileTransferEvent::Error { .. } => {}
+            FileTransferEvent::Error { .. } | FileTransferEvent::Drained => {}
         }
     }
 

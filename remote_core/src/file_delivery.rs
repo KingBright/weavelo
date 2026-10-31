@@ -10,7 +10,7 @@ use tokio::time::Instant;
 
 const WINDOW: usize = 32;
 const RETRY: Duration = Duration::from_millis(500);
-const DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Default)]
 pub(crate) struct FileDeliveryTracker {

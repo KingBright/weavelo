@@ -50,6 +50,7 @@ pub struct SessionState<Texture, Pan: Default> {
     pub next_file_page: Option<u64>,
     pub file_pending: bool,
     pub transfers: Arc<Mutex<TransferCenterState>>,
+    file_scope: remote_core::shared_files::ShareScope,
     file_notices: tokio::sync::mpsc::Receiver<FileTransferEvent>,
     file_observers: tokio::sync::broadcast::Sender<FileTransferEvent>,
     file_task: Option<JoinHandle<()>>,
@@ -167,6 +168,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             file_notices,
             file_observers,
             file_task: Some(file_task),
+            file_scope: remote_core::shared_files::current_share_scope(),
             volume: 100,
             muted: false,
             zoom: 1.,
@@ -724,6 +726,9 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.confirmed = false;
                     self.error = reason;
                 }
+                SessionCommand::Unsubscribed { id } if id == self.video_id && self.video_error.is_none() => {
+                    self.fail_video("Screen sharing ended".into());
+                }
                 SessionCommand::TextRejected {binding,reason,..} if binding.connection_id==self.conn.id && binding.subscription_id==self.video_id && binding.source_revision==self.source_revision() => {
                     self.fail_input(reason);
                 }
@@ -843,7 +848,38 @@ impl<Texture, Pan: Default> Drop for SessionState<Texture, Pan> {
         self.release_input();
         self.clipboard.stop();
         if let Some(task) = self.file_task.take() {
-            task.abort();
+            if self.conn.files_available && self.file_scope == remote_core::shared_files::current_share_scope() {
+                let conn = self.conn.clone();
+                let scope = self.file_scope;
+                let mut events = self.file_observers.subscribe();
+                // The runtime owns the drain decision, including commands it
+                // has dequeued but not yet started. No idle-time guess can
+                // safely replace that barrier.
+                tokio::spawn(async move {
+                    let drain = async {
+                        if conn.file_commands.send(FileTransferCommand::Drain).await.is_ok() {
+                            loop {
+                                match events.recv().await {
+                                    Ok(FileTransferEvent::Drained) | Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                                }
+                            }
+                        }
+                    };
+                    tokio::pin!(drain);
+                    let mut network = tokio::time::interval(Duration::from_secs(1));
+                    loop {
+                        tokio::select! {
+                            _ = &mut drain => break,
+                            _ = network.tick() => if scope != remote_core::shared_files::current_share_scope() {
+                                conn.close().await;
+                                break;
+                            }
+                        }
+                    }
+                    task.abort();
+                });
+            } else { task.abort(); }
         }
         if let Some(task) = self.audio_task.take() {
             task.abort();

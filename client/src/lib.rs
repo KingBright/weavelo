@@ -1097,7 +1097,8 @@ fn env_path_or_temp(name: &str, fallback_dir_name: &str) -> PathBuf {
 
 fn log_file_transfer_event(label: &str, event: FileTransferEvent) {
     match event {
-        FileTransferEvent::IncomingClipboardReady { .. }
+        FileTransferEvent::Drained
+        | FileTransferEvent::IncomingClipboardReady { .. }
         | FileTransferEvent::SharedResponse { .. } => {}
         FileTransferEvent::OutgoingGroupStarted {
             group_id,

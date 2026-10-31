@@ -598,6 +598,20 @@ impl Connection {
             || slot.target!=target || slot.portal_generation!=generation {return None;}
         slot.lease.accept(packet,host_input_time_ms())
     }
+    async fn retire_directed_media(&mut self) -> Vec<SessionCommand> {
+        self.input_leases.clear();
+        let ids = self.subscriptions.keys().filter(|id|!self.retired.contains_key(id)).copied().collect::<Vec<_>>();
+        let mut replies = Vec::with_capacity(ids.len());
+        for id in ids {
+            replies.push(match self.unsubscribe(id).await {
+                Ok(()) => SessionCommand::Unsubscribed { id },
+                Err(reason) => SessionCommand::Error { request_id:id, reason },
+            });
+        }
+        // Keep delivery_owner/cancel as a tombstone. This authenticated file
+        // transport must never become an unrestricted pull connection.
+        replies
+    }
     async fn unsubscribe(&mut self, id: u32) -> Result<(), String> {
         if let Some(receipt) = self.retired.get(&id) {
             return receipt.clone();
@@ -2089,7 +2103,13 @@ async fn run_host_service_inner(
                         && authenticated.get(&owner.addr).is_some_and(|(n,_,_)|*n==owner.nonce)
                         && owner.scope==remote_core::shared_files::current_share_scope());
                     let revoked=peers.iter().filter(|(_,p)|p.delivery_owner.is_some_and(|(o,t)|!broker.claim_alive(o,t))).map(|(a,_)|*a).collect::<Vec<_>>();
-                    for addr in revoked {begin_close(&mut peers,&mut closing,addr,true);}
+                    for addr in revoked {
+                        if input_owner.owner.is_some_and(|(owner,_)|owner==addr) {let _=input_owner.release(&injector).await;}
+                        if let Some(peer)=peers.get_mut(&addr) {
+                            let replies=input_owner.during_control(&injector,peer.retire_directed_media()).await;
+                            for reply in replies {input_owner.during_control(&injector,send_session(&udp_sender,addr,reply)).await;}
+                        }
+                    }
                 }
                 let expired: Vec<_> = peers.iter().filter(|(_, peer)| peer.last_seen.elapsed() > Duration::from_secs(15)).map(|(addr, _)| *addr).collect();
                 for addr in expired {begin_close(&mut peers,&mut closing,addr,true);}
@@ -3706,6 +3726,30 @@ mod failure_admission_tests {
         ));
         assert_eq!(peers[&addr].id, 90002);
         peers.remove(&addr).unwrap().shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn ending_directed_media_preserves_file_workers_and_expired_claim_binding() {
+        let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let (sender, _) = mux.split();
+        let addr = "127.0.0.1:39982".parse().unwrap();
+        let config = HostServiceConfig {
+            bind_addr: addr, stats: Statistics::new(), enable_clipboard_sync: false,
+            enable_file_transfer: true, enable_talkback: false,
+        };
+        let mut peer = Connection::new(90009, addr, sender, &config);
+        install_capture_fixture(&mut peer).await;
+        let owner = crate::directed_delivery::Peer { addr, connection:peer.id, nonce:[1;16], scope:Some([2;32]) };
+        peer.delivery_owner = Some((owner,[3;32]));
+        peer.delivery_cancel = Some(watch::channel(true).1);
+        let files = peer.files.clone().unwrap();
+        assert!(matches!(peer.retire_directed_media().await.as_slice(), [SessionCommand::Unsubscribed { id:100 }]));
+        assert!(peer.retire_directed_media().await.is_empty());
+        assert!(files.same_channel(peer.files.as_ref().unwrap()) && !files.is_closed());
+        assert!(peer.subscriptions.is_empty());
+        assert_eq!(peer.delivery_owner, Some((owner,[3;32])));
+        assert!(*peer.delivery_cancel.as_ref().unwrap().borrow());
+        assert_eq!(peer.resources.native_streams.load(std::sync::atomic::Ordering::SeqCst), 0);
+        peer.shutdown().await.unwrap();
     }
     #[tokio::test]
     async fn unsubscribe_is_joined_and_duplicate_safe_unknown_id_does_not_retire_live_capture() {
