@@ -163,6 +163,13 @@ impl Pool {
         self.directed_receive.as_ref().is_some_and(|binding|binding.scope==remote_core::shared_files::current_share_scope()&&Instant::now()<binding.expires&&binding.attempt.is_some_and(|attempt|
             self.tabs.failed().is_some_and(|failed|failed.device_id==binding.source&&failed.attempt==attempt)))
     }
+    fn receive_current(&self,request:&str)->bool {
+        self.directed_receive.as_ref().is_some_and(|binding|
+            binding.request_id==request && binding.scope==remote_core::shared_files::current_share_scope()
+            && Instant::now()<binding.expires && !self.receive_failed()
+            && binding.connection.is_none_or(|connection|self.sessions.iter().any(|entry|
+                entry.session.conn.id==connection && entry.session.connected && entry.session.video_error.is_none())))
+    }
     fn cancel_receive(&mut self, request_id: &str) {
         if !self.directed_receive.as_ref().is_some_and(|b| b.request_id == request_id) { return; }
         let binding = self.directed_receive.take().unwrap();
@@ -585,6 +592,7 @@ impl OriginalOwner {
     }
     pub(crate) fn renew_directed_receive(&self,request:&str,duration:std::time::Duration)->bool {
         let mut p=self.pool.lock().unwrap();
+        if !p.receive_current(request) {return false;}
         let Some(b)=p.directed_receive.as_mut().filter(|b|b.request_id==request&&b.claim.is_some()&&Instant::now()<b.expires) else{return false;};
         b.expires=Instant::now()+duration;true
     }
@@ -599,7 +607,7 @@ impl OriginalOwner {
         }
     }
     pub(crate) fn directed_receive_current(&self, request: &str) -> bool {
-        self.pool.lock().unwrap().directed_receive.as_ref().is_some_and(|b| b.request_id == request && Instant::now() < b.expires)
+        self.pool.lock().unwrap().receive_current(request)
     }
     pub(crate) async fn connect_received_device(&self, key: &str, options: StreamStartOptions, request: &str) -> Result<(), Error> {
         self.connect_mode(key, options, true, true, None, Some(request), true, None).await
@@ -1734,7 +1742,17 @@ mod restoration_regression_tests {
         assert!(rows.rows[0].can_connect,"a completed file transfer must not disable Connect Stream");
         owner.pool.lock().unwrap().active_mut().unwrap().session.pending=Some((1,Instant::now()));
         assert!(matches!(owner.snapshot().role,RoleState::Connecting(_)),"an actual video request still shows connecting");
+        {
+            let mut pool=owner.pool.lock().unwrap();
+            bind_receive(&mut pool,"live-media",Instant::now()+std::time::Duration::from_secs(10));
+            pool.directed_receive.as_mut().unwrap().connection=Some(id);
+        }
+        assert!(owner.directed_receive_current("live-media"));
+        owner.pool.lock().unwrap().active_mut().unwrap().session.video_error=Some("Screen sharing ended".into());
+        assert!(!owner.directed_receive_current("live-media"));
+        owner.pool.lock().unwrap().active_mut().unwrap().session.video_error=None;
         owner.pool.lock().unwrap().active_mut().unwrap().session.connected=false;
+        assert!(!owner.directed_receive_current("live-media"));
         let closed=owner.snapshot();assert!(matches!(closed.role,RoleState::Idle));
         let rows=super::super::device_list::DeviceListViewModel::project(&devices,&closed.role,
             super::super::device_list::DeviceFilterKind::All);
@@ -1765,6 +1783,20 @@ mod restoration_regression_tests {
     fn bind_receive(pool: &mut Pool, request: &str, expires: Instant) {
         pool.directed_receive = Some(DirectedReceiveBinding { request_id: request.into(), source: "a".into(),
             scope: remote_core::shared_files::current_share_scope(), expires, cancel: tokio::sync::watch::channel(()).0, attempt: None, connection: None, claim:None, capture:CaptureSource::MainDisplay });
+    }
+    #[test]
+    fn receiving_status_does_not_outlive_its_connection_or_failed_handshake() {
+        let mut pool=pending_pool();
+        bind_receive(&mut pool,"live",Instant::now()+std::time::Duration::from_secs(10));
+        assert!(pool.receive_current("live"));
+        assert!(!pool.receive_current("different-request"));
+        pool.directed_receive.as_mut().unwrap().connection=Some(7);
+        assert!(!pool.receive_current("live"));
+        pool.directed_receive.as_mut().unwrap().connection=None;
+        let attempt=begin(&mut pool,"a",values());
+        pool.directed_receive.as_mut().unwrap().attempt=Some(attempt);
+        pool.tabs.complete("a",attempt,false,0);
+        assert!(!pool.receive_current("live"));
     }
     #[test]
     fn directed_receive_failure_belongs_only_to_its_exact_source_and_attempt(){
