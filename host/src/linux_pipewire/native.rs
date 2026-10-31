@@ -97,7 +97,7 @@ async fn prepare_capture(
     let thread = std::thread::Builder::new()
         .name("rp-pipewire".into())
         .spawn(move || {
-            let _ = run(
+            if let Err(error) = run(
                 fd,
                 node,
                 serial,
@@ -106,7 +106,9 @@ async fn prepare_capture(
                 worker_stop,
                 first_tx,
                 budget,
-            );
+            ) {
+                eprintln!("WEAVELO_PIPEWIRE_ERROR stage=stream error={error}");
+            }
             worker_mailbox.close();
             let _ = done_tx.send(());
         })
@@ -246,10 +248,16 @@ fn run(
                 }
                 let mut raw = spa::param::video::VideoInfoRaw::default();
                 raw.parse(param).map_err(|_| WorkerError::Format)?;
+                let metadata = raw.as_raw();
+                eprintln!("WEAVELO_PIPEWIRE_FORMAT width={} height={} format={} range={} matrix={} transfer={} primaries={} chroma={} flags={}",
+                    metadata.size.width, metadata.size.height, metadata.format, metadata.color_range,
+                    metadata.color_matrix, metadata.transfer_function, metadata.color_primaries,
+                    metadata.chroma_site, metadata.flags);
                 data.contract.renegotiate(Some(format(raw)?))?;
                 request_cpu_buffers(stream).map_err(|_| WorkerError::Buffer)
             })();
-            if result.is_err() {
+            if let Err(error) = result {
+                eprintln!("WEAVELO_PIPEWIRE_ERROR stage=negotiate error={error:?}");
                 data.fail();
             }
         })
@@ -360,7 +368,10 @@ fn run(
                     }
                 }
                 Err(WorkerError::Budget) => {} // Skip a frame while two owned reservations are busy.
-                Err(_) => data.fail(),
+                Err(error) => {
+                    eprintln!("WEAVELO_PIPEWIRE_ERROR stage=frame error={error:?}");
+                    data.fail();
+                }
             }
         })
         .register()?;

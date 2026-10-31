@@ -753,7 +753,9 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn poll_directed_receive(&mut self, cx: &mut Context<Self>) {
-        if let Some(sender)=&self.directed_send {let _=sender.poll();}
+        if self.directed_send.as_ref().is_some_and(|sender| sender.is_finished()) {
+            self.directed_send.take();
+        } else if let Some(sender)=&self.directed_send {let _=sender.poll();}
         use crate::desktop::directed_receive::{Request, Lease};
         if self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).is_some_and(|lease| !lease.current()) {
             self.stop_directed_receive();
@@ -2406,9 +2408,9 @@ impl Render for RestoredDashboard {
                     self.active_tab,
                     &self.device_list_state,
                     #[cfg(any(unix, windows))]
-                    self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).map(|lease| format!("Receiving from {} · {}s remaining", compact_device_id(&lease.source), lease.expires.saturating_duration_since(Instant::now()).as_secs())),
+                    self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).map(|lease| format!("Receiving · {}", compact_device_id(&lease.source))),
                     #[cfg(any(unix, windows))]
-                    self.directed_send.as_ref().map(|sender|format!("To {} · {}",compact_device_id(&sender.target),sender.poll())),
+                    self.directed_send.as_ref().map(|sender|format!("Sending · {}",compact_device_id(&sender.target))),
                     #[cfg(target_os = "linux")]
                     &self.local_share_state,
                     self.local_permissions.clone(),
@@ -2434,7 +2436,7 @@ impl Render for RestoredDashboard {
                     ))
                 },
             )
-            .when_some(self.source_selection.as_ref(),|tree,selection|tree.child(source_selection::render(selection,cx)))
+            .when_some(self.source_selection.as_ref(),|tree,selection|tree.child(source_selection::render(selection,#[cfg(target_os="linux")] self.local_share_state.pending(),cx)))
             // Local window commands must also see the root focus itself. The
             // remote-input surface remains inside the scope and keeps its focus guard.
             .map(|tree| div().size_full()
@@ -3741,17 +3743,18 @@ fn drawer_devices_tab(
     #[cfg(any(unix, windows))]
     let content = if let Some(label) = receive_label {
         let stop = cx.weak_entity();
-        content.child(div().flex().flex_col().gap_2().child(label).child(
+        content.child(div().flex().items_center().gap_2().h(px(28.)).text_size(px(10.)).child(div().flex_1().truncate().child(label)).child(
             command_button("stop_directed_receive", ActionVariantKind::Neutral, cx)
-                .child("Stop receiving")
+                .size(px(24.)).rounded_full().tooltip(tooltip("Stop receiving").build()).child("×")
                 .on_click(move |_, _, cx| { let _ = stop.update(cx, |this, cx| { this.stop_directed_receive(); cx.notify(); }); })
         ))
     } else { content };
     #[cfg(any(unix, windows))]
     let content = if let Some(label) = send_label {
         let stop=cx.weak_entity();
-        content.child(div().flex().flex_col().gap_2().child(label).child(
-            command_button("stop_directed_send",ActionVariantKind::Neutral,cx).child("Stop sending")
+        content.child(div().flex().items_center().gap_2().h(px(28.)).text_size(px(10.)).child(div().flex_1().truncate().child(label)).child(
+            command_button("stop_directed_send",ActionVariantKind::Neutral,cx)
+                .size(px(24.)).rounded_full().tooltip(tooltip("Stop sending").build()).child("×")
                 .on_click(move|_,_,cx|{let _=stop.update(cx,|this,cx|{this.directed_send.take();this.status="Stopping directed delivery".into();cx.notify();});})
         ))
     } else {content};
@@ -3806,7 +3809,11 @@ impl RestoredDashboard {
         let task=tokio::spawn(self.local_share_owner.call(effect.call));
         cx.spawn(async move |view,cx| {
             let result=task.await.unwrap_or_else(|_|Err("Sharing request stopped; check status".into()));
-            let _=view.update(cx,|this,cx| {this.local_share_state.completed(receipt,result);cx.notify();});
+            let _=view.update(cx,|this,cx| {
+                let before=this.local_share_state.snapshot.clone();
+                if this.local_share_state.completed(receipt,result) {this.refresh_delivery_sharing(&before,cx);}
+                cx.notify();
+            });
         }).detach();
         self.poll_local_sharing(cx);
         cx.notify();
@@ -3819,16 +3826,29 @@ impl RestoredDashboard {
             loop {
                 cx.background_executor().timer(Duration::from_millis(500)).await;
                 let next=view.update(cx,|this,_| {
-                    if !this.drawer_open || this.active_tab!=DrawerTab::Security || !this.window_active {
+                    let delivery_open=this.source_selection.as_ref().is_some_and(source_selection::Selection::is_delivery);
+                    if !this.window_active || (!delivery_open && (!this.drawer_open || this.active_tab!=DrawerTab::Security)) {
                         this.local_share_polling=false;return None;
                     }
                     Some((this.local_share_state.receipt(),this.local_share_owner.call(crate::sharing_permissions::SharingCall::Status)))
                 });
                 let Ok(Some((receipt,future)))=next else {break;};
                 let result=tokio::spawn(future).await.unwrap_or_else(|_|Err("Sharing status is unavailable".into()));
-                if view.update(cx,|this,cx| {if this.local_share_state.polled(receipt,result) {cx.notify();}}).is_err() {break;}
+                if view.update(cx,|this,cx| {
+                    let before=this.local_share_state.snapshot.clone();
+                    if this.local_share_state.polled(receipt,result) {this.refresh_delivery_sharing(&before,cx);cx.notify();}
+                }).is_err() {break;}
             }
         }).detach();
+    }
+
+    #[cfg(target_os="linux")]
+    fn refresh_delivery_sharing(&mut self,before:&crate::sharing_permissions::SharingSnapshot,cx:&mut Context<Self>) {
+        let current=&self.local_share_state.snapshot;
+        if (before.sources!=current.sources || before.message!=current.message)
+            && self.source_selection.as_ref().is_some_and(source_selection::Selection::is_delivery) {
+            self.refresh_delivery_sources(cx);
+        }
     }
 
     fn dispatch_stream_settings_action(

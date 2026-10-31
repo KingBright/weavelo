@@ -276,7 +276,10 @@ impl PortalCaptureLease {
             return Err(PortalCallError::Revoked);
         }
         crate::linux_raw_encode::validate_native_input(&first)
-            .map_err(|_| PortalCallError::InvalidSource)?;
+            .map_err(|error| {
+                eprintln!("WEAVELO_PORTAL_CAPTURE_ERROR stage=encoder_input format={:?} error={error}", first.source_format);
+                PortalCallError::InvalidSource
+            })?;
         if let Some(input) = self
             .owner
             .control
@@ -1495,8 +1498,12 @@ async fn select_with_restoration_policy(
             Ok(token)
         }).transpose()?
     } else { None };
-    let selected = selected(response, generation, options)?;
+    let selected = selected(response, generation, options).map_err(|error| {
+        eprintln!("WEAVELO_PORTAL_CAPTURE_ERROR stage=selected_source error={error:?}");
+        error
+    })?;
     if control_input && screencast_version >= 6 && selected.pipewire_serial.is_none() {
+        eprintln!("WEAVELO_PORTAL_CAPTURE_ERROR stage=stream_serial_missing");
         return Err(PortalCallError::InvalidSource);
     }
     complete(

@@ -17,6 +17,7 @@ pub(super) struct Selection {
     error: Option<String>,
 }
 impl Selection {
+    pub(super) fn is_delivery(&self) -> bool { matches!(self.target, Target::Send(_)) }
     fn toggle(&mut self,source:CaptureSource) {
         if !self.sources.iter().any(|item|item.source==source) {self.error=Some("The source list changed".into());return;}
         if self.selected.contains(&source) {self.selected.retain(|selected|*selected!=source);self.error=None;}
@@ -30,7 +31,8 @@ impl Selection {
         }
         let mut seen=std::collections::HashSet::new();
         sources.retain(|source|seen.insert(source.source));
-        self.selected=sources.first().map(|source|vec![source.source]).unwrap_or_default();
+        self.selected.retain(|id| sources.iter().any(|source| source.source == *id));
+        if self.selected.is_empty() {self.selected=sources.first().map(|source|vec![source.source]).unwrap_or_default();}
         self.sources=sources;self.artwork=artwork;self.loading=false;
         self.error=self.sources.is_empty().then(||"Choose a screen in Sharing & permissions first".into());
     }
@@ -42,35 +44,51 @@ impl RestoredDashboard {
         if self.directed_send.as_ref().is_some_and(|sender|!sender.is_finished()) {
             self.status="Stop the current delivery before choosing another target".into();cx.notify();return;
         }
-        let Some(client)=self.background.clone() else {
-            self.status="Sharing service is unavailable".into();cx.notify();return;
-        };
         let name=self.owner.snapshot().devices.iter().find(|item|item.device_id==device)
             .map(|item|item.display_name.clone()).unwrap_or_else(||device.clone());
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
         let scope=current_share_scope();
         self.source_selection=Some(Selection {target:Target::Send(device),scope,title:format!("Send to {name}"),
             sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None});
-        if self.source_query_inflight {cx.notify();return;}
-        self.source_query_inflight=true;
+        self.refresh_delivery_sources(cx);
+        cx.notify();
+    }
+    pub(super) fn refresh_delivery_sources(&mut self, cx:&mut Context<Self>) {
+        let Some(selection)=self.source_selection.as_mut() else {return;};
+        let Target::Send(device)=&selection.target else {return;};
+        let device=device.clone();let scope=selection.scope;
+        let Some(client)=self.background.clone() else {
+            selection.loading=false;selection.error=Some("Sharing service is unavailable".into());cx.notify();return;
+        };
+        selection.loading=true;
         let work=tokio::task::spawn_blocking(move || {
-            let command=host::capture_sources::with_artwork(client.capture_sources().map_err(|error|error.to_string())?);
+            let sources=client.capture_sources().map_err(|error|error.to_string())?;
+            #[cfg(target_os="linux")]
+            let message=if sources.is_empty() {
+                client.sharing_call(crate::sharing_permissions::SharingCall::Status)
+                    .map_err(|error|error.to_string())?.message
+            } else {None};
+            #[cfg(not(target_os="linux"))]
+            let message:Option<String>=None;
+            let command=host::capture_sources::with_artwork(sources);
             let SessionCommand::Sources {sources,source_icons,icons,..}=command else {return Err("Invalid local source directory".into());};
             let mut cache=remote_core::application_icons::SourceIconCache::default();
             cache.update(sources.iter().map(|source|source.source),&source_icons,&icons)?;
-            Ok::<_,String>((sources,cache.assets()))
+            Ok::<_,String>((sources,cache.assets(),message))
         });
         cx.spawn(async move |view,cx| {
             let result=work.await.unwrap_or_else(|_|Err("Source lookup stopped; try again".into()));
             let _=view.update(cx,|this,cx| {
-                this.source_query_inflight=false;
                 if let Some(selection)=this.source_selection.as_mut()
-                    && matches!(selection.target,Target::Send(_)) && selection.scope==scope
+                    && matches!(&selection.target,Target::Send(target) if *target==device) && selection.scope==scope
                 {
                     selection.loading=false;
                     if scope!=current_share_scope() {selection.error=Some("The device network changed; choose the sources again".into());}
                     else {match result {
-                        Ok((sources,assets))=>selection.replace(sources,ApplicationArtwork::default().update(assets)),
+                        Ok((sources,assets,message))=>{
+                            selection.replace(sources,ApplicationArtwork::default().update(assets));
+                            if selection.sources.is_empty() && message.is_some() {selection.error=message;}
+                        },
                         Err(error)=>selection.error=Some(error),
                     }}
                 }
@@ -124,7 +142,7 @@ impl RestoredDashboard {
     }
 }
 
-pub(super) fn render(selection:&Selection,cx:&mut Context<RestoredDashboard>)->Div {
+pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pending:bool,cx:&mut Context<RestoredDashboard>)->Div {
     let theme=cx.theme().clone();let view=cx.weak_entity();
     let mut rows=div().id("source_selection_rows").max_h(px(340.)).overflow_y_scroll().flex().flex_col().gap_1();
     for source in &selection.sources {
@@ -141,11 +159,29 @@ pub(super) fn render(selection:&Selection,cx:&mut Context<RestoredDashboard>)->D
             .child(div().flex_1().text_size(px(11.)).child(source.title.clone())));
     }
     let view=cx.weak_entity();let confirm=cx.weak_entity();
+    #[cfg(target_os="linux")]
+    let share_choices={
+        let mut choices=div().flex().items_center().gap_2();
+        if matches!(selection.target,Target::Send(_)) {
+            for (id,label,kind) in [
+                ("delivery-window","App window",crate::sharing_permissions::ShareKind::Window),
+                ("delivery-screen","Screen",crate::sharing_permissions::ShareKind::Display),
+                ("delivery-control","Screen + control",crate::sharing_permissions::ShareKind::ControlledDisplay),
+            ] {
+                choices=choices.child(command_button(id,ActionVariantKind::Neutral,cx)
+                    .h(px(26.)).text_size(px(10.)).disabled(sharing_pending)
+                    .on_click(cx.listener(move|this,_,_,cx|this.dispatch_local_share(crate::desktop::local_share::Action::Select(kind),cx)))
+                    .child(label));
+            }
+        }
+        choices
+    };
     let panel=div().id("source_selection_panel").occlude().w(px(460.)).max_w(relative(0.95))
         .p_4().flex().flex_col().gap_3().bg(color_glass_card()).border_1().border_color(color_border_fine()).rounded_xl().shadow_2xl()
         .on_any_mouse_down(cx.listener(|_,_,_,cx|cx.stop_propagation()))
         .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(selection.title.clone()))
         .child(div().text_size(px(11.)).text_color(theme.content.secondary).child("Choose screens or app windows."))
+        .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child("Loading sources…")))
         .child(rows)
         .when_some(selection.error.as_ref(),|panel,error|panel.child(div().text_size(px(11.)).text_color(theme.status.error.bg).child(error.clone())))
@@ -180,6 +216,17 @@ mod tests {
             source(CaptureSource::Window(2)),source(CaptureSource::Window(2))],Arc::new(Default::default()));
         assert_eq!(selection.sources.len(),2);assert_eq!(selection.selected,vec![CaptureSource::Display(1)]);
         assert!(!selection.loading);assert!(selection.error.is_none());
+    }
+    #[test]
+    fn refreshing_shared_sources_retains_selected_windows_and_drops_ended_ones() {
+        let mut selection=selection();
+        let sources=|| (1..=3).map(|id|source(CaptureSource::Window(id))).collect();
+        selection.replace(sources(),Arc::new(Default::default()));
+        selection.toggle(CaptureSource::Window(2));
+        selection.replace(sources(),Arc::new(Default::default()));
+        assert_eq!(selection.selected,vec![CaptureSource::Window(1),CaptureSource::Window(2)]);
+        selection.replace(vec![source(CaptureSource::Window(2)),source(CaptureSource::Window(4))],Arc::new(Default::default()));
+        assert_eq!(selection.selected,vec![CaptureSource::Window(2)]);
     }
     #[test]
     fn stale_buttons_cannot_select_absent_sources_and_selection_stays_bounded() {
