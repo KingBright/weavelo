@@ -151,6 +151,10 @@ pub(crate) fn command(
                 "cbr",
                 "-header_insertion_mode",
                 "idr",
+                // AMF's BGRA path emits full-range BT.709 samples but replaces
+                // the sRGB transfer tag. Preserve actual samples and fix its VUI.
+                "-bsf:v",
+                "hevc_metadata=transfer_characteristics=13",
             ]);
         }
         Encoder::Nvidia => {
@@ -193,7 +197,7 @@ pub(crate) fn command(
         "-bufsize",
         &bitrate,
         "-color_range",
-        "tv",
+        if encoder==Encoder::Amd {"pc"}else{"tv"},
         "-colorspace",
         "bt709",
         "-color_primaries",
@@ -228,6 +232,8 @@ mod tests {
             .join(" ");
         assert!(args.contains("hwnd=5124095577148911"));
         assert!(args.contains("hevc_amf"));
+        assert!(args.contains("-color_range pc"));
+        assert!(args.contains("hevc_metadata=transfer_characteristics=13"));
         for forbidden in ["hwdownload", "gdigrab", "libx265", "format=yuv420p"] {
             assert!(!args.contains(forbidden));
         }

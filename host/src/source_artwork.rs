@@ -63,6 +63,13 @@ fn native_icon(_pid: i32) -> Option<ApplicationIcon> {
 #[cfg(target_os="windows")]
 fn native_icon(pid:i32)->Option<ApplicationIcon> {
     use windows_sys::Win32::{Graphics::Gdi::*,UI::{Shell::*,WindowsAndMessaging::{DrawIconEx,DestroyIcon,DI_NORMAL}}};
+    use windows_sys::Win32::System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED,COINIT_DISABLE_OLE1DDE};
+    // Shell icon handlers require COM on this exact worker thread. Balance both
+    // S_OK and S_FALSE without changing an existing apartment's concurrency model.
+    if unsafe{CoInitializeEx(std::ptr::null(),(COINIT_APARTMENTTHREADED|COINIT_DISABLE_OLE1DDE) as u32)}<0{return None;}
+    struct Apartment;
+    impl Drop for Apartment {fn drop(&mut self){unsafe{CoUninitialize();}}}
+    let _apartment=Apartment;
     let path=crate::windows_sources::application_path(pid.try_into().ok()?)?;
     let name=path.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
     let mut info:SHFILEINFOW=unsafe{std::mem::zeroed()};
