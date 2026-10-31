@@ -121,11 +121,8 @@ def _check(action, root, authority, binding_path, helper):
             raise Refusal("missing/ambiguous canonical inventory reference: " + ref)
         if not target.is_dir():
             raise Refusal("selected artifact must be an existing target directory: " + ref)
-    checked = invoke(helper, ["adopt-check", "--binding", str(binding_path)])
-    if checked["binding"] != binding:
-        raise Refusal("helper observation changed the selected environment binding")
-    if action == "check":
-        return checked
+    # Dependency/source changes do not change ownership of the existing cache.
+    # Observe today's inputs directly; never require a renewed dependency hash.
     arguments = ["adopt", "--project", str(root), "--inventory", str(authority), "--dry-run"]
     for ref in refs:
         arguments.extend(["--artifact", ref])
@@ -133,8 +130,10 @@ def _check(action, root, authority, binding_path, helper):
     if evidence:
         arguments.extend(["--local-source-evidence", evidence])
     report = invoke(helper, arguments)
-    if report["binding"] != checked["binding"]:
-        raise Refusal("evidence changed between check and dry-run; owner must reassess")
+    current = report["binding"]
+    stable = lambda value: {key: item for key, item in value.items() if key != "contract_sha256"}
+    if stable(current) != stable(binding):
+        raise Refusal("cache authority, paths or ownership changed")
     return report
 
 

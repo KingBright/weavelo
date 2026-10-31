@@ -128,3 +128,13 @@ Keep the current authenticated sessions and native media paths. Upgrade all
 owned devices together; do not retain an old-protocol compatibility branch.
 Share validation, ownership and input logic; use native platform icon/text APIs.
 Actual OS consent and stable signing identities remain required.
+
+## Direct delivery without dependency gates (2026-10-31, latest user instruction)
+
+Normal changes to dependencies, Cargo.lock or source files must not require cache
+re-adoption, patch-hash approval or a new delivery confirmation. Observe current
+inputs automatically and reuse the existing cache. Packaging must not contend
+with unrelated projects' global cleanup/build locks; retain only the local
+serialization needed to publish one correct current output. Routine compatible
+builds, publication and upgrades continue directly. Keep signing identities,
+credentials, actual OS consent, active transfers and unrelated files intact.

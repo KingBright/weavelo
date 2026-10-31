@@ -1,5 +1,6 @@
 """Narrow existing-project interface fixtures; no build, shared cache or cleanup call."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -141,12 +142,17 @@ class LifecycleAdoptionInterfaceTests(unittest.TestCase):
         with self.assertRaisesRegex(self.entry.Refusal, "authority_inventory"):
             self.entry_check("dry-run", authority, binding)
 
-    def test_root_cargo_configuration_digest_change_is_refused(self):
+    def test_normal_dependency_and_source_changes_need_no_re_adoption(self):
         authority, binding = self.observed_fixture()
+        original = binding.read_bytes()
         config = self.project / ".cargo/config.toml"
         config.write_text(config.read_text() + "# changed configuration\n")
-        with self.assertRaisesRegex(self.entry.Refusal, "contract_sha256"):
-            self.entry_check("check", authority, binding)
+        lock = self.project / "Cargo.lock"
+        lock.write_text("# Updated dependencies\nversion = 4\n")
+        report = self.entry_check("check", authority, binding)
+        self.assertEqual(report["binding"]["contract_sha256"]["Cargo.lock"], hashlib.sha256(lock.read_bytes()).hexdigest())
+        self.assertEqual(binding.read_bytes(), original)
+        self.assertEqual(report["binding"]["selected_artifact_refs"], [str(self.base / "shared-target")])
 
     def test_authority_reference_change_cannot_switch_to_a_second_ledger(self):
         authority, binding = self.observed_fixture()

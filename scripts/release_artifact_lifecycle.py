@@ -92,10 +92,36 @@ def public(action, *arguments):
 def _public(action, *arguments):
     gate.require_admitted()
     regular(HELPER)
-    command = [sys.executable, '-B', str(HELPER), action, '--project', str(ROOT), *map(str, arguments)]
+    command = [sys.executable, '-B', str(Path(__file__).resolve()), '_authority', action,
+               '--project', str(ROOT), *map(str, arguments)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=180)
     require(result.returncode == 0, result.stderr.strip()[-2000:] or 'Public current-output transaction refused')
     return json.loads(result.stdout)
+
+
+def project_authority(arguments):
+    """Keep atomic current outputs; unrelated builds never block packaging."""
+    regular(HELPER)
+    spec = importlib.util.spec_from_file_location('weavelo_current_authority', HELPER)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    original_lock = helper.lock
+
+    @contextmanager
+    def project_lock(project, global_cleanup=False):
+        require(Path(project).samefile(ROOT), 'Current output belongs to another project')
+        # The original project mutex and current-output transaction stay intact.
+        # Packaging does not delete shared compilation caches.
+        with original_lock(project, global_cleanup=False) as state:
+            yield state
+
+    helper.lock = project_lock
+    previous = sys.argv
+    try:
+        sys.argv = [str(HELPER), *arguments]
+        return helper.main()
+    finally:
+        sys.argv = previous
 
 
 def macos_output_root():
@@ -748,6 +774,8 @@ def run(kind, arguments):
 
 
 def main():
+    if sys.argv[1:2] == ['_authority']:
+        return project_authority(sys.argv[2:])
     with gate.admission():
         return _main()
 

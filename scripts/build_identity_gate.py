@@ -269,7 +269,8 @@ def build_environment() -> dict[str, str]:
     # Never collect token/password/key variables. Unknown Cargo/compiler overrides
     # are rejected rather than silently attributed to the reviewed configuration.
     unknown = [key for key in os.environ if key.startswith(('CARGO_', 'RUST', 'RP_')) and
-               key not in BUILD_ENV and key not in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS')]
+               key not in BUILD_ENV and key not in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS',
+                                                   'RUSTUP_DIST_SERVER', 'RUSTUP_UPDATE_ROOT')]
     require(not unknown and not os.environ.get('RUSTFLAGS') and
             not os.environ.get('CARGO_ENCODED_RUSTFLAGS'), 'Unrecorded build override rejected')
     values = os.environ

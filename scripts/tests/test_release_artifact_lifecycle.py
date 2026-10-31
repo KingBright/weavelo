@@ -15,6 +15,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'release_artifact_lifecycle.py'
@@ -25,6 +26,26 @@ spec.loader.exec_module(hook)
 
 
 class ReleaseHookTests(unittest.TestCase):
+    def test_packaging_uses_project_mutex_without_unrelated_cleanup_lock(self):
+        calls = []
+        @contextmanager
+        def original_lock(project, global_cleanup=False):
+            calls.append((project, global_cleanup))
+            yield ('current', 'state')
+        helper = SimpleNamespace(lock=original_lock)
+        def main():
+            with helper.lock(str(self.root), global_cleanup=True) as state:
+                self.assertEqual(state, ('current', 'state'))
+            self.assertEqual(sys.argv[1], 'release-preflight')
+        helper.main = main
+        spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None))
+        previous = sys.argv
+        with patch.object(hook.importlib.util, 'spec_from_file_location', return_value=spec), \
+             patch.object(hook.importlib.util, 'module_from_spec', return_value=helper):
+            hook.project_authority(['release-preflight', '--project', str(self.root)])
+        self.assertEqual(calls, [(str(self.root), False)])
+        self.assertIs(sys.argv, previous)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='rp-current-hook-')
         self.addCleanup(temporary.cleanup)

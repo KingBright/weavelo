@@ -54,6 +54,12 @@ class BuildIdentityGateTests(unittest.TestCase):
             self.assertEqual(gate.build_environment(), sdk)
             self.assertEqual(gate.environment_digest(), gate.digest(gate.canonical(sdk)))
 
+    def test_rustup_download_mirrors_do_not_block_offline_builds(self):
+        with patch.dict(os.environ, {'PATH': '/existing/tools',
+                'RUSTUP_DIST_SERVER': 'https://mirror.example.invalid',
+                'RUSTUP_UPDATE_ROOT': 'https://mirror.example.invalid/rustup'}, clear=True):
+            self.assertEqual(gate.build_environment(), {'PATH': '/existing/tools'})
+
     def test_changed_or_missing_linux_sdk_binding_stops_before_the_producer(self):
         sdk = {'WEAVELO_VERIFIED_FFMPEG_INCLUDE': '/verified/ffmpeg-8.1.2',
                'LIBRARY_PATH': '/existing/opus/lib64'}
