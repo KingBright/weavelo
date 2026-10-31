@@ -35,7 +35,7 @@ impl Target {
         Ok(self)
     }
     fn select(&self, sources: &[CaptureSourceInfo]) -> Result<CaptureSourceInfo> {
-        let mut exact = sources.iter().filter(|s| s.source == CaptureSource::Window(self.window)
+        let mut exact = sources.iter().filter(|s| matches!(s.source,CaptureSource::Window(id) if self.window==0 || id==self.window)
             && s.process_id == Some(self.pid) && s.title == format!("{TITLE} {}",self.nonce));
         let selected = exact.next().ok_or("exact synthetic Window/PID/title not found")?;
         if exact.next().is_some() {
@@ -346,6 +346,22 @@ async fn drive_hold_loss(link:&mut Wire,target:Target,budgets:Budgets,mut cancel
     report
 }
 
+async fn discover_window<L:Link>(link:&mut L,mut target:Target,budgets:Budgets)->Value {
+    target.window=0;
+    let mut report=json!({"kind":"owned-window-catalog","connection_id":link.connection_id(),"input_commands_enqueued":0});
+    let result=async {
+        link.send(SessionCommand::ListSources{request_id:LIST,known_icons:Vec::new()}).await?;
+        let reply=normal_ack(link,budgets.acknowledgement,|c|matches!(c,SessionCommand::Sources{request_id:LIST,..})).await?;
+        let SessionCommand::Sources{sources,..}=reply else {unreachable!()};
+        report["source"]=json!(target.select(&sources)?);
+        Ok::<_,String>(())
+    }.await;
+    report["operation_succeeded"]=result.is_ok().into();
+    if let Err(error)=result {report["error"]=error.into();}
+    cleanup_with_input_requirement(link,false,budgets,&mut report,false).await;
+    report
+}
+
 pub fn main_cli(args:&[String]) {
     if args.get(1).is_some_and(|mode|mode=="replay-hevc") { hevc_diagnostic::replay_cli(&args); return; }
     if args.get(1).is_some_and(|mode|matches!(mode.as_str(),"inspect-hevc"|"inspect-hevc-input")) { hevc_diagnostic::main_cli(&args); return; }
@@ -355,11 +371,14 @@ pub fn main_cli(args:&[String]) {
     let hold_loss=args.get(1).is_some_and(|mode|matches!(mode.as_str(),"hold-loss"|"hold-focus"));
     let suite=args.get(1).is_some_and(|mode|mode=="input-suite");
     let titlebar=args.get(1).is_some_and(|mode|mode=="titlebar-drag");
-    if args.len()!=7 || !matches!(args[1].as_str(),"input-window"|"input-suite"|"titlebar-drag"|"hold-loss"|"hold-focus") { eprintln!("usage: probe input-window|input-suite|titlebar-drag|hold-loss|hold-focus LOOPBACK_TARGET FIXTURE_PID WINDOW_ID FIXTURE_NONCE NEW_ABSOLUTE_OUTPUT_JSON");std::process::exit(2); }
+    let catalog=args.get(1).is_some_and(|mode|mode=="catalog-window");
+    if args.len()!=7 || !matches!(args[1].as_str(),"catalog-window"|"input-window"|"input-suite"|"titlebar-drag"|"hold-loss"|"hold-focus") { eprintln!("usage: probe catalog-window|input-window|input-suite|titlebar-drag|hold-loss|hold-focus LOOPBACK_TARGET FIXTURE_PID WINDOW_ID_OR_ZERO FIXTURE_NONCE NEW_ABSOLUTE_OUTPUT_JSON");std::process::exit(2); }
     let checked=(||->Result<_>{
         let address=args[2].parse::<SocketAddr>().map_err(|_|"invalid route")?;
         if !address.ip().is_loopback() || address.port()==0 { return Err("must use the existing viewer-local loopback route".into()); }
-        let target=Target{pid:args[3].parse().map_err(|_|"invalid PID")?,window:args[4].parse().map_err(|_|"invalid Window ID")?,nonce:args[5].clone()}.validate()?;
+        let window=args[4].parse().map_err(|_|"invalid Window ID")?;
+        if catalog && window!=0 {return Err("catalog-window requires zero until the exact owned window is discovered".into());}
+        let target=Target{pid:args[3].parse().map_err(|_|"invalid PID")?,window:if catalog {1}else{window},nonce:args[5].clone()}.validate()?;
         let output=PathBuf::from(&args[6]);
         if !output.is_absolute() || output.exists() || !output.parent().is_some_and(|p|p.is_dir()) { return Err("new absolute output in an existing owned directory required".into()); }
         if hold_loss && ["armed","closing"].iter().any(|phase|output.with_extension(format!("{phase}.json")).exists()) {
@@ -391,7 +410,8 @@ pub fn main_cli(args:&[String]) {
         let report=match tokio::time::timeout(Duration::from_secs(12),WorkspaceConnection::connect(address,scratch.clone())).await {
             Ok(Ok((conn,events)))=>{
                 let mut link=Wire{conn,events,stats:Statistics::new(),media:None};
-                if hold_loss {drive_hold_loss(&mut link,target,Budgets::default(),rx,&output,args[1]=="hold-focus").await}
+                if catalog {discover_window(&mut link,target,Budgets::default()).await}
+                else if hold_loss {drive_hold_loss(&mut link,target,Budgets::default(),rx,&output,args[1]=="hold-focus").await}
                 else if suite || titlebar {drive_mode(&mut link,target,Budgets::default(),rx,if titlebar {InputProbe::TitlebarDrag}else{InputProbe::Suite}).await}
                 else {drive(&mut link,target,Budgets::default(),rx).await}
             },
@@ -456,6 +476,8 @@ mod tests {
     async fn run(fake:&mut Fake)->Value{let (_tx,rx)=watch::channel(false);drive(fake,target(),short(),rx).await}
     fn input_count(fake:&Fake)->usize{fake.sent.iter().filter(|c|matches!(c,SessionCommand::SourceInput{..})).count()}
     fn has_close(fake:&Fake)->bool{fake.sent.iter().any(|c|matches!(c,SessionCommand::Close{connection_id:44}))}
+    #[tokio::test] async fn opaque_window_catalog_has_no_capture_or_input(){let mut f=Fake::default();let mut t=target();t.window=0;let r=discover_window(&mut f,t,short()).await;assert_eq!(r["source"]["source"],json!(CaptureSource::Window(77)));assert_eq!(r["cleanup_complete"],true);assert_eq!(input_count(&f),0);assert!(f.sent.iter().all(|c|matches!(c,SessionCommand::ListSources{..}|SessionCommand::Close{..})));}
+    #[test] fn automatic_window_selection_rejects_ambiguity(){let mut t=target();t.window=0;let s=CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {NONCE}"),application:"fixture".into(),process_id:Some(123),width:540,height:380,supports_input:true};let mut second=s.clone();second.source=CaptureSource::Window(78);assert!(t.select(&[s,second]).unwrap_err().contains("ambiguous"));}
     #[tokio::test] async fn normal_exit_releases_input_unsubscribes_and_confirms_exact_closed(){let mut f=Fake::default();let r=run(&mut f).await;assert_eq!(r["operation_succeeded"],true);assert_eq!(r["cleanup_complete"],true);assert_eq!(input_count(&f),5);assert_eq!(r["target_effect_verified"],false);assert!(has_close(&f));}
     #[tokio::test] async fn denied_live_readiness_never_sends_input_but_cleans_capture(){let mut f=Fake{ready:false,..Fake::default()};let r=run(&mut f).await;assert_eq!(input_count(&f),0);assert_eq!(r["cleanup_complete"],true);assert_eq!(r["operation_succeeded"],false);}
     #[tokio::test] async fn wrong_fixture_pid_never_subscribes_or_sends_input(){let mut f=Fake{catalog_pid:999,..Fake::default()};let r=run(&mut f).await;assert_eq!(input_count(&f),0);assert!(r.get("subscribed_acknowledged").is_none());assert_eq!(r["cleanup_complete"],true);}
