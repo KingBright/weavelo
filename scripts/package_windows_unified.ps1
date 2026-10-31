@@ -130,8 +130,8 @@ $buildInfo = [ordered]@{
     weavelo_sha256 = (Get-FileHash -LiteralPath (Join-Path $appDir 'weavelo.exe') -Algorithm SHA256).Hash.ToLower()
     ffmpeg_sha256 = (Get-FileHash -LiteralPath (Join-Path $appDir 'bin\ffmpeg.exe') -Algorithm SHA256).Hash.ToLower()
     ffmpeg_version = (($versionText -split "\r?\n")[0]).Trim()
-    capture_backend = 'gdigrab-physical-display-only'
-    encoder = 'libx265'
+    capture_backend = 'windows-graphics-capture-d3d11'
+    encoder = 'media-foundation-hardware-hevc'
     system_ffmpeg_fallback = $false
     generated_at = (Get-Date).ToUniversalTime().ToString('o')
 }
