@@ -799,9 +799,22 @@ impl RestoredDashboard {
                 });
                 continue;
             }
+            if let Request::Send {request_id,target_device_id,sources,..}=command.request {
+                let result=self.send_screen_request(target_device_id,sources,request_id.clone());
+                let response=match result {
+                    Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.as_ref().unwrap().cancellation()),
+                    Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
+                };
+                let _=command.reply.send(response);continue;
+            }
+            if let Request::StopSend {request_id,..}=command.request {
+                let current=self.directed_send.as_ref().is_some_and(|sender|sender.request_id==request_id);
+                if current {self.directed_send.take();}
+                let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
+            }
             let mut newly_accepted = false;
             let response = match command.request {
-                Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} => unreachable!(),
+                Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} | Request::Send {..} | Request::StopSend {..} => unreachable!(),
                 Request::NetworkDiagnostics => serde_json::json!({
                     "ok":true, "generation":generation, "pid":std::process::id(),
                     "executable_sha256":adapter.executable_sha256,
@@ -812,6 +825,7 @@ impl RestoredDashboard {
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "lease":adapter.lease.as_ref().map(|lease|lease.snapshot()),
+                    "sending":self.directed_send.as_ref().map(|sender|serde_json::json!({"request_id":sender.request_id,"target":sender.target,"finished":sender.is_finished(),"status":sender.poll()})),
                     "sessions":self.owner.diagnostic_snapshot(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
@@ -3973,16 +3987,23 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn send_screen(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>)->Result<(),String>{
+        let request_id=format!("{}-{}",std::process::id(),crate::unix_now_ms());
+        self.send_screen_request(device_id,sources,request_id)
+    }
+    #[cfg(any(unix, windows))]
+    fn send_screen_request(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>,request_id:String)->Result<(),String>{
+        protocol::session::validate_delivery_sources(&sources).map_err(str::to_owned)?;
         if self.exit_group.stopping.load(Ordering::Acquire) {return Err("GUI exit is already requested".into());}
         if self.directed_send.as_ref().is_some_and(|s|!s.is_finished()){return Err("Stop the current delivery before choosing another target".into());}
         let instance=self._instance.as_ref().ok_or("Send from the main device window")?;
         let directory=instance.state_directory();
         let profile=if instance.is_frontend(){directory.parent().ok_or("Missing profile")?}else{directory}.to_owned();
         let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(&profile).load().map_err(|e|e.to_string())?.ok_or("Missing device identity")?;
+        if device_id==identity.node_id {return Err("Choose another device to receive the screen".into());}
         let generation=self.directed_receive.as_ref().ok_or("GUI generation is unavailable")?.generation.clone();
         let routes=self.runtime.owner.discovery_snapshot_rx().map(|rx|crate::desktop::model::candidate_routes(&rx.borrow(),&device_id)).unwrap_or_default();
         if routes.is_empty(){return Err("Target is not currently available".into());}
-        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
+        self.directed_send=Some(crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
         self.status="Contacting target to receive this screen".into();Ok(())
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {

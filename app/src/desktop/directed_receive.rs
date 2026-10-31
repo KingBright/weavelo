@@ -49,6 +49,9 @@ pub(crate) enum Request {
         #[serde(default)]
         claim: Option<protocol::session::DeliveryClaimProof>,
     },
+    Send { generation:String, request_id:String, target_device_id:String,
+        sources:Vec<protocol::session::CaptureSource>, deadline_ms:u64 },
+    StopSend { generation:String, request_id:String, deadline_ms:u64 },
     Renew { generation:String, request_id:String, deadline_ms:u64, revision:u64, lease_ms:u64 },
     Stop {
         generation: String,
@@ -64,6 +67,7 @@ pub(crate) struct Command {
 pub(crate) struct Reply {
     body: serde_json::Value,
     pixels: Option<std::sync::Arc<Vec<u8>>>,
+    cancel_send: Option<tokio::sync::watch::Sender<bool>>,
     on_written: Option<oneshot::Sender<()>>,
     revoke_on_drop: Option<(
         Vec<std::sync::Weak<super::original_owner::OriginalOwner>>,
@@ -75,6 +79,7 @@ impl From<serde_json::Value> for Reply {
         Self {
             body,
             pixels: None,
+            cancel_send: None,
             on_written: None,
             revoke_on_drop: None,
         }
@@ -92,23 +97,29 @@ impl Reply {
         Self {
             body,
             pixels: None,
+            cancel_send: None,
             on_written: None,
             revoke_on_drop: Some((owners, request)),
         }
     }
     pub fn observation(output: super::computer_use_ipc::Output) -> Self {
-        Self {body:output.body,pixels:output.pixels,revoke_on_drop:None,on_written:None}
+        Self {body:output.body,pixels:output.pixels,cancel_send:None,revoke_on_drop:None,on_written:None}
     }
     pub fn upgrade_exit(body:serde_json::Value, signal:oneshot::Sender<()>) -> Self {
-        Self {body,pixels:None,revoke_on_drop:None,on_written:Some(signal)}
+        Self {body,pixels:None,cancel_send:None,revoke_on_drop:None,on_written:Some(signal)}
+    }
+    pub fn sending(body:serde_json::Value, cancel:tokio::sync::watch::Sender<bool>) -> Self {
+        let mut reply=Self::from(body); reply.cancel_send=Some(cancel); reply
     }
     fn written(&mut self) {
+        self.cancel_send=None;
         if let Some(signal)=self.on_written.take() {let _=signal.send(());}
         self.revoke_on_drop = None;
     }
 }
 impl Drop for Reply {
     fn drop(&mut self) {
+        if let Some(cancel)=self.cancel_send.take() {cancel.send_replace(true);}
         if let Some((owners, request)) = self.revoke_on_drop.take() {
             for owner in owners {
                 if let Some(owner) = owner.upgrade() { owner.cancel_directed_receive(&request); }
@@ -274,6 +285,17 @@ impl Adapter {
                 if !call.valid() {return Err("Invalid computer-use request");}
                 Ok(())
             }
+            Request::Send {generation,request_id,target_device_id,sources,deadline_ms} => {
+                valid_request(&self.generation,generation,request_id,*deadline_ms,now_ms)?;
+                protocol::session::validate_delivery_sources(sources)?;
+                if target_device_id.is_empty() || target_device_id.len()>256 || target_device_id.chars().any(char::is_control) {
+                    return Err("Invalid target device ID");
+                }
+                self.seen.retain(|_,deadline|*deadline>now_ms);
+                if self.seen.len()>=256 || self.seen.contains_key(request_id) {return Err("Send request replay refused");}
+                self.seen.insert(request_id.clone(),*deadline_ms); Ok(())
+            }
+            Request::StopSend {generation,request_id,deadline_ms} => valid_request(&self.generation,generation,request_id,*deadline_ms,now_ms),
             Request::Receive {
                 generation,
                 request_id,
@@ -407,8 +429,17 @@ pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Val
             Request::Receive { generation, request_id: format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()),
                 source_device_id: source.clone(), sources:vec![protocol::session::CaptureSource::MainDisplay], deadline_ms: now.saturating_add(ADMISSION_MS), lease_ms: seconds*1000, claim:None }
         }
+        [cmd, target, sources] if cmd == "--gui-send" => {
+            let sources:Vec<protocol::session::CaptureSource>=serde_json::from_str(sources)?;
+            protocol::session::validate_delivery_sources(&sources)?;
+            let status=exchange(directory,&Request::Status)?;
+            let generation=status["generation"].as_str().ok_or("Missing GUI generation")?.to_owned();
+            Request::Send {generation,request_id:format!("{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()),
+                target_device_id:target.clone(),sources,deadline_ms:crate::unix_now_ms().saturating_add(ADMISSION_MS)}
+        }
+        [cmd,generation,id] if cmd == "--gui-stop-send" => Request::StopSend {generation:generation.clone(),request_id:id.clone(),deadline_ms:crate::unix_now_ms().saturating_add(ADMISSION_MS)},
         [cmd, generation, id] if cmd == "--gui-stop-receive" => Request::Stop { generation: generation.clone(), request_id: id.clone(), deadline_ms: crate::unix_now_ms().saturating_add(ADMISSION_MS) },
-        _ => return Err("Usage: --gui-status-json | --gui-receive SOURCE_DEVICE_ID [1..120 seconds] [--receiver RECEIVER_DEVICE_ID] | --gui-stop-receive GENERATION REQUEST_ID".into()),
+        _ => return Err("Usage: --gui-send TARGET_DEVICE_ID SOURCES_JSON | --gui-stop-send GENERATION REQUEST_ID | --gui-status-json | --gui-receive SOURCE_DEVICE_ID [1..120 seconds] [--receiver RECEIVER_DEVICE_ID] | --gui-stop-receive GENERATION REQUEST_ID".into()),
     };
     let result = exchange(directory, &request)?;
     if result["ok"] != true {
@@ -461,6 +492,27 @@ mod tests {
         assert!(adapter.admit(&decoded,100).is_err());
         assert!(adapter.admit(&Request::UpgradeQuit {generation,executable_sha256:hash,
             request_id:"explicit-user-close".into(),deadline_ms:200},100).is_err());
+    }
+    #[tokio::test]
+    async fn send_requests_bind_generation_sources_and_reject_replay() {
+        let dir=private_fixture(); let mut adapter=Adapter::start(dir.path()).unwrap();
+        let make=|generation:String,id:&str,sources| Request::Send {generation,request_id:id.into(),
+            target_device_id:"paired-target".into(),sources,deadline_ms:200};
+        assert!(adapter.admit(&make("stale".into(),"request-1",vec![protocol::session::CaptureSource::MainDisplay]),100).is_err());
+        assert!(adapter.admit(&make(adapter.generation.clone(),"request-1",vec![]),100).is_err());
+        let request=make(adapter.generation.clone(),"request-1",vec![protocol::session::CaptureSource::MainDisplay]);
+        assert!(adapter.admit(&request,100).is_ok());
+        assert!(adapter.admit(&request,100).is_err());
+        assert!(adapter.admit(&Request::StopSend {generation:"old".into(),request_id:"request-1".into(),deadline_ms:200},100).is_err());
+    }
+    #[test]
+    fn unwritten_send_acknowledgement_cancels_only_its_own_sender() {
+        let (first,old)=tokio::sync::watch::channel(false);
+        let (second,current)=tokio::sync::watch::channel(false);
+        let reply=Reply::sending(serde_json::json!({"ok":true}),first);
+        drop(reply);assert!(*old.borrow());assert!(!*current.borrow());
+        let mut reply=Reply::sending(serde_json::json!({"ok":true}),second);
+        reply.written();drop(reply);assert!(!*current.borrow());
     }
     #[tokio::test]
     async fn owns_private_endpoint_rejects_replay_and_removes_on_drop() {

@@ -5,6 +5,9 @@ import org.json.JSONObject
 import java.io.File
 import kotlinx.coroutines.flow.asStateFlow
 
+internal fun incomingVideoReceiving(expected: List<String>, panes: List<WorkspacePane>, submitted: Set<Int>): Boolean =
+    panes.any { it.accepted && it.id in submitted && it.source.source.toString() in expected }
+
 /** Tickets remain process-local; Intents and saved UI state carry only an opaque ID. */
 object DirectedDelivery {
     private val mutableError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
@@ -90,9 +93,8 @@ object DirectedDelivery {
         if (submittedGeneration != generation) { submitted.clear(); submittedGeneration = generation }
         submitted.add(pane)
         val expected = sources(id)
-        if (expected.isNotEmpty() && expected.all { source -> panes.any {
-                it.source.source.toString() == source && it.accepted && it.id in submitted
-            } }) update(id, "Receiving") // native Surface submission, not physical scanout
+        submitted.retainAll(panes.map { it.id }.toSet())
+        if (incomingVideoReceiving(expected, panes, submitted)) update(id, "Receiving") // native Surface submission, not physical scanout
     }
 
     @Synchronized fun finish(id: String, reason: String = "", rejected: Boolean = false) {

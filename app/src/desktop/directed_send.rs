@@ -20,6 +20,7 @@ mod sender {
     static NEXT_REGISTRATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     pub(crate) struct SendHandle {
         pub target: String,
+        pub request_id: String,
         stop: tokio::sync::watch::Sender<bool>,
         heartbeat: Arc<Mutex<Instant>>,
         status: Arc<Mutex<String>>,
@@ -27,6 +28,7 @@ mod sender {
     }
     impl SendHandle {
         pub fn start(
+            request_id:String,
             profile: PathBuf,
             generation: String,
             source: String,
@@ -61,6 +63,7 @@ mod sender {
                 };
             });
             Self {
+                request_id,
                 target,
                 stop,
                 heartbeat,
@@ -68,6 +71,7 @@ mod sender {
                 task,
             }
         }
+        pub fn cancellation(&self) -> tokio::sync::watch::Sender<bool> {self.stop.clone()}
         pub fn poll(&self) -> String {
             *self.heartbeat.lock().unwrap() = Instant::now();
             self.status.lock().unwrap().clone()

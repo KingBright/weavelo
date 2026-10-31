@@ -201,9 +201,16 @@ object WorkspaceClient {
     }
     fun remove(id: Int) = guarded {
         command("Unsubscribe", JSONObject().put("id", id))
-        val panes = mutable.value.panes.filter { it.id != id }
-        mutable.value = mutable.value.copy(panes = panes, selected = panes.firstOrNull()?.id ?: 0)
-        activity()
+        removePane(id, "Receiving stopped")
+    }
+    private fun removePane(id: Int, reason: String, rejected: Boolean = false) {
+        val previous = mutable.value
+        if (previous.panes.none { it.id == id }) return
+        val panes = previous.panes.filter { it.id != id }
+        mutable.value = previous.copy(panes = panes,
+            selected = previous.selected.takeIf { selected -> panes.any { it.id == selected } } ?: panes.firstOrNull()?.id ?: 0)
+        if (panes.isEmpty() && ownership.request()?.incomingId != null && !incomingEnded) endIncoming(reason, rejected)
+        else activity()
     }
     fun layout(grid: Boolean, selected: Int = mutable.value.selected) = guarded {
         mutable.value = mutable.value.copy(grid = grid, selected = selected); activity()
@@ -386,8 +393,7 @@ object WorkspaceClient {
                 }
             }
             control?.optJSONObject("Unsubscribed")?.let { ended ->
-                val panes = mutable.value.panes.filter { it.id != ended.getInt("id") }
-                mutable.value = mutable.value.copy(panes = panes, selected = panes.firstOrNull()?.id ?: 0)
+                removePane(ended.getInt("id"), "The source stopped sharing")
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map {
@@ -399,9 +405,8 @@ object WorkspaceClient {
                 val id = it.getInt("request_id")
                 if (ownership.request()?.incomingId != null && mutable.value.panes.any { pane -> pane.id == id && !pane.accepted }) {
                     command("Unsubscribe", JSONObject().put("id", id))
-                    val panes = mutable.value.panes.filter { pane -> pane.id != id }
-                    mutable.value = mutable.value.copy(panes = panes, selected = panes.firstOrNull()?.id ?: 0)
-                    if (panes.isEmpty()) endIncoming(it.getString("reason"), rejected = true)
+                    mutable.value = mutable.value.copy(status = it.getString("reason"))
+                    removePane(id, it.getString("reason"), rejected = true)
                 }
                 android.util.Log.w("WeaveloWorkspace", "Request $id failed: ${it.getString("reason")}")
                 // A late settings/unsubscribe reply for a closed pane must not
