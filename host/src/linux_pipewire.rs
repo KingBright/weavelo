@@ -1,5 +1,5 @@
 //! Platform independent contract for a single restricted PipeWire stream.
-//! Native mappings are borrowed only during process(); only checked owned YUV
+//! Native mappings are borrowed only during process(); only checked owned raw frames
 //! and local generation/negotiation stamps may enter the one-frame mailbox.
 use crate::linux_frame::{
     BorrowedPlane, FrameError, FrameFormat, FrameMailbox, FrameStamp, OwnedFrame, PixelFormat,
@@ -72,14 +72,13 @@ impl CopyContract {
             return Err(WorkerError::Closed);
         }
         if let Some(format) = format {
-            if !matches!(format.pixel_format, PixelFormat::Nv12 | PixelFormat::I420)
-                || format.transform != Transform::Identity
+            if format.transform != Transform::Identity
                 || format.width == 0
                 || format.height == 0
                 || format.width > crate::linux_frame::MAX_DIMENSION
                 || format.height > crate::linux_frame::MAX_DIMENSION
-                || format.width % 2 != 0
-                || format.height % 2 != 0
+                || (matches!(format.pixel_format,PixelFormat::Nv12|PixelFormat::I420)
+                    && (format.width % 2 != 0 || format.height % 2 != 0))
                 || u64::from(format.width) * u64::from(format.height)
                     > crate::linux_frame::MAX_PIXELS
             {
@@ -152,7 +151,7 @@ fn split_planes<'a>(
     let count = match format.pixel_format {
         PixelFormat::Nv12 => 2,
         PixelFormat::I420 => 3,
-        _ => return Err(FrameError::PlaneCount),
+        PixelFormat::Bgra|PixelFormat::Bgrx|PixelFormat::Rgba|PixelFormat::Rgbx => 1,
     };
     let borrow = |chunk: &MappedChunk<'a>| BorrowedPlane {
         data: chunk.bytes,

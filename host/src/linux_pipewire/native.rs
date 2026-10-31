@@ -149,6 +149,10 @@ fn format(raw: spa::param::video::VideoInfoRaw) -> Result<FrameFormat, WorkerErr
     let pixel_format = match raw.format() {
         spa::param::video::VideoFormat::NV12 => PixelFormat::Nv12,
         spa::param::video::VideoFormat::I420 => PixelFormat::I420,
+        spa::param::video::VideoFormat::BGRA => PixelFormat::Bgra,
+        spa::param::video::VideoFormat::BGRx => PixelFormat::Bgrx,
+        spa::param::video::VideoFormat::RGBA => PixelFormat::Rgba,
+        spa::param::video::VideoFormat::RGBx => PixelFormat::Rgbx,
         _ => return Err(WorkerError::Format),
     };
     if raw
@@ -156,7 +160,7 @@ fn format(raw: spa::param::video::VideoInfoRaw) -> Result<FrameFormat, WorkerErr
         .contains(spa::param::video::VideoFlags::MODIFIER)
         || raw.interlace_mode() != spa::param::video::VideoInterlaceMode::Progressive
         || raw.views() > 1
-        || raw.as_raw().chroma_site != 0
+        || (matches!(pixel_format,PixelFormat::Nv12|PixelFormat::I420) && raw.as_raw().chroma_site != 0)
     {
         return Err(WorkerError::Format);
     }
@@ -398,18 +402,34 @@ fn run(
             spa::param::video::VideoFormat::I420
         )
     );
-    let bytes = spa::pod::serialize::PodSerializer::serialize(
-        Cursor::new(Vec::new()),
-        &spa::pod::Value::Object(object),
-    )?
-    .0
-    .into_inner();
-    let pod = spa::pod::Pod::from_bytes(&bytes).ok_or("invalid format pod")?;
+    // KWin's mapped-memory stream exposes packed RGB, not planar YUV.
+    // Negotiate its color contract explicitly; never fill unknown metadata
+    // after capture or infer a YUV matrix from the screen dimensions.
+    let mut rgb=spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,spa::param::ParamType::EnumFormat,
+        spa::pod::property!(spa::param::format::FormatProperties::MediaType,Id,spa::param::format::MediaType::Video),
+        spa::pod::property!(spa::param::format::FormatProperties::MediaSubtype,Id,spa::param::format::MediaSubtype::Raw),
+        spa::pod::property!(spa::param::format::FormatProperties::VideoFormat,Choice,Enum,Id,
+            spa::param::video::VideoFormat::BGRA,spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRx,spa::param::video::VideoFormat::RGBA,spa::param::video::VideoFormat::RGBx)
+    );
+    for (key,value) in [
+        (spa::param::format::FormatProperties::VideoColorRange,1), // full-range packed RGB
+        (spa::param::format::FormatProperties::VideoColorMatrix,1), // RGB
+        (spa::param::format::FormatProperties::VideoTransferFunction,7), // sRGB
+        (spa::param::format::FormatProperties::VideoColorPrimaries,1), // BT.709
+    ] {rgb.properties.push(spa::pod::property!(key,spa::pod::Value::Id(spa::utils::Id(value))));}
+    let formats=[object,rgb].into_iter().map(|format| {
+        spa::pod::serialize::PodSerializer::serialize(Cursor::new(Vec::new()),&spa::pod::Value::Object(format))
+            .map(|result|result.0.into_inner())
+    }).collect::<Result<Vec<_>,_>>()?;
+    let mut pods=formats.iter().map(|bytes|spa::pod::Pod::from_bytes(bytes).ok_or("invalid format pod"))
+        .collect::<Result<Vec<_>,_>>()?;
     stream.connect(
         spa::utils::Direction::Input,
         if serial.is_some() { None } else { Some(node) },
         pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
-        &mut [pod],
+        &mut pods,
     )?;
     let timer_loop = mainloop.clone();
     let timer = mainloop.loop_().add_timer(move |_| {

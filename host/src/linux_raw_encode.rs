@@ -1,4 +1,4 @@
-//! Owned YUV input to the existing FFmpeg/libx265 Annex-B media chain.
+//! Owned raw input to the existing FFmpeg/libx265 Annex-B media chain.
 //! No screen capture process, inferred color matrix, or compressed-frame loss.
 
 use crate::linux_frame::{FrameFormat, FrameStamp, OwnedFrame, PixelFormat, SourceColor};
@@ -295,18 +295,22 @@ fn color_values(color: SourceColor) -> Result<(u32, u32, u32, u32)> {
     Ok((range, matrix, transfer, primaries))
 }
 
+fn encoded_color(format:FrameFormat)->Result<(u32,u32,u32,u32)> {
+    if matches!(format.pixel_format,PixelFormat::Nv12|PixelFormat::I420) {
+        return color_values(format.color);
+    }
+    let color=format.color;
+    if (color.range,color.matrix,color.transfer,color.primaries)!=(1,1,7,1) {
+        return Err("packed RGB capture requires its negotiated full-range sRGB/BT.709 color contract".into());
+    }
+    // This is the declared RGB -> limited-range BT.709 conversion below,
+    // not a replacement description for unspecified YUV capture metadata.
+    Ok((1,1,13,1))
+}
+
 pub(crate) fn validate_native_input(frame: &OwnedFrame) -> Result<()> {
     frame.validate_owned()?;
-    if !matches!(
-        frame.source_format.pixel_format,
-        PixelFormat::Nv12 | PixelFormat::I420
-    ) {
-        return Err(
-            "native HEVC RGB conversion is not yet validated; refusing an inferred YUV matrix"
-                .into(),
-        );
-    }
-    color_values(frame.source_format.color)?;
+    encoded_color(frame.source_format)?;
     Ok(())
 }
 
@@ -317,19 +321,22 @@ fn raw_command(frame: &OwnedFrame, settings: RawSettings) -> Result<Command> {
         match frame.source_format.pixel_format {
             PixelFormat::Nv12 => "nv12",
             PixelFormat::I420 => "yuv420p",
-            _ => return Err(
-                "native HEVC RGB conversion is not yet validated; refusing an inferred YUV matrix"
-                    .into(),
-            ),
+            PixelFormat::Bgra=>"bgra",PixelFormat::Bgrx=>"bgr0",
+            PixelFormat::Rgba=>"rgba",PixelFormat::Rgbx=>"rgb0",
         };
-    let (range, matrix, transfer, primaries) = color_values(frame.source_format.color)?;
+    let (range, matrix, transfer, primaries) = encoded_color(frame.source_format)?;
+    let rgb=matches!(frame.source_format.pixel_format,PixelFormat::Bgra|PixelFormat::Bgrx|PixelFormat::Rgba|PixelFormat::Rgbx);
+    let (input_range,input_matrix)=if rgb {(2,0)}else{(range,matrix)};
+    let scale=format!("scale=w={}:h={}:force_original_aspect_ratio=decrease:force_divisible_by=2{}",
+        settings.width.min(frame.width),settings.height.min(frame.height),
+        if rgb {":in_range=full:out_range=limited:out_color_matrix=bt709"}else{""});
     let mut command = Command::new("ffmpeg");
     command.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
         "-f", "rawvideo", "-pixel_format", pixel, "-video_size", &format!("{}x{}", frame.width, frame.height),
-        "-framerate", &settings.fps.to_string(), "-color_range", &range.to_string(),
-        "-colorspace", &matrix.to_string(), "-color_trc", &transfer.to_string(), "-color_primaries", &primaries.to_string(),
+        "-framerate", &settings.fps.to_string(), "-color_range", &input_range.to_string(),
+        "-colorspace", &input_matrix.to_string(), "-color_trc", &transfer.to_string(), "-color_primaries", &primaries.to_string(),
         "-i", "pipe:0", "-an", "-filter_threads", "1", "-threads", "2",
-        "-vf", &format!("scale=w={}:h={}:force_original_aspect_ratio=decrease:force_divisible_by=2", settings.width.min(frame.width), settings.height.min(frame.height)),
+        "-vf", &scale,
         "-fps_mode", "passthrough", "-pix_fmt", "yuv420p", "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
         "-x265-params", &format!("keyint={}:min-keyint={}:repeat-headers=1:bframes=0:rc-lookahead=0:aud=1:pools=2:frame-threads=1:log-level=error:colorprim={primaries}:transfer={transfer}:colormatrix={matrix}", settings.fps, settings.fps),
         "-color_range", &range.to_string(), "-colorspace", &matrix.to_string(), "-color_trc", &transfer.to_string(), "-color_primaries", &primaries.to_string(),

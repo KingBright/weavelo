@@ -27,7 +27,15 @@ pub(crate) fn frame(pixel: PixelFormat, color: SourceColor, sequence: u64) -> Ow
         }
     }
     let uv: Vec<_> = u.iter().zip(&v).flat_map(|(&u, &v)| [u, v]).collect();
-    let data: Vec<&[u8]> = if pixel == PixelFormat::Nv12 {
+    let rgb=matches!(pixel,PixelFormat::Bgra|PixelFormat::Bgrx|PixelFormat::Rgba|PixelFormat::Rgbx);
+    let mut packed=Vec::new();
+    if rgb {
+        for row in 0..height {for column in 0..width {
+            let (r,g,b)=rgb_quadrants()[usize::from(row>=height/2)*2+usize::from(column>=width/2)];
+            packed.extend_from_slice(&if matches!(pixel,PixelFormat::Bgra|PixelFormat::Bgrx) {[b,g,r,255]}else{[r,g,b,255]});
+        }}
+    }
+    let data: Vec<&[u8]> = if rgb {vec![&packed]}else if pixel == PixelFormat::Nv12 {
         vec![&y, &uv]
     } else {
         vec![&y, &u, &v]
@@ -40,7 +48,7 @@ pub(crate) fn frame(pixel: PixelFormat, color: SourceColor, sequence: u64) -> Ow
             mapping_offset: 0,
             chunk_offset: 0,
             chunk_size: data.len() as u32,
-            stride: if index == 0 || pixel == PixelFormat::Nv12 {
+            stride: if rgb {width as i32*4}else if index == 0 || pixel == PixelFormat::Nv12 {
                 width as i32
             } else {
                 width as i32 / 2
@@ -75,6 +83,7 @@ pub(crate) fn known_color() -> SourceColor {
         primaries: 1,
     }
 }
+fn rgb_quadrants()->[(u8,u8,u8);4] {[(0,0,0),(255,255,255),(224,40,72),(24,160,88)]}
 fn settings() -> RawSettings {
     RawSettings {
         width: 64,
@@ -166,6 +175,25 @@ fn encoded(chunks: &[RawChunk]) -> Vec<u8> {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn packed_rgb_keeps_channel_order_range_and_declared_srgb_after_real_encoding() {
+    for pixel in [PixelFormat::Bgra,PixelFormat::Bgrx,PixelFormat::Rgba,PixelFormat::Rgbx] {
+        let chunks=fixture_stream(pixel,SourceColor {range:1,matrix:1,transfer:7,primaries:1}).await;
+        let bytes=encoded(&chunks);
+        let metadata=String::from_utf8(inspect("ffprobe",&["-v","error","-f","hevc","-show_entries",
+            "stream=color_range,color_space,color_transfer,color_primaries","-of","compact=p=0","pipe:0"],&bytes)).unwrap();
+        for expected in ["color_range=tv","color_space=bt709","color_transfer=iec61966-2-1","color_primaries=bt709"] {
+            assert!(metadata.contains(expected),"{pixel:?}: {metadata}");
+        }
+        let decoded=inspect("ffmpeg",&["-v","error","-f","hevc","-i","pipe:0","-frames:v","1",
+            "-pix_fmt","rgb24","-f","rawvideo","pipe:1"],&bytes);
+        assert_eq!(decoded.len(),64*32*3);
+        for ((r,g,b),(x,y)) in rgb_quadrants().into_iter().zip([(16,8),(48,8),(16,24),(48,24)]) {
+            let actual=&decoded[(y*64+x)*3..(y*64+x)*3+3];
+            for (actual,expected) in actual.iter().zip([r,g,b]) {assert!(actual.abs_diff(expected)<=6,"{pixel:?}: {actual} != {expected}");}
+        }
+    }
+}
 #[tokio::test]
 async fn actual_ffmpeg_nv12_retains_quadrants_sps_and_every_submitted_timing() {
     let chunks = fixture_stream(PixelFormat::Nv12, known_color()).await;
@@ -391,8 +419,7 @@ fn unsubmitted_slot_keeps_latest_and_rejects_malformed_or_unknown_rgb() {
     let mut invalid = frame(PixelFormat::I420, known_color(), 1);
     Arc::get_mut(&mut invalid.planes).unwrap()[0].pop();
     assert!(RawHevcSource::start(&invalid, settings()).is_err());
-    let mut rgb = frame(PixelFormat::I420, SourceColor::default(), 1);
-    rgb.source_format.pixel_format = PixelFormat::Bgra;
+    let rgb = frame(PixelFormat::Bgra, SourceColor::default(), 1);
     assert!(raw_command(&rgb, settings()).is_err());
     let mut hdr = known_color();
     hdr.transfer = 14;

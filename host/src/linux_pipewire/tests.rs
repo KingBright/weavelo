@@ -201,11 +201,23 @@ fn malformed_stride_chunk_plane_transform_and_unknown_range_fail_closed() {
     unknown.color.range = 0;
     contract.renegotiate(Some(unknown)).unwrap();
     assert!(copy(&contract, &bytes).is_err());
-    assert!(
-        contract
-            .renegotiate(Some(format(PixelFormat::Bgra)))
-            .is_err()
-    );
+    contract.renegotiate(Some(format(PixelFormat::Bgra))).unwrap();
+    assert!(contract.copy(contract.revision(),&[chunk(&[0;32],16)],None,Transform::Identity,None,None,0).is_err());
+}
+
+#[test]
+fn mapped_packed_rgb_preserves_odd_geometry_crop_padding_and_negotiated_color() {
+    for pixel in [PixelFormat::Bgra,PixelFormat::Bgrx,PixelFormat::Rgba,PixelFormat::Rgbx] {
+        let (mut contract,_)=setup(1);
+        let color=SourceColor {range:1,matrix:1,transfer:7,primaries:1};
+        contract.renegotiate(Some(FrameFormat {width:5,height:3,color,..format(pixel)})).unwrap();
+        let bytes:Vec<u8>=(0..75).collect();
+        let frame=contract.copy(contract.revision(),&[MappedChunk {offset:3,size:72,..chunk(&bytes,24)}],
+            Some(Crop{x:1,y:1,width:3,height:2}),Transform::Identity,Some(2),Some(3),4).unwrap();
+        let expected:Vec<u8>=bytes[31..43].iter().chain(&bytes[55..67]).copied().collect();
+        assert_eq!(*frame.planes,vec![expected]);assert_eq!((frame.width,frame.height),(3,2));
+        assert_eq!(frame.source_format.color,color);
+    }
 }
 
 #[tokio::test]
