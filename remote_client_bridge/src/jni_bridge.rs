@@ -68,10 +68,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             let newly_started = node.is_none();
             if newly_started {
                 *node = Some(Arc::new(client().runtime().block_on(
-                    async {
-                        if operation == 20 { crate::publisher_bridge::MobilePublisher::start_delivery_listener(bind, directory).await }
-                        else { crate::publisher_bridge::MobilePublisher::start_receiver(bind, directory).await }
-                    },
+                    crate::publisher_bridge::MobilePublisher::start_delivery_listener(bind, directory),
                 )?));
             }
             let publisher = node.as_ref().unwrap();
@@ -88,7 +85,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             } else {
                 FILE_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            publisher.set_file_reception(CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
+            publisher.set_file_reception(FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
             let address = publisher.address.to_string();
             crate::PUBLISHING_PORT.store(
                 publisher.address.port(),
@@ -120,7 +117,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 && !FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
                 && !DELIVERY_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
             if let Some(publisher) = node.as_ref() {
-                publisher.set_file_reception(CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) || FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
+                publisher.set_file_reception(FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
             }
             if stop {
                 node.take();
@@ -159,7 +156,14 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
         }
         if operation==16 {
             let publisher=PUBLISHER.lock().unwrap().clone();
+            if publisher.as_ref().is_some_and(|publisher|publisher.is_finished()) {return Err("Incoming screen service stopped; stop sharing and receiving before retrying".into());}
             return serde_json::to_string(&publisher.and_then(|publisher|publisher.next_delivery())).map_err(|error|error.to_string());
+        }
+        if operation==23 {
+            let publisher=PUBLISHER.lock().unwrap().clone();
+            let mut status=publisher.as_ref().map_or_else(||serde_json::json!({"id":0,"active":false,"target":"","status":""}),|publisher|publisher.outgoing_status());
+            status["incoming_ready"]=serde_json::json!(publisher.is_some_and(|publisher|!publisher.is_finished()));
+            return Ok(status.to_string());
         }
         if operation==18 {
             let publisher=PUBLISHER.lock().unwrap().clone();
@@ -171,6 +175,13 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             .clone()
             .ok_or("screen sharing is not running")?;
         match operation {
+            22 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Send {target:String,endpoint:std::net::SocketAddr}
+                let send:Send=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                client().runtime().block_on(publisher.send_screen(send.target,send.endpoint))?;Ok(String::new())
+            }
+            24 => {publisher.stop_sending_id(serde_json::from_str(&value).map_err(|error|error.to_string())?)?;Ok(String::new())}
             17 => {
                 #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
                 struct Update {id:String,state:protocol::session::DeliveryState,reason:String}

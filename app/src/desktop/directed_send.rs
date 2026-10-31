@@ -1,11 +1,11 @@
 //! Directed delivery owns a control-only WorkspaceConnection. The target uses
 //! the normal pull connection after proving the one-time sending intention.
-use protocol::session::{DeliveryState, SessionCommand};
-use remote_core::workspace_session::{WorkspaceConnection, WorkspaceEvents};
+use protocol::session::SessionCommand;
+use remote_core::workspace_session::WorkspaceConnection;
 use std::time::Duration;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-pub(crate) use remote_core::directed_delivery::{claim,exchange};
+pub(crate) use remote_core::directed_delivery::claim;
 
 #[cfg(any(unix, windows))]
 mod sender {
@@ -143,54 +143,18 @@ mod sender {
             },
         )
         .await?;
-        let cancellation = cancelled.clone();
-        let sending = async {
-            let mut revision = 1;
-            loop {
-                if *cancellation.borrow() {
-                    return Ok::<(), Error>(());
-                }
-                if heartbeat.lock().unwrap().elapsed() > Duration::from_secs(10)
-                    || remote_core::shared_files::current_share_scope() != scope
-                {
-                    return Err("Sending window or device group changed".into());
-                }
-                if revision > 1 {
-                    local(
-                        &client,
-                        LocalIntent::Renew {
-                            ticket,
-                            generation: generation.clone(),
-                            revision,
-                        },
-                    )
-                    .await?;
-                }
-                let command = SessionCommand::DeliveryOffer {
-                    request_id: request,
-                    source_device_id: source.clone(),
-                    target_device_id: target.clone(),
-                    ticket,
-                    revision,
-                    sources: sources.clone(),
-                };
-                let state = exchange(&conn, &mut events, command, request, revision).await?;
-                *status.lock().unwrap() = match state {
-                    DeliveryState::Pending => "Opening receiver…".into(),
-                    DeliveryState::Accepted => "Connecting…".into(),
-                    DeliveryState::Receiving => "Receiving".into(),
-                    DeliveryState::Cancelled | DeliveryState::Rejected => return Ok(()),
-                    _ => return Err("Unexpected delivery receipt".into()),
-                };
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                revision = revision
-                    .checked_add(1)
-                    .ok_or("Sending revision exhausted")?;
-            }
-        };
-        // Drop signals are independent of GUI polling. Revocation happens
-        // locally first; a lost target Cancel cannot leave our capture running.
-        let result = tokio::select! {biased;_=cancelled.changed()=>Ok(()),result=sending=>result};
+        let renewing = client.clone();
+        let renewing_generation = generation.clone();
+        let result = remote_core::directed_delivery::maintain_offer(&conn, &mut events,
+            remote_core::directed_delivery::OutgoingOffer {source, target, ticket, request, sources, scope}, cancelled,
+            || heartbeat.lock().unwrap().elapsed() <= Duration::from_secs(10),
+            move |revision| {
+                let client = renewing.clone(); let generation = renewing_generation.clone();
+                async move {local(&client, LocalIntent::Renew {ticket, generation, revision}).await}
+            },
+            |state| *status.lock().unwrap() = remote_core::directed_delivery::sending_status(state).into(),
+        ).await;
+        // Revoke locally first even when the target's cancellation reply is lost.
         let revoked = local(&client, LocalIntent::Revoke { ticket, generation }).await;
         let _ = conn
             .control(SessionCommand::DeliveryCancel {

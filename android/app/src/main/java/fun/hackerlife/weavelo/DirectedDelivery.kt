@@ -3,9 +3,13 @@ package `fun`.hackerlife.weavelo
 import android.content.Context
 import org.json.JSONObject
 import java.io.File
+import kotlinx.coroutines.flow.asStateFlow
 
 /** Tickets remain process-local; Intents and saved UI state carry only an opaque ID. */
 object DirectedDelivery {
+    private val mutableError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val error = mutableError.asStateFlow()
+    fun failed(reason: String?) { mutableError.value = reason }
     private var foregroundOwner: Any? = null
     private var listening = false
     private var incoming: JSONObject? = null
@@ -91,9 +95,9 @@ object DirectedDelivery {
             } }) update(id, "Receiving") // native Surface submission, not physical scanout
     }
 
-    @Synchronized fun finish(id: String, reason: String = "") {
+    @Synchronized fun finish(id: String, reason: String = "", rejected: Boolean = false) {
         if (incoming?.optString("id") != id) return
-        runCatching { update(id, "Cancelled", reason) }
+        runCatching { update(id, if (rejected) "Rejected" else "Cancelled", reason) }
         incoming = null
         request = null
         submitted.clear()

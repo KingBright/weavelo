@@ -64,6 +64,9 @@ fun MobileConsoleScreen(
     onConnectHost: (String, String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit = { _, _ -> },
     onSendFiles: (String, String) -> Unit = { _, _ -> },
+    outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState = `fun`.hackerlife.weavelo.OutgoingScreenState(),
+    onSendScreen: (String) -> Unit = {},
+    onStopSending: (Long) -> Unit = {},
     publishing: Boolean = false,
     receivingFiles: Boolean = false,
     receiverStarting: Boolean = false,
@@ -228,7 +231,8 @@ fun MobileConsoleScreen(
                         onToggleAdvanced = { advancedConnection = !advancedConnection },
                         onConnectHost = onConnectHost,
                         onConnectWorkspace = onConnectWorkspace,
-                        onSendFiles = onSendFiles
+                        onSendFiles = onSendFiles,
+                        outgoing = outgoing, onSendScreen = onSendScreen, onStopSending = onStopSending
                     )
                     "Mesh P2P" -> MeshP2pTabContent(
                         devices = devices,
@@ -303,7 +307,8 @@ fun QuickActionButton(text: String, modifier: Modifier = Modifier, enabled: Bool
 
 @Composable
 fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true,
-    canSendFiles: Boolean = false, onSendFiles: () -> Unit = {}, onConnect: () -> Unit) {
+    canSendFiles: Boolean = false, onSendFiles: () -> Unit = {},
+    canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {}, onConnect: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
         .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(20.dp))
         .clickable(enabled = enabled, onClick = onConnect).padding(14.dp),
@@ -322,6 +327,9 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                 overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
+            MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
+                if (sending) "Stop sending to $name" else "Send this screen to $name", canSendScreen,
+                modifier = Modifier.size(44.dp), onClick = onSendScreen)
             MobileAction(MobileSymbol.Open, "Open device $name", enabled, modifier = Modifier.size(44.dp), onClick = onConnect)
             MobileAction(MobileSymbol.Files, "Send files to $name", canSendFiles, modifier = Modifier.size(44.dp), onClick = onSendFiles)
         }
@@ -374,7 +382,10 @@ private fun DevicesTabContent(
     onToggleAdvanced: () -> Unit,
     onConnectHost: (String, String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit,
-    onSendFiles: (String, String) -> Unit
+    onSendFiles: (String, String) -> Unit,
+    outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState,
+    onSendScreen: (String) -> Unit,
+    onStopSending: (Long) -> Unit
 ) {
     var detailsOpen by remember { mutableStateOf(false) }
     LazyColumn(
@@ -413,9 +424,12 @@ private fun DevicesTabContent(
                 HostCard(
                     name = device.name.ifBlank { device.id },
                     tag = device.scope,
-                    subtext = device.capabilitySummary,
+                    subtext = if (outgoing.target == device.id && outgoing.status.isNotBlank()) outgoing.status else device.capabilitySummary,
                     enabled = nativeAvailable && device.canOpenWorkspace && sessionState != SessionState.CONNECTING,
                     canSendFiles = nativeAvailable && device.canSendFiles,
+                    canSendScreen = nativeAvailable && (outgoing.active && outgoing.target == device.id || !outgoing.active && device.canReceiveScreen),
+                    sending = outgoing.active && outgoing.target == device.id,
+                    onSendScreen = { if (outgoing.active && outgoing.target == device.id) onStopSending(outgoing.id) else onSendScreen(device.id) },
                     onSendFiles = { onSendFiles(device.id, device.endpoint) },
                     onConnect = { onConnectWorkspace(device.id, device.endpoint) }
                 )
@@ -718,218 +732,84 @@ private fun SecurityTabContent(
     onStopSharing: () -> Unit,
     onBrowseFiles: () -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Text(
-                text = "Sharing & permissions",
-                color = ColorTextSecondary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 1.sp
-            )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
+    var permissionRevision by remember { mutableStateOf(0) }
+    var securityDetails by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) permissionRevision++
         }
-
-        // 1. 屏幕共享受控服务
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    val audioAllowed = remember(permissionRevision) {
+        context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+    val notificationsAllowed = remember(permissionRevision) {
+        context.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()
+    }
+    if (securityDetails) AlertDialog(onDismissRequest = { securityDetails = false },
+        title = { Text("Connection security") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            TelemetryLaneRow("Transport cipher", "ChaCha20-Poly1305", ColorAccentCyan)
+            TelemetryLaneRow("Network access", "Invitation required", ColorAccentEmerald)
+            TelemetryLaneRow("Authentication", "Paired device group", ColorAccentCyan)
+            TelemetryLaneRow("Storage", "App private", ColorTextSecondary)
+        } }, confirmButton = { TextButton(onClick = { securityDetails = false }) { Text("Done") } })
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ColorSurfaceCard)
-                    .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Screen Sharing Service",
-                        color = ColorTextPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(9999.dp))
-                            .background(if (publishing) Color(0xFF132832) else Color(0xFF22262E))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            text = if (publishing) "PUBLISHING" else "OFF",
-                            color = if (publishing) ColorAccentEmerald else ColorTextSecondary,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+            Text("Sharing & permissions", color = ColorTextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text("Choose a screen or app, and set control and audio permissions.",
+                color = ColorTextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+        }
+        item {
+            Column(Modifier.fillMaxWidth().background(ColorSurfaceCard, RoundedCornerShape(18.dp))
+                .border(1.dp, ColorBorderFine, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                SharingPermissionRow(MobileSymbol.Share, "Screen or app", if (publishing) "Sharing" else "Not sharing",
+                    if (publishing) "Stop" else "Share", nativeAvailable) {
+                    if (publishing) onStopSharing() else onShareScreen(false)
                 }
-                Text(
-                    text = if (publishing) "Paired devices can view this phone until you stop sharing."
-                        else "Choose a screen or app and confirm Android screen sharing.",
-                    color = ColorTextSecondary,
-                    fontSize = 11.sp
-                )
-                if (publishing) {
-                    Button(
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF3E1418),
-                            contentColor = Color(0xFFFF8A80)
-                        ),
-                        onClick = onStopSharing,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Stop sharing this phone")
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            colors = ButtonDefaults.buttonColors(containerColor = ColorAccentCyan, contentColor = Color.Black),
-                            enabled = nativeAvailable,
-                            onClick = { onShareScreen(false) },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Share screen", fontSize = 12.sp)
-                        }
-                        Button(
-                            colors = ButtonDefaults.buttonColors(containerColor = ColorSurfaceCard, contentColor = ColorTextPrimary),
-                            enabled = nativeAvailable,
-                            onClick = { onShareScreen(true) },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("+ Audio", fontSize = 12.sp)
-                        }
-                    }
+                SharingPermissionRow(MobileSymbol.Control, "Remote control", if (controlReady) "Allowed" else "Needs permission",
+                    if (controlReady) "Settings" else "Allow", nativeAvailable, onControlSettings)
+                SharingPermissionRow(MobileSymbol.Audio, "Audio", if (audioAllowed) "Microphone allowed" else "Needs permission",
+                    "Share with audio", nativeAvailable && !publishing) { onShareScreen(true) }
+                SharingPermissionRow(MobileSymbol.Notifications, "Notifications", if (notificationsAllowed) "Allowed" else "Off",
+                    "Settings", true) {
+                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
                 }
+                if (controlReady) TextButton(onClick = onShareControlledScreen, enabled = nativeAvailable && !publishing,
+                    modifier = Modifier.fillMaxWidth()) { Text("Share with control and audio") }
             }
         }
-
         item {
-            Column(Modifier.fillMaxWidth().background(ColorSurfaceCard,RoundedCornerShape(12.dp))
-                .border(1.dp,ColorBorderFine,RoundedCornerShape(12.dp)).padding(14.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("REMOTE CONTROL",color = ColorTextPrimary,fontSize = 12.sp,fontWeight = FontWeight.Bold)
-                Text("Allow touch and typing while sharing this phone's full screen.",color = ColorTextSecondary,fontSize = 11.sp)
-                if (controlReady) {
-                    Button(onClick = onShareControlledScreen,enabled = nativeAvailable && !publishing,modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = ColorAccentCyan,contentColor = Color.Black)) {
-                        Text("Share screen + control + audio",fontSize = 12.sp)
-                    }
-                    TextButton(onClick = onControlSettings) { Text("Remote control settings") }
-                } else {
-                    Button(onClick = onControlSettings,enabled = nativeAvailable,modifier = Modifier.fillMaxWidth()) { Text("Enable remote control") }
+            Column(Modifier.fillMaxWidth().background(ColorSurfaceCard, RoundedCornerShape(18.dp))
+                .border(1.dp, ColorBorderFine, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                SharingPermissionRow(MobileSymbol.Files, "Receive files",
+                    if (receiverStarting) "Starting…" else if (receivingFiles) "On" else "Off",
+                    if (receivingFiles) "Stop" else "Start", nativeAvailable && !receiverStarting) {
+                    if (receivingFiles) onStopReceiving() else onStartReceiving()
                 }
+                TextButton(onClick = onBrowseFiles, modifier = Modifier.fillMaxWidth()) { Text("Browse received files") }
             }
         }
+        item { TextButton(onClick = { securityDetails = true }) { Text("Connection security") } }
+    }
+}
 
-        // 2. 独立文件接收服务
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ColorSurfaceCard)
-                    .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "File Reception Service",
-                        color = ColorTextPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(9999.dp))
-                            .background(if (receivingFiles) Color(0xFF132832) else Color(0xFF22262E))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            text = if (receivingFiles) "RECEIVING" else "IDLE",
-                            color = if (receivingFiles) ColorAccentCyan else ColorTextSecondary,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                Text(
-                    text = "Allow other mesh devices to push files to this phone. Operates independently from screen sharing.",
-                    color = ColorTextSecondary,
-                    fontSize = 11.sp
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (receivingFiles) {
-                        Button(
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3E1418), contentColor = Color(0xFFFF8A80)),
-                            enabled = !receiverStarting,
-                            onClick = onStopReceiving,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(if (receiverStarting) "Starting..." else "Stop receiver")
-                        }
-                    } else {
-                        Button(
-                            colors = ButtonDefaults.buttonColors(containerColor = ColorSurfaceCard, contentColor = ColorTextPrimary),
-                            enabled = nativeAvailable,
-                            onClick = onStartReceiving,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Start receiver")
-                        }
-                    }
-                    TextButton(onClick = onBrowseFiles) {
-                        Text("Browse files")
-                    }
-                }
-            }
+@Composable
+private fun SharingPermissionRow(symbol: MobileSymbol, title: String, state: String, action: String,
+    enabled: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        androidx.compose.material3.Icon(symbol.image, contentDescription = null, tint = ColorAccentCyan,
+            modifier = Modifier.size(22.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = ColorTextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(state, color = ColorTextSecondary, fontSize = 11.sp)
         }
-
-        // 3. 安全与零信任防护矩阵
-        item {
-            Text(
-                text = "ZERO-TRUST CRYPTOGRAPHIC MATRIX",
-                color = ColorTextSecondary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 1.sp
-            )
-        }
-
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ColorSurfaceCard)
-                    .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                TelemetryLaneRow("Transport Cipher", "ChaCha20-Poly1305", ColorAccentCyan)
-                TelemetryLaneRow("Network access", "Invitation-based device group", ColorAccentEmerald)
-                TelemetryLaneRow("Connection authentication", "Paired device-group key", ColorAccentCyan)
-                TelemetryLaneRow("Storage Sandbox", "App Isolated", Color(0xFFFFB300))
-            }
-        }
+        TextButton(onClick = onClick, enabled = enabled) { Text(action, fontSize = 12.sp) }
     }
 }
 

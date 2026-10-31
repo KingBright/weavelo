@@ -22,6 +22,7 @@ class ProjectionService : Service() {
     @Volatile private var sourceHeight = 1920
     @Volatile private var audioAllowed = false
     @Volatile private var controlAllowed = false
+    private var sendTarget: String? = null
     private val audioRunning = AtomicBoolean(false)
     private var audioWorker: Thread? = null
 
@@ -36,12 +37,13 @@ class ProjectionService : Service() {
         val stop = PendingIntent.getService(this, 2, Intent(this, ProjectionService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         startForeground(8124, Notification.Builder(this, "projection").setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("Weavelo screen sharing").setContentText("Only paired devices can connect on port 5001")
+            .setContentTitle("Weavelo screen sharing").setContentText("Sharing with your devices. Tap to return.")
             .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "Stop sharing", stop).build()).build())
         try {
             val metrics = resources.displayMetrics
             sourceWidth = metrics.widthPixels; sourceHeight = metrics.heightPixels
             controlAllowed = intent?.getBooleanExtra("control", false) == true
+            sendTarget = intent?.getStringExtra("send-target")
             audioAllowed = intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
             val capture = checkNotNull(getSystemService(MediaProjectionManager::class.java).getMediaProjection(intent?.getIntExtra("result", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED, consent))
             projection = capture
@@ -79,6 +81,11 @@ class ProjectionService : Service() {
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
             PublisherClient.status("Sharing enabled · $addresses", true)
+            sendTarget?.let { target ->
+                runCatching { PublisherClient.sendScreen(target) }
+                    .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true) }
+                sendTarget = null
+            }
             val info = MediaCodec.BufferInfo()
             val hardwareEncoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter {
                 it.isEncoder && it.supportedTypes.any { type -> type.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, true) } &&

@@ -3,7 +3,7 @@
 //! silently switch to arbitrary third-party application windows.
 use protocol::{ControlMessage, RtpHeader, RtpPacket, session::*};
 use remote_core::{
-    directed_delivery::{Broker, Incoming, Peer as DeliveryPeer},
+    directed_delivery::{Broker, Incoming, Peer as DeliveryPeer, LocalIntent, OutgoingOffer},
     file_transfer_runtime::*,
     net::{MultiplexedPacket, UdpMultiplexer, UdpSender},
     scheduled_sender::ScheduledDataSender,
@@ -68,9 +68,21 @@ pub struct MobilePublisher {
     capabilities: watch::Sender<remote_core::discovery::DiscoveryCapabilities>,
     task: tokio::task::JoinHandle<()>,
     file_reception: Arc<AtomicBool>,
+    identity: Mutex<Option<String>>,
+    outgoing: Mutex<Option<Outgoing>>,
     delivery: Arc<Broker>,
     incoming: Mutex<mpsc::Receiver<Arc<Incoming>>>,
     deliveries: Mutex<HashMap<String,Arc<Incoming>>>,
+}
+struct Outgoing {
+    id: u64,
+    target: String,
+    stop: watch::Sender<bool>,
+    status: Arc<Mutex<String>>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for Outgoing {
+    fn drop(&mut self) { self.stop.send_replace(true); }
 }
 impl Drop for MobilePublisher {
     fn drop(&mut self) {
@@ -114,7 +126,70 @@ impl Drop for Peer {
     }
 }
 impl MobilePublisher {
-    pub fn set_device_identity(&self, identity:String) { self.delivery.set_identity(identity); }
+    pub fn set_device_identity(&self, identity:String) {
+        self.delivery.set_identity(identity.clone());
+        *self.identity.lock().unwrap()=Some(identity);
+    }
+    pub fn outgoing_status(&self) -> serde_json::Value {
+        self.outgoing.lock().unwrap().as_ref().map_or_else(
+            ||serde_json::json!({"id":0,"active":false,"target":"","status":""}),
+            |send|serde_json::json!({"id":send.id,"active":!send.task.is_finished(),"target":send.target,"status":*send.status.lock().unwrap()}),
+        )
+    }
+    pub fn stop_sending(&self) { self.outgoing.lock().unwrap().take(); }
+    pub fn stop_sending_id(&self, id:u64)->Result<(),String> {
+        let mut outgoing=self.outgoing.lock().unwrap();
+        if !outgoing.as_ref().is_some_and(|send|send.id==id) {return Err("Sending intention changed".into());}
+        outgoing.take();Ok(())
+    }
+    pub async fn send_screen(&self, target:String, endpoint:SocketAddr)->Result<(),String> {
+        if !self.permission.borrow().enabled || self.is_finished() {
+            return Err("Confirm Android screen sharing before sending this phone's screen".into());
+        }
+        let source=self.identity.lock().unwrap().clone().ok_or("Missing device identity")?;
+        if target.is_empty() || target.len()>128 || target==source {return Err("Choose a paired receiving device".into());}
+        let mut outgoing=self.outgoing.lock().unwrap();
+        if outgoing.as_ref().is_some_and(|send|!send.task.is_finished()) {return Err("Stop the current delivery before choosing another target".into());}
+        static SEQUENCE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+        let sequence=SEQUENCE.fetch_update(Ordering::Relaxed,Ordering::Relaxed,|value|value.checked_add(1))
+            .map_err(|_|"Sending sequence exhausted")?;
+        let permission=self.permission.subscribe();
+        let epoch=permission.borrow().epoch;
+        let generation=format!("android-projection-{epoch}");
+        let broker=self.delivery.clone();
+        let scope=remote_core::shared_files::current_share_scope();
+        let (stop,mut cancelled)=watch::channel(false);
+        let status=Arc::new(Mutex::new("Contacting target".to_string()));
+        let progress=status.clone();let target_id=target.clone();
+        let task=tokio::spawn(async move {
+            type Error=Box<dyn std::error::Error+Send+Sync>;
+            let run=async {
+                let (conn,mut events)=tokio::select! {biased;_=cancelled.changed()=>return Ok::<(),Error>(()),
+                    result=tokio::time::timeout(Duration::from_secs(5),remote_core::workspace_session::WorkspaceConnection::connect_media(endpoint))=>result??};
+                let mut ticket=[0;32];ticket[..16].copy_from_slice(&random_bytes_16());ticket[16..].copy_from_slice(&random_bytes_16());
+                let request=u64::from_le_bytes(ticket[..8].try_into().unwrap()).max(1);
+                let sources=vec![CaptureSource::MainDisplay];
+                if scope!=remote_core::shared_files::current_share_scope() || !permission.borrow().enabled || permission.borrow().epoch!=epoch {
+                    conn.close().await;return Err("Screen sharing or device network changed".into());
+                }
+                let registration=broker.local(LocalIntent::Register {ticket,target:target_id.clone(),generation:generation.clone(),connection:conn.id,sequence,sources:sources.clone()});
+                if let Err(error)=registration {conn.close().await;return Err(error.into());}
+                let renewing=broker.clone();let renewing_generation=generation.clone();
+                let result=remote_core::directed_delivery::maintain_offer(&conn,&mut events,
+                    OutgoingOffer {source,target:target_id,ticket,request,sources,scope}, &mut cancelled,
+                    || {let permission=permission.borrow();permission.enabled && permission.epoch==epoch},
+                    move |revision| {let broker=renewing.clone();let generation=renewing_generation.clone();
+                        async move {broker.local(LocalIntent::Renew {ticket,generation,revision}).map_err(Error::from)}},
+                    |state| *progress.lock().unwrap()=remote_core::directed_delivery::sending_status(state).into(),
+                ).await;
+                let revoked=broker.local(LocalIntent::Revoke {ticket,generation});
+                let _=conn.control(SessionCommand::DeliveryCancel {request_id:request}).await;
+                conn.close().await;revoked?;result
+            }.await;
+            *progress.lock().unwrap()=match run {Ok(())=>"Sending stopped".into(),Err(error)=>format!("Delivery stopped: {error}")};
+        });
+        *outgoing=Some(Outgoing {id:sequence,target,stop,status,task});Ok(())
+    }
     pub fn next_delivery(&self) -> Option<serde_json::Value> {
         let scope=remote_core::shared_files::current_share_scope();
         let mut deliveries=self.deliveries.lock().unwrap();
@@ -207,6 +282,7 @@ impl MobilePublisher {
         let input = Arc::new(Mutex::new(crate::publisher_input::PublisherInput::default()));
         let shared_input = input.clone();
         let (delivery,incoming)=Broker::new();
+        if capture_enabled { delivery.verified_source_generation("android-projection-1"); }
         let peer_delivery=delivery.clone();
         let scope=Some(remote_core::shared_files::share_scope_for_key(&key));
         let advertised_lifetime = AdvertisedPublisher(capabilities.clone(), input.clone());
@@ -488,11 +564,12 @@ impl MobilePublisher {
             permission,
             input,
             capabilities,
-            task,file_reception,delivery,incoming:Mutex::new(incoming),deliveries:Mutex::new(HashMap::new()),
+            task,file_reception,identity:Mutex::new(None),outgoing:Mutex::new(None),delivery,incoming:Mutex::new(incoming),deliveries:Mutex::new(HashMap::new()),
         })
     }
     /// Detach or attach media without replacing the authenticated file connection.
     pub fn set_capture_available(&self, enabled: bool, audio: bool) {
+        let previous=self.permission.borrow().epoch;
         self.permission.send_if_modified(|permission| {
             let audio = enabled && audio;
             if permission.enabled == enabled && permission.audio == audio {
@@ -503,6 +580,11 @@ impl MobilePublisher {
             permission.epoch = permission.epoch.wrapping_add(1);
             true
         });
+        let epoch=self.permission.borrow().epoch;
+        if epoch!=previous {
+            self.stop_sending();
+            self.delivery.verified_source_generation(&format!("android-projection-{epoch}"));
+        }
         self.capabilities.send_modify(|capabilities| {
             // Once the task has retired its file endpoint, a late permission
             // callback cannot resurrect the capture announcement.
@@ -662,6 +744,24 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn sending_requires_capture_and_stop_cannot_cancel_a_replacement_intent() {
+        let publisher = MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),
+            std::env::temp_dir(), b"send-intent-test".to_vec(), false, false, false).await.unwrap();
+        publisher.set_device_identity("phone".into());
+        assert!(publisher.send_screen("desktop".into(), "127.0.0.1:9".parse().unwrap()).await.unwrap_err().contains("Confirm Android"));
+        assert!(!publisher.delivery.upgrade_busy());
+        let (stop, mut cancelled) = watch::channel(false);
+        let (finished, done) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move { let _=cancelled.changed().await; let _=finished.send(()); });
+        *publisher.outgoing.lock().unwrap()=Some(Outgoing {id:2,target:"desktop".into(),stop,
+            status:Arc::new(Mutex::new("Sending".into())),task});
+        assert!(publisher.stop_sending_id(1).is_err());
+        assert_eq!(publisher.outgoing_status()["id"], 2);
+        assert!(publisher.outgoing_status()["active"].as_bool().unwrap());
+        publisher.stop_sending_id(2).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), done).await.unwrap().unwrap();
+    }
     #[tokio::test]
     async fn foreground_delivery_listener_does_not_enable_files_or_capture() {
         let key = b"mobile-incoming-only".to_vec();

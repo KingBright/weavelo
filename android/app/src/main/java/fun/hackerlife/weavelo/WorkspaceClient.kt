@@ -123,7 +123,7 @@ object WorkspaceClient {
                     }
                 }
             } catch (error: Exception) {
-                request.incomingId?.let { DirectedDelivery.finish(it, "Could not open the offered sources") }
+                request.incomingId?.let { DirectedDelivery.finish(it, "Could not open the offered sources", rejected = true) }
                 ownership.release(owner, preserveForForeground = true)
                 throw error
             } finally { pendingStarts.decrementAndGet() }
@@ -321,11 +321,11 @@ object WorkspaceClient {
         }
         action(12, JSONObject().put("id", id).put("token", token).put("event", JSONObject().put("Touch", event)).toString())
     }
-    private fun endIncoming(reason: String) {
+    private fun endIncoming(reason: String, rejected: Boolean = false) {
         incomingEnded = true
         mutable.value.panes.forEach { command("Unsubscribe", JSONObject().put("id", it.id)) }
         mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), status = reason)
-        ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason) }
+        ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason, rejected) }
     }
     private fun drainEvents() {
         val events = JSONArray(action(5))
@@ -381,7 +381,7 @@ object WorkspaceClient {
                 if (incoming != null && !incomingInitialized && !incomingEnded) {
                     incomingInitialized = true
                     if (expected.isNullOrEmpty() || expected.size > minOf(4, mutable.value.maxSubscriptions) || visible.size != expected.size) {
-                        endIncoming("An offered source is no longer available")
+                        endIncoming("An offered source is no longer available", rejected = true)
                     } else visible.forEach { addNative(it) }
                 }
             }
@@ -397,6 +397,12 @@ object WorkspaceClient {
             }
             control?.optJSONObject("Error")?.let {
                 val id = it.getInt("request_id")
+                if (ownership.request()?.incomingId != null && mutable.value.panes.any { pane -> pane.id == id && !pane.accepted }) {
+                    command("Unsubscribe", JSONObject().put("id", id))
+                    val panes = mutable.value.panes.filter { pane -> pane.id != id }
+                    mutable.value = mutable.value.copy(panes = panes, selected = panes.firstOrNull()?.id ?: 0)
+                    if (panes.isEmpty()) endIncoming(it.getString("reason"), rejected = true)
+                }
                 android.util.Log.w("WeaveloWorkspace", "Request $id failed: ${it.getString("reason")}")
                 // A late settings/unsubscribe reply for a closed pane must not
                 // replace the status of the current screen or its keyboard.

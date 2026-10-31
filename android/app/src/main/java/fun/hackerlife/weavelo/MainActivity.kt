@@ -78,6 +78,8 @@ class MainActivity : ComponentActivity() {
             var receivedFiles by remember { mutableStateOf(false) }
             var pairingMessage by remember { mutableStateOf<String?>(null) }
             val publisherStatus by PublisherClient.status.collectAsState()
+            val outgoing by PublisherClient.outgoing.collectAsState()
+            val incomingError by DirectedDelivery.error.collectAsState()
             val receiverState by FileReceiverClient.state.collectAsState()
             val controlReady by RemoteControlService.connected.collectAsState()
             fun joinNetwork(raw: String) {
@@ -106,8 +108,11 @@ class MainActivity : ComponentActivity() {
             }
             var publishAudio by remember { mutableStateOf(false) }
             var publishControl by remember { mutableStateOf(false) }
+            var pendingSendTarget by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
             val projection = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-                if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl)
+                val target = pendingSendTarget
+                pendingSendTarget = null
+                if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl, target)
                 else PublisherClient.status("Screen sharing was not started. Confirm Android screen capture to make this phone viewable.", false)
             }
             fun requestProjection(audio: Boolean, control: Boolean = false) {
@@ -129,13 +134,16 @@ class MainActivity : ComponentActivity() {
                             val incoming = withContext(Dispatchers.IO) {
                                 WeaveloClient.refreshDevices()
                                 WeaveloClient.pollTelemetry()
-                                if (!WeaveloClient.nativeAvailable || joiningNetwork || devices.isEmpty()) null
+                                if (!WeaveloClient.nativeAvailable || joiningNetwork) null
                                 else runCatching {
+                                    PublisherClient.refreshOutgoing()
+                                    if (devices.isEmpty()) return@runCatching null
                                     DirectedDelivery.listen(applicationContext, receiverOwner)
                                     DirectedDelivery.poll(workspaceEndpoint != null || scanningQr ||
                                         WorkspaceClient.starting || WorkspaceClient.active ||
                                         sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING))
-                                }.getOrNull()
+                                }.onSuccess { DirectedDelivery.failed(null) }
+                                    .onFailure { DirectedDelivery.failed(it.message ?: "Could not receive screens") }.getOrNull()
                             }
                             if (incoming != null) {
                                 incomingSession = incoming
@@ -183,7 +191,7 @@ class MainActivity : ComponentActivity() {
                         nativeAvailable = WeaveloClient.nativeAvailable && !joiningNetwork,
                         networkName = networkName,
                         joiningNetwork = joiningNetwork,
-                        pairingMessage = listOfNotNull(WeaveloClient.nativeStartupError.takeIf { it.isNotBlank() }?.let { "error:Native startup failed ($it). Existing data is retained." }, pairingMessage, publisherStatus.takeIf { it.isNotBlank() }, receiverState.message.takeIf { it.isNotBlank() }).distinct().joinToString("\n"),
+                        pairingMessage = listOfNotNull(WeaveloClient.nativeStartupError.takeIf { it.isNotBlank() }?.let { "error:Native startup failed ($it). Existing data is retained." }, pairingMessage, incomingError, publisherStatus.takeIf { it.isNotBlank() }, receiverState.message.takeIf { it.isNotBlank() }).distinct().joinToString("\n"),
                         sessionError = sessionError,
                         sessionState = sessionState,
                         onCancelConnect = {
@@ -194,6 +202,18 @@ class MainActivity : ComponentActivity() {
                         },
                         onConnectWorkspace = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = false; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         onSendFiles = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = true; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        outgoing = outgoing,
+                        onSendScreen = { deviceId ->
+                            if (PublisherClient.active) scope.launch(Dispatchers.IO) {
+                                runCatching { PublisherClient.sendScreen(deviceId) }.onFailure { PublisherClient.status(it.message ?: "Could not send screen") }
+                            } else {
+                                pendingSendTarget = deviceId
+                                requestProjection(false)
+                            }
+                        },
+                        onStopSending = { id -> scope.launch(Dispatchers.IO) {
+                            runCatching { PublisherClient.stopSending(id) }.onFailure { PublisherClient.status(it.message ?: "Could not stop sending") }
+                        } },
                         publishing = PublisherClient.active,
                         receivingFiles = receiverState.active || receiverState.starting,
                         receiverStarting = receiverState.starting,
@@ -202,11 +222,13 @@ class MainActivity : ComponentActivity() {
                         controlReady = controlReady,
                         onControlSettings = { RemoteControlService.openSettings(this) },
                         onShareControlledScreen = {
+                            pendingSendTarget = null
                             publishControl = true
                             if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
                             else requestProjection(true,true)
                         },
                         onShareScreen = { audio ->
+                            pendingSendTarget = null
                             publishControl = false
                             if (audio && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
                             else requestProjection(audio)

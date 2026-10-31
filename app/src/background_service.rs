@@ -236,7 +236,7 @@ impl Service {
                             let verified={let _=directory;false};
                             let closing=closed.lock().unwrap();
                             if *closing {Response::Rejected("GUI owner stopped".into())}
-                            else if verified {runtime.owner.delivery.verified_gui_generation(&gui);answer(request,&runtime,generation,executable_sha256,owner_mode)}
+                            else if verified {runtime.owner.delivery.verified_source_generation(&gui);answer(request,&runtime,generation,executable_sha256,owner_mode)}
                             else {Response::Rejected("Sending GUI generation or executable changed".into())}
                         } else {let closing=closed.lock().unwrap();if *closing && !shutdown_observation(&request){Response::Rejected("Background shutdown pending; inspect status or retry cleanup".into())}else{answer(request,&runtime,generation,executable_sha256,owner_mode)}};
                         #[cfg(target_os="linux")]
@@ -280,7 +280,7 @@ async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:
     }
 }
 impl Drop for Service {
-    fn drop(&mut self) { #[cfg(target_os="linux")] self.sharing.cancel_for_exit(); let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_gui_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
+    fn drop(&mut self) { #[cfg(target_os="linux")] self.sharing.cancel_for_exit(); let mut closed=self.closing.lock().unwrap();*closed=true;self.broker.verified_source_generation("");self.broker.reconcile(|_|false); self.delivery_task.abort(); self.task.abort(); crate::private_ipc::remove_endpoint(&self.path); }
 }
 fn upgrade_quit_background_owner(expected:(&str,&str,u32), actual:(&str,&str,u32))->Result<(),String> {
     if expected!=actual {return Err("Planned background generation/executable/PID changed; no stop sent".into());}

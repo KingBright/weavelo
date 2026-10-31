@@ -16,6 +16,7 @@ data class HostDevice(
     val canOpenWorkspace: Boolean get() = online && hasService && (canStream || fileTransfer)
     val canViewScreen: Boolean get() = online && hasService && canStream
     val canSendFiles: Boolean get() = online && hasService && fileTransfer
+    val canReceiveScreen: Boolean get() = online && hasService && canView
     val capabilitySummary: String get() = buildList {
         if (canStream) add("Screen sharing")
         if (fileTransfer) add("Files")
@@ -33,3 +34,7 @@ fun resolveNetworkEndpoint(deviceId: String, manualEndpoint: String, devices: Li
     }
     return device.endpoint
 }
+
+fun resolveScreenDeliveryEndpoint(deviceId: String, devices: List<HostDevice>): String =
+    devices.firstOrNull { it.id == deviceId && it.canReceiveScreen }?.endpoint
+        ?: error("This device is not currently accepting incoming screens")

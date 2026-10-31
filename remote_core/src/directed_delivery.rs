@@ -77,6 +77,62 @@ pub async fn claim(
     Ok(())
 }
 
+pub struct OutgoingOffer {
+    pub source: String,
+    pub target: String,
+    pub ticket: [u8; 32],
+    pub request: u64,
+    pub sources: Vec<CaptureSource>,
+    pub scope: ShareScope,
+}
+
+/// Desktop and mobile use the same retry, revision, expiry and receipt rules.
+/// The source adapter owns registration/revocation and its native capture grant.
+pub async fn maintain_offer<R, F, A, S>(
+    conn: &WorkspaceConnection, events: &mut WorkspaceEvents, offer: OutgoingOffer,
+    cancelled: &mut tokio::sync::watch::Receiver<bool>, alive: A, mut renew: R, mut status: S,
+) -> Result<(), Error>
+where
+    R: FnMut(u64) -> F,
+    F: std::future::Future<Output = Result<(), Error>>,
+    A: Fn() -> bool,
+    S: FnMut(DeliveryState),
+{
+    validate_delivery_sources(&offer.sources)?;
+    let cancellation = cancelled.clone();
+    let sending = async {
+        let mut revision = 1;
+        loop {
+            if *cancellation.borrow() { return Ok(()); }
+            if !alive() || offer.scope != crate::shared_files::current_share_scope() {
+                return Err("Screen sharing or device network changed".into());
+            }
+            if revision > 1 { renew(revision).await?; }
+            let state = exchange(conn, events, SessionCommand::DeliveryOffer {
+                request_id: offer.request, source_device_id: offer.source.clone(), target_device_id: offer.target.clone(),
+                ticket: offer.ticket, revision, sources: offer.sources.clone(),
+            }, offer.request, revision).await?;
+            match state {
+                DeliveryState::Pending | DeliveryState::Accepted | DeliveryState::Receiving => status(state),
+                DeliveryState::Cancelled | DeliveryState::Rejected => return Ok(()),
+                _ => return Err("Unexpected delivery receipt".into()),
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            revision = revision.checked_add(1).ok_or("Sending revision exhausted")?;
+        }
+    };
+    tokio::select! {biased; _=cancelled.changed()=>Ok(()), result=sending=>result}
+}
+
+pub fn sending_status(state: DeliveryState) -> &'static str {
+    match state {
+        DeliveryState::Pending => "Opening receiver…",
+        DeliveryState::Accepted => "Connecting…",
+        DeliveryState::Receiving => "Receiving",
+        _ => "Sending stopped",
+    }
+}
+
 
 pub const LEASE: Duration = Duration::from_secs(15);
 const LIMIT: usize = 16;
@@ -232,9 +288,10 @@ impl Broker {
     pub fn set_identity(&self, id: String) {
         self.state.lock().unwrap().identity = Some(id);
     }
-    /// Called only by the same-user service after it has verified the live GUI
-    /// generation and binary under its serialized registration lock.
-    pub fn verified_gui_generation(&self, generation: &str) {
+    /// The source adapter first verifies its live native capture authorization.
+    /// Desktop additionally verifies the GUI generation/binary under its
+    /// serialized registration lock; Android owns the MediaProjection epoch.
+    pub fn verified_source_generation(&self, generation: &str) {
         let mut s = self.state.lock().unwrap();
         if s.source_generation.as_deref() != Some(generation) {
             s.tickets.clear(); // Drop cancels old generation's exact resources first.
@@ -756,7 +813,7 @@ mod tests {
     async fn registration_history_is_bounded_without_a_lifetime_delivery_limit() {
         let (b, _) = Broker::new();
         b.set_identity("source".into());
-        b.verified_gui_generation("gui-1");
+        b.verified_source_generation("gui-1");
         for sequence in 1u64..=1024 {
             let mut token = [8; 32];
             token[..8].copy_from_slice(&sequence.to_le_bytes());
@@ -794,7 +851,7 @@ mod tests {
             )
             .is_err()
         );
-        b.verified_gui_generation("gui-2");
+        b.verified_source_generation("gui-2");
         assert!(
             register(
                 &mut b.state.lock().unwrap(),

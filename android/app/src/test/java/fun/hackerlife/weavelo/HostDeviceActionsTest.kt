@@ -30,6 +30,20 @@ class HostDeviceActionsTest {
         assertTrue(peer.capabilitySummary.contains("Can view"))
     }
 
+    @Test fun incomingScreenListenerDoesNotNeedFileOrCapturePermission() {
+        val peer = device(service = true)
+        assertTrue(peer.canReceiveScreen)
+        assertFalse(peer.canOpenWorkspace)
+        assertFalse(peer.canSendFiles)
+        assertEquals(peer.endpoint, resolveScreenDeliveryEndpoint(peer.id, listOf(peer)))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun screenDeliveryCannotUseAnOfflineOrMissingRoute() {
+        val peer = device(service = true, online = false)
+        resolveScreenDeliveryEndpoint(peer.id, listOf(peer))
+    }
+
     @Test fun fileOnlyMemberDoesNotRequireVideo() {
         val peer = device(files = true, service = true)
         assertTrue(peer.canOpenWorkspace)
