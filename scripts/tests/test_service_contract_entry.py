@@ -38,6 +38,7 @@ class ServiceContractEntryTests(unittest.TestCase):
     SESSION_CLOCK_CASES = {
         "host-linux-capture": ("host", "linux_"),
         "sharing-ui": ("weavelo_app", "desktop::local_share::tests"),
+        "bridge-delivery": ("remote_client_bridge", "delivery_claim_json::tests"),
         "committed-text-input": ("remote_core", "workspace_input::tests"),
         "committed-text-native": ("host", "unicode_"),
         "committed-text-protocol": ("protocol", "interaction::"),
@@ -181,7 +182,7 @@ class ServiceContractEntryTests(unittest.TestCase):
                             'shared-file-publication': ['--no-default-features', '--features', 'gpui-restoration'],
                             'pairing-image': ['--features', 'pairing-image'],
                             'bridge-invitation': ['--features', 'android'], 'bridge-network': ['--features', 'android'],
-                            'bridge-discovery': ['--features', 'android'], 'bridge-input': ['--features', 'android'],
+                            'bridge-discovery': ['--features', 'android'], 'bridge-delivery': ['--features', 'android'], 'bridge-input': ['--features', 'android'],
                             'bridge-workspace-input': ['--features', 'android'], 'bridge-keyboard': ['--features', 'android']}.get(mode, [])
                 native = (['--profile','release','--target','aarch64-apple-darwin','-j','2']
                           if mode == 'desktop-identity' and runner.sys.platform == 'darwin' else [])

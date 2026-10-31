@@ -201,7 +201,7 @@ impl MobilePublisher {
             let id=format!("{}-{}-{nonce}",offer.peer.connection,offer.request);
             let result=serde_json::json!({"id":id,"source_device_id":offer.source,"target_device_id":offer.target,
                 "sources":offer.sources,"remaining_ms":offer.snapshot().1.saturating_duration_since(Instant::now()).as_millis(),
-                "claim":DeliveryClaimProof {ticket:offer.ticket,target_device_id:offer.target.clone(),request_id:offer.request,sources:offer.sources.clone()}});
+                "claim":crate::delivery_claim_json::encode(DeliveryClaimProof {ticket:offer.ticket,target_device_id:offer.target.clone(),request_id:offer.request,sources:offer.sources.clone()})});
             deliveries.insert(id,offer);return Some(result);
         }
         None

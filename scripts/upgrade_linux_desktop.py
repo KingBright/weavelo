@@ -277,9 +277,7 @@ class Native:
             gui=self.gui_owner(sha)
             pid=gui['pid'];known.add(pid)
             require(pids==known,'Additional unidentified Desktop owners')
-            require(gui['sessions']['pending']==0 and gui['sessions']['sessions']==[] and gui['lease'] is None,
-                    'GUI has active/pending sessions, transfers or lease')
-            gui={'pid':pid,'generation':gui['generation'],'supported':gui.get('upgrade_quit')=='gui-upgrade-quit.v1'}
+            gui={'pid':pid,'generation':gui['generation'],'supported':gui.get('gui_close')=='gui-close.v1'}
             if not gui['supported']:blockers.append('Current GUI requires its normal Quit GUI / Quit Weavelo control')
         if 'shutdown-idle.v1' not in bg.get('service_contract',{}).get('capabilities',[]):
             blockers.append('Current background lacks idle-only stop; normal Quit Weavelo must finish before apply')
@@ -287,7 +285,7 @@ class Native:
                 'gui':gui,'blockers':blockers,'active':True}
     def stop_gui(self,before,sha):
         if before['gui']:
-            r=self.query('--gui-upgrade-quit-json',before['gui']['generation'],sha)
+            r=self.query('--gui-close-json',before['gui']['generation'],sha)
             require(r.get('process_exit_observed') is True and r.get('cleanup_verified') is True,'GUI stop unconfirmed')
     def stop_background(self,before,sha):
         if before['background']:

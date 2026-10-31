@@ -309,8 +309,8 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
                     .as_str()
                     .ok_or("missing receive directory")?
                     .into();
-                let claim=value.get("claim").filter(|value|!value.is_null()).map(|value|
-                    serde_json::from_value::<protocol::session::DeliveryClaimProof>(value.clone()).map_err(|error|error.to_string())).transpose()?;
+                let claim=value.get("claim").filter(|value|!value.is_null())
+                    .map(crate::delivery_claim_json::decode).transpose()?;
                 let workspace = client.runtime().block_on(
                     crate::workspace_bridge::MobileWorkspace::connect_with_claim(endpoint, directory,claim),
                 )?;

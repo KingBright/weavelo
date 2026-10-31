@@ -6,12 +6,39 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import upgrade_linux_desktop as up
 import upgrade_macos_desktop as mac
+
+class NativeCloseTests(unittest.TestCase):
+    def test_active_frontend_is_closed_normally_before_update(self):
+        native = object.__new__(up.Native)
+        native.paths = {'profile': Path('/synthetic/profile')}
+        native.owners = Mock(return_value={41, 42})
+        native.configuration = Mock(return_value={'pid': 41, 'active': 'active', 'substate': 'running'})
+        native.query = Mock(return_value={
+            'role': 'background-service', 'pid': 41, 'profile': '/synthetic/profile',
+            'executable_sha256': 'sha', 'network_diagnostics': {'generation': 'bg'},
+            'service_contract': {'capabilities': ['shutdown-idle.v1']},
+        })
+        native.gui_owner = Mock(return_value={
+            'pid': 42, 'generation': 'gui', 'gui_close': 'gui-close.v1',
+            'sessions': {'pending': 0, 'sessions': [{'transfers': 2}]}, 'lease': {'active': True},
+        })
+        observed = native.observe('sha')
+        self.assertEqual(observed['blockers'], [])
+        native.query.return_value = {'process_exit_observed': True, 'cleanup_verified': True}
+        native.stop_gui(observed, 'sha')
+        native.query.assert_called_with('--gui-close-json', 'gui', 'sha')
+
+    def test_update_requires_confirmed_normal_frontend_cleanup(self):
+        native = object.__new__(up.Native)
+        native.query = Mock(return_value={'process_exit_observed': False, 'cleanup_verified': True})
+        with self.assertRaisesRegex(ValueError, 'GUI stop unconfirmed'):
+            native.stop_gui({'gui': {'generation': 'gui'}}, 'sha')
 
 class UpgradeTests(unittest.TestCase):
     def setUp(self):
