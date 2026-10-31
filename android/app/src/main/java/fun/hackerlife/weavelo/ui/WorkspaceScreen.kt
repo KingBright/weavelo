@@ -199,7 +199,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     }
                 }
             }
-            Text(localError ?: state.status, color = Color.LightGray, minLines = 2, maxLines = 2)
+            (localError ?: state.status.takeUnless { it == "Connected" })?.takeIf { it.isNotBlank() }?.let {
+                Text(it, color = Color.LightGray, maxLines = 2)
+            }
             if (!state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
             }
@@ -217,9 +219,6 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                         Row(Modifier.fillMaxWidth()) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
-                                        }
-                                        pane.audioOwner?.let { owner ->
-                                            Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it }, modifier = Modifier.height(24.dp))
                                         }
                                         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                                             if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration, onError = { localError = it })
@@ -256,7 +255,14 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             var fps by remember(pane.id) { mutableStateOf(pane.fps.toString()) }
             var kbps by remember(pane.id) { mutableStateOf(pane.kbps.toString()) }
             AlertDialog(onDismissRequest = { selectedSettings = null }, title = { Text("Stream settings") },
-                text = { Column { OutlinedTextField(fps, { fps = it }, label = { Text("Frames per second") }); OutlinedTextField(kbps, { kbps = it }, label = { Text("Bitrate (kbps)") }) } },
+                text = { Column {
+                    OutlinedTextField(fps, { fps = it }, label = { Text("Frames per second") })
+                    OutlinedTextField(kbps, { kbps = it }, label = { Text("Bitrate (kbps)") })
+                    pane.audioOwner?.let { owner ->
+                        Text("Volume")
+                        Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it })
+                    }
+                } },
                 confirmButton = { TextButton(onClick = {
                     val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
                     if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, state.sessionKey, state.connectionGeneration, fps = f, kbps = k); selectedSettings = null }
