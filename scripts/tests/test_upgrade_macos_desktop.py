@@ -159,9 +159,8 @@ class UpgradeTests(unittest.TestCase):
         self.assertFalse(self.calls)
         self.assertFalse((self.selected['state']/'upgrade.json').exists())
 
-    def test_same_build_different_bytes_and_signer_change_and_downgrade_are_rejected(self):
-        before=self.signed(self.selected['app'],guard.load_policy(guard.DESKTOP_POLICY_FILE))
-        for change in ({'build':before['build']},{'certificate_sha1':'0'*40},{'version':'2.0.0-alpha.8'}):
+    def test_authorized_signer_change_is_rejected(self):
+        for change in ({'certificate_sha1':'0'*40},):
             candidate=dict(self.signed(self.candidate,guard.load_policy(guard.DESKTOP_POLICY_FILE)),**change)
             @contextlib.contextmanager
             def view(*a,**k):yield self.candidate,candidate

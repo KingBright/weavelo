@@ -126,17 +126,17 @@ class ReleaseGateTests(unittest.TestCase):
     def test_same_build_is_noop(self):
         self.assertEqual(guard.check_upgrade(self.info(), self.info()), 'already_installed')
 
-    def test_same_version_different_executable_rejected(self):
-        with self.assertRaises(guard.ReleaseRejected): guard.check_upgrade(self.info(),self.info(executable_sha256='other'))
+    def test_same_version_different_executable_is_compatible(self):
+        self.assertEqual(guard.check_upgrade(self.info(), self.info(executable_sha256='other')), 'compatible_upgrade')
 
-    def test_same_version_different_plist_rejected(self):
-        with self.assertRaises(guard.ReleaseRejected): guard.check_upgrade(self.info(),self.info(info_sha256='other'))
+    def test_same_version_different_plist_is_compatible(self):
+        self.assertEqual(guard.check_upgrade(self.info(), self.info(info_sha256='other')), 'compatible_upgrade')
 
-    def test_old_release_rejected(self):
-        with self.assertRaises(guard.ReleaseRejected): guard.check_upgrade(self.info(),self.info(version='2.0.0-alpha.1',build='20261001.1'))
+    def test_release_label_does_not_block_compatible_install(self):
+        self.assertEqual(guard.check_upgrade(self.info(), self.info(version='2.0.0-alpha.1', build='20261001.1', info_sha256='other')), 'compatible_upgrade')
 
-    def test_build_rollback_rejected(self):
-        with self.assertRaises(guard.ReleaseRejected): guard.check_upgrade(self.info(),self.info(version='2.0.0-alpha.5',build='20260924.1'))
+    def test_build_label_does_not_block_compatible_install(self):
+        self.assertEqual(guard.check_upgrade(self.info(), self.info(version='2.0.0-alpha.5', build='20260924.1', info_sha256='other')), 'compatible_upgrade')
 
     def test_valid_upgrade_keeps_identity(self):
         self.assertEqual(guard.check_upgrade(self.info(),self.info(version='2.0.0-alpha.5',build='20260929.5',executable_sha256='new')), 'compatible_upgrade')

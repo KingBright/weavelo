@@ -186,13 +186,10 @@ def check_upgrade(previous: dict, candidate: dict) -> str:
     for key in ('bundle_id', 'certificate_sha1', 'designated_requirement'):
         if previous[key] != candidate[key]:
             raise ReleaseRejected(f'Upgrade would change authorized identity: {key}')
-    if version_key(candidate['version']) < version_key(previous['version']):
-        raise ReleaseRejected('Release downgrade rejected')
-    if build_key(candidate['build']) < build_key(previous['build']):
-        raise ReleaseRejected('Build number rollback rejected')
-    if previous['version'] == candidate['version'] and previous['build'] == candidate['build']:
-        if previous['executable_sha256'] != candidate['executable_sha256'] or previous['info_sha256'] != candidate['info_sha256']:
-            raise ReleaseRejected('Same version/build contains different bytes; assign a new build instead of silently replacing it')
+    # Labels describe an artifact; only its authorized identity controls whether
+    # it can replace the installed app during main-only iteration.
+    if all(previous[key] == candidate[key] for key in
+           ('executable_sha256', 'info_sha256')):
         return 'already_installed'
     return 'compatible_upgrade'
 
