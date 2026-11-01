@@ -156,13 +156,18 @@ fn open_restored_window(
     if exit_group.stopping.load(Ordering::Acquire) {return None;}
     let primary = instance.is_some();
     let attached = instance.as_ref().is_some_and(|i| i.is_frontend());
+    let window_bounds = cx.primary_display().map(|display| {
+        let work = display.visible_bounds();
+        let window_size = size(
+            px(1280.).min((work.size.width-px(32.)).max(px(1.))),
+            px(800.).min((work.size.height-px(48.)).max(px(1.))),
+        );
+        Bounds::centered_at(work.center(), window_size)
+    }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), size(px(1280.), px(800.))));
     let options = WindowOptions {
             app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
-        window_bounds: Some(WindowBounds::Windowed(bounds(
-            point(px(80.), px(60.)),
-            size(px(1280.), px(800.)),
-        ))),
-        window_min_size: Some(size(px(800.), px(560.))),
+        window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+        window_min_size: Some(size(px(800.).min(window_bounds.size.width), px(560.).min(window_bounds.size.height))),
         titlebar: Some(TitlebarOptions {
             title: Some(
                 if std::env::var_os("WEAVELO_RESTORED_TEST_OUTPUT").is_some() {

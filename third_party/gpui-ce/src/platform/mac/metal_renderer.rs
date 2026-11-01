@@ -15,7 +15,6 @@ use cocoa::{
 use core_foundation::base::TCFType;
 use core_video::{
     metal_texture::CVMetalTextureGetTexture, metal_texture_cache::CVMetalTextureCache,
-    pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
 };
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
@@ -1092,9 +1091,19 @@ impl MetalRenderer {
                 DevicePixels::from(surface.image_buffer.get_height() as i32),
             );
 
-            assert_eq!(
-                surface.image_buffer.get_pixel_format(),
-                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            let color = match crate::video_color::VideoColor::from_macos_pixel_buffer(&surface.image_buffer) {
+                Ok(color) => color,
+                Err(error) => {
+                    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) { log::error!("{error}"); }
+                    continue;
+                }
+            };
+            let color_rows = color.rows(crate::video_color::VideoFormat::Nv12);
+            command_encoder.set_fragment_bytes(
+                SurfaceInputIndex::Surfaces as u64,
+                mem::size_of_val(&color_rows) as u64,
+                color_rows.as_ptr() as *const _,
             );
 
             let y_texture = self

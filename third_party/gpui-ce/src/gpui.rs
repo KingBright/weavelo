@@ -15,6 +15,7 @@ mod asset_cache;
 mod assets;
 mod bounds_tree;
 mod color;
+mod video_color;
 /// The default colors used by GPUI.
 pub mod colors;
 mod element;

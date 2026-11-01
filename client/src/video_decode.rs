@@ -476,3 +476,51 @@ impl Drop for MacVideoDecoder {
         });
     }
 }
+
+#[cfg(test)]
+mod native_surface_color_tests {
+    use gpui::native_video::{VideoColor, VideoFormat, Matrix, Range};
+    use core_foundation::{base::TCFType, string::CFString};
+    use core_video::{buffer::{kCVAttachmentMode_ShouldPropagate, TCVBuffer}, image_buffer::*, pixel_buffer::*};
+
+    #[test]
+    fn actual_native_matrix_and_range_produce_distinct_correct_rgb() {
+        for (format, range) in [(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, Range::Full),
+                                (kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, Range::Limited)] {
+            for (native, matrix, kr, kb) in unsafe {
+                [(kCVImageBufferYCbCrMatrix_ITU_R_709_2, Matrix::Bt709, 0.2126, 0.0722),
+                 (kCVImageBufferYCbCrMatrix_ITU_R_601_4, Matrix::Bt601, 0.299, 0.114)]
+            } {
+                let buffer = CVPixelBuffer::new(format, 4, 4, None).unwrap();
+                let key = unsafe { CFString::wrap_under_get_rule(kCVImageBufferYCbCrMatrixKey) };
+                let value = unsafe { CFString::wrap_under_get_rule(native) };
+                buffer.as_buffer().set_attachment(&key, &value.as_CFType(), kCVAttachmentMode_ShouldPropagate);
+                let color = VideoColor::from_macos_pixel_buffer(&buffer).unwrap();
+                assert_eq!((color.matrix, color.range), (matrix, range));
+                let rows = color.rows(VideoFormat::Nv12);
+                // Signal red, plus neutral black and white, in the buffer's
+                // actual code range. No pixel mapping or CPU rendering involved.
+                let (ys, yo, cs) = if range == Range::Full { (1., 0., 1.) } else { (219./255., 16./255., 224./255.) };
+                for (signal, expected) in [([kr, -kr/(2.*(1.-kb)), 0.5], [1.,0.,0.]),
+                                           ([0.,0.,0.], [0.,0.,0.]), ([1.,0.,0.], [1.,1.,1.])] {
+                    let sample = [signal[0]*ys+yo, signal[1]*cs+128./255., signal[2]*cs+128./255., 1.];
+                    for (row, expected) in rows.iter().zip(expected) {
+                        let actual:f32 = row.iter().zip(sample).map(|(a,b)| a*b).sum();
+                        assert!((actual-expected).abs()<0.00001, "{matrix:?}/{range:?}: {actual} != {expected}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_surface_rejects_absent_unknown_matrix_and_non_nv12() {
+        let buffer = CVPixelBuffer::new(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, 4, 4, None).unwrap();
+        assert!(VideoColor::from_macos_pixel_buffer(&buffer).is_err());
+        let key = unsafe { CFString::wrap_under_get_rule(kCVImageBufferYCbCrMatrixKey) };
+        buffer.as_buffer().set_attachment(&key, &CFString::new("unknown").as_CFType(), kCVAttachmentMode_ShouldPropagate);
+        assert!(VideoColor::from_macos_pixel_buffer(&buffer).is_err());
+        let bgra = CVPixelBuffer::new(kCVPixelFormatType_32BGRA, 4, 4, None).unwrap();
+        assert!(VideoColor::from_macos_pixel_buffer(&bgra).is_err());
+    }
+}
