@@ -139,7 +139,7 @@ def runtime_env(profile):
 
 
 class NativeOwners:
-    """The two authenticated Desktop owners, verified again before stopping."""
+    """Authenticated Desktop owners and their native clipboard children."""
     def __init__(self, executable, profile):
         self.exe, self.profile = executable, profile
 
@@ -176,20 +176,63 @@ class NativeOwners:
             gui_pid = gui.get('pid') or int(gui['generation'].split('-', 1)[0])
             require(type(gui_pid) is int and gui_pid > 1 and gui_pid != primary_pid, 'Invalid GUI owner')
         ids = {primary_pid} | ({gui_pid} if gui_pid else set())
-        require(self.pids() == ids, 'Unidentified Desktop process; repair before updating')
         processes = {str(pid): process_metadata(pid) for pid in ids}
         require(all(v['path'] == os.path.normcase(str(self.exe)) for v in processes.values()), 'Desktop process path changed')
+        live = self.pids()
+        workers = self.clipboard_workers(processes, live - ids)
+        require(live == ids | {int(pid) for pid in workers}, 'Unidentified Desktop process; repair before updating')
         return {'background_pid': primary_pid, 'frontend_pid': gui_pid, 'processes': processes}
 
+    def clipboard_workers(self, owners, extra):
+        if not extra:
+            return {}
+        literal = str(self.exe).replace("'", "''")
+        command = ("$p='" + literal + "';@(Get-CimInstance Win32_Process -Filter \"Name='weavelo.exe'\" | "
+                   "Where-Object {$_.ExecutablePath -eq $p} | ForEach-Object {"
+                   "[pscustomobject]@{pid=[int]$_.ProcessId;parent=[int]$_.ParentProcessId;"
+                   "clipboard=($_.CommandLine -match '(^|\\s)--native-clipboard-worker(\\s|$)')}}) | ConvertTo-Json -Compress")
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', command],
+                                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
+        require(result.returncode == 0, 'Cannot identify native clipboard children')
+        rows = json.loads(result.stdout) if result.stdout.strip() else []
+        rows = rows if isinstance(rows, list) else [rows]
+        workers = {}
+        for row in rows:
+            pid, parent = row.get('pid'), row.get('parent')
+            if type(pid) is not int or pid not in extra or row.get('clipboard') is not True or str(parent) not in owners:
+                continue
+            metadata = process_metadata(pid)
+            require(metadata['path'] == os.path.normcase(str(self.exe))
+                    and metadata['created'] >= owners[str(parent)]['created'], 'Native clipboard child changed')
+            workers[str(pid)] = metadata
+        return workers
+
     def stop(self, before, binary, expected):
-        require(self.pids() == {int(pid) for pid in before['processes']}, 'Desktop owners changed before stop')
+        ids = {int(pid) for pid in before['processes']}
+        live = self.pids()
+        workers = self.clipboard_workers(before['processes'], live - ids)
+        require(live == ids | {int(pid) for pid in workers}, 'Desktop owners changed before stop')
+        metadata = dict(before['processes'], **workers)
         class Owner:
             def native(_self, pid, executable, digest, identity):
-                require(process_metadata(pid) == before['processes'][str(pid)], 'Desktop process was replaced')
+                require(process_metadata(pid) == metadata[str(pid)], 'Desktop process was replaced')
                 return gate.verify_running_windows(pid, executable, digest, identity)
         for pid in (before['frontend_pid'], before['background_pid']):
             if pid:
                 stop_verified(Owner(), pid, self.exe, binary, expected)
+        # Parent exit closes the worker's stdin. Normally it exits without a kill.
+        deadline = time.monotonic() + 2
+        remaining = self.pids()
+        while remaining and remaining <= {int(pid) for pid in workers} and time.monotonic() < deadline:
+            time.sleep(.1)
+            remaining = self.pids()
+        require(remaining <= {int(pid) for pid in workers}, 'Unidentified Desktop process appeared during stop')
+        for pid in remaining:
+            try:
+                stop_verified(Owner(), pid, self.exe, binary, expected)
+            except Exception:
+                if pid in self.pids():
+                    raise
         require(not self.pids(), 'Desktop owner remains; files were not replaced')
 
     def start_gui(self, binary):
@@ -237,6 +280,8 @@ def apply(home, bound, old_binary, old_identity, pid, created, expected_plan,
     reviewed, digest = plan(home, bound, old_binary, old_identity, pid, created)
     require(digest == gate.sha(expected_plan), 'Upgrade plan changed')
     p = transaction_paths(home); native = security or private.NativeSecurity()
+    owners = None if stopper else NativeOwners(p['app']/'weavelo.exe', p['profile'])
+    before = owners.observe(old_binary, pid) if owners else None
     state = {'schema': 1, 'kind': reviewed['kind'], 'plan_sha256': digest, 'plan': reviewed, 'phase': 'verified'}
     prior = reviewed['previous_upgrade_sha256']
     require(prior is None or gate.hash_file(p['journal']) == prior, 'Previous upgrade changed')
@@ -254,8 +299,6 @@ def apply(home, bound, old_binary, old_identity, pid, created, expected_plan,
         def native(self, actual_pid, executable, binary, expected):
             require(process_metadata(actual_pid) == now['process'], 'Original owner was replaced')
             return gate.verify_running_windows(actual_pid, executable, binary, expected)
-    owners = None if stopper else NativeOwners(p['app']/'weavelo.exe', p['profile'])
-    before = owners.observe(old_binary, pid) if owners else None
     if owners:
         owners.stop(before, old_binary, now['identity'])
     else:

@@ -149,6 +149,19 @@ class UpgradeTests(unittest.TestCase):
             self.reviewed()
         self.assertFalse(self.calls)
 
+    def test_owner_identification_failure_leaves_no_upgrade_staging(self):
+        _, digest = self.reviewed()
+        security = SimpleNamespace(create_private_directory=Mock())
+        with patch.object(upgrade.sys, 'platform', 'win32'), \
+             patch.object(upgrade, 'NativeOwners') as owners:
+            owners.return_value.observe.side_effect = upgrade.gate.IdentityRejected('Unidentified Desktop process')
+            with self.assertRaisesRegex(upgrade.gate.IdentityRejected, 'Unidentified Desktop process'):
+                upgrade.apply(self.home, self.bound, self.old, self.old_identity, 9, 7, digest, security=security)
+        self.assertFalse(self.p['journal'].exists())
+        self.assertFalse(self.p['pending'].exists())
+        security.create_private_directory.assert_not_called()
+        self.assertEqual((self.p['app']/'weavelo.exe').read_bytes(), b'old-image')
+
     def test_registry_cas_preserves_concurrent_user_edit(self):
         path = self.p['state']/'install.json'
         digest = upgrade.gate.hash_file(path)
@@ -178,6 +191,7 @@ class NativeDesktopOwnersTests(unittest.TestCase):
             {'role':'background-service','pid':9,'executable_sha256':'a'*64},
             {'ok':True,'generation':'10-existing','renderer':'restored-original-gpui','executable_sha256':'a'*64}])
         control.pids = Mock(return_value={9,10})
+        control.clipboard_workers = Mock(return_value={})
         return control
 
     def metadata(self, control, pid):
@@ -192,17 +206,62 @@ class NativeDesktopOwnersTests(unittest.TestCase):
              patch.object(upgrade.gate, 'verify_running_windows') as verify, \
              patch.object(upgrade, 'stop_verified', side_effect=stop):
             before = c.observe('a'*64,9)
-            c.pids.side_effect = [{9,10},set()]
+            c.pids.side_effect = [{9,10},set(),set()]
             c.stop(before,'a'*64,{'compiled':'fixture'})
         self.assertEqual(effects,[10,9])
         self.assertEqual([call.args[0] for call in verify.call_args_list],[10,9])
 
     def test_unidentified_process_blocks_before_any_stop(self):
         c = self.control(); c.pids.return_value={9,10,11}
-        with patch.object(upgrade, 'process_metadata') as metadata:
+        with patch.object(upgrade, 'process_metadata', side_effect=lambda pid:self.metadata(c,pid)) as metadata:
             with self.assertRaisesRegex(upgrade.gate.IdentityRejected,'Unidentified Desktop process'):
                 c.observe('a'*64,9)
-        metadata.assert_not_called()
+        self.assertEqual({call.args[0] for call in metadata.call_args_list},{9,10})
+
+    def test_clipboard_child_can_restart_before_stop_and_exits_with_its_parent(self):
+        c=self.control();effects=[]
+        c.clipboard_workers.side_effect=[{'11':self.metadata(c,11)},{'12':self.metadata(c,12)}]
+        c.pids.side_effect=[{9,10,11},{9,10,12},set(),set()]
+        def stop(owner,pid,exe,binary,identity):
+            owner.native(pid,exe,binary,identity);effects.append(pid)
+        with patch.object(upgrade,'process_metadata',side_effect=lambda pid:self.metadata(c,pid)), \
+             patch.object(upgrade.gate,'verify_running_windows'), \
+             patch.object(upgrade,'stop_verified',side_effect=stop):
+            before=c.observe('a'*64,9);c.stop(before,'a'*64,{'compiled':'fixture'})
+        self.assertEqual(effects,[10,9])
+
+    def test_hung_clipboard_child_is_verified_before_cleanup(self):
+        c=self.control();effects=[]
+        c.clipboard_workers.return_value={'11':self.metadata(c,11)}
+        c.pids.side_effect=[{9,10,11},{9,10,11},{11},set()]
+        def stop(owner,pid,exe,binary,identity):
+            owner.native(pid,exe,binary,identity);effects.append(pid)
+        with patch.object(upgrade,'process_metadata',side_effect=lambda pid:self.metadata(c,pid)), \
+             patch.object(upgrade.gate,'verify_running_windows'), \
+             patch.object(upgrade,'stop_verified',side_effect=stop), \
+             patch.object(upgrade.time,'monotonic',side_effect=[0,3]):
+            before=c.observe('a'*64,9);c.stop(before,'a'*64,{'compiled':'fixture'})
+        self.assertEqual(effects,[10,9,11])
+
+    def test_clipboard_role_requires_the_authenticated_parent_and_same_image(self):
+        c=self.control();del c.clipboard_workers
+        rows=[{'pid':11,'parent':9,'clipboard':True},
+              {'pid':12,'parent':99,'clipboard':True},
+              {'pid':13,'parent':9,'clipboard':False}]
+        result=SimpleNamespace(returncode=0,stdout=json.dumps(rows))
+        owners={'9':self.metadata(c,9),'10':self.metadata(c,10)}
+        with patch.object(upgrade.subprocess,'run',return_value=result), \
+             patch.object(upgrade,'process_metadata',side_effect=lambda pid:self.metadata(c,pid)) as metadata:
+            self.assertEqual(set(c.clipboard_workers(owners,{11,12,13})),{'11'})
+        metadata.assert_called_once_with(11)
+        with patch.object(upgrade.subprocess,'run',return_value=result), \
+             patch.object(upgrade,'process_metadata',return_value=dict(self.metadata(c,11),created=1)):
+            with self.assertRaisesRegex(upgrade.gate.IdentityRejected,'child changed'):
+                c.clipboard_workers(owners,{11})
+        with patch.object(upgrade.subprocess,'run',return_value=result), \
+             patch.object(upgrade,'process_metadata',return_value=dict(self.metadata(c,11),path='another.exe')):
+            with self.assertRaisesRegex(upgrade.gate.IdentityRejected,'child changed'):
+                c.clipboard_workers(owners,{11})
 
     def test_reused_gui_pid_is_not_terminated(self):
         c = self.control(); effects=[]
