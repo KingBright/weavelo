@@ -66,6 +66,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
             LaunchedEffect(Unit) { sourcePicker = false }
         } else SourcePicker(state.sources, onClose = { sourcePicker = false }) { source ->
+            localError = null
             WorkspaceClient.add(source, sessionKey, pickerGeneration)
             sourcePicker = false
         }

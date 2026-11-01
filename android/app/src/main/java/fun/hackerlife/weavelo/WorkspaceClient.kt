@@ -211,7 +211,7 @@ object WorkspaceClient {
         val prefs = checkNotNull(context).getSharedPreferences("stream", Context.MODE_PRIVATE)
         val pane = WorkspacePane(nextId, source, prefs.getInt("fps", 60), prefs.getInt("bitrate_kbps", 20_000))
         nextId += 256
-        mutable.value = mutable.value.copy(panes = mutable.value.panes + pane, selected = pane.id)
+        mutable.value = mutable.value.copy(panes = mutable.value.panes + pane, selected = pane.id, status = "Connected")
         command("Subscribe", request(pane)); activity()
     }
     fun remove(id: Int) = guarded {
