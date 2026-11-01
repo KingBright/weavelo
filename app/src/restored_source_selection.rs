@@ -263,7 +263,7 @@ mod tests {
         selection.pending_request=Some("attempt-1".into());selection
     }
     fn progress(started:bool,result:Option<Result<(),String>>)->crate::desktop::directed_send::SendProgress {
-        crate::desktop::directed_send::SendProgress {status:"Connecting…".into(),started,result}
+        crate::desktop::directed_send::SendProgress {status:"Connecting…".into(),started,result,confirmation_timeout:None}
     }
     #[test]
     fn asynchronous_failure_keeps_the_selected_source_and_can_be_retried() {

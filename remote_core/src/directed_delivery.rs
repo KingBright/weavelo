@@ -15,7 +15,7 @@ use crate::workspace_session::{WorkspaceConnection,WorkspaceEvents};
 type Error=Box<dyn std::error::Error+Send+Sync>;
 
 /// Scalar failure evidence. Queue admission is not a claim of wire delivery.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ConfirmationTimeout {
     pub connection_id: u32,
     pub request_id: u64,

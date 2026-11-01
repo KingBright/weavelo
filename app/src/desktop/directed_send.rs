@@ -12,6 +12,7 @@ pub(crate) struct SendProgress {
     pub status: String,
     pub started: bool,
     pub result: Option<Result<(), String>>,
+    pub confirmation_timeout: Option<remote_core::directed_delivery::ConfirmationTimeout>,
 }
 
 #[cfg(any(unix, windows))]
@@ -49,6 +50,7 @@ mod sender {
             let beat = heartbeat.clone();
             let status = Arc::new(Mutex::new(SendProgress {
                 status: "Contacting target".into(), started: false, result: None,
+                confirmation_timeout: None,
             }));
             let progress = status.clone();
             let peer = target.clone();
@@ -66,8 +68,11 @@ mod sender {
                     progress.clone(),
                 )
                 .await;
+                let confirmation_timeout = result.as_ref().err().and_then(|error|
+                    error.downcast_ref::<remote_core::directed_delivery::ConfirmationTimeout>()).cloned();
                 let result = result.map_err(|error| error.to_string());
                 let mut progress = progress.lock().unwrap();
+                progress.confirmation_timeout = confirmation_timeout;
                 progress.status = match &result {
                     Ok(()) => "Sending stopped".into(),
                     Err(error) => format!("Delivery stopped: {error}"),

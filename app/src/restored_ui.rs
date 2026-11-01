@@ -504,7 +504,8 @@ impl RestoredDashboard {
         self.directed_send.lock().unwrap().as_ref().filter(|sender|sender.is_finished()).map(|sender| {
             let progress=sender.progress();
             serde_json::json!({"request_id":sender.request_id,"target":sender.target,
-                "started":progress.started,"status":progress.status,"error":progress.result.and_then(Result::err)})
+                "started":progress.started,"status":progress.status,"error":progress.result.and_then(Result::err),
+                "confirmation_timeout":progress.confirmation_timeout})
         })
     }
     fn new(
