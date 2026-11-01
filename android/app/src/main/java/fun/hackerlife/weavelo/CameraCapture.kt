@@ -40,8 +40,13 @@ internal data class CameraDescription(val id: String, val name: String, val faci
         }.thenBy { if (it.width.toLong() * it.height >= wanted) 0 else 1 }
             .thenBy { abs(it.width.toLong() * it.height - wanted) })
         val fps = demand.getInt("fps")
-        val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val characteristics = manager.getCameraCharacteristics(id)
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: error("Camera video formats are unavailable")
+        val srgb = Build.VERSION.SDK_INT >= 34 && characteristics
+            .get(CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES)
+            ?.getSupportedColorSpacesForDynamicRange(ImageFormat.PRIVATE, DynamicRangeProfiles.STANDARD)
+            ?.contains(ColorSpace.Named.SRGB) == true
         for (size in ordered) {
             val duration = map.getOutputMinFrameDuration(android.media.MediaCodec::class.java, size)
             val maximum = if (duration > 0) (1_000_000_000L / duration).toInt().coerceAtLeast(1) else fps
@@ -50,7 +55,7 @@ internal data class CameraDescription(val id: String, val name: String, val faci
                 compareBy<Range<Int>> { it.upper }.thenBy { it.lower }) ?: continue
             val actual = rate.upper
             val encoder = SurfaceHevcEncoder.exact(size.width, size.height, actual, demand.getInt("bitrate_kbps")) ?: continue
-            return Configuration(encoder, rate)
+            return Configuration(encoder.copy(srgb = srgb), rate)
         }
         error("No native camera mode and hardware HEVC encoder support this stream")
     }
@@ -143,15 +148,10 @@ internal class CameraCapture(private val description: CameraDescription, val con
                 if (Build.VERSION.SDK_INT >= 33) output.setMirrorMode(OutputConfiguration.MIRROR_MODE_NONE)
                 val session = SessionConfiguration(SessionConfiguration.SESSION_REGULAR,
                     listOf(output), { task -> handler.post(task) }, callback)
-                if (Build.VERSION.SDK_INT >= 34) {
-                    val profiles = description.manager.getCameraCharacteristics(description.id)
-                        .get(CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES)
-                    if (profiles?.getSupportedColorSpacesForDynamicRange(ImageFormat.PRIVATE,
-                            DynamicRangeProfiles.STANDARD)?.contains(ColorSpace.Named.SRGB) == true) {
-                        // Ask the camera producer for an actually supported common
-                        // gamut; changing codec tags alone would mislabel pixels.
-                        session.setColorSpace(ColorSpace.Named.SRGB)
-                    }
+                if (Build.VERSION.SDK_INT >= 34 && configuration.encoder.srgb) {
+                    // The same hardware-verified color choice configures both
+                    // the camera pixels and encoder; neither infers the other.
+                    session.setColorSpace(ColorSpace.Named.SRGB)
                 }
                 camera.createCaptureSession(session)
             } else @Suppress("DEPRECATION") camera.createCaptureSession(listOf(encoder.surface), callback, handler)

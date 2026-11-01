@@ -10,7 +10,8 @@ import android.view.Surface
 
 /** Shared hardware surface encoder for screen and camera producers. No CPU pixel conversion. */
 internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
-    data class Plan(val codec: String, val width: Int, val height: Int, val fps: Int, val bitrateKbps: Int)
+    data class Plan(val codec: String, val width: Int, val height: Int, val fps: Int, val bitrateKbps: Int,
+        val srgb: Boolean = false)
     companion object {
         private val hardware by lazy {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter {
@@ -51,7 +52,13 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
                 setInteger(MediaFormat.KEY_FRAME_RATE, plan.fps); setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
                 if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                // Let the camera/screen surface carry its actual dataspace; do not invent YUV metadata.
+                if (plan.srgb) {
+                    // Only used with an explicitly configured sRGB Camera2 producer.
+                    // Platform transfer 2 is sRGB (also exposed by Media3 C.COLOR_TRANSFER_SRGB).
+                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, 2)
+                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+                }
             }
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             input = codec.createInputSurface(); codec.start(); surface = input

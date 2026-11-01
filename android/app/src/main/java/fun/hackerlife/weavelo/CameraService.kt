@@ -100,7 +100,9 @@ class CameraService : Service() {
                 if (wanted == null) {
                     capture.getAndSet(null)?.let { old -> delayedClose = old; old.close(); delayedClose = null }
                     activeKey = ""
-                    CameraPublisher.update(CameraPublisher.state.value.copy(live = false, activeCameraId = null))
+                    val state = CameraPublisher.state.value
+                    CameraPublisher.update(state.copy(live = false, activeCameraId = null,
+                        status = if (state.live) "Ready for your devices" else state.status))
                     Thread.sleep(100); continue
                 }
                 val source = wanted.get("source")
@@ -161,7 +163,8 @@ class CameraService : Service() {
         running.set(false)
         runCatching { PublisherClient.action(33) }
         capture.get()?.requestClose()
-        CameraPublisher.update(CameraPublisher.state.value.copy(enabled = false, live = false, sources = emptyList(), activeCameraId = null))
+        val state = CameraPublisher.state.value
+        CameraPublisher.update(CameraSharingState(status = if (state.enabled) "Not sharing" else state.status))
         super.onDestroy()
     }
 }
