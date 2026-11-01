@@ -62,6 +62,8 @@ object WorkspaceClient {
     private var incomingInitialized = false
     private var incomingEnded = false
     private val cameraReplacements = HashMap<Int, Pair<Int, Long>>()
+    private data class CameraSwitch(val pane: Int, val source: WorkspaceSource, val deadline: Long)
+    private val cameraSwitches = HashMap<Long, CameraSwitch>()
 
     private fun action(op: Int, payload: String = ""): String {
         val result = nativeAction(op, payload)
@@ -172,7 +174,7 @@ object WorkspaceClient {
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
             connectionGeneration = ++connectionGeneration, panes = mutable.value.panes.map { it.copy(input = false, accepted = false) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
     }
-    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); if (active) action(1); active = false; retainingConnection = false }
+    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
         ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
     }
@@ -213,9 +215,28 @@ object WorkspaceClient {
         command("Subscribe", request(pane)); activity()
     }
     fun remove(id: Int) = guarded {
+        cameraSwitches.entries.removeAll { it.value.pane == id }
         cameraReplacements.entries.removeAll { it.value.first == id }
         command("Unsubscribe", JSONObject().put("id", id))
         removePane(id, "Receiving stopped")
+    }
+    fun cameraSwitchTarget(pane: WorkspacePane): WorkspaceSource? {
+        if (ownership.request()?.incomingId != null || !pane.source.isCamera || !pane.accepted) return null
+        val group = pane.source.camera?.optLong("switch_group") ?: 0
+        if (group == 0L) return null
+        val wanted = if (pane.source.camera?.optString("facing") == "Front") "Back" else "Front"
+        return mutable.value.sources.firstOrNull { it.isCamera && it.camera?.optLong("switch_group") == group &&
+            it.camera?.optString("facing") == wanted && it.source.toString() != pane.source.source.toString() }
+    }
+    fun switchCamera(id: Int, sessionKey: String, generation: Long) = guarded {
+        if (!currentView(id, sessionKey, generation, false) || cameraSwitches.values.any { it.pane == id }) return@guarded
+        val pane = mutable.value.panes.firstOrNull { it.id == id } ?: return@guarded
+        val target = cameraSwitchTarget(pane) ?: return@guarded
+        val request = ++revision
+        command("RequestCameraSwitch", JSONObject().put("id", id).put("request_id", request)
+            .put("source_revision", 0).put("from", pane.source.source).put("target", target.source)
+            .put("delivery_request_id", JSONObject.NULL))
+        cameraSwitches[request] = CameraSwitch(id, target, SystemClock.elapsedRealtime() + 10_000)
     }
     private fun replaceCameraView(pane: WorkspacePane, source: WorkspaceSource) {
         if (cameraReplacements.values.any { it.first==pane.id }) return
@@ -358,6 +379,12 @@ object WorkspaceClient {
         ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason, rejected) }
     }
     private fun drainEvents() {
+        cameraSwitches.entries.removeAll { (_, pending) ->
+            if (pending.deadline < SystemClock.elapsedRealtime()) {
+                mutable.value = mutable.value.copy(status = "Camera switch timed out; retry")
+                true
+            } else mutable.value.panes.none { it.id == pending.pane }
+        }
         cameraReplacements.entries.filter { it.value.second<SystemClock.elapsedRealtime() }.toList().forEach { (old,waiting)->
             cameraReplacements.remove(old)
             removePane(waiting.first,"Camera did not finish closing; retry this source",rejected=true)
@@ -367,6 +394,19 @@ object WorkspaceClient {
             val event = events.getJSONObject(i)
             if (event.has("transfers_active")) transfersActive = event.getBoolean("transfers_active")
             val control = event.optJSONObject("control")
+            control?.optJSONObject("CameraSwitchResult")?.let { reply ->
+                val request = reply.getJSONObject("request")
+                cameraSwitches.remove(request.getLong("request_id"))?.let { pending ->
+                    val pane = mutable.value.panes.firstOrNull { it.id == pending.pane }
+                    if (pane != null && request.getInt("id") == pane.id && request.getInt("source_revision") == 0 &&
+                        request.isNull("delivery_request_id") && request.get("from").toString() == pane.source.source.toString() &&
+                        request.get("target").toString() == pending.source.source.toString()) {
+                        val ready = reply.getJSONObject("ready")
+                        if (ready.has("Ok")) replaceCameraView(pane, pending.source)
+                        else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"))
+                    }
+                }
+            }
             control?.optJSONObject("Opened")?.let { mutable.value = mutable.value.copy(maxSubscriptions = it.getInt("max_subscriptions"), files = it.getBoolean("files"), clipboardAvailable = it.getBoolean("clipboard")) }
             control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, status = it.getString("reason")) }
             control?.optJSONObject("TextRejected")?.let {

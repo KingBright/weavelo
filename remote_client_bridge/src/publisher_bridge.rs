@@ -476,6 +476,25 @@ impl MobilePublisher {
                                             let catalog=shared.lock().unwrap().catalog(ready);
                                             reply(&sender,addr,SessionCommand::sources(request_id,catalog)).await;
                                         }
+                                        SessionCommand::RequestCameraSwitch(request) if peers.contains_key(&addr) => {
+                                            let peer=&peers[&addr];
+                                            let ready=(|| -> Result<(),String> {
+                                                let sub=peer.subscriptions.get(&request.id).ok_or("The camera subscription ended")?;
+                                                if peer.delivery_owner.is_some() {return Err("Camera switching requires a replacement sending intention".into());}
+                                                let catalog=shared.lock().unwrap().catalog(false);
+                                                remote_core::camera_switch::validate(&request,remote_core::camera_switch::CameraView {
+                                                    source:sub.request.source,revision:0,delivery_request:None,
+                                                },&catalog).map_err(str::to_owned)?;
+                                                let others=peers.values().flat_map(|other|other.subscriptions.values()
+                                                    .filter(move |sub|other.addr!=addr||sub.request.id!=request.id))
+                                                    .filter(|sub|sub.video).map(|sub|sub.request.source);
+                                                if remote_core::camera_switch::exclusive_camera_busy(request.target,others) {
+                                                    return Err("Another viewer is using this camera".into());
+                                                }
+                                                Ok(())
+                                            })();
+                                            reply(&sender,addr,SessionCommand::CameraSwitchResult {request,ready}).await;
+                                        }
                                         SessionCommand::Subscribe(request) if peers.contains_key(&addr) => {
                                             let peer=&peers[&addr];
                                             if let Some((owner,ticket))=peer.delivery_owner
@@ -1390,6 +1409,40 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn camera_switch_preflight_preserves_other_viewers_and_requires_fresh_subscription() {
+        let directory=ReceiverTestDir::new();let key=b"camera-switch-transport-test".to_vec();
+        let publisher=MobilePublisher::start_with_permissions("127.0.0.1:0".parse().unwrap(),directory.0.clone(),key.clone(),false,false).await.unwrap();
+        let sources=publisher.set_cameras([("front",CameraFacing::Front),("back",CameraFacing::Back)].into_iter().map(|(name,facing)|
+            remote_core::cameras::NativeCamera {key:name.into(),name:name.into(),facing,switch_group:Some("phone".into()),
+                width:1280,height:720,rotation:90}).collect()).unwrap();
+        let from=sources[0].0;let target=sources[1].0;
+        let (a,ar)=receiver_client(&publisher,&key).await;let (b,br)=receiver_client(&publisher,&key).await;
+        let mut subscription=receiver_subscription(256);subscription.source=from;
+        for (sender,receiver) in [(&a,&ar),(&b,&br)] {
+            command(sender,publisher.address,SessionCommand::Subscribe(subscription.clone())).await;
+            assert!(matches!(reply(receiver).await,SessionCommand::Subscribed{id:256,..}));
+        }
+        let switch=protocol::session::CameraSwitchRequest {id:256,request_id:9,source_revision:0,from,target,delivery_request_id:None};
+        command(&a,publisher.address,SessionCommand::RequestCameraSwitch(switch.clone())).await;
+        assert!(matches!(reply(&ar).await,SessionCommand::CameraSwitchResult {ready:Err(_),..}));
+        command(&b,publisher.address,SessionCommand::Unsubscribe{id:256}).await;
+        assert!(matches!(reply(&br).await,SessionCommand::Unsubscribed{id:256}));
+        command(&a,publisher.address,SessionCommand::RequestCameraSwitch(switch.clone())).await;
+        assert!(matches!(reply(&ar).await,SessionCommand::CameraSwitchResult {ready:Ok(()),..}));
+        // Ready is preflight, never a source mutation or a claim of presentation.
+        assert!(publisher.media.lock().unwrap().demand(from).active);
+        assert!(!publisher.media.lock().unwrap().demand(target).active);
+        command(&a,publisher.address,SessionCommand::Unsubscribe{id:256}).await;
+        assert!(matches!(reply(&ar).await,SessionCommand::Unsubscribed{id:256}));
+        subscription.id=512;subscription.source=target;
+        command(&a,publisher.address,SessionCommand::Subscribe(subscription)).await;
+        assert!(matches!(reply(&ar).await,SessionCommand::Subscribed{id:512,..}));
+        command(&a,publisher.address,SessionCommand::RequestCameraSwitch(switch)).await;
+        assert!(matches!(reply(&ar).await,SessionCommand::CameraSwitchResult {ready:Err(_),..}));
+        assert!(publisher.media.lock().unwrap().demand(target).active);
     }
 
     #[tokio::test]

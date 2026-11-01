@@ -26,6 +26,11 @@ pub(crate) struct SourceCatalog {
     recent: Option<(u32, Instant, CatalogResult)>,
 }
 impl SourceCatalog {
+    /// Metadata for a camera preflight only. Subscribe still resolves the live
+    /// native identity; never run a blocking native scan on the control loop.
+    pub(crate) fn sources(&self) -> Option<&[protocol::session::CaptureSourceInfo]> {
+        self.recent.as_ref()?.2.as_ref().ok().map(|directory| directory.sources.as_slice())
+    }
     // A retry of the same request joins the existing query. Different requests
     // get an explicit busy response; the queue cannot grow with UDP retries.
     pub(crate) fn request(&mut self, id: u32, known_icons: Vec<[u8; 32]>) -> Option<CatalogResult> {

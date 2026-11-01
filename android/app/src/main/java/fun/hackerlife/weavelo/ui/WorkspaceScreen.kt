@@ -220,6 +220,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                     Column(Modifier.weight(1f).fillMaxHeight().padding(3.dp)) {
                                         Row(Modifier.fillMaxWidth()) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                            if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
+                                                MobileAction(MobileSymbol.Refresh, "Switch camera", state.connected) {
+                                                    WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
+                                                }
+                                            }
                                             MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
                                         }
                                         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {

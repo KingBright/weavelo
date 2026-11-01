@@ -128,7 +128,7 @@ pub fn sending_status(state: DeliveryState) -> &'static str {
     match state {
         DeliveryState::Pending => "Opening receiver…",
         DeliveryState::Accepted => "Connecting…",
-        DeliveryState::Receiving => "Receiving",
+        DeliveryState::Receiving => "Sending",
         _ => "Sending stopped",
     }
 }

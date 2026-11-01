@@ -1,5 +1,6 @@
 pub mod directed_delivery;
 pub mod cameras;
+pub mod camera_switch;
 pub mod audio;
 pub mod application_icons;
 pub mod desktop_identity;

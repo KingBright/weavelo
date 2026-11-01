@@ -213,10 +213,24 @@ pub enum SessionCommand {
     CommitText(crate::interaction::TextCommit),
     TextCommitted { binding: crate::realtime_input::InputBinding, request_id: u64 },
     TextRejected { binding: crate::realtime_input::InputBinding, request_id: u64, reason: String },
+    RequestCameraSwitch(CameraSwitchRequest),
+    CameraSwitchResult { request: CameraSwitchRequest, ready: Result<(), String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeliveryClaimProof { pub ticket:[u8;32], pub target_device_id:String, pub request_id:u64, pub sources:Vec<CaptureSource> }
+
+/// A preflight bound to the current camera view. Ready still requires retiring
+/// that subscription and establishing a fresh one; it does not mean pixels changed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CameraSwitchRequest {
+    pub id: u32,
+    pub request_id: u64,
+    pub source_revision: u32,
+    pub from: CaptureSource,
+    pub target: CaptureSource,
+    pub delivery_request_id: Option<u64>,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DeliveryState { Pending, Accepted, Claimed, Cancelled, Rejected, Receiving }
