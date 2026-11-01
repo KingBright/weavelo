@@ -22,7 +22,7 @@ class NativeCloseTests(unittest.TestCase):
         native.query = Mock(return_value={
             'role': 'background-service', 'pid': 41, 'profile': '/synthetic/profile',
             'executable_sha256': 'sha', 'network_diagnostics': {'generation': 'bg'},
-            'service_contract': {'capabilities': ['shutdown-idle.v1']},
+            'service_contract': {'capabilities': []},
         })
         native.gui_owner = Mock(return_value={
             'pid': 42, 'generation': 'gui', 'gui_close': 'gui-close.v1',
@@ -39,6 +39,37 @@ class NativeCloseTests(unittest.TestCase):
         native.query = Mock(return_value={'process_exit_observed': False, 'cleanup_verified': True})
         with self.assertRaisesRegex(ValueError, 'GUI stop unconfirmed'):
             native.stop_gui({'gui': {'generation': 'gui'}}, 'sha')
+
+    def background(self):
+        native=object.__new__(up.Native)
+        native.exe=Path('/synthetic/desktop/weavelo')
+        native.configuration=Mock(side_effect=[{'pid':41,'active':'active'},{'pid':0,'active':'inactive'}])
+        native.query=Mock(side_effect=AssertionError('GUI exit may have closed IPC'))
+        native.ctl=Mock();native.owners=Mock(return_value=set())
+        return native
+
+    def test_registered_background_stops_normally_without_idle_or_ipc_gate(self):
+        native=self.background()
+        with patch.object(up.gate,'verify_running_linux') as verify:
+            native.stop_background({'background':{'pid':41,'generation':'41-original'}},'old-image')
+        verify.assert_called_once_with(41,native.exe,'old-image')
+        native.ctl.assert_called_once_with('stop')
+        native.query.assert_not_called()
+
+    def test_replaced_supervisor_owner_is_not_stopped(self):
+        native=self.background();native.configuration.side_effect=None
+        native.configuration.return_value={'pid':42,'active':'active'}
+        with patch.object(up.gate,'verify_running_linux') as verify:
+            with self.assertRaisesRegex(ValueError,'Background owner changed'):
+                native.stop_background({'background':{'pid':41}},'old-image')
+        verify.assert_not_called();native.ctl.assert_not_called()
+
+    def test_changed_native_image_is_not_stopped(self):
+        native=self.background()
+        with patch.object(up.gate,'verify_running_linux',side_effect=ValueError('image changed')):
+            with self.assertRaisesRegex(ValueError,'image changed'):
+                native.stop_background({'background':{'pid':41}},'old-image')
+        native.ctl.assert_not_called()
 
 class UpgradeTests(unittest.TestCase):
     def setUp(self):

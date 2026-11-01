@@ -279,8 +279,6 @@ class Native:
             require(pids==known,'Additional unidentified Desktop owners')
             gui={'pid':pid,'generation':gui['generation'],'supported':gui.get('gui_close')=='gui-close.v1'}
             if not gui['supported']:blockers.append('Current GUI requires its normal Quit GUI / Quit Weavelo control')
-        if 'shutdown-idle.v1' not in bg.get('service_contract',{}).get('capabilities',[]):
-            blockers.append('Current background lacks idle-only stop; normal Quit Weavelo must finish before apply')
         return {'background':{'pid':bg['pid'],'generation':bg['network_diagnostics']['generation']},
                 'gui':gui,'blockers':blockers,'active':True}
     def stop_gui(self,before,sha):
@@ -289,14 +287,12 @@ class Native:
             require(r.get('process_exit_observed') is True and r.get('cleanup_verified') is True,'GUI stop unconfirmed')
     def stop_background(self,before,sha):
         if before['background']:
-            current=self.query('--background-status-json')
-            require(current['pid']==before['background']['pid'] and current['executable_sha256']==sha
-                    and current['network_diagnostics']['generation']==before['background']['generation'],'Background owner changed')
-            r=self.query('--background-upgrade-stop-json',before['background']['generation'],sha,str(before['background']['pid']))
-            require(r.get('idle_only') is True and r.get('process_exit_observed') is True and r.get('cleanup_verified') is True
-                    and r.get('pid')==before['background']['pid'] and r.get('generation')==before['background']['generation']
-                    and r.get('executable_sha256')==sha,
-                    'Background stop unconfirmed')
+            # systemd owns this fixed profile's background. Its normal stop also
+            # closes active streams and does not depend on IPC after GUI exit.
+            config=self.configuration();pid=before['background']['pid']
+            require(config['pid']==pid and config['active']=='active','Background owner changed')
+            gate.verify_running_linux(pid,self.exe,sha)
+            self.ctl('stop')
         require(not self.owners(sha),'Desktop owner remains; no replacement')
         end=time.monotonic()+10
         while True:
@@ -408,7 +404,7 @@ class Upgrade:
         require(gate.digest(gate.canonical(plan))==digest,'Exact reviewed plan required')
         with self.lock():
             require(self.plan(plan['archive'],plan['pins'])==plan,'Plan changed; no action')
-            require(plan['applicable'],'Installed owners lack normal idle-only exit; no stop or file changes')
+            require(plan['applicable'],'Installed GUI owner cannot close normally; no stop or file changes')
             previous=self.begin(plan)
             record={'schema':1,'kind':RECORD_KIND,'transaction_id':str(uuid.uuid4()),'plan':plan,'plan_sha256':digest,'phase':'preparing'}
             current=self.save(record,previous)
