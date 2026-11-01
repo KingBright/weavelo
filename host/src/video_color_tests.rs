@@ -134,3 +134,24 @@ async fn actual_source_color_survives_hardware_hevc_and_session_resize()
     }
     Ok(())
 }
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn native_encoder_backpressure_keeps_every_compressed_reference()
+-> Result<(),Box<dyn Error+Send+Sync>> {
+    let mut encoder=MacVideoEncoder::new(640,360,30,2000)?;
+    for index in 0..ENCODE_CAPACITY {
+        encoder.submit_frame(generated_frame(640,360,index as i64,true)?).await?;
+    }
+    assert!(!encoder.can_submit_frame());
+    unsafe { assert_eq!(VTCompressionSessionCompleteFrames(encoder.session.unwrap(),core_media_sys::CMTime{value:0,timescale:0,flags:0,epoch:0}),0); }
+    let first=tokio::time::timeout(Duration::from_secs(5),encoder.pull_encoded_chunk()).await??;
+    assert!(first.is_keyframe);assert!(!encoder.can_submit_frame());
+    drop(first);assert!(encoder.can_submit_frame());
+    let mut count=1;
+    while count<ENCODE_CAPACITY {
+        let chunk=tokio::time::timeout(Duration::from_secs(5),encoder.pull_encoded_chunk()).await??;
+        assert!(!chunk.nalu.is_empty());count+=1;
+    }
+    assert_eq!(count,ENCODE_CAPACITY);
+    Ok(())
+}

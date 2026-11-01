@@ -9,7 +9,9 @@ use core_media_sys::CMTime;
 use remote_core::VideoEncoder;
 use std::error::Error;
 use std::ffi::c_void;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc,Semaphore,OwnedSemaphorePermit};
+use std::sync::Arc;
+const ENCODE_CAPACITY:usize=4;
 use video_toolbox_sys::compression::{
     VTCompressionSessionCompleteFrames, VTCompressionSessionCreate,
     VTCompressionSessionEncodeFrame, VTCompressionSessionInvalidate, VTCompressionSessionRef,
@@ -71,12 +73,14 @@ pub struct EncodedChunk {
     pub encode_cost_ms: f32,
     pub is_keyframe: bool,
     pub timing: protocol::FrameTimingCheckpoints,
+    _admission:Arc<OwnedSemaphorePermit>,
 }
 
 struct FrameContext {
     capture_time_ms: u32,
     submit_instant: std::time::Instant,
     timing: protocol::FrameTimingCheckpoints,
+    admission:Arc<OwnedSemaphorePermit>,
 }
 
 pub struct MacVideoEncoder {
@@ -84,6 +88,7 @@ pub struct MacVideoEncoder {
     source_color: Option<crate::video_color::SourceColor>,
     _tx: mpsc::Sender<EncodedChunk>,
     rx: mpsc::Receiver<EncodedChunk>,
+    admission:Arc<Semaphore>,
     _tx_box: Box<mpsc::Sender<EncodedChunk>>,
     force_keyframe: bool,
     width: u32,
@@ -99,24 +104,13 @@ extern "C" fn compression_callback(
     _info_flags: u32,
     sample_buffer: *mut c_void,
 ) {
-    let (capture_time_ms, encode_cost_ms, timing) = if !source_frame_ref_con.is_null() {
-        let ctx = unsafe { Box::from_raw(source_frame_ref_con as *mut FrameContext) };
-        let cost = ctx.submit_instant.elapsed().as_secs_f32() * 1000.0;
-        let mut t = ctx.timing;
-        let now_us = remote_core::timing::quanta_now_us();
-        t.encode_done_ts_us = (now_us.saturating_sub(t.capture_ts_us)) as u32;
-        (ctx.capture_time_ms, cost, t)
-    } else {
-        let capture_ts_us = remote_core::timing::quanta_now_us();
-        let now_ms = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            & 0xFFFFFFFF) as u32;
-        let mut t = protocol::FrameTimingCheckpoints::new(capture_ts_us);
-        t.encode_done_ts_us = 2_000;
-        (now_ms, 2.0, t)
-    };
+    if source_frame_ref_con.is_null(){return;}
+    let ctx=unsafe{Box::from_raw(source_frame_ref_con as *mut FrameContext)};
+    let capture_time_ms=ctx.capture_time_ms;
+    let encode_cost_ms=ctx.submit_instant.elapsed().as_secs_f32()*1000.;
+    let mut timing=ctx.timing;
+    timing.encode_done_ts_us=remote_core::timing::quanta_now_us().saturating_sub(timing.capture_ts_us) as u32;
+    let admission=ctx.admission;
 
     if status != 0 || sample_buffer.is_null() {
         return;
@@ -205,12 +199,15 @@ extern "C" fn compression_callback(
 
         if !out_buffer.is_empty() {
             let tx = output_callback_ref_con as *mut mpsc::Sender<EncodedChunk>;
+            // Every admitted raw frame owns one slot through callback AND encoded
+            // consumption, so an open output channel always has room here.
             let _ = (*tx).try_send(EncodedChunk {
                 nalu: out_buffer,
                 capture_time_ms,
                 encode_cost_ms,
                 is_keyframe,
                 timing,
+                _admission:admission,
             });
         }
     }
@@ -386,7 +383,7 @@ impl MacVideoEncoder {
         fps: u32,
         bitrate_kbps: u32,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let (tx, rx) = mpsc::channel(60);
+        let (tx, rx) = mpsc::channel(ENCODE_CAPACITY);
         let mut tx_box = Box::new(tx.clone());
         // The Box address stays stable when the encoder moves. Keep one owned
         // allocation through session invalidation, including the initial session.
@@ -397,6 +394,7 @@ impl MacVideoEncoder {
         Ok(Self {
             session: Some(session),
             source_color: None,
+            admission:Arc::new(Semaphore::new(ENCODE_CAPACITY)),
             _tx: tx,
             rx,
             _tx_box: tx_box,
@@ -441,6 +439,8 @@ impl MacVideoEncoder {
         self.force_keyframe=true;
         Ok(candidate)
     }
+
+    pub fn can_submit_frame(&self)->bool {self.admission.available_permits()>0}
 
     pub fn request_keyframe(&mut self) {
         self.force_keyframe = true;
@@ -543,6 +543,7 @@ impl VideoEncoder for MacVideoEncoder {
         &mut self,
         frame: Self::Frame,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let admission=Arc::new(self.admission.clone().try_acquire_owned().map_err(|_|"Drain encoded output before submitting another raw frame")?);
         let cv_pixel_buffer = match frame.sample_buffer.image_buffer() {
             Some(buf) => buf,
             None => return Ok(()),
@@ -573,6 +574,7 @@ impl VideoEncoder for MacVideoEncoder {
             capture_time_ms: frame.capture_time_ms,
             submit_instant: std::time::Instant::now(),
             timing,
+            admission,
         });
         let source_frame_ref_con = Box::into_raw(ctx) as *mut c_void;
 

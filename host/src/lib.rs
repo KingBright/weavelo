@@ -1156,6 +1156,12 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     paused_telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // Leave the newest raw frame in its capture mailbox while encoded output
+        // is backed up. Never discard an already encoded reference frame.
+        #[cfg(target_os="macos")]
+        let capture_ready=video_encoder.can_submit_frame();
+        #[cfg(not(target_os="macos"))]
+        let capture_ready=true;
         tokio::select! {
             _ = async {
                 #[cfg(target_os = "linux")]
@@ -1217,7 +1223,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             frame_res = async {
                 #[cfg(not(target_os="windows"))] {video_capturer.capture_frame().await}
                 #[cfg(target_os="windows")] {std::future::pending::<Result<crate::windows_video_encode::WindowsVideoFrame,Box<dyn Error+Send+Sync>>>().await}
-            }, if !paused => {
+            }, if !paused && capture_ready => {
                 let frame = frame_res?;
                 stats_video.video_frames_captured.fetch_add(1, Relaxed);
                 resources.captured_frames.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

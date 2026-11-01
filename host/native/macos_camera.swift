@@ -67,17 +67,21 @@ private final class CameraSession {
             throw NSError(domain: "WeaveloCamera", code: 2, userInfo: [NSLocalizedDescriptionKey: "The selected camera is no longer available"])
         }
         let wantedArea = UInt64(width) * UInt64(height)
-        let formats = device.formats.filter { format in
-            format.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) }
-        }
+        let formats = device.formats.filter { !$0.videoSupportedFrameRateRanges.isEmpty }
         func area(_ format: AVCaptureDevice.Format) -> UInt64 {
             let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             return UInt64(max(0, size.width)) * UInt64(max(0, size.height))
         }
         guard let format = formats.filter({ area($0) <= wantedArea }).max(by: { area($0) < area($1) })
                 ?? formats.min(by: { area($0) < area($1) }) else {
-            throw NSError(domain: "WeaveloCamera", code: 3, userInfo: [NSLocalizedDescriptionKey: "Camera does not support the requested frame rate"])
+            throw NSError(domain: "WeaveloCamera", code: 3, userInfo: [NSLocalizedDescriptionKey: "Camera has no supported video format"])
         }
+        let rate = format.videoSupportedFrameRateRanges.min(by: {
+            abs(min(max(Double(fps), $0.minFrameRate), $0.maxFrameRate)-Double(fps)) <
+            abs(min(max(Double(fps), $1.minFrameRate), $1.maxFrameRate)-Double(fps))
+        })!
+        let interval = Double(fps) >= rate.maxFrameRate ? rate.minFrameDuration :
+            Double(fps) <= rate.minFrameRate ? rate.maxFrameDuration : CMTime(value: 1, timescale: CMTimeScale(fps))
         let session = AVCaptureSession(); let output = AVCaptureVideoDataOutput()
         let delegate = CameraOutput(context, callback)
         self.session = session; self.output = output; self.delegate = delegate
@@ -97,7 +101,6 @@ private final class CameraSession {
         session.addInput(input)
         try device.lockForConfiguration()
         device.activeFormat = format
-        let interval = CMTime(value: 1, timescale: CMTimeScale(fps))
         device.activeVideoMinFrameDuration = interval; device.activeVideoMaxFrameDuration = interval
         device.unlockForConfiguration()
         let available = output.availableVideoPixelFormatTypes
