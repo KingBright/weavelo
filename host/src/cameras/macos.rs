@@ -24,8 +24,16 @@ unsafe fn owned_string(text:*mut c_char)->Result<String,String> {
     Ok(value)
 }
 pub(crate) fn list()->Result<Vec<CaptureSourceInfo>,String> {
+    if access()!=3 {
+        registry().lock().unwrap_or_else(|e|e.into_inner()).revoke();
+        return Ok(Vec::new());
+    }
     let text=unsafe{owned_string(weavelo_camera_catalog())}?;
     let cameras:Vec<NativeCamera>=serde_json::from_str(&text).map_err(|error|error.to_string())?;
+    if access()!=3 {
+        registry().lock().unwrap_or_else(|e|e.into_inner()).revoke();
+        return Ok(Vec::new());
+    }
     registry().lock().unwrap_or_else(|e|e.into_inner()).reconcile(cameras).map_err(str::to_owned)
 }
 pub fn access()->i32 {unsafe{weavelo_camera_access()}}
@@ -76,7 +84,9 @@ extern "C" fn stopped(context:*mut c_void) {
 }
 impl CameraHandle {
     pub(crate) fn is_running(&self)->bool {
-        self.native.is_some_and(|native|unsafe{weavelo_camera_running(native.as_ptr())})
+        let running=self.native.is_some_and(|native|unsafe{weavelo_camera_running(native.as_ptr())});
+        if !running&&access()!=3 {registry().lock().unwrap_or_else(|e|e.into_inner()).revoke();}
+        running
     }
     pub(crate) fn start(source:CaptureSource,width:u32,height:u32,fps:u32,slot:Arc<LatestFrameSlot<MacVideoFrame>>,resources:Option<Arc<crate::lifecycle::Resources>>)->Result<Self,String> {
         list()?;
