@@ -55,6 +55,7 @@ private final class CameraSession {
     var session: AVCaptureSession?
     var output: AVCaptureVideoDataOutput?
     var delegate: CameraOutput?
+    var lockedDevice: AVCaptureDevice?
     let frames = DispatchQueue(label: "fun.hackerlife.weavelo.camera.frames", qos: .userInteractive)
 
     init(_ key: String, _ width: UInt32, _ height: UInt32, _ fps: UInt32,
@@ -86,42 +87,24 @@ private final class CameraSession {
         let delegate = CameraOutput(context, callback)
         self.session = session; self.output = output; self.delegate = delegate
         var complete = false
+        var configuring = false
         defer {
             if !complete {
+                if configuring { session.commitConfiguration() }
                 if session.isRunning { session.stopRunning() }
                 output.setSampleBufferDelegate(nil, queue: nil)
                 frames.sync {}
+                lockedDevice?.unlockForConfiguration(); lockedDevice = nil
             }
         }
         session.beginConfiguration()
+        configuring = true
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
             throw NSError(domain: "WeaveloCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "Camera input is unavailable or occupied"])
         }
         session.addInput(input)
         let selectedSize = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-        let preset: AVCaptureSession.Preset?
-        switch (selectedSize.width, selectedSize.height) {
-        case (3840, 2160): preset = .hd4K3840x2160
-        case (1920, 1080): preset = .hd1920x1080
-        case (1280, 720): preset = .hd1280x720
-        case (640, 480): preset = .vga640x480
-        default: preset = nil
-        }
-        // macOS has no inputPriority preset. Its default .high preset can
-        // replace activeFormat at start, so align the session with the native
-        // mode instead of letting it silently promote 720p to 1080p.
-        if let preset = preset {
-            guard session.canSetSessionPreset(preset) else {
-                throw NSError(domain: "WeaveloCamera", code: 8, userInfo: [NSLocalizedDescriptionKey:
-                    "Camera cannot retain its selected native video mode"])
-            }
-            session.sessionPreset = preset
-        }
-        try device.lockForConfiguration()
-        device.activeFormat = format
-        device.activeVideoMinFrameDuration = interval; device.activeVideoMaxFrameDuration = interval
-        device.unlockForConfiguration()
         let available = output.availableVideoPixelFormatTypes
         guard let pixel = [kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
             .first(where: { available.contains($0) }) else {
@@ -137,7 +120,15 @@ private final class CameraSession {
         if let connection = output.connection(with: .video), connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false; connection.isVideoMirrored = false
         }
+        // Unlike iOS, macOS can replace activeFormat at commit/start even
+        // with a matching session preset. Keep the documented device lock
+        // while this capture requires its native format and frame interval.
+        try device.lockForConfiguration()
+        lockedDevice = device
+        device.activeFormat = format
+        device.activeVideoMinFrameDuration = interval; device.activeVideoMaxFrameDuration = interval
         session.commitConfiguration()
+        configuring = false
         session.startRunning()
         guard session.isRunning else {
             throw NSError(domain: "WeaveloCamera", code: 7, userInfo: [NSLocalizedDescriptionKey: "Camera did not start; check permission and availability"])
@@ -145,7 +136,7 @@ private final class CameraSession {
         let actualSize = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         guard actualSize.width == selectedSize.width && actualSize.height == selectedSize.height else {
             throw NSError(domain: "WeaveloCamera", code: 9, userInfo: [NSLocalizedDescriptionKey:
-                "Camera changed its selected native video mode"])
+                "Camera changed its selected native video mode (\(selectedSize.width)×\(selectedSize.height) → \(actualSize.width)×\(actualSize.height))"])
         }
         complete = true
     }
@@ -153,6 +144,7 @@ private final class CameraSession {
         session?.stopRunning()
         output?.setSampleBufferDelegate(nil, queue: nil)
         frames.sync {}
+        lockedDevice?.unlockForConfiguration(); lockedDevice = nil
         // Release native resources before acknowledging teardown to Rust.
         delegate = nil; output = nil; session = nil
     }
