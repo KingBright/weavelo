@@ -703,6 +703,14 @@ impl MeshPairingBackend for Client {
     fn rename_device(&self, expected_name: &str, name: &str) -> MeshPairingSnapshot { self.pairing_command(Request::RenameDevice { expected_name: expected_name.into(), name: name.into() }) }
 }
 
+fn configure_background_roles(config: &mut UnifiedRuntimeConfig) {
+    config.enable_viewer_media=false;
+    config.enable_client_receiver=false;
+    // The real delivery worker activates this signed product's existing GUI.
+    // Advertising it does not allocate a decoder in the background process.
+    config.enable_workspace_viewer=cfg!(feature="gpui-restoration");
+}
+
 /// Explicit service mode owns the same lock as legacy standalone/headless.
 /// It never invokes Application::new or GUI activation.
 pub async fn run(mut config: UnifiedRuntimeConfig) -> Result<(), Error> {
@@ -712,7 +720,7 @@ pub async fn run(mut config: UnifiedRuntimeConfig) -> Result<(), Error> {
     };
     let identity = AppPrivateMeshConfigStore::new(&config.mesh_dir).load_or_generate(&config.display_name)?;
     remote_core::session_crypto::use_paired_session_secret(identity.network_secret.expose_secret());
-    config.enable_viewer_media = false; config.enable_workspace_viewer = false; config.enable_client_receiver = false;
+    configure_background_roles(&mut config);
     let runtime = Arc::new(crate::start_unified_runtime(config.clone()).await?);
     let service = Service::start(&config.mesh_dir, runtime.clone(), owner)?;
     // Persist the launch role, not credentials. During a crash/restart gap a
@@ -1155,6 +1163,16 @@ mod service_contract_tests {
 
 #[cfg(all(test,unix))]
 mod tests {
+    #[test]
+    fn background_delivery_is_advertised_without_starting_background_viewer_media() {
+        let mut config=crate::UnifiedRuntimeConfig::app_defaults();
+        super::configure_background_roles(&mut config);
+        let mesh=remote_core::mesh::MeshConfig::generate("Background receiver");
+        let discovery=crate::build_unified_discovery_config_from_mesh(&config,&mesh).unwrap();
+        assert_eq!(discovery.announcement.capabilities.can_view,cfg!(feature="gpui-restoration"));
+        assert!(!config.enable_viewer_media);
+        assert!(!config.enable_client_receiver);
+    }
     use std::os::unix::{fs::{PermissionsExt,MetadataExt}};
     use super::*;
     #[cfg(target_os="linux")]
