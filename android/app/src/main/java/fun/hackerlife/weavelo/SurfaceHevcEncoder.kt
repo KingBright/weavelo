@@ -69,9 +69,15 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
             val index = codec.dequeueOutputBuffer(info, if (attempt == 0) 10_000 else 0)
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return accepted
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                codec.outputFormat.getByteBuffer("csd-0")?.duplicate()?.let { bytes ->
+                val format = codec.outputFormat
+                format.getByteBuffer("csd-0")?.duplicate()?.let { bytes ->
                     header = ByteArray(bytes.remaining()).also { bytes.get(it) }
                 }
+                // One record per codec generation, containing codec metadata only.
+                // The actual SPS lets native receivers diagnose unsupported color
+                // without inventing a matrix from the picture dimensions.
+                android.util.Log.i("WeaveloMedia", "HEVC output $format csd=" +
+                    header.take(1024).joinToString("") { "%02x".format(it.toInt() and 255) })
             } else if (index >= 0) {
                 try {
                     if (info.size > 0) {

@@ -172,7 +172,8 @@ impl LinuxHevcDecoder {
         // decoded stream fields; a unsupported/missing description remains visible.
         ensure!(
             i.primaries == 1 && matches!(i.transfer, 1 | 13),
-            "native video requires declared SDR BT.709/sRGB; source color is unspecified or unsupported"
+            "native video requires declared SDR BT.709/sRGB; decoded primaries={}, transfer={}, matrix={}, range={}",
+            i.primaries, i.transfer, i.matrix, i.range
         );
         let matrix = match i.matrix {
             1 => Matrix::Bt709,

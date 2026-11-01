@@ -1,8 +1,11 @@
 package `fun`.hackerlife.weavelo
 
 import android.annotation.SuppressLint
+import android.graphics.ColorSpace
+import android.graphics.ImageFormat
 import android.hardware.camera2.*
 import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Build
 import android.os.Handler
@@ -138,8 +141,19 @@ internal class CameraCapture(private val description: CameraDescription, val con
             if (Build.VERSION.SDK_INT >= 28) {
                 val output = OutputConfiguration(encoder.surface)
                 if (Build.VERSION.SDK_INT >= 33) output.setMirrorMode(OutputConfiguration.MIRROR_MODE_NONE)
-                camera.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR,
-                    listOf(output), { task -> handler.post(task) }, callback))
+                val session = SessionConfiguration(SessionConfiguration.SESSION_REGULAR,
+                    listOf(output), { task -> handler.post(task) }, callback)
+                if (Build.VERSION.SDK_INT >= 34) {
+                    val profiles = description.manager.getCameraCharacteristics(description.id)
+                        .get(CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES)
+                    if (profiles?.getSupportedColorSpacesForDynamicRange(ImageFormat.PRIVATE,
+                            DynamicRangeProfiles.STANDARD)?.contains(ColorSpace.Named.SRGB) == true) {
+                        // Ask the camera producer for an actually supported common
+                        // gamut; changing codec tags alone would mislabel pixels.
+                        session.setColorSpace(ColorSpace.Named.SRGB)
+                    }
+                }
+                camera.createCaptureSession(session)
             } else @Suppress("DEPRECATION") camera.createCaptureSession(listOf(encoder.surface), callback, handler)
             val ready = configured.get(5, TimeUnit.SECONDS)
             check(!closing.get()) { "Camera start cancelled" }

@@ -314,6 +314,7 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
     canSendFiles: Boolean = false, onSendFiles: () -> Unit = {},
     canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {},
     canSendCamera: Boolean = false, onSendCamera: () -> Unit = {}, onConnect: () -> Unit) {
+    var sendMenu by remember(name) { mutableStateOf(false) }
     Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
         .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(20.dp))
         .clickable(enabled = enabled, onClick = onConnect).padding(14.dp),
@@ -332,11 +333,22 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                 overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            MobileAction(MobileSymbol.Camera, "Send camera to $name", canSendCamera,
-                modifier = Modifier.size(44.dp), onClick = onSendCamera)
-            MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
-                if (sending) "Stop sending to $name" else "Send this screen to $name", canSendScreen,
-                modifier = Modifier.size(44.dp), onClick = onSendScreen)
+            Box {
+                MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
+                    if (sending) "Stop sending to $name" else "Send to $name", canSendScreen || canSendCamera,
+                    modifier = Modifier.size(44.dp), onClick = { if (sending) onSendScreen() else sendMenu = true })
+                androidx.compose.material3.DropdownMenu(expanded = sendMenu && !sending,
+                    onDismissRequest = { sendMenu = false }) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Screen or app") },
+                        enabled = canSendScreen, leadingIcon = {
+                            androidx.compose.material3.Icon(MobileSymbol.Devices.image, contentDescription = null)
+                        }, onClick = { sendMenu = false; onSendScreen() })
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Camera") },
+                        enabled = canSendCamera, leadingIcon = {
+                            androidx.compose.material3.Icon(MobileSymbol.Camera.image, contentDescription = null)
+                        }, onClick = { sendMenu = false; onSendCamera() })
+                }
+            }
             MobileAction(MobileSymbol.Open, "Open device $name", enabled, modifier = Modifier.size(44.dp), onClick = onConnect)
             MobileAction(MobileSymbol.Files, "Send files to $name", canSendFiles, modifier = Modifier.size(44.dp), onClick = onSendFiles)
         }

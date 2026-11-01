@@ -110,9 +110,11 @@ class CameraService : Service() {
                 var epoch = demand.getLong("epoch")
                 val grant = demand.getLong("grant")
                 try {
-                    val plan = description.configure(demand)
-                    fun key(value: Long) = "$source:$value:$rotation:${plan.encoder}"
+                    // Epoch changes already cover every encoding-demand change. Camera
+                    // characteristics and codec capabilities are not per-frame work.
+                    fun key(value: Long) = "$source:$value:$rotation"
                     if (activeKey != key(epoch)) {
+                        val plan = description.configure(demand)
                         capture.getAndSet(null)?.let { old -> delayedClose = old; old.close(); delayedClose = null }
                         val configured = JSONObject(PublisherClient.action(3, JSONObject().put("source", source)
                             .put("epoch", epoch).put("grant", grant).put("width", plan.encoder.width)
