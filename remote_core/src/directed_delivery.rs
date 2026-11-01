@@ -23,34 +23,39 @@ pub async fn exchange(
     request: u64,
     revision: u64,
 ) -> Result<DeliveryState, Error> {
-    for _ in 0..4 {
-        conn.control(command.clone()).await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(750);
+    // Match ordinary session confirmation tolerance. Four lost UDP receipts
+    // used to end an otherwise live 15-second delivery lease after only 3s.
+    let confirmation = async {
         loop {
-            match tokio::time::timeout_at(deadline, events.control.recv()).await {
-                Ok(Some(SessionCommand::DeliveryReceipt {
-                    request_id,
-                    revision: got,
-                    state,
-                    reason,
-                })) if request_id == request
-                    && (got == revision
-                        || matches!(state, DeliveryState::Cancelled | DeliveryState::Rejected)) =>
-                {
-                    if state == DeliveryState::Rejected {
-                        return Err(format!("Target rejected delivery: {reason}").into());
+            conn.control(command.clone()).await?;
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(750);
+            loop {
+                match tokio::time::timeout_at(deadline, events.control.recv()).await {
+                    Ok(Some(SessionCommand::DeliveryReceipt {
+                        request_id,
+                        revision: got,
+                        state,
+                        reason,
+                    })) if request_id == request
+                        && (got == revision
+                            || matches!(state, DeliveryState::Cancelled | DeliveryState::Rejected)) =>
+                    {
+                        if state == DeliveryState::Rejected {
+                            return Err(format!("Target rejected delivery: {reason}").into());
+                        }
+                        return Ok(state);
                     }
-                    return Ok(state);
+                    Ok(Some(SessionCommand::Closed { .. })) | Ok(None) => {
+                        return Err("Control connection closed".into());
+                    }
+                    Ok(Some(_)) => continue,
+                    Err(_) => break,
                 }
-                Ok(Some(SessionCommand::Closed { .. })) | Ok(None) => {
-                    return Err("Control connection closed".into());
-                }
-                Ok(Some(_)) => continue,
-                Err(_) => break,
             }
         }
-    }
-    Err("Target did not acknowledge directed delivery; it may need an update".into())
+    };
+    tokio::time::timeout(Duration::from_secs(8), confirmation).await
+        .map_err(|_| -> Error { "Target did not confirm delivery in time".into() })?
 }
 pub async fn claim(
     conn: &WorkspaceConnection,
@@ -103,6 +108,7 @@ where
     let sending = async {
         let mut revision = 1;
         loop {
+            let next_offer = tokio::time::Instant::now() + Duration::from_secs(5);
             if *cancellation.borrow() { return Ok(()); }
             if !alive() || offer.scope != crate::shared_files::current_share_scope() {
                 return Err("Screen sharing or device network changed".into());
@@ -117,7 +123,9 @@ where
                 DeliveryState::Cancelled | DeliveryState::Rejected => return Ok(()),
                 _ => return Err("Unexpected delivery receipt".into()),
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // Receipt latency consumes this interval; never add another five
+            // seconds after a delayed confirmation and drift past the lease.
+            tokio::time::sleep_until(next_offer).await;
             revision = revision.checked_add(1).ok_or("Sending revision exhausted")?;
         }
     };
@@ -626,6 +634,70 @@ fn renew(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn delivery_survives_lost_receipts_without_accepting_a_stale_revision() {
+        use crate::net::{MultiplexedPacket, UdpMultiplexer};
+        use protocol::ControlMessage;
+        assert!(crate::session_crypto::load_session_psk().is_none(), "Use only the isolated synthetic peer");
+        let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target = server.local_addr().unwrap();
+        let (sender, receiver) = server.split();
+        let request = u64::MAX - 3;
+        let peer = tokio::spawn(async move {
+            let mut attempts = 0;
+            let mut first_offer = None;
+            loop {
+                let mut finished = false;
+                let reply = match receiver.recv().await.unwrap() {
+                    MultiplexedPacket::Control(ControlMessage::Session(command), addr) => {
+                        let reply = match *command {
+                            SessionCommand::Open { connection_id, version } => SessionCommand::Opened {
+                                connection_id, version, max_subscriptions: 8, files: false, clipboard: false, window_capture: false,
+                            },
+                            SessionCommand::DeliveryOffer { request_id, revision, sources, .. } => {
+                                assert_eq!(request_id, request);
+                                assert_eq!(sources, vec![CaptureSource::MainDisplay]);
+                                if revision == 1 {
+                                    first_offer.get_or_insert_with(tokio::time::Instant::now);
+                                    attempts += 1;
+                                    // Four lost current receipts must not terminate
+                                    // this live lease or accept a stale revision.
+                                    receipt(request, if attempts <= 4 { 0 } else { revision }, DeliveryState::Receiving, "")
+                                } else {
+                                    assert_eq!(revision, 2);
+                                    finished = true;
+                                    receipt(request, revision, DeliveryState::Cancelled, "Fixture receiver stopped")
+                                }
+                            }
+                            _ => continue,
+                        };
+                        (ControlMessage::Session(Box::new(reply)), addr)
+                    }
+                    MultiplexedPacket::Control(ControlMessage::Ping { client_send_ts }, addr) => (
+                        ControlMessage::Pong { client_send_ts, host_recv_ts: 0, host_send_ts: 0 }, addr),
+                    _ => continue,
+                };
+                sender.send_control(&reply.0, reply.1).await.unwrap();
+                if finished { break first_offer.unwrap().elapsed(); }
+            }
+        });
+        let (connection, mut events) = WorkspaceConnection::connect_media(target).await.unwrap();
+        let (_stop, mut cancelled) = tokio::sync::watch::channel(false);
+        let mut progress = Vec::new();
+        let mut renewals = Vec::new();
+        tokio::time::timeout(Duration::from_secs(9), maintain_offer(&connection, &mut events,
+            OutgoingOffer { source: "fixture-source".into(), target: "fixture-target".into(), ticket: [7;32],
+                request, sources: vec![CaptureSource::MainDisplay], scope: crate::shared_files::current_share_scope() },
+            &mut cancelled, ||true, |revision| { renewals.push(revision); async { Ok(()) } },
+            |state|progress.push(state))).await.unwrap().unwrap();
+        let elapsed = peer.await.unwrap();
+        // Retrying for 3s consumes the 5s cadence, rather than adding a new 5s
+        // sleep. Cancel remains terminal and renews only the exact next revision.
+        assert!(elapsed >= Duration::from_secs(4) && elapsed < Duration::from_secs(7), "renewal drifted: {elapsed:?}");
+        assert_eq!(progress, vec![DeliveryState::Receiving]);
+        assert_eq!(renewals, vec![2]);
+    }
+
     fn peer() -> Peer {
         Peer {
             addr: "127.0.0.1:1".parse().unwrap(),
