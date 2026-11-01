@@ -3151,6 +3151,7 @@ name = "host"
 version = "2.0.0-alpha.6"
 dependencies = [
  "async-trait",
+ "cc",
  "core-foundation 0.10.0",
  "core-graphics 0.23.2",
  "core-media-rs",

@@ -273,7 +273,7 @@ fn is_hevc_vcl(nal_type: u8) -> bool {
     nal_type <= 31
 }
 
-fn is_hevc_keyframe(au: &[u8]) -> bool {
+pub(crate) fn is_hevc_keyframe(au: &[u8]) -> bool {
     let mut offset = 0;
     while offset < au.len() {
         let Some(next) = find_start(au, offset + 1) else {

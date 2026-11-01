@@ -3,7 +3,11 @@
 use super::{RawSettings,Result,encoded_color};
 use crate::linux_frame::OwnedFrame;
 use std::{path::PathBuf,process::{Command,Stdio},sync::{Mutex,OnceLock},time::{Duration,Instant}};
-use std::os::unix::fs::FileTypeExt;
+fn is_character_device(kind:std::fs::FileType)->bool {
+    #[cfg(unix)] {use std::os::unix::fs::FileTypeExt;kind.is_char_device()}
+    // This module's shared frame/encoding models also compile in Windows tests.
+    #[cfg(not(unix))] {let _=kind;false}
+}
 
 #[derive(Clone)]
 pub(crate) struct HardwareEncoder {device:PathBuf}
@@ -11,13 +15,13 @@ impl HardwareEncoder {
     pub(crate) fn probe()->Result<Self> {
         static DEVICE:OnceLock<Mutex<Option<HardwareEncoder>>>=OnceLock::new();
         let mut cached=DEVICE.get_or_init(Default::default).lock().unwrap_or_else(|e|e.into_inner());
-        if let Some(encoder)=cached.as_ref() && encoder.device.metadata().is_ok_and(|m|m.file_type().is_char_device()) {
+        if let Some(encoder)=cached.as_ref() && encoder.device.metadata().is_ok_and(|m|is_character_device(m.file_type())) {
             return Ok(encoder.clone());
         }
         let mut devices=std::fs::read_dir("/dev/dri").into_iter().flatten().filter_map(|entry| {
             let entry=entry.ok()?;let name=entry.file_name();let name=name.to_str()?;
             let number=name.strip_prefix("renderD")?;
-            if number.is_empty() || !number.bytes().all(|c|c.is_ascii_digit()) || !entry.file_type().ok()?.is_char_device(){return None;}
+            if number.is_empty() || !number.bytes().all(|c|c.is_ascii_digit()) || !is_character_device(entry.file_type().ok()?){return None;}
             Some(entry.path())
         }).collect::<Vec<_>>();
         devices.sort();

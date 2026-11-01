@@ -102,7 +102,7 @@ fn accessible_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
 
 pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
     let screens=list_screens();
-    #[cfg(any(target_os="macos",target_os="linux"))]
+    #[cfg(any(target_os="macos",target_os="linux",target_os="windows"))]
     {
         let cameras=crate::cameras::list();
         return match (screens,cameras) {
@@ -112,7 +112,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
             (Err(error),_)=>Err(error),
         };
     }
-    #[cfg(not(any(target_os="macos",target_os="linux")))]
+    #[cfg(not(any(target_os="macos",target_os="linux",target_os="windows")))]
     screens
 }
 

@@ -4619,7 +4619,7 @@ mod failure_admission_tests {
     #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn windows_resubscribe_releases_previous_capture_reservation_first() {
-        WINDOWS_VIDEO_CAPTURE_RESERVED.store(false, Relaxed);
+        WINDOWS_VIDEO_CAPTURE_RESERVED.store(0, Relaxed);
         let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
         let (sender, _receiver) = mux.split();
         let addr = "127.0.0.1:39573".parse().unwrap();
@@ -4670,10 +4670,10 @@ mod failure_admission_tests {
             )
             .await;
         assert!(replacement.is_ok());
-        assert!(WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed));
+        assert_eq!(WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed),1);
         drop(peer);
         tokio::task::yield_now().await;
-        assert!(!WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed));
+        assert_eq!(WINDOWS_VIDEO_CAPTURE_RESERVED.load(Relaxed),0);
     }
 }
 

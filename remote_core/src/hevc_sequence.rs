@@ -91,11 +91,18 @@ struct ParsedSps {
 /// The caller must have independently verified an SDR sRGB source. Repair only
 /// an explicit BT.709 transfer tag; preserve range, matrix, geometry and VCL data.
 pub fn set_srgb_transfer(bytes: &mut Vec<u8>) -> Result<bool, &'static str> {
+    set_srgb_transfer_for_matrix(bytes,1)
+}
+
+/// Correct only the transfer tag for an independently verified SDR source.
+/// The matrix must already match the source; no range/matrix relabelling.
+pub fn set_srgb_transfer_for_matrix(bytes:&mut Vec<u8>,matrix:u8)->Result<bool,&'static str> {
+    if !matches!(matrix,1|6){return Err("Unsupported verified SDR matrix");}
     let mut cursor=0;
     let mut changed=false;
     while let Some(mut sps)=sequence_details(&bytes[cursor..])? {
         let signal=sps.info.signal.ok_or("SPS color metadata is missing")?;
-        if signal.primaries!=Some(1) || signal.matrix!=Some(1) || !matches!(signal.transfer,Some(1|13)) {
+        if signal.primaries!=Some(1) || signal.matrix!=Some(matrix) || !matches!(signal.transfer,Some(1|13)) {
             return Err("SPS does not describe the verified SDR color space");
         }
         if signal.transfer==Some(13) {cursor+=sps.end;continue;}

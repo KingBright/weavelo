@@ -1138,7 +1138,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
 
     #[cfg(target_os = "windows")]
     let mut video_encoder =
-        crate::windows_video_encode::WindowsVideoEncoder::new(width, height, fps, bitrate_kbps, source)?;
+        crate::windows_video_encode::WindowsVideoEncoder::new(width, height, fps, bitrate_kbps, source, resources.clone())?;
 
     #[cfg(not(target_os="windows"))]
     video_capturer.start().await?;

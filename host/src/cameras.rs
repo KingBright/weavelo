@@ -11,3 +11,7 @@ mod linux;
 pub use linux::{access, request_access};
 #[cfg(target_os="linux")]
 pub(crate) use linux::{list, start};
+#[cfg(target_os="windows")]
+mod windows;
+#[cfg(target_os="windows")]
+pub(crate) use windows::{list,CameraStream};

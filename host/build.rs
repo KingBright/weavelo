@@ -6,6 +6,16 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
         build_camera_bridge();
     }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=native/windows_camera.cpp");
+        let mut build=cc::Build::new();build.cpp(true).std("c++17").file("native/windows_camera.cpp")
+            .define("NOMINMAX",None).define("WIN32_LEAN_AND_MEAN",None);
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref()==Ok("msvc"){build.flag("/EHsc");}
+        build.compile("weavelo_camera");
+        for library in ["mfplat","mf","mfreadwrite","mfuuid","d3d11","dxgi","ole32","oleaut32","cfgmgr32"] {
+            println!("cargo:rustc-link-lib={library}");
+        }
+    }
 }
 
 fn build_camera_bridge() {
