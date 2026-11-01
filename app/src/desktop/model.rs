@@ -41,6 +41,7 @@ pub struct SessionState<Texture, Pan: Default> {
     pub paused: bool,
     pub pending: Option<(u32, Instant)>,
     camera_replacement: Option<CaptureSource>,
+    camera_switch: Option<protocol::session::CameraSwitchRequest>,
     pub activity_revision: u64,
     pub status: String,
     pub error: String,
@@ -157,6 +158,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             paused: false,
             pending: None,
             camera_replacement: None,
+            camera_switch: None,
             activity_revision: 0,
             status: "Authenticated device connection".into(),
             error: String::new(),
@@ -318,6 +320,18 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             return;
         }
         if matches!(self.source,CaptureSource::Camera(_)) || matches!(source,CaptureSource::Camera(_)) {
+            if self.sources.iter().find(|info|info.source==self.source)
+                .zip(self.sources.iter().find(|info|info.source==source))
+                .is_some_and(|(from,target)|from.camera_switch_target(target)) {
+                self.next_request=self.next_request.wrapping_add(1).max(1000);
+                let request=protocol::session::CameraSwitchRequest {id:self.video_id,request_id:u64::from(self.next_request),
+                    source_revision:self.source_revision,from:self.source,target:source,delivery_request_id:None};
+                if self.control(SessionCommand::RequestCameraSwitch(request.clone())) {
+                    self.pending=Some((self.next_request,Instant::now()));self.camera_switch=Some(request);
+                    self.status="Checking camera availability".into();
+                }
+                return;
+            }
             self.replace_camera_view(source);
             return;
         }
@@ -340,6 +354,10 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         self.pending=Some((self.video_id,Instant::now()));
         self.error.clear();
         self.status="Updating camera view".into();
+    }
+    pub(crate) fn pending_capture_source(&self)->Option<CaptureSource> {
+        self.camera_switch.as_ref().map(|request|request.target)
+            .or(self.camera_replacement).or_else(||self.pending.map(|_|self.request.source))
     }
     pub fn set_paused(&mut self, paused: bool) {
         if self.paused != paused { self.release_input(); }
@@ -491,6 +509,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         self.modifiers = 0;
     }
     fn fail_video(&mut self, reason: String) {
+        self.camera_switch=None;
         self.camera_replacement=None;
         self.release_input();
         if let Some(task) = self.reader_task.take() { task.abort(); }
@@ -687,6 +706,15 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             remote_core::workspace_session::trace_control_event(self.conn.id,"gui_received",&event,
                 self.pending.map(|p|p.1.elapsed()),Some(self.pending.is_some()));
             match event {
+                SessionCommand::CameraSwitchResult {request,ready}
+                    if self.camera_switch.as_ref()==Some(&request) && self.connected
+                        && request.id==self.video_id && request.from==self.source && request.source_revision==self.source_revision => {
+                    self.camera_switch=None;self.pending=None;
+                    match ready {
+                        Ok(())=>self.replace_camera_view(request.target),
+                        Err(reason)=>{self.error=reason;self.status="Camera switch was not available".into();}
+                    }
+                }
                 SessionCommand::Sources { sources, .. } => {
                     let before=self.sources.iter().find(|info|info.source==self.source).and_then(|info|info.camera.as_ref());
                     let after=sources.iter().find(|info|info.source==self.source).and_then(|info|info.camera.as_ref());
@@ -742,6 +770,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     }
                 }
                 SessionCommand::Closed { reason, .. } => {
+                    self.camera_switch=None;self.pending=None;
                     self.release_input();
                     self.connected = false;
                     self.confirmed = false;
@@ -766,6 +795,9 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                         .trim()
                         .to_owned();
                     self.fail_input(reason);
+                }
+                SessionCommand::Error {request_id,reason} if self.camera_switch.as_ref().is_some_and(|request|request.request_id==u64::from(request_id)) => {
+                    self.camera_switch=None;self.pending=None;self.error=reason;
                 }
                 SessionCommand::Error { request_id, reason } => {
                     // Cleanup uses the same numeric ID as the video request. Once
@@ -796,9 +828,11 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             .pending
             .is_some_and(|p| p.1.elapsed() > Duration::from_secs(10))
         {
-            self.fail_video(
-                "Host did not confirm the video request; reconnect or update the peer".into(),
-            );
+            if self.camera_switch.take().is_some() {
+                self.pending=None;self.error="Camera switch was not confirmed; try again".into();
+            } else {
+                self.fail_video("Host did not confirm the video request; reconnect or update the peer".into());
+            }
         }
         for _ in 0..256 {
             let Ok(event) = self.events.audio.try_recv() else {
@@ -1211,6 +1245,47 @@ pub(crate) mod static_input_tests {
         (session, recorded_rx, recorder, temp)
     }
 
+    fn camera_pair()->Vec<CaptureSourceInfo> {
+        [protocol::session::CameraFacing::Back,protocol::session::CameraFacing::Front].into_iter().enumerate()
+            .map(|(index,facing)|CaptureSourceInfo {source:CaptureSource::Camera(11+index as u64),title:format!("Camera {index}"),
+                application:String::new(),process_id:None,width:1280,height:720,supports_input:false,
+                camera:Some(protocol::session::CameraInfo {facing,switch_group:1,rotation:0,mirrored:false})}).collect()
+    }
+    #[tokio::test]
+    async fn camera_preflight_failure_timeout_and_late_reply_preserve_the_live_source() {
+        let (mut session,_received,recorder,_temp)=recorder_session().await;
+        session.sources=camera_pair();session.source=session.sources[0].source;session.confirmed=true;
+        let from=session.source;let target=session.sources[1].source;
+        let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();session.events.control=receiver;
+        session.switch_source(target);let request=session.camera_switch.clone().unwrap();
+        assert_eq!(session.pending_capture_source(),Some(target));assert_eq!(session.source,from);assert!(session.confirmed);
+        assert_eq!((request.id,request.source_revision,request.from,request.target,request.delivery_request_id),
+            (session.video_id,0,from,target,None));
+        sender.send(SessionCommand::CameraSwitchResult{request:request.clone(),ready:Err("Camera is occupied".into())}).unwrap();
+        session.poll();assert_eq!(session.error,"Camera is occupied");assert!(session.confirmed);
+        assert_eq!(session.source,from);assert!(session.video_error.is_none());assert!(session.pending.is_none());
+        sender.send(SessionCommand::CameraSwitchResult{request,ready:Ok(())}).unwrap();
+        session.poll();assert_eq!(session.source,from);assert!(session.confirmed);
+        session.switch_source(target);
+        session.pending.as_mut().unwrap().1=Instant::now()-Duration::from_secs(11);
+        session.poll();assert!(session.camera_switch.is_none());assert!(session.pending.is_none());
+        assert!(session.confirmed);assert_eq!(session.source,from);assert!(session.video_error.is_none());
+        recorder.abort();
+    }
+    #[tokio::test]
+    async fn camera_preflight_retires_only_the_confirmed_subscription_before_replacement() {
+        let (mut session,_received,recorder,_temp)=recorder_session().await;
+        session.sources=camera_pair();session.source=session.sources[0].source;session.confirmed=true;session.request.audio=false;
+        let old=session.video_id;let from=session.source;let target=session.sources[1].source;
+        let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();session.events.control=receiver;
+        session.switch_source(target);let request=session.camera_switch.clone().unwrap();
+        sender.send(SessionCommand::CameraSwitchResult{request,ready:Ok(())}).unwrap();session.poll();
+        assert_eq!(session.source,from);assert_eq!(session.video_id,old);assert!(!session.confirmed);
+        sender.send(SessionCommand::Unsubscribed{id:old+256}).unwrap();session.poll();assert_eq!(session.source,from);
+        sender.send(SessionCommand::Unsubscribed{id:old}).unwrap();session.poll();
+        assert_eq!(session.source,target);assert_eq!(session.video_id,old+256);assert!(!session.confirmed);
+        recorder.abort();
+    }
     #[tokio::test]
     async fn camera_rotation_waits_for_retirement_and_ignores_old_acknowledgements() {
         let (mut session,_received,recorder,_temp)=recorder_session().await;

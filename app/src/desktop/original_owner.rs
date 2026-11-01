@@ -449,7 +449,7 @@ impl OriginalOwner {
                 source_icons: s.conn.source_icons(),
                 source_binding: Some(SourceViewBinding::new(&s.conn, remote_core::shared_files::current_share_scope())),
                 active_source: s.source,
-                pending_source: s.pending.map(|_| s.request.source),
+                pending_source: s.pending_capture_source(),
                 supports_input: s.supports_input && s.connected,
                 error: active_video_error(s.video_error.as_deref(), s.media.as_ref().and_then(|m|m.decode_status.try_lock().ok().map(|v|v.clone())).as_deref()),
                 input_failed: s.input_failed(),
@@ -1043,7 +1043,7 @@ impl OriginalOwner {
         } else {
             e.session.switch_source(source);
         }
-        *e.frame.lock().unwrap() = None;
+        if !e.session.confirmed {*e.frame.lock().unwrap() = None;}
         Ok(())
     }
     /// None means committed for the pending handshake, or preferences-only while idle.

@@ -3181,6 +3181,17 @@ fn display_switcher_control(
         );
     }
 
+    if let Some(target)=sources.iter().find(|source|source.source==active_source)
+        .and_then(|source|sources.iter().find(|target|source.camera_switch_target(target))).cloned() {
+        let view=view.clone();let binding=source_binding.cloned();
+        control=control.child(command_button("island_camera_switch",ActionVariantKind::Neutral,cx)
+            .disabled(pending_source.is_some()).h(px(22.0)).w(px(26.0))
+            .tooltip(tooltip("Switch camera").build())
+            .on_click(move|_,_,cx| {
+                let _=view.update(cx,|this,cx|this.start_capture_source_switch(
+                    binding.clone(),target.clone(),target.title.clone(),cx));
+            }).child(icon(IconName::CameraSwitch).size(px(13.0))));
+    }
     let view = view.clone();
     let binding = source_binding.cloned();
     control.child(
