@@ -74,6 +74,20 @@ pub fn configure_device_group_dir(path: impl Into<PathBuf>) -> Result<(), PathBu
     BRIDGE_DEVICE_GROUP_DIR.set(path.into())
 }
 
+#[cfg(any(feature = "android", test))]
+fn initialize_phone_identity(store: &AppPrivateMeshConfigStore, model: &str) -> Result<MeshConfig, MeshStoreError> {
+    let model = remote_core::device_name::valid_name(model)
+        .ok_or_else(|| MeshStoreError::InvalidMetadata("invalid phone model name".into()))?;
+    let identity = store.load_or_generate(model.clone())?;
+    // The owner requested model names for these generic Android labels. Preserve
+    // deliberate labels and change only public metadata, through the existing CAS.
+    if identity.display_name == "Weavelo Android" {
+        store.rename_display_name(&identity.display_name, &model)
+    } else {
+        Ok(identity)
+    }
+}
+
 fn bridge_device_group_dir() -> PathBuf {
     BRIDGE_DEVICE_GROUP_DIR
         .get()
@@ -1370,6 +1384,22 @@ fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscover
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phone_model_name_preserves_membership_and_custom_labels() {
+        let directory = std::env::temp_dir().join(format!("weavelo-phone-model-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let store = AppPrivateMeshConfigStore::new(&directory);
+        let before = store.load_or_generate("Weavelo Android").unwrap();
+        let mut expected = before.clone();
+        expected.display_name = "nubia NX741J".into();
+        assert_eq!(initialize_phone_identity(&store, "nubia NX741J").unwrap(), expected);
+        let custom = store.rename_display_name("nubia NX741J", "My phone").unwrap();
+        assert_eq!(initialize_phone_identity(&store, "Redmi 2409BRN2CC").unwrap(), custom);
+        assert!(initialize_phone_identity(&store, "invalid\nmodel").is_err());
+        assert_eq!(store.load().unwrap().unwrap(), custom);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn bridge_discovery_matches_desktop_lan_and_tunnel_targets() {

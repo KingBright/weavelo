@@ -448,8 +448,13 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeInit(
     mut env: JNIEnv,
     _class: JClass,
     storage_dir: JString,
+    model_name: JString,
 ) -> jboolean {
     let storage_dir: String = match env.get_string(&storage_dir) {
+        Ok(value) => value.into(),
+        Err(_) => return 0,
+    };
+    let model_name: String = match env.get_string(&model_name) {
         Ok(value) => value.into(),
         Err(_) => return 0,
     };
@@ -461,7 +466,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeInit(
         return 0;
     }
     let store = remote_core::mesh::AppPrivateMeshConfigStore::new(crate::bridge_device_group_dir());
-    let identity = match store.load_or_generate("Weavelo Android") {
+    let identity = match crate::initialize_phone_identity(&store, &model_name) {
         Ok(identity) => identity,
         Err(error) => {
             let code = crate::startup_diagnostics::profile_error_code(&error, std::path::Path::new(&storage_dir));

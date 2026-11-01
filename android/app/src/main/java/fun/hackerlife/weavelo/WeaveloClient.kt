@@ -126,7 +126,10 @@ object WeaveloClient {
         }
         if (!isNativeLoaded) return false
         val initialized = try {
-            nativeInit(context.filesDir.absolutePath)
+            val model = Build.MODEL.trim().ifBlank { "Android device" }
+            val brand = Build.BRAND.trim().takeUnless { it.equals("unknown", ignoreCase = true) }.orEmpty()
+            val name = if (brand.isBlank() || model.startsWith(brand, ignoreCase = true)) model else "$brand $model"
+            nativeInit(context.filesDir.absolutePath, name)
         } catch (error: Exception) {
             startupFailed(NativeStartupDiagnostics.initialization(error))
             return false
@@ -443,7 +446,7 @@ object WeaveloClient {
         return _telemetry.value
     }
 
-    private external fun nativeInit(storageDir: String): Boolean
+    private external fun nativeInit(storageDir: String, modelName: String): Boolean
     private external fun nativeConnect(deviceId: String, endpoint: String)
     private external fun nativeDisconnect()
     private external fun nativeSetNetworkEnabled(enabled: Boolean)
