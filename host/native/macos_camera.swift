@@ -45,17 +45,23 @@ private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBuffer
     let callback: FrameCallback
     var frameCount: UInt64 = 0
     var lateFrames: UInt64 = 0
+    var offeredFrames: UInt64 = 0
+    var notReadyFrames: UInt64 = 0
+    var missingImageFrames: UInt64 = 0
+    var invalidTimeFrames: UInt64 = 0
     var firstPTS: Double = 0
     var lastPTS: Double = 0
     init(_ context: UnsafeMutableRawPointer?, _ callback: @escaping FrameCallback) {
         self.context = context; self.callback = callback
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard CMSampleBufferDataIsReady(sample), let image = CMSampleBufferGetImageBuffer(sample) else { return }
+        offeredFrames += 1
+        guard CMSampleBufferDataIsReady(sample) else { notReadyFrames += 1; return }
+        guard let image = CMSampleBufferGetImageBuffer(sample) else { missingImageFrames += 1; return }
         let sourceTime = CMSampleBufferGetPresentationTimeStamp(sample)
-        guard sourceTime.isNumeric else { return }
+        guard sourceTime.isNumeric else { invalidTimeFrames += 1; return }
         let pacingTime = CMTimeConvertScale(sourceTime, timescale: 1_000_000, method: .default).value
-        guard pacingTime >= 0 else { return }
+        guard pacingTime >= 0 else { invalidTimeFrames += 1; return }
         let pts = CMTimeGetSeconds(sourceTime)
         if pts.isFinite {
             if frameCount == 0 { firstPTS = pts }
@@ -74,7 +80,7 @@ private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBuffer
         let duration = lastPTS-firstPTS
         let fps = duration > 0 ? Double(frameCount > 0 ? frameCount-1 : 0)/duration : 0
         Logger(subsystem: "fun.hackerlife.weavelo", category: "camera").notice(
-            "Native capture ended: frames=\(self.frameCount, privacy: .public) fps=\(fps, privacy: .public) late_frames=\(self.lateFrames, privacy: .public)")
+            "Native capture ended: frames=\(self.frameCount, privacy: .public) fps=\(fps, privacy: .public) late_frames=\(self.lateFrames, privacy: .public) offered_frames=\(self.offeredFrames, privacy: .public) not_ready=\(self.notReadyFrames, privacy: .public) missing_image=\(self.missingImageFrames, privacy: .public) invalid_time=\(self.invalidTimeFrames, privacy: .public)")
     }
 }
 
