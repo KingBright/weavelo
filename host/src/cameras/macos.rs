@@ -3,7 +3,7 @@ use protocol::session::{CaptureSource, CaptureSourceInfo};
 use remote_core::{cameras::{CameraRegistry, NativeCamera}, LatestFrameSlot};
 use std::{ffi::{c_char,c_void,CStr,CString},ptr::NonNull,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}}};
 
-type FrameCallback=extern "C" fn(*mut c_void,*mut c_void,u32,u32);
+type FrameCallback=extern "C" fn(*mut c_void,*mut c_void,u32,u32,u64);
 unsafe extern "C" {
     fn weavelo_camera_catalog()->*mut c_char;
     fn weavelo_camera_free_string(text:*mut c_char);
@@ -51,7 +51,7 @@ struct CameraFrames {
 }
 // Only owned calls move between worker threads. AVFoundation owns its serial callback/stop queues.
 unsafe impl Send for CameraHandle {}
-extern "C" fn frame(context:*mut c_void,sample:*mut c_void,width:u32,height:u32) {
+extern "C" fn frame(context:*mut c_void,sample:*mut c_void,width:u32,height:u32,pacing_ts_us:u64) {
     let Some(sample_buffer)=screencapturekit::cm::CMSampleBuffer::from_raw(sample) else{return;};
     let frames=unsafe{&*context.cast::<CameraFrames>()};
     if let Some(resources)=&frames.resources {resources.native_camera_frames.fetch_add(1,Ordering::Relaxed);}
@@ -59,7 +59,7 @@ extern "C" fn frame(context:*mut c_void,sample:*mut c_void,width:u32,height:u32)
     if frames.count.fetch_add(1,Ordering::Relaxed)==0 {frames.first.store(capture_ts,Ordering::Relaxed);}
     frames.last.store(capture_ts,Ordering::Relaxed);
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u32;
-    frames.slot.push(MacVideoFrame {width,height,sample_buffer,capture_time_ms:now,timing:protocol::FrameTimingCheckpoints::new(capture_ts)});
+    frames.slot.push(MacVideoFrame {width,height,sample_buffer,capture_time_ms:now,pacing_ts_us,timing:protocol::FrameTimingCheckpoints::new(capture_ts)});
 }
 struct StopContext {
     frames:Arc<CameraFrames>,

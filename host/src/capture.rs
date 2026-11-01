@@ -12,6 +12,8 @@ pub struct MacVideoFrame {
     pub sample_buffer: CMSampleBuffer,
     pub capture_time_ms: u32,
     pub timing: protocol::FrameTimingCheckpoints,
+    /// Source timeline for pacing; callback delivery can arrive in bursts.
+    pub pacing_ts_us: u64,
 }
 
 impl VideoFrame for MacVideoFrame {
@@ -52,6 +54,7 @@ impl SCStreamOutputTrait for StreamOutput {
             sample_buffer: sample,
             capture_time_ms: now_ms,
             timing: protocol::FrameTimingCheckpoints::new(capture_ts_us),
+            pacing_ts_us: capture_ts_us,
         };
 
         self.slot.push(frame);
@@ -279,7 +282,7 @@ impl VideoCapturer for MacVideoCapturer {
                 Ok(frame) => {
                     if let Some(resources)=&self.resources {resources.raw_capture_samples.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
                     if frame.timing.capture_ts_us < self.minimum_capture_ts_us {continue;}
-                    if self.pacer.admit(frame.timing.capture_ts_us) {return Ok(frame);}
+                    if self.pacer.admit(frame.pacing_ts_us) {return Ok(frame);}
                     if let Some(resources)=&self.resources {resources.capture_pacing_skips.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
                 }
                 Err(_) => {

@@ -4,7 +4,7 @@ import CoreVideo
 import Foundation
 import os
 
-typealias FrameCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt32, UInt32) -> Void
+typealias FrameCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt32, UInt32, UInt64) -> Void
 
 private func devices() -> [AVCaptureDevice] {
     var types: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
@@ -52,7 +52,11 @@ private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard CMSampleBufferDataIsReady(sample), let image = CMSampleBufferGetImageBuffer(sample) else { return }
-        let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+        let sourceTime = CMSampleBufferGetPresentationTimeStamp(sample)
+        guard sourceTime.isNumeric else { return }
+        let pacingTime = CMTimeConvertScale(sourceTime, timescale: 1_000_000, method: .default).value
+        guard pacingTime >= 0 else { return }
+        let pts = CMTimeGetSeconds(sourceTime)
         if pts.isFinite {
             if frameCount == 0 { firstPTS = pts }
             lastPTS = pts
@@ -60,7 +64,7 @@ private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBuffer
         frameCount += 1
         // Transfer one retained CMSampleBuffer; the CVPixelBuffer never becomes CPU pixels.
         callback(context, Unmanaged.passRetained(sample).toOpaque(),
-                 UInt32(CVPixelBufferGetWidth(image)), UInt32(CVPixelBufferGetHeight(image)))
+                 UInt32(CVPixelBufferGetWidth(image)), UInt32(CVPixelBufferGetHeight(image)), UInt64(pacingTime))
     }
     func captureOutput(_ output: AVCaptureOutput, didDrop sample: CMSampleBuffer, from connection: AVCaptureConnection) {
         lateFrames += 1

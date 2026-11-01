@@ -81,6 +81,7 @@ fn generated_frame(
         sample_buffer: sample,
         capture_time_ms: (index * 33) as u32,
         timing: protocol::FrameTimingCheckpoints::default(),
+        pacing_ts_us: index as u64 * 1_000_000 / 30,
     })
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

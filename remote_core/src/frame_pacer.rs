@@ -55,4 +55,15 @@ mod tests {
         pacer.reset(37);
         assert!(pacer.admit(20_000_002));
     }
+    #[test]
+    fn delayed_camera_callbacks_are_paced_by_source_time() {
+        // A 20 Hz camera may deliver two samples together. Their callback
+        // arrival times are not the source's frame intervals.
+        let mut source=FramePacer::new(30);
+        let mut arrival=FramePacer::new(30);
+        let emitted_source=(0..200).filter(|n|source.admit(n*50_000)).count();
+        let emitted_arrival=(0..200).filter(|n|arrival.admit((n/2)*100_000)).count();
+        assert_eq!(emitted_source,200);
+        assert_eq!(emitted_arrival,100);
+    }
 }
