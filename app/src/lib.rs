@@ -3689,6 +3689,7 @@ mod tests {
                 width: 2560,
                 height: 1440,
                 supports_input: true,
+                camera: None,
             },
             protocol::session::CaptureSourceInfo {
                 source: protocol::session::CaptureSource::Display(77),
@@ -3698,6 +3699,7 @@ mod tests {
                 width: 1920,
                 height: 1080,
                 supports_input: false,
+                camera: None,
             },
         ];
         assert!(

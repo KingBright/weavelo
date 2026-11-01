@@ -28,6 +28,7 @@ pub mod assets {
                 "weavelo-icons/sharing.svg" => Some(include_bytes!("product_components/icons/sharing.svg")),
                 "weavelo-icons/receiving.svg" => Some(include_bytes!("product_components/icons/receiving.svg")),
                 "weavelo-icons/window.svg" => Some(include_bytes!("product_components/icons/window.svg")),
+                "weavelo-icons/camera.svg" => Some(include_bytes!("product_components/icons/camera.svg")),
                 "weavelo-icons/maximize-off.svg" => {
                     Some(include_bytes!("product_components/icons/maximize-off.svg"))
                 }
@@ -124,6 +125,7 @@ pub enum IconName {
     Sharing,
     Receiving,
     Window,
+    Camera,
     Maximize(bool),
     Minimize,
     PingIndicator(u8),
@@ -141,6 +143,7 @@ pub fn icon(name: IconName) -> ProductIcon {
         IconName::Sharing => "sharing.svg",
         IconName::Receiving => "receiving.svg",
         IconName::Window => "window.svg",
+        IconName::Camera => "camera.svg",
         IconName::Maximize(false) => "maximize-off.svg",
         IconName::Maximize(true) => "maximize-on.svg",
         IconName::Minimize => "minimize.svg",

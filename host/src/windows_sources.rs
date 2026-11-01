@@ -374,6 +374,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, String> {
             width: source.bounds.width,
             height: source.bounds.height,
             supports_input: true,
+            camera: None,
         });
         let issued = state
             .entries

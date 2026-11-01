@@ -512,6 +512,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         } else if !self.supports_input {
             match self.source {
                 CaptureSource::Window(_) => "This host cannot control the selected window. Check Weavelo Accessibility on that host or choose an input-enabled source",
+                CaptureSource::Camera(_) => "Camera viewing does not control the remote desktop",
                 CaptureSource::MainDisplay | CaptureSource::Display(_) => "Display control unavailable. Read the host reason below; after correcting permission or source availability, reselect this source before enabling control",
             }
         } else if !self.conn.input_ready(self.video_id,self.source_revision) {

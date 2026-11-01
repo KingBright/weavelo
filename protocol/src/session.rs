@@ -1,7 +1,7 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 5;
+pub const SESSION_VERSION: u32 = 6;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -10,6 +10,32 @@ pub enum CaptureSource {
     MainDisplay,
     Display(u32),
     Window(u32),
+    Camera(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCategory { Screen, Window, Camera }
+
+impl CaptureSource {
+    pub fn category(self) -> SourceCategory {
+        match self {
+            Self::MainDisplay | Self::Display(_) => SourceCategory::Screen,
+            Self::Window(_) => SourceCategory::Window,
+            Self::Camera(_) => SourceCategory::Camera,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CameraFacing { Front, Back, External, Unspecified }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CameraInfo {
+    pub facing: CameraFacing,
+    /// Opaque runtime-local group; zero means this camera has no switch group.
+    pub switch_group: u64,
+    pub rotation: u16,
+    pub mirrored: bool,
 }
 
 /// The ordered source selection is immutable for the lifetime of a delivery.
@@ -32,6 +58,28 @@ pub struct CaptureSourceInfo {
     pub width: u32,
     pub height: u32,
     pub supports_input: bool,
+    pub camera: Option<CameraInfo>,
+}
+
+impl CaptureSourceInfo {
+    /// Camera metadata is never permission to inject desktop input.
+    pub fn validate_camera(&self) -> Result<(), &'static str> {
+        match (self.source, self.camera) {
+            (CaptureSource::Camera(id), Some(camera)) if id != 0 && id <= i64::MAX as u64
+                && !self.supports_input && self.process_id.is_none()
+                && camera.switch_group <= i64::MAX as u64
+                && matches!(camera.rotation, 0 | 90 | 180 | 270) => Ok(()),
+            (CaptureSource::Camera(_), _) => Err("Invalid camera source metadata"),
+            (_, None) => Ok(()),
+            (_, Some(_)) => Err("Camera metadata requires a camera source"),
+        }
+    }
+    pub fn camera_switch_target(&self, other: &Self) -> bool {
+        self.source != other.source && self.validate_camera().is_ok()
+            && other.validate_camera().is_ok()
+            && self.camera.zip(other.camera).is_some_and(|(a,b)|
+                a.switch_group != 0 && a.switch_group == b.switch_group)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +237,29 @@ pub fn fit_capture_size(source: (u32, u32), target: (u32, u32)) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_metadata_cannot_grant_desktop_input_or_attach_to_a_screen() {
+        let camera=CameraInfo {facing:CameraFacing::Back,switch_group:11,rotation:90,mirrored:false};
+        let mut source=CaptureSourceInfo {source:CaptureSource::Camera(23),title:"Back camera".into(),
+            application:String::new(),process_id:None,width:1280,height:720,supports_input:false,camera:Some(camera)};
+        assert!(source.validate_camera().is_ok());
+        source.supports_input=true;assert!(source.validate_camera().is_err());source.supports_input=false;
+        source.process_id=Some(42);assert!(source.validate_camera().is_err());source.process_id=None;
+        source.camera.as_mut().unwrap().rotation=45;assert!(source.validate_camera().is_err());
+        source.camera=Some(camera);source.source=CaptureSource::Display(23);assert!(source.validate_camera().is_err());
+        source.source=CaptureSource::Camera(0);assert!(source.validate_camera().is_err());
+        source.source=CaptureSource::Camera(23);source.camera=None;assert!(source.validate_camera().is_err());
+    }
+    #[test]
+    fn camera_catalog_round_trip_retains_identity_facing_and_geometry() {
+        let source=CaptureSourceInfo {source:CaptureSource::Camera(0x0123456789),title:"Front camera".into(),
+            application:String::new(),process_id:None,width:720,height:1280,supports_input:false,
+            camera:Some(CameraInfo {facing:CameraFacing::Front,switch_group:9,rotation:270,mirrored:false})};
+        let encoded=bincode::serialize(&SessionCommand::sources(18,vec![source.clone()])).unwrap();
+        let decoded:SessionCommand=bincode::deserialize(&encoded).unwrap();
+        let SessionCommand::Sources {sources,..}=decoded else {panic!("wrong command")};
+        assert_eq!(sources,vec![source]);assert_eq!(sources[0].source.category(),SourceCategory::Camera);
+    }
     #[test]
     fn delivery_selection_is_bounded_unique_and_required_on_the_wire() {
         assert!(validate_delivery_sources(&[]).is_err());

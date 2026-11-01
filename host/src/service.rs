@@ -197,6 +197,7 @@ fn input_target_for(
         CaptureSource::Window(id) => pid
             .filter(|pid| *pid > 0)
             .map(|pid| InputTarget::Window { id, pid }),
+        CaptureSource::Camera(_) => None,
     }
 }
 
@@ -4666,6 +4667,11 @@ mod failure_admission_tests {
 #[cfg(test)]
 mod input_target_tests {
     use super::*;
+    #[test]
+    fn cameras_never_bind_desktop_input_even_with_an_untrusted_capability() {
+        assert_eq!(input_target_for(CaptureSource::Camera(42),None,true),None);
+        assert_eq!(input_target_for(CaptureSource::Camera(42),Some(123),true),None);
+    }
     #[test]
     fn windows_are_bound_to_server_selected_owner() {
         assert_eq!(

@@ -95,6 +95,7 @@ fn sources() -> Vec<CaptureSourceInfo> {
         width: 640,
         height: 360,
         supports_input: true,
+        camera: None,
     })
     .into()
 }

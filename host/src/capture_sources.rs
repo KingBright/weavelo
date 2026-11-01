@@ -122,6 +122,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
                 // Capability only: subscription/injection separately check the
                 // actual running host's input-posting permission.
                 supports_input: crate::input_injector::display_input_capable(display.display_id()),
+                camera: None,
             });
         }
         for window in content.windows() {
@@ -153,6 +154,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
                 // Geometry/owner capability, not permission. The selected PID
                 // is bound by the host; readiness requires actual OS grants.
                 supports_input: app.process_id() > 0,
+                camera: None,
             });
         }
         Ok(sources)
@@ -171,6 +173,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
             #[cfg(not(target_os = "linux"))]
             { true }
         },
+        camera: None,
     }])
 }
 
@@ -182,6 +185,7 @@ pub(crate) fn filter(
     use screencapturekit::prelude::*;
     let content = SCShareableContent::get()?;
     match source {
+        CaptureSource::Camera(_) => Err("Camera source requires native camera capture".into()),
         CaptureSource::Window(id) => {
             let window = content
                 .windows()

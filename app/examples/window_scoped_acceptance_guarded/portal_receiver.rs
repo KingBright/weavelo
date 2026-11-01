@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use std::{cell::Cell,collections::VecDeque};
     const NONCE:&str="0123456789abcdef0123456789abcdef";
-    fn source(id:u32,title:&str)->CaptureSourceInfo{CaptureSourceInfo{source:CaptureSource::Display(id),title:title.into(),application:String::new(),process_id:None,width:800,height:450,supports_input:true}}
+    fn source(id:u32,title:&str)->CaptureSourceInfo{CaptureSourceInfo{source:CaptureSource::Display(id),title:title.into(),application:String::new(),process_id:None,width:800,height:450,supports_input:true, camera: None, }}
     struct Fake {
         sent:Vec<SessionCommand>,replies:VecDeque<SessionCommand>,catalog:Vec<CaptureSourceInfo>,
         resumed:bool,frames:Cell<u64>,output:PathBuf,approval:bool,bad_approval:bool,bad_switch:bool,

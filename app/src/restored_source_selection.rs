@@ -1,5 +1,5 @@
 use super::*;
-use protocol::session::{CaptureSource, CaptureSourceInfo, SessionCommand, MAX_SUBSCRIPTIONS};
+use protocol::session::{CaptureSource, CaptureSourceInfo, SessionCommand, SourceCategory, MAX_SUBSCRIPTIONS};
 use remote_core::shared_files::{ShareScope, current_share_scope};
 
 pub(super) enum Target {
@@ -44,6 +44,7 @@ impl Selection {
         else {self.error=Some("Choose up to eight sources".into());}
     }
     fn replace(&mut self, mut sources: Vec<CaptureSourceInfo>, artwork: SourceArtwork) {
+        sources.retain(|source|source.validate_camera().is_ok());
         // MainDisplay is an alias; don't offer it beside the concrete displays.
         if sources.iter().any(|source|matches!(source.source,CaptureSource::Display(_))) {
             sources.retain(|source|source.source!=CaptureSource::MainDisplay);
@@ -181,12 +182,13 @@ impl RestoredDashboard {
 pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pending:bool,cx:&mut Context<RestoredDashboard>)->Div {
     let theme=cx.theme().clone();let view=cx.weak_entity();
     let mut rows=div().id("source_selection_rows").max_h(px(340.)).overflow_y_scroll().flex().flex_col().gap_1();
-    for windows in [false,true] {
+    for category in [SourceCategory::Screen,SourceCategory::Window,SourceCategory::Camera] {
+      let windows=category==SourceCategory::Window;
       let mut heading=false;
-      for source in selection.sources.iter().filter(|source|matches!(source.source,CaptureSource::Window(_))==windows) {
+      for source in selection.sources.iter().filter(|source|source.source.category()==category) {
         if !heading {
             rows=rows.child(div().mt_2().text_size(px(10.)).text_color(theme.content.secondary)
-                .child(if windows {"App windows"}else{"Entire screens"}));heading=true;
+                .child(match category {SourceCategory::Screen=>"Entire screens",SourceCategory::Window=>"App windows",SourceCategory::Camera=>"Cameras"}));heading=true;
         }
         let selected=selection.selected.contains(&source.source);let id=source.source;let view=view.clone();
         rows=rows.child(command_button(format!("source_selection_{id:?}"),if selected {ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx)
@@ -253,7 +255,7 @@ mod tests {
     }
     fn source(source:CaptureSource)->CaptureSourceInfo {
         CaptureSourceInfo {source,title:format!("{source:?}"),application:String::new(),process_id:None,
-            width:1280,height:720,supports_input:false}
+            width:1280,height:720,supports_input:false, camera: None, }
     }
     fn pending_selection()->Selection {
         let mut selection=selection();

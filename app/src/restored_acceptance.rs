@@ -124,7 +124,7 @@ impl MediaCycle {
     use super::*;
     fn item(source: CaptureSource, title: &str, pid: Option<i32>) -> CaptureSourceInfo {
         CaptureSourceInfo { source, title: title.into(), application: String::new(), process_id: pid,
-            width: 0, height: 0, supports_input: false }
+            width: 0, height: 0, supports_input: false , camera: None, }
     }
     #[test] fn bounded_selector_uses_real_linux_main_display_and_never_falls_back() {
         let request = SourceRequest::parse(r#"{"source":"MainDisplay","title":"Desktop"}"#).unwrap();

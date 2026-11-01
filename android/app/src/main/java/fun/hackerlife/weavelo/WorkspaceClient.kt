@@ -12,8 +12,10 @@ import java.io.File
 import java.util.concurrent.Executors
 
 // Each source has its own subscription; audio owners may be shared by same-app windows.
-data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null) {
+data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null, val camera: JSONObject? = null) {
     val isWindow: Boolean get() = (source as? JSONObject)?.has("Window") == true
+    val isCamera: Boolean get() = (source as? JSONObject)?.has("Camera") == true
+    val group: String get() = if (isCamera) "Cameras" else if (isWindow) "App windows" else "Entire screens"
 }
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
@@ -386,7 +388,7 @@ object WorkspaceClient {
                 val directory = (0 until sources.length()).map { index ->
                     val source = sources.getJSONObject(index)
                     WorkspaceSource(source.get("source"), source.getString("title"), source.getInt("width"), source.getInt("height"),
-                        source.getString("application"), artwork[source.get("source").toString()])
+                        source.getString("application"), artwork[source.get("source").toString()], source.optJSONObject("camera"))
                 }
                 val incoming = ownership.request()?.incomingId
                 val expected = incoming?.let { DirectedDelivery.sources(it) }

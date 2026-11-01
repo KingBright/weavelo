@@ -3098,7 +3098,7 @@ fn display_capture_sources(
         let id = match source.source {
             protocol::session::CaptureSource::MainDisplay => 0,
             protocol::session::CaptureSource::Display(id) => id,
-            protocol::session::CaptureSource::Window(_) => u32::MAX,
+            protocol::session::CaptureSource::Window(_) | protocol::session::CaptureSource::Camera(_) => u32::MAX,
         };
         (primary_rank, id)
     });
@@ -3225,6 +3225,7 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
     if title.is_empty() {
         if !app.is_empty() { app.into() }
         else if matches!(source.source, protocol::session::CaptureSource::Window(_)) { "Application window".into() }
+        else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) { "Camera".into() }
         else { "Display".into() }
     } else if app.is_empty() || app == title {
         title.into()
@@ -3254,7 +3255,11 @@ fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, source_ic
         .text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(color_accent_cyan())
         .child(match initial {
             Some(letter) => div().child(letter.to_uppercase().collect::<String>()).into_any_element(),
-            None => icon(if window { IconName::Window } else { IconName::Display }).size(px(14.0)).into_any_element(),
+            None => icon(match source.source.category() {
+                protocol::session::SourceCategory::Window=>IconName::Window,
+                protocol::session::SourceCategory::Camera=>IconName::Camera,
+                protocol::session::SourceCategory::Screen=>IconName::Display,
+            }).size(px(14.0)).into_any_element(),
         }).into_any_element()
 }
 
@@ -6214,6 +6219,7 @@ mod input_tests {
             width: 640,
             height: 480,
             supports_input: false,
+            camera: None,
         }]).is_empty());
         let one = vec![protocol::session::CaptureSourceInfo {
             source: protocol::session::CaptureSource::MainDisplay,
@@ -6223,6 +6229,7 @@ mod input_tests {
             width: 1920,
             height: 1080,
             supports_input: true,
+            camera: None,
         }];
         let displays = display_capture_sources(&one);
         assert_eq!(displays.len(), 1);
@@ -6239,6 +6246,7 @@ mod input_tests {
             width: 2560,
             height: 1440,
             supports_input: false,
+            camera: None,
         };
         let displays = display_capture_sources(&[one[0].clone(), real_secondary.clone()]);
         assert_eq!(displays.len(), 2);

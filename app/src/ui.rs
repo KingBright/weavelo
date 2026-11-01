@@ -1788,6 +1788,7 @@ fn display_capture_sources(
             width: 0,
             height: 0,
             supports_input: true,
+            camera: None,
         });
     }
     displays
@@ -4276,6 +4277,7 @@ mod input_tests {
             width: 1920,
             height: 1080,
             supports_input: true,
+            camera: None,
         }];
         let displays = display_capture_sources(&one);
         assert_eq!(displays.len(), 1);
@@ -4292,6 +4294,7 @@ mod input_tests {
             width: 2560,
             height: 1440,
             supports_input: false,
+            camera: None,
         };
         let displays = display_capture_sources(&[one[0].clone(), real_secondary.clone()]);
         assert_eq!(displays.len(), 2);

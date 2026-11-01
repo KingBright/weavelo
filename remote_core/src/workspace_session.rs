@@ -2254,6 +2254,7 @@ mod tests {
                     sources: vec![protocol::session::CaptureSourceInfo {
                         source: CaptureSource::Window(77), title: "Owned window".into(), application: "Fixture".into(), process_id: None,
                         width: 16, height: 16, supports_input: false,
+                        camera: None,
                     }],
                     source_icons: vec![protocol::interaction::SourceIconBinding { source: CaptureSource::Window(77), icon_id: icon.id }],
                     icons: vec![icon],

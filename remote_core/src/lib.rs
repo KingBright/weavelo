@@ -1,4 +1,5 @@
 pub mod directed_delivery;
+pub mod cameras;
 pub mod audio;
 pub mod application_icons;
 pub mod desktop_identity;

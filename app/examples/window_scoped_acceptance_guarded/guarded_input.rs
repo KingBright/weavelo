@@ -475,7 +475,7 @@ mod tests {
         async fn send(&mut self,c:SessionCommand)->Result<()> {
             self.sent.push(c.clone());
             match c {
-                SessionCommand::ListSources { request_id, .. }=>self.replies.push_back(SessionCommand::Sources{ source_icons: Vec::new(), icons: Vec::new(), request_id,sources:vec![CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {}",self.catalog_nonce),application:"owned fixture".into(),process_id:Some(self.catalog_pid),width:540,height:380,supports_input:true}]}),
+                SessionCommand::ListSources { request_id, .. }=>self.replies.push_back(SessionCommand::Sources{ source_icons: Vec::new(), icons: Vec::new(), request_id,sources:vec![CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {}",self.catalog_nonce),application:"owned fixture".into(),process_id:Some(self.catalog_pid),width:540,height:380,supports_input:true, camera: None, }]}),
                 SessionCommand::ReleaseInput{id} if self.release_ack=>{
                     self.release_sends+=1;
                     if self.late_input_error{self.replies.push_back(SessionCommand::Error{request_id:ID,reason:"INPUT_UNAVAILABLE: revoked after enqueue".into()});}
@@ -506,7 +506,7 @@ mod tests {
     fn input_count(fake:&Fake)->usize{fake.sent.iter().filter(|c|matches!(c,SessionCommand::SourceInput{..})).count()}
     fn has_close(fake:&Fake)->bool{fake.sent.iter().any(|c|matches!(c,SessionCommand::Close{connection_id:44}))}
     #[tokio::test] async fn opaque_window_catalog_has_no_capture_or_input(){let mut f=Fake::default();let mut t=target();t.window=0;let r=discover_window(&mut f,t,short()).await;assert_eq!(r["source"]["source"],json!(CaptureSource::Window(77)));assert_eq!(r["cleanup_complete"],true);assert_eq!(input_count(&f),0);assert!(f.sent.iter().all(|c|matches!(c,SessionCommand::ListSources{..}|SessionCommand::Close{..})));}
-    #[test] fn automatic_window_selection_rejects_ambiguity(){let mut t=target();t.window=0;let s=CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {NONCE}"),application:"fixture".into(),process_id:Some(123),width:540,height:380,supports_input:true};let mut second=s.clone();second.source=CaptureSource::Window(78);assert!(t.select(&[s,second]).unwrap_err().contains("ambiguous"));}
+    #[test] fn automatic_window_selection_rejects_ambiguity(){let mut t=target();t.window=0;let s=CaptureSourceInfo{source:CaptureSource::Window(77),title:format!("{TITLE} {NONCE}"),application:"fixture".into(),process_id:Some(123),width:540,height:380,supports_input:true, camera: None, };let mut second=s.clone();second.source=CaptureSource::Window(78);assert!(t.select(&[s,second]).unwrap_err().contains("ambiguous"));}
     #[tokio::test]
     async fn committed_text_probe_preserves_intentional_repeats_cjk_and_emoji_and_cleans_up() {
         let mut f = Fake::default();

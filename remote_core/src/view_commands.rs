@@ -7,6 +7,7 @@ use protocol::session::{CaptureSource, CaptureSourceInfo};
 pub fn enumerated_source(catalog: &[CaptureSourceInfo], id: CaptureSource) -> Option<&CaptureSourceInfo> {
     let mut matches = catalog.iter().filter(|source| source.source == id);
     let source = matches.next()?;
+    source.validate_camera().ok()?;
     matches.next().is_none().then_some(source)
 }
 
@@ -59,7 +60,7 @@ mod tests {
     use crate::session_tabs::SessionCommandState;
     fn source(id: CaptureSource, title: &str, pid: Option<i32>) -> CaptureSourceInfo {
         CaptureSourceInfo { source: id, title: title.into(), application: String::new(),
-            process_id: pid, width: 640, height: 480, supports_input: false }
+            process_id: pid, width: 640, height: 480, supports_input: false , camera: None, }
     }
     #[test]
     fn missing_display_or_window_never_dispatches_a_fallback() {

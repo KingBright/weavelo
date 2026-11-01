@@ -666,6 +666,7 @@ fn available_sources(
         width,
         height,
         supports_input,
+        camera: None,
     }]
 }
 fn valid(s: &SubscriptionRequest) -> bool {

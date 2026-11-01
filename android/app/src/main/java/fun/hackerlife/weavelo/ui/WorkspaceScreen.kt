@@ -493,20 +493,21 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
     val matches = remember(sources, query) {
         val hasDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
         sources.filter { !(hasDisplay && it.source == "MainDisplay") }
-            .filter { it.title.contains(query, true) || it.application.contains(query, true) }.sortedBy { it.isWindow }
+            .filter { it.title.contains(query, true) || it.application.contains(query, true) }
+            .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
     }
     AlertDialog(onDismissRequest = onClose,
         modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(.9f),
         properties = DialogProperties(usePlatformDefaultWidth = false),
-        title = { Text("Screens & apps", maxLines = 1) }, text = {
+        title = { Text("Sources", maxLines = 1) }, text = {
         Column(Modifier.fillMaxWidth()) {
             OutlinedTextField(query, { query = it }, label = { Text("Search apps and windows") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
                 itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
                   Column(Modifier.fillMaxWidth()) {
-                    if (index == 0 || matches[index - 1].isWindow != source.isWindow) {
-                        Text(if (source.isWindow) "App windows" else "Entire screens",
+                    if (index == 0 || matches[index - 1].group != source.group) {
+                        Text(source.group,
                             style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
                     }

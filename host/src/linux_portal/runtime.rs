@@ -333,6 +333,7 @@ impl PortalCaptureLease {
             width: first.width,
             height: first.height,
             supports_input: self.input_available(),
+            camera: None,
         };
         {
             let mut state = self

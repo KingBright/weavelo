@@ -30,6 +30,7 @@ impl Target {
             CaptureSource::MainDisplay => "main".into(),
             CaptureSource::Display(id) => format!("display:{id}"),
             CaptureSource::Window(id) => format!("window:{id}"),
+            CaptureSource::Camera(id) => format!("camera:{id}"),
         };
         format!(
             "weavelo:{}:{source}:{}",
