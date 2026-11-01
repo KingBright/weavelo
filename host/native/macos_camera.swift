@@ -172,6 +172,8 @@ private final class CameraSession {
             throw NSError(domain: "WeaveloCamera", code: 9, userInfo: [NSLocalizedDescriptionKey:
                 "Camera changed its selected native video mode (\(selectedSize.width)×\(selectedSize.height) → \(actualSize.width)×\(actualSize.height))"])
         }
+        Logger(subsystem: "fun.hackerlife.weavelo", category: "camera").notice(
+            "Native capture configured: requested_fps=\(fps, privacy: .public) min_frame_ms=\(CMTimeGetSeconds(device.activeVideoMinFrameDuration) * 1000, privacy: .public) max_frame_ms=\(CMTimeGetSeconds(device.activeVideoMaxFrameDuration) * 1000, privacy: .public)")
         complete = true
     }
     func stop() {
