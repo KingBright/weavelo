@@ -193,10 +193,13 @@ async fn receive(
                 break;
             }
             let status = first_frame.wait(ipc(directory.clone(), Request::Status)).await??;
-            if status["generation"].as_str() != Some(&generation)
-                || status["lease"]["request_id"].as_str() != Some(&request_id)
-            {
+            if status["generation"].as_str() != Some(&generation) {
                 return Err("Receiver stopped or changed generation".into());
+            }
+            // The receiver can close its window or stop receiving normally.
+            // End that intention as cancelled, rather than reporting rejection.
+            if status["lease"]["request_id"].as_str() != Some(&request_id) {
+                return Ok(());
             }
             if first_frame.observe(&status, &generation, &request_id, &offer.source, Instant::now())? {
                 offer.finish(DeliveryState::Receiving, "");

@@ -14,6 +14,39 @@ use protocol::session::DeliveryClaimProof;
 use crate::workspace_session::{WorkspaceConnection,WorkspaceEvents};
 type Error=Box<dyn std::error::Error+Send+Sync>;
 
+/// Scalar failure evidence. Queue admission is not a claim of wire delivery.
+#[derive(Debug, Serialize)]
+pub struct ConfirmationTimeout {
+    pub connection_id: u32,
+    pub request_id: u64,
+    pub revision: u64,
+    pub queued_commands: u32,
+    pub peer_responsive: bool,
+}
+impl std::fmt::Display for ConfirmationTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Target did not confirm delivery in time")
+    }
+}
+impl std::error::Error for ConfirmationTimeout {}
+fn record_confirmation_timeout(timeout: &ConfirmationTimeout) {
+    let message = serde_json::to_string(timeout).expect("Scalar timeout diagnostics");
+    #[cfg(target_os = "android")]
+    {
+        // Native stderr is normally discarded in an APK. Use Android's log so
+        // a failed real-device run remains inspectable without another build.
+        #[link(name = "log")]
+        unsafe extern "C" {
+            fn __android_log_write(priority: i32, tag: *const std::ffi::c_char,
+                message: *const std::ffi::c_char) -> i32;
+        }
+        let message = std::ffi::CString::new(message).expect("Scalar JSON has no NUL");
+        unsafe { __android_log_write(6, c"WeaveloDelivery".as_ptr(), message.as_ptr()); }
+    }
+    #[cfg(not(target_os = "android"))]
+    eprintln!("WEAVELO_DELIVERY_CONFIRMATION_TIMEOUT {message}");
+}
+
 /// Retry the exact command/revision; newer revisions never substitute for a
 /// lost first offer. Only this connection's matching receipt completes it.
 pub async fn exchange(
@@ -25,9 +58,11 @@ pub async fn exchange(
 ) -> Result<DeliveryState, Error> {
     // Match ordinary session confirmation tolerance. Four lost UDP receipts
     // used to end an otherwise live 15-second delivery lease after only 3s.
+    let mut queued_commands = 0;
     let confirmation = async {
         loop {
             conn.control(command.clone()).await?;
+            queued_commands += 1;
             let deadline = tokio::time::Instant::now() + Duration::from_millis(750);
             loop {
                 match tokio::time::timeout_at(deadline, events.control.recv()).await {
@@ -54,8 +89,13 @@ pub async fn exchange(
             }
         }
     };
-    tokio::time::timeout(Duration::from_secs(8), confirmation).await
-        .map_err(|_| -> Error { "Target did not confirm delivery in time".into() })?
+    let confirmed = tokio::time::timeout(Duration::from_secs(8), confirmation).await;
+    confirmed.map_err(|_| -> Error {
+        let timeout = ConfirmationTimeout { connection_id: conn.id, request_id: request, revision,
+            queued_commands, peer_responsive: conn.peer_is_responsive() };
+        record_confirmation_timeout(&timeout);
+        Box::new(timeout)
+    })?
 }
 pub async fn claim(
     conn: &WorkspaceConnection,
@@ -238,6 +278,7 @@ impl Incoming {
         ) {
             s.state = state;
             s.reason = reason.into();
+            if state == DeliveryState::Receiving { s.stage = "receiving"; }
         }
     }
     fn receipt(&self) -> SessionCommand {
@@ -634,6 +675,52 @@ fn renew(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn missing_offer_receipts_report_queue_progress_and_live_heartbeat() {
+        use crate::net::{MultiplexedPacket, UdpMultiplexer};
+        use protocol::ControlMessage;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        assert!(crate::session_crypto::load_session_psk().is_none());
+        let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target = server.local_addr().unwrap();
+        let (sender, receiver) = server.split();
+        let seen = Arc::new(AtomicU32::new(0));
+        let received = seen.clone();
+        let request = u64::MAX - 7;
+        let peer = tokio::spawn(async move {
+            loop {
+                let (reply, addr) = match receiver.recv().await.unwrap() {
+                    MultiplexedPacket::Control(ControlMessage::Session(command), addr) => match *command {
+                        SessionCommand::Open { connection_id, version } => (ControlMessage::Session(Box::new(
+                            SessionCommand::Opened { connection_id, version, max_subscriptions: 8,
+                                files: false, clipboard: false, window_capture: false })), addr),
+                        SessionCommand::DeliveryOffer { request_id, revision, .. } => {
+                            assert_eq!((request_id, revision), (request, 1));
+                            received.fetch_add(1, Ordering::SeqCst);
+                            continue; // Lose receipts while normal heartbeat traffic still works.
+                        }
+                        _ => continue,
+                    },
+                    MultiplexedPacket::Control(ControlMessage::Ping { client_send_ts }, addr) => (
+                        ControlMessage::Pong { client_send_ts, host_recv_ts: 0, host_send_ts: 0 }, addr),
+                    _ => continue,
+                };
+                sender.send_control(&reply, addr).await.unwrap();
+            }
+        });
+        let (connection, mut events) = WorkspaceConnection::connect_media(target).await.unwrap();
+        let error = exchange(&connection, &mut events, SessionCommand::DeliveryOffer {
+            request_id: request, source_device_id: "source".into(), target_device_id: "target".into(),
+            ticket: [4; 32], revision: 1, sources: vec![CaptureSource::MainDisplay],
+        }, request, 1).await.unwrap_err();
+        let evidence = error.downcast_ref::<ConfirmationTimeout>().expect("typed timeout evidence");
+        assert_eq!((evidence.connection_id, evidence.request_id, evidence.revision), (connection.id, request, 1));
+        assert!(evidence.queued_commands >= 8 && seen.load(Ordering::SeqCst) >= 8);
+        assert!(evidence.peer_responsive, "a missing receipt must not be reported as a dead heartbeat");
+        assert_eq!(error.to_string(), "Target did not confirm delivery in time");
+        connection.close().await;
+        peer.abort();
+    }
     #[tokio::test]
     async fn delivery_survives_lost_receipts_without_accepting_a_stale_revision() {
         use crate::net::{MultiplexedPacket, UdpMultiplexer};
