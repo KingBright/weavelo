@@ -2,6 +2,7 @@ package `fun`.hackerlife.weavelo.ui
 
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.lazy.LazyColumn
@@ -50,6 +51,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    val disconnect: () -> Unit = {
+        SessionConnectionService.closeWorkspace(context, sessionKey)
+        onClose()
+    }
+    BackHandler(enabled = foreground, onBack = disconnect)
     var localError by remember { mutableStateOf<String?>(null) }
     var receivedFiles by remember { mutableStateOf(false) }
     var backgroundSettings by remember { mutableStateOf(false) }
@@ -141,9 +147,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     WeaveloTheme {
         Column(Modifier.fillMaxSize().background(Color(0xff101318)).safeDrawingPadding().padding(8.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                MobileAction(MobileSymbol.Back, "Disconnect", onClick = {
-                    SessionConnectionService.closeWorkspace(context, sessionKey); onClose()
-                })
+                MobileAction(MobileSymbol.Back, "Disconnect", onClick = disconnect)
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(remoteDevice?.name ?: "Remote device",
                         color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
