@@ -99,6 +99,25 @@ private final class CameraSession {
             throw NSError(domain: "WeaveloCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "Camera input is unavailable or occupied"])
         }
         session.addInput(input)
+        let selectedSize = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        let preset: AVCaptureSession.Preset?
+        switch (selectedSize.width, selectedSize.height) {
+        case (3840, 2160): preset = .hd4K3840x2160
+        case (1920, 1080): preset = .hd1920x1080
+        case (1280, 720): preset = .hd1280x720
+        case (640, 480): preset = .vga640x480
+        default: preset = nil
+        }
+        // macOS has no inputPriority preset. Its default .high preset can
+        // replace activeFormat at start, so align the session with the native
+        // mode instead of letting it silently promote 720p to 1080p.
+        if let preset = preset {
+            guard session.canSetSessionPreset(preset) else {
+                throw NSError(domain: "WeaveloCamera", code: 8, userInfo: [NSLocalizedDescriptionKey:
+                    "Camera cannot retain its selected native video mode"])
+            }
+            session.sessionPreset = preset
+        }
         try device.lockForConfiguration()
         device.activeFormat = format
         device.activeVideoMinFrameDuration = interval; device.activeVideoMaxFrameDuration = interval
@@ -122,6 +141,11 @@ private final class CameraSession {
         session.startRunning()
         guard session.isRunning else {
             throw NSError(domain: "WeaveloCamera", code: 7, userInfo: [NSLocalizedDescriptionKey: "Camera did not start; check permission and availability"])
+        }
+        let actualSize = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        guard actualSize.width == selectedSize.width && actualSize.height == selectedSize.height else {
+            throw NSError(domain: "WeaveloCamera", code: 9, userInfo: [NSLocalizedDescriptionKey:
+                "Camera changed its selected native video mode"])
         }
         complete = true
     }
