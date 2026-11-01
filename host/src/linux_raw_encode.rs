@@ -10,6 +10,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 const MAX_AU_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) mod vaapi;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RawSettings {
@@ -112,15 +113,22 @@ pub struct RawHevcSource {
 }
 impl RawHevcSource {
     pub fn start(first: &OwnedFrame, settings: RawSettings) -> Result<Self> {
+        Self::start_with_encoder(first,settings,None)
+    }
+    pub(crate) fn start_hardware(first:&OwnedFrame,settings:RawSettings,encoder:&vaapi::HardwareEncoder)->Result<Self> {
+        Self::start_with_encoder(first,settings,Some(encoder))
+    }
+    fn start_with_encoder(first:&OwnedFrame,settings:RawSettings,hardware:Option<&vaapi::HardwareEncoder>)->Result<Self> {
         first.validate_owned()?;
-        let mut command = raw_command(first, settings)?;
+        let mut command = raw_command_with_encoder(first, settings, hardware)?;
+        let expected_signal=hardware.map(|_|vaapi::HardwareEncoder::signal(first)).transpose()?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         let mut child = command
             .spawn()
-            .map_err(|_| "native HEVC encoder could not start; FFmpeg with libx265 is required")?;
+            .map_err(|_| "native HEVC encoder process could not start")?;
         let mut stdin = child
             .stdin
             .take()
@@ -163,7 +171,7 @@ impl RawHevcSource {
         let reader = match std::thread::Builder::new()
             .name("rp-native-hevc-reader".into())
             .spawn(move || {
-                drain_reader(stdout, stamps_rx, output_tx);
+                drain_reader(stdout, stamps_rx, output_tx,expected_signal);
                 reader_input.close();
             }) {
             Ok(reader) => reader,
@@ -315,6 +323,9 @@ pub(crate) fn validate_native_input(frame: &OwnedFrame) -> Result<()> {
 }
 
 fn raw_command(frame: &OwnedFrame, settings: RawSettings) -> Result<Command> {
+    raw_command_with_encoder(frame,settings,None)
+}
+fn raw_command_with_encoder(frame:&OwnedFrame,settings:RawSettings,hardware:Option<&vaapi::HardwareEncoder>)->Result<Command> {
     validate_native_input(frame)?;
     settings.validate_for(frame.width, frame.height)?;
     let pixel =
@@ -331,14 +342,22 @@ fn raw_command(frame: &OwnedFrame, settings: RawSettings) -> Result<Command> {
         settings.width.min(frame.width),settings.height.min(frame.height),
         if rgb {":in_range=full:out_range=limited:out_color_matrix=bt709"}else{""});
     let mut command = Command::new("ffmpeg");
-    command.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
+    command.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0"]);
+    if let Some(encoder)=hardware {
+        command.arg("-noauto_conversion_filters");
+        encoder.configure_device(&mut command);
+    }
+    command.args([
         "-f", "rawvideo", "-pixel_format", pixel, "-video_size", &format!("{}x{}", frame.width, frame.height),
         "-framerate", &settings.fps.to_string(), "-color_range", &input_range.to_string(),
         "-colorspace", &input_matrix.to_string(), "-color_trc", &transfer.to_string(), "-color_primaries", &primaries.to_string(),
-        "-i", "pipe:0", "-an", "-filter_threads", "1", "-threads", "2",
+        "-i", "pipe:0", "-an", "-filter_threads", "1", "-threads", "2"]);
+    if let Some(encoder)=hardware {encoder.configure_output(&mut command,frame,settings)?;}
+    else {command.args([
         "-vf", &scale,
         "-fps_mode", "passthrough", "-pix_fmt", "yuv420p", "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
-        "-x265-params", &format!("keyint={}:min-keyint={}:repeat-headers=1:bframes=0:rc-lookahead=0:aud=1:pools=2:frame-threads=1:log-level=error:colorprim={primaries}:transfer={transfer}:colormatrix={matrix}", settings.fps, settings.fps),
+        "-x265-params", &format!("keyint={}:min-keyint={}:repeat-headers=1:bframes=0:rc-lookahead=0:aud=1:pools=2:frame-threads=1:log-level=error:colorprim={primaries}:transfer={transfer}:colormatrix={matrix}", settings.fps, settings.fps)]);}
+    command.args([
         "-color_range", &range.to_string(), "-colorspace", &matrix.to_string(), "-color_trc", &transfer.to_string(), "-color_primaries", &primaries.to_string(),
         "-b:v", &format!("{}k", settings.bitrate_kbps), "-maxrate", &format!("{}k", settings.bitrate_kbps), "-bufsize", &format!("{}k", settings.bitrate_kbps),
         "-f", "hevc", "-flush_packets", "1", "pipe:1"]);
@@ -396,6 +415,7 @@ fn drain_reader(
     mut stdout: impl Read,
     stamps: sync_mpsc::Receiver<FrameStamp>,
     output: mpsc::Sender<std::result::Result<RawChunk, String>>,
+    expected_signal:Option<remote_core::hevc_sequence::VideoSignal>,
 ) {
     let mut bytes = Vec::new();
     let mut read = [0u8; 32_768];
@@ -403,6 +423,14 @@ fn drain_reader(
     loop {
         match take_au(&mut bytes, eof) {
             Ok(Some((nalu, is_keyframe))) => {
+                if is_keyframe && let Some(expected)=expected_signal {
+                    let valid=matches!(remote_core::hevc_sequence::sequence_info(&nalu),
+                        Ok(Some(sequence)) if sequence.signal==Some(expected));
+                    if !valid {
+                        let _=output.blocking_send(Err("Hardware HEVC bitstream does not preserve the native camera color contract".into()));
+                        return;
+                    }
+                }
                 let Ok(stamp) = stamps.recv() else {
                     let _ =
                         output.blocking_send(Err("native HEVC timing association ended".into()));

@@ -80,6 +80,7 @@ private final class CameraSession {
     var output: AVCaptureVideoDataOutput?
     var delegate: CameraOutput?
     var lockedDevice: AVCaptureDevice?
+    var activity: NSObjectProtocol?
     let frames = DispatchQueue(label: "fun.hackerlife.weavelo.camera.frames", qos: .userInteractive)
 
     init(_ control: DispatchQueue, _ key: String, _ width: UInt32, _ height: UInt32, _ fps: UInt32,
@@ -111,6 +112,9 @@ private final class CameraSession {
         let session = AVCaptureSession(); let output = AVCaptureVideoDataOutput()
         let delegate = CameraOutput(context, callback)
         self.session = session; self.output = output; self.delegate = delegate
+        // A remote camera stream is active user work even without a local
+        // preview window. Declare video latency needs without waking a display.
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Weavelo camera streaming")
         var complete = false
         var configuring = false
         defer {
@@ -120,6 +124,7 @@ private final class CameraSession {
                 output.setSampleBufferDelegate(nil, queue: nil)
                 frames.sync {}
                 lockedDevice?.unlockForConfiguration(); lockedDevice = nil
+                if let activity = activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
             }
         }
         session.beginConfiguration()
@@ -173,6 +178,7 @@ private final class CameraSession {
         lockedDevice?.unlockForConfiguration(); lockedDevice = nil
         // Release native resources before acknowledging teardown to Rust.
         delegate = nil; output = nil; session = nil
+        if let activity = activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
     }
 }
 

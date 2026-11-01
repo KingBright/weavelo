@@ -20,7 +20,31 @@ pub(crate) struct Resources {
     pub native_stop_errors: AtomicU64,
     pub captured_frames: AtomicU64,
     pub encoded_frames: AtomicU64,
+    pub capture_wait: StageTimer,
+    pub video_submit: StageTimer,
+    pub media_send: StageTimer,
+    pub encoder_backpressure_ticks: AtomicU64,
     pub scheduled_data: Mutex<Option<ScheduledDataObservation>>,
+}
+
+#[derive(Default)]
+pub(crate) struct StageTimer {calls:AtomicU64,total_us:AtomicU64,max_us:AtomicU64}
+impl StageTimer {
+    pub(crate) fn record(&self,duration:std::time::Duration) {
+        let us=duration.as_micros().min(u64::MAX as u128) as u64;
+        self.calls.fetch_add(1,SeqCst);self.total_us.fetch_add(us,SeqCst);self.max_us.fetch_max(us,SeqCst);
+    }
+    fn snapshot(&self)->StageTimingSnapshot {StageTimingSnapshot {
+        calls:self.calls.load(SeqCst),total_us:self.total_us.load(SeqCst),max_us:self.max_us.load(SeqCst),
+    }}
+}
+/// Wall-clock time in a stage, including waits; this does not measure CPU use.
+#[derive(Clone,Default,Serialize,Deserialize)]
+pub struct StageTimingSnapshot {pub calls:u64,pub total_us:u64,pub max_us:u64}
+#[derive(Clone,Default,Serialize,Deserialize)]
+pub struct VideoTimingSnapshot {
+    pub capture_wait:StageTimingSnapshot,pub submit:StageTimingSnapshot,pub send:StageTimingSnapshot,
+    pub encoder_backpressure_ticks:u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -125,6 +149,8 @@ pub struct ConnectionLifecycleSnapshot {
     pub native_stop_errors: u64,
     pub captured_frames: u64,
     pub encoded_frames: u64,
+    #[serde(default)]
+    pub video_timing:VideoTimingSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_data: Option<ScheduledDataObservation>,
 }
@@ -198,6 +224,8 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 native_stop_errors: x.native_stop_errors.load(SeqCst),
                 captured_frames: x.captured_frames.load(SeqCst),
                 encoded_frames: x.encoded_frames.load(SeqCst),
+                video_timing:VideoTimingSnapshot {capture_wait:x.capture_wait.snapshot(),submit:x.video_submit.snapshot(),
+                    send:x.media_send.snapshot(),encoder_backpressure_ticks:x.encoder_backpressure_ticks.load(SeqCst)},
                 scheduled_data: x.scheduled_data.lock().unwrap().clone(),
             }
         })

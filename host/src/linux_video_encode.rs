@@ -25,6 +25,7 @@ pub struct LinuxVideoEncoder {
     force_keyframe: bool,
     native_generation: Option<u64>,
     native: Option<RawHevcSource>,
+    native_hardware:Option<crate::linux_raw_encode::vaapi::HardwareEncoder>,
     paused: bool,
 }
 
@@ -45,6 +46,7 @@ impl LinuxVideoEncoder {
             force_keyframe: false,
             native_generation: None,
             native: None,
+            native_hardware:None,
             paused: false,
         })
     }
@@ -69,6 +71,7 @@ impl LinuxVideoEncoder {
             force_keyframe: true,
             native_generation: Some(generation),
             native: None,
+            native_hardware:None,
             paused: false,
         })
     }
@@ -78,6 +81,12 @@ impl LinuxVideoEncoder {
         if self.native_generation.is_some() {
             self.native = None;
         }
+    }
+
+    pub(crate) fn from_camera_frames(generation:u64,width:u32,height:u32,fps:u32,bitrate_kbps:u32,
+        encoder:crate::linux_raw_encode::vaapi::HardwareEncoder)->Result<Self,Box<dyn Error+Send+Sync>> {
+        let mut result=Self::from_owned_frames(generation,width,height,fps,bitrate_kbps)?;
+        result.native_hardware=Some(encoder);Ok(result)
     }
 
     pub fn update_settings(
@@ -217,15 +226,16 @@ impl VideoEncoder for LinuxVideoEncoder {
             {
                 // A format/color change never reuses the previous SPS or bytes.
                 self.native = None;
-                self.native = Some(RawHevcSource::start(
-                    &frame,
-                    RawSettings {
+                let settings=RawSettings {
                         width: self.width,
                         height: self.height,
                         fps: self.fps,
                         bitrate_kbps: self.bitrate_kbps,
-                    },
-                )?);
+                    };
+                self.native=Some(match &self.native_hardware {
+                    Some(encoder)=>RawHevcSource::start_hardware(&frame,settings,encoder)?,
+                    None=>RawHevcSource::start(&frame,settings)?,
+                });
                 self.force_keyframe = true;
             }
             self.native.as_ref().unwrap().submit(frame)?;
@@ -372,6 +382,7 @@ mod lifecycle_tests {
             force_keyframe: false,
             native_generation: None,
             native: None,
+            native_hardware:None,
             paused: true,
         };
         encoder.update_settings(1280, 720, 30, 4000).unwrap();

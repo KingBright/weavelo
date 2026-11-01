@@ -3,7 +3,9 @@ use crate::linux_frame::{BorrowedPlane, FrameStamp, Transform};
 use std::time::{Duration, Instant};
 
 pub(crate) fn frame(pixel: PixelFormat, color: SourceColor, sequence: u64) -> OwnedFrame {
-    let (width, height) = (128u32, 64u32);
+    frame_sized(pixel,color,sequence,128,64)
+}
+fn frame_sized(pixel:PixelFormat,color:SourceColor,sequence:u64,width:u32,height:u32)->OwnedFrame {
     let mut y = Vec::new();
     let mut u = Vec::new();
     let mut v = Vec::new();
@@ -74,6 +76,52 @@ pub(crate) fn frame(pixel: PixelFormat, color: SourceColor, sequence: u64) -> Ow
         },
     )
     .unwrap()
+}
+
+#[cfg(target_os="linux")]
+#[tokio::test]
+#[ignore="requires an accessible VAAPI hardware HEVC encoder"]
+async fn actual_vaapi_camera_preserves_pixels_color_and_frame_association() {
+    let encoder=vaapi::HardwareEncoder::probe().unwrap();
+    let settings=RawSettings{width:320,height:180,fps:30,bitrate_kbps:2000};
+    let mut full=known_color();full.range=1;
+    let rgb=SourceColor{range:1,matrix:1,transfer:7,primaries:1};
+    for (pixel,color) in [(PixelFormat::Nv12,known_color()),(PixelFormat::Nv12,full),
+        (PixelFormat::I420,known_color()),(PixelFormat::I420,full),
+        (PixelFormat::Bgra,rgb),(PixelFormat::Bgrx,rgb),(PixelFormat::Rgba,rgb),(PixelFormat::Rgbx,rgb)] {
+        let first=frame_sized(pixel,color,0,640,360);
+        let expected=vaapi::HardwareEncoder::signal(&first).unwrap();
+        let source=std::sync::Arc::new(RawHevcSource::start_hardware(&first,settings,&encoder).unwrap());
+        let (_,chunks)=tokio::join!(async {
+            for sequence in 0..36 {
+                source.submit(frame_sized(pixel,color,sequence,640,360)).unwrap();wait_for_writer(&source).await;
+            }
+            source.finish_input();
+        },async {
+            let mut chunks=Vec::new();
+            for sequence in 0..36 {
+                let chunk=tokio::time::timeout(Duration::from_secs(5),source.pull()).await.unwrap().unwrap();
+                assert_eq!(chunk.stamp.sequence,Some(sequence));chunks.push(chunk);
+            }
+            chunks
+        });
+        let bytes=encoded(&chunks);
+        let sequence=remote_core::hevc_sequence::sequence_info(&bytes).unwrap().unwrap();
+        assert_eq!(sequence.signal,Some(expected),"{pixel:?}");
+        assert_eq!([sequence.visible[2],sequence.visible[3]],[320,180]);
+        let rgb=matches!(pixel,PixelFormat::Bgra|PixelFormat::Bgrx|PixelFormat::Rgba|PixelFormat::Rgbx);
+        let decoded=inspect("ffmpeg",&["-v","error","-f","hevc","-i","pipe:0","-frames:v","1",
+            "-pix_fmt",if rgb {"rgb24"}else{"yuv420p"},"-f","rawvideo","pipe:1"],&bytes);
+        for (index,(x,y)) in [(80,45),(240,45),(80,135),(240,135)].into_iter().enumerate() {
+            if rgb {
+                let (r,g,b)=rgb_quadrants()[index];let actual=&decoded[(y*320+x)*3..(y*320+x)*3+3];
+                for (&actual,wanted) in actual.iter().zip([r,g,b]) {assert!(actual.abs_diff(wanted)<=6,"{pixel:?}: {actual} != {wanted}");}
+            } else {
+                let expected=[40u8,90,145,210][index];let actual=decoded[y*320+x];
+                assert!(actual.abs_diff(expected)<=6,"{pixel:?}: {actual} != {expected}");
+            }
+        }
+    }
 }
 pub(crate) fn known_color() -> SourceColor {
     SourceColor {
@@ -390,7 +438,7 @@ fn reference_au_backpressure_preserves_order_and_multislice_frames() {
     drop(stamps_tx);
     let (tx, mut rx) = mpsc::channel(4);
     let reader =
-        std::thread::spawn(move || drain_reader(std::io::Cursor::new(bytes), stamps_rx, tx));
+        std::thread::spawn(move || drain_reader(std::io::Cursor::new(bytes), stamps_rx, tx,None));
     // Let the real reader saturate its compressed queue before consuming.
     let until = Instant::now() + Duration::from_secs(2);
     while rx.len() < 4 && Instant::now() < until {

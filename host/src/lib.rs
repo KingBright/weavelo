@@ -1102,6 +1102,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut video_encoder = MacVideoEncoder::new(width, height, fps, bitrate_kbps)?;
 
     #[cfg(target_os="linux")]
+    let camera_encoder=if matches!(source,protocol::session::CaptureSource::Camera(_)) {
+        Some(tokio::task::spawn_blocking(crate::linux_raw_encode::vaapi::HardwareEncoder::probe).await??)
+    } else {None};
+    #[cfg(target_os="linux")]
     let camera_capture=if matches!(source,protocol::session::CaptureSource::Camera(_)) {
         Some(crate::cameras::start(source,width,height,fps).await?)
     } else {None};
@@ -1117,7 +1121,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     }};
     #[cfg(target_os = "linux")]
     let mut video_encoder = if let Some(camera)=&camera_capture {
-        LinuxVideoEncoder::from_owned_frames(camera.native.generation,width,height,fps,bitrate_kbps)?
+        LinuxVideoEncoder::from_camera_frames(camera.native.generation,width,height,fps,bitrate_kbps,
+            camera_encoder.ok_or("Camera hardware encoder is unavailable")?)?
     } else {match &native_capture {
         Some(capture) => LinuxVideoEncoder::from_owned_frames(
             capture.generation(),
@@ -1170,6 +1175,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         let capture_ready=video_encoder.can_submit_frame();
         #[cfg(not(target_os="macos"))]
         let capture_ready=true;
+        if !capture_ready {resources.encoder_backpressure_ticks.fetch_add(1,Relaxed);}
         tokio::select! {
             _ = async {
                 #[cfg(target_os = "linux")]
@@ -1229,8 +1235,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
             }
             frame_res = async {
-                #[cfg(not(target_os="windows"))] {video_capturer.capture_frame().await}
-                #[cfg(target_os="windows")] {std::future::pending::<Result<crate::windows_video_encode::WindowsVideoFrame,Box<dyn Error+Send+Sync>>>().await}
+                let started=std::time::Instant::now();
+                #[cfg(not(target_os="windows"))] let result=video_capturer.capture_frame().await;
+                #[cfg(target_os="windows")] let result=std::future::pending::<Result<crate::windows_video_encode::WindowsVideoFrame,Box<dyn Error+Send+Sync>>>().await;
+                resources.capture_wait.record(started.elapsed());result
             }, if !paused && capture_ready => {
                 let frame = frame_res?;
                 stats_video.video_frames_captured.fetch_add(1, Relaxed);
@@ -1238,7 +1246,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 if keyframe_requested.swap(false, Relaxed) {
                     video_encoder.request_keyframe();
                 }
-                video_encoder.submit_frame(frame).await?;
+                let started=std::time::Instant::now();
+                let submitted=video_encoder.submit_frame(frame).await;
+                resources.video_submit.record(started.elapsed());submitted?;
             }
             chunk_res = video_encoder.pull_encoded_chunk() => {
                 let chunk = chunk_res?;
@@ -1314,7 +1324,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     payload: chunk.nalu,
                 };
 
-                let packet_size =
+                let send_started=std::time::Instant::now();
+                let packet_result =
                     send_media_packet(
                         &udp_sender,
                         scheduled_media_sender.as_ref(),
@@ -1323,7 +1334,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                         client_addr,
                         use_data_plane_media,
                     )
-                    .await?;
+                    .await;
+                resources.media_send.record(send_started.elapsed());
+                let packet_size=packet_result?;
 
                 if packet_size > 0 {
                     stats_video.udp_packets_sent.fetch_add(1, Relaxed);

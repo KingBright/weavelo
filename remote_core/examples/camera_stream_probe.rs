@@ -70,7 +70,7 @@ async fn capture(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, sourc
     }
     let intervals=|times:&[u64]|times.windows(2).filter_map(|pair|pair[1].checked_sub(pair[0])).collect();
     let host=host_stats.snapshot();
-    Ok(serde_json::json!({"source":source.source,"name":source.title,"camera":source.camera,
+    Ok(serde_json::json!({"connection_id":conn.id,"source":source.source,"name":source.title,"camera":source.camera,
         "first_encoded_ms":first.unwrap().duration_since(start).as_secs_f64()*1000.,
         "frames":frames,"bytes":bytes,"fps":(frames.saturating_sub(1)) as f64/duration,
         "encoded_capture_interval_ms":percentiles(intervals(&capture_times)),
