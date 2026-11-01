@@ -144,6 +144,13 @@ mod native_file_scope_tests {
 }
 
 impl WorkspaceConnection {
+    pub fn control_queue_depth(&self) -> usize {
+        self.commands.max_capacity().saturating_sub(self.commands.capacity())
+    }
+    pub fn peer_response_age_ms(&self) -> u64 {
+        self.last_response_rx.borrow().elapsed().as_millis().min(u64::MAX as u128) as u64
+    }
+
     /// Authenticated connection health is independent of screen dirtiness.
     /// An unchanged desktop is allowed to stop producing new image frames.
     pub fn peer_is_responsive(&self) -> bool {

@@ -18,9 +18,12 @@ type Error=Box<dyn std::error::Error+Send+Sync>;
 #[derive(Clone, Debug, Serialize)]
 pub struct ConfirmationTimeout {
     pub connection_id: u32,
+    pub target: std::net::SocketAddr,
     pub request_id: u64,
     pub revision: u64,
     pub queued_commands: u32,
+    pub control_queue_depth: usize,
+    pub peer_response_age_ms: u64,
     pub peer_responsive: bool,
 }
 impl std::fmt::Display for ConfirmationTimeout {
@@ -91,8 +94,10 @@ pub async fn exchange(
     };
     let confirmed = tokio::time::timeout(Duration::from_secs(8), confirmation).await;
     confirmed.map_err(|_| -> Error {
-        let timeout = ConfirmationTimeout { connection_id: conn.id, request_id: request, revision,
-            queued_commands, peer_responsive: conn.peer_is_responsive() };
+        let timeout = ConfirmationTimeout { connection_id: conn.id, target: conn.target,
+            request_id: request, revision, queued_commands,
+            control_queue_depth: conn.control_queue_depth(),
+            peer_response_age_ms: conn.peer_response_age_ms(), peer_responsive: conn.peer_is_responsive() };
         record_confirmation_timeout(&timeout);
         Box::new(timeout)
     })?
@@ -715,7 +720,10 @@ mod tests {
         }, request, 1).await.unwrap_err();
         let evidence = error.downcast_ref::<ConfirmationTimeout>().expect("typed timeout evidence");
         assert_eq!((evidence.connection_id, evidence.request_id, evidence.revision), (connection.id, request, 1));
+        assert_eq!(evidence.target, target);
         assert!(evidence.queued_commands >= 8 && seen.load(Ordering::SeqCst) >= 8);
+        assert_eq!(evidence.control_queue_depth, 0, "the socket actor drained the admitted offers");
+        assert!(evidence.peer_response_age_ms <= 6_000);
         assert!(evidence.peer_responsive, "a missing receipt must not be reported as a dead heartbeat");
         assert_eq!(error.to_string(), "Target did not confirm delivery in time");
         connection.close().await;

@@ -54,6 +54,7 @@ struct Outgoing {
     target: String,
     stop: watch::Sender<bool>,
     status: Arc<Mutex<String>>,
+    confirmation_timeout: Arc<Mutex<Option<remote_core::directed_delivery::ConfirmationTimeout>>>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Outgoing {
@@ -148,7 +149,8 @@ impl MobilePublisher {
     pub fn outgoing_status(&self) -> serde_json::Value {
         self.outgoing.lock().unwrap().as_ref().map_or_else(
             ||serde_json::json!({"id":0,"active":false,"target":"","status":""}),
-            |send|serde_json::json!({"id":send.id,"active":!send.task.is_finished(),"target":send.target,"status":*send.status.lock().unwrap()}),
+            |send|serde_json::json!({"id":send.id,"active":!send.task.is_finished(),"target":send.target,"status":*send.status.lock().unwrap(),
+                "confirmation_timeout":*send.confirmation_timeout.lock().unwrap()}),
         )
     }
     pub fn stop_sending(&self) { self.outgoing.lock().unwrap().take(); }
@@ -180,6 +182,8 @@ impl MobilePublisher {
         let scope=remote_core::shared_files::current_share_scope();
         let (stop,mut cancelled)=watch::channel(false);
         let status=Arc::new(Mutex::new("Contacting target".to_string()));
+        let confirmation_timeout=Arc::new(Mutex::new(None));
+        let timeout_evidence=confirmation_timeout.clone();
         let progress=status.clone();let target_id=target.clone();
         let task=tokio::spawn(async move {
             type Error=Box<dyn std::error::Error+Send+Sync>;
@@ -207,9 +211,11 @@ impl MobilePublisher {
                 let _=conn.control(SessionCommand::DeliveryCancel {request_id:request}).await;
                 conn.close().await;revoked?;result
             }.await;
+            *timeout_evidence.lock().unwrap()=run.as_ref().err().and_then(|error|
+                error.downcast_ref::<remote_core::directed_delivery::ConfirmationTimeout>()).cloned();
             *progress.lock().unwrap()=match run {Ok(())=>"Sending stopped".into(),Err(error)=>format!("Delivery stopped: {error}")};
         });
-        *outgoing=Some(Outgoing {id:sequence,target,stop,status,task});Ok(())
+        *outgoing=Some(Outgoing {id:sequence,target,stop,status,confirmation_timeout,task});Ok(())
     }
     pub fn next_delivery(&self) -> Option<serde_json::Value> {
         let scope=remote_core::shared_files::current_share_scope();
@@ -749,7 +755,7 @@ mod tests {
         let (finished, done) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move { let _=cancelled.changed().await; let _=finished.send(()); });
         *publisher.outgoing.lock().unwrap()=Some(Outgoing {id:2,target:"desktop".into(),stop,
-            status:Arc::new(Mutex::new("Sending".into())),task});
+            status:Arc::new(Mutex::new("Sending".into())),confirmation_timeout:Arc::new(Mutex::new(None)),task});
         assert!(publisher.stop_sending_id(1).is_err());
         assert_eq!(publisher.outgoing_status()["id"], 2);
         assert!(publisher.outgoing_status()["active"].as_bool().unwrap());

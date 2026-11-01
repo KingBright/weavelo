@@ -46,6 +46,11 @@ class CameraService : Service() {
     private val target = AtomicReference<String?>(null)
     private var worker: Thread? = null
     override fun onBind(intent: Intent?) = null
+    override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>?) {
+        writer.println("Weavelo camera delivery diagnostics")
+        // Scalar native JSON only; preserve u64 IDs and exclude media, tickets and pairing secrets.
+        writer.println(runCatching { PublisherClient.action(23) }.getOrDefault("Publisher diagnostics unavailable"))
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "stop") { stopSelf(); return START_NOT_STICKY }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
