@@ -483,16 +483,24 @@ impl RestoredDashboard {
         StreamActivity {
             sharing: self.background.as_ref().map_or(0, |background| background.outgoing_streams()),
             receiving: self.exit_group.owners().iter().map(|owner| owner.receiving_streams()).sum(),
-            can_stop_sending: self.directed_send.lock().unwrap().is_some(),
+            can_stop_sending: self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|!sender.is_finished()),
             can_stop_receiving: self.directed_receive.as_ref().is_some_and(|adapter| adapter.lease.is_some()),
         }
     }
     #[cfg(any(unix, windows))]
     fn sending_snapshot(&self) -> Option<serde_json::Value> {
-        self.directed_send.lock().unwrap().as_ref().map(|sender|serde_json::json!({
+        self.directed_send.lock().unwrap().as_ref().filter(|sender|!sender.is_finished()).map(|sender|serde_json::json!({
             "request_id":sender.request_id,"target":sender.target,
             "finished":sender.is_finished(),"status":sender.poll(),
         }))
+    }
+    #[cfg(any(unix, windows))]
+    fn last_delivery_snapshot(&self) -> Option<serde_json::Value> {
+        self.directed_send.lock().unwrap().as_ref().filter(|sender|sender.is_finished()).map(|sender| {
+            let progress=sender.progress();
+            serde_json::json!({"request_id":sender.request_id,"target":sender.target,
+                "started":progress.started,"status":progress.status,"error":progress.result.and_then(Result::err)})
+        })
     }
     fn new(
         runtime: Arc<UnifiedRuntimeHandle>,
@@ -784,9 +792,13 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn poll_directed_receive(&mut self, cx: &mut Context<Self>) {
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|sender| sender.is_finished()) {
-            self.directed_send.lock().unwrap().take();
-        } else if let Some(sender)=self.directed_send.lock().unwrap().as_ref() {let _=sender.poll();}
+        let pending=self.source_selection.as_ref().is_some_and(source_selection::Selection::pending_delivery);
+        let progress=self.directed_send.lock().unwrap().as_ref()
+            .filter(|sender|pending||!sender.is_finished()).map(|sender|(sender.request_id.clone(),sender.progress()));
+        if let Some(selection)=self.source_selection.as_mut()
+            && selection.observe_delivery(progress.as_ref().map(|(request,progress)|(request.as_str(),progress))) {
+            self.source_selection=None;
+        }
         use crate::desktop::directed_receive::{Request, Lease};
         if self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).is_some_and(|lease| !lease.current()) {
             self.stop_directed_receive();
@@ -841,7 +853,7 @@ impl RestoredDashboard {
                 let _=command.reply.send(response);continue;
             }
             if let Request::StopSend {request_id,..}=command.request {
-                let current=self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|sender.request_id==request_id);
+                let current=self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|sender.request_id==request_id&&!sender.is_finished());
                 if current {self.directed_send.lock().unwrap().take();}
                 let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
             }
@@ -859,6 +871,7 @@ impl RestoredDashboard {
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "lease":adapter.lease.as_ref().map(|lease|lease.snapshot()),
                     "sending":self.sending_snapshot(),
+                    "last_delivery":self.last_delivery_snapshot(),
                     "stream_activity":self.stream_activity(),
                     "sessions":self.owner.diagnostic_snapshot(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
@@ -1141,7 +1154,9 @@ impl RestoredDashboard {
         self.request_bound_capture_sources(binding, cx);
     }
     fn invalidate_source_commands(&mut self) {
-        self.source_selection=None;
+        if !self.source_selection.as_ref().is_some_and(source_selection::Selection::local_delivery_is_current) {
+            self.source_selection=None;
+        }
         self.source_commands.begin(); self.discovery_commands.begin();
     }
     fn request_bound_capture_sources(&mut self, binding: SourceViewBinding, cx: &mut Context<Self>) {
@@ -2487,7 +2502,7 @@ impl Render for RestoredDashboard {
                         this.owner.release_input();
                         this.drawer_open = false;
                         this.show_apps_menu = false;
-                        this.source_selection = None;
+                        this.cancel_source_selection();
                         cx.stop_propagation();
                         cx.notify();
                         return;

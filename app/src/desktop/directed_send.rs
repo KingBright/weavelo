@@ -7,6 +7,13 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) use remote_core::directed_delivery::claim;
 
+#[derive(Clone)]
+pub(crate) struct SendProgress {
+    pub status: String,
+    pub started: bool,
+    pub result: Option<Result<(), String>>,
+}
+
 #[cfg(any(unix, windows))]
 mod sender {
     use super::*;
@@ -23,7 +30,7 @@ mod sender {
         pub request_id: String,
         stop: tokio::sync::watch::Sender<bool>,
         heartbeat: Arc<Mutex<Instant>>,
-        status: Arc<Mutex<String>>,
+        status: Arc<Mutex<SendProgress>>,
         task: tokio::task::JoinHandle<()>,
     }
     impl SendHandle {
@@ -40,7 +47,9 @@ mod sender {
             let (stop, mut cancelled) = tokio::sync::watch::channel(false);
             let heartbeat = Arc::new(Mutex::new(Instant::now()));
             let beat = heartbeat.clone();
-            let status = Arc::new(Mutex::new("Contacting target".into()));
+            let status = Arc::new(Mutex::new(SendProgress {
+                status: "Contacting target".into(), started: false, result: None,
+            }));
             let progress = status.clone();
             let peer = target.clone();
             let task = tokio::spawn(async move {
@@ -57,10 +66,13 @@ mod sender {
                     progress.clone(),
                 )
                 .await;
-                *progress.lock().unwrap() = match result {
+                let result = result.map_err(|error| error.to_string());
+                let mut progress = progress.lock().unwrap();
+                progress.status = match &result {
                     Ok(()) => "Sending stopped".into(),
                     Err(error) => format!("Delivery stopped: {error}"),
                 };
+                progress.result = Some(result);
             });
             Self {
                 request_id,
@@ -73,8 +85,15 @@ mod sender {
         }
         pub fn cancellation(&self) -> tokio::sync::watch::Sender<bool> {self.stop.clone()}
         pub fn poll(&self) -> String {
+            self.progress().status
+        }
+        pub fn progress(&self) -> SendProgress {
             *self.heartbeat.lock().unwrap() = Instant::now();
-            self.status.lock().unwrap().clone()
+            let mut progress = self.status.lock().unwrap().clone();
+            if self.task.is_finished() && progress.result.is_none() {
+                progress.result = Some(Err("Sending worker stopped unexpectedly".into()));
+            }
+            progress
         }
         pub fn is_finished(&self) -> bool {
             self.task.is_finished()
@@ -101,7 +120,7 @@ mod sender {
         sources: Vec<protocol::session::CaptureSource>,
         cancelled: &mut tokio::sync::watch::Receiver<bool>,
         heartbeat: Arc<Mutex<Instant>>,
-        status: Arc<Mutex<String>>,
+        status: Arc<Mutex<SendProgress>>,
     ) -> Result<(), Error> {
         protocol::session::validate_delivery_sources(&sources)?;
         let scope=remote_core::shared_files::current_share_scope();
@@ -156,7 +175,11 @@ mod sender {
                 let client = renewing.clone(); let generation = renewing_generation.clone();
                 async move {local(&client, LocalIntent::Renew {ticket, generation, revision}).await}
             },
-            |state| *status.lock().unwrap() = remote_core::directed_delivery::sending_status(state).into(),
+            |state| {
+                let mut progress = status.lock().unwrap();
+                progress.status = remote_core::directed_delivery::sending_status(state).into();
+                progress.started |= state == protocol::session::DeliveryState::Receiving;
+            },
         ).await;
         // Revoke locally first even when the target's cancellation reply is lost.
         let revoked = local(&client, LocalIntent::Revoke { ticket, generation }).await;
