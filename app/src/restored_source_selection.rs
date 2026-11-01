@@ -121,7 +121,7 @@ impl RestoredDashboard {
         let Some(binding)=binding.filter(|binding|self.owner.source_binding_is_current(binding)) else {return;};
         let snapshot=self.owner.snapshot();
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
-        let mut selection=Selection {target:Target::Open(binding),scope:current_share_scope(),title:"Open screens & apps".into(),
+        let mut selection=Selection {target:Target::Open(binding),scope:current_share_scope(),title:"Choose screens & app windows".into(),
             sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,pending_request:None,error:None};
         let artwork=self.artwork_cache.borrow_mut().update(snapshot.source_icons);
         selection.replace((*snapshot.sources).clone(),artwork);
@@ -181,7 +181,13 @@ impl RestoredDashboard {
 pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pending:bool,cx:&mut Context<RestoredDashboard>)->Div {
     let theme=cx.theme().clone();let view=cx.weak_entity();
     let mut rows=div().id("source_selection_rows").max_h(px(340.)).overflow_y_scroll().flex().flex_col().gap_1();
-    for source in &selection.sources {
+    for windows in [false,true] {
+      let mut heading=false;
+      for source in selection.sources.iter().filter(|source|matches!(source.source,CaptureSource::Window(_))==windows) {
+        if !heading {
+            rows=rows.child(div().mt_2().text_size(px(10.)).text_color(theme.content.secondary)
+                .child(if windows {"App windows"}else{"Entire screens"}));heading=true;
+        }
         let selected=selection.selected.contains(&source.source);let id=source.source;let view=view.clone();
         rows=rows.child(command_button(format!("source_selection_{id:?}"),if selected {ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx)
             .w_full().min_h(px(34.)).px_2().gap_2().disabled(selection.pending_delivery())
@@ -192,7 +198,10 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
             });})
             .child(if selected {"✓"}else{"○"})
             .child(capture_source_badge(source,&selection.artwork,&theme))
-            .child(div().flex_1().text_size(px(11.)).child(source.title.clone())));
+            .child(div().flex_1().flex().flex_col().text_size(px(11.)).child(source.title.clone())
+                .when(windows&&!source.application.is_empty(),|label|label.child(div().text_size(px(10.))
+                    .text_color(theme.content.secondary).child(source.application.clone())))));
+      }
     }
     let view=cx.weak_entity();let confirm=cx.weak_entity();
     #[cfg(target_os="linux")]
@@ -216,7 +225,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         .p_4().flex().flex_col().gap_3().bg(color_glass_card()).border_1().border_color(color_border_fine()).rounded_xl().shadow_2xl()
         .on_any_mouse_down(cx.listener(|_,_,_,cx|cx.stop_propagation()))
         .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(selection.title.clone()))
-        .child(div().text_size(px(11.)).text_color(theme.content.secondary).child("Choose screens or app windows."))
+        .child(div().text_size(px(11.)).text_color(theme.content.secondary).child("Select one or more screens or app windows."))
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child("Loading sources…")))
         .when(selection.pending_delivery(),|panel|panel.child(div().text_size(px(11.)).child("Connecting to receiver…")))

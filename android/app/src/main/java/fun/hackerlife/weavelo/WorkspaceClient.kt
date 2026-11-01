@@ -12,7 +12,9 @@ import java.io.File
 import java.util.concurrent.Executors
 
 // Each source has its own subscription; audio owners may be shared by same-app windows.
-data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null)
+data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null) {
+    val isWindow: Boolean get() = (source as? JSONObject)?.has("Window") == true
+}
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false)

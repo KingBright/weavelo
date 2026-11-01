@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.background
@@ -488,18 +489,25 @@ private fun SourceIcon(source: WorkspaceSource) {
 @Composable
 private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
     var query by remember { mutableStateOf("") }
-    val matches = remember(sources, query) { sources.filter { it.title.contains(query, true) || it.application.contains(query, true) } }
+    val matches = remember(sources, query) {
+        sources.filter { it.title.contains(query, true) || it.application.contains(query, true) }.sortedBy { it.isWindow }
+    }
     AlertDialog(onDismissRequest = onClose, title = { Text("Screens and app windows") }, text = {
         Column(Modifier.fillMaxWidth()) {
             OutlinedTextField(query, { query = it }, label = { Text("Search apps and windows") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
-                items(matches, key = { it.source.toString() }) { source ->
+                itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
+                    if (index == 0 || matches[index - 1].isWindow != source.isWindow) {
+                        Text(if (source.isWindow) "App windows" else "Entire screens",
+                            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+                    }
                     TextButton(onClick = { onSelect(source) }, modifier = Modifier.fillMaxWidth()) {
                         SourceIcon(source)
                         Column(Modifier.weight(1f)) {
                             Text(source.title, maxLines = 2)
-                            if (source.application.isNotBlank()) Text(source.application, style = MaterialTheme.typography.labelMedium)
+                            if (source.isWindow && source.application.isNotBlank()) Text(source.application, style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
