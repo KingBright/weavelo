@@ -26,6 +26,11 @@ use tokio::sync::{oneshot, watch};
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 const RAW_FRAME_MAX_AGE: Duration = Duration::from_millis(250);
 
+pub(crate) fn initialize() {
+    static INIT:std::sync::Once=std::sync::Once::new();
+    INIT.call_once(pw::init);
+}
+
 struct Worker {
     stop: Arc<AtomicBool>,
     mailbox: Arc<FrameMailbox>,
@@ -106,6 +111,8 @@ async fn prepare_capture(
                 worker_stop,
                 first_tx,
                 budget,
+                None,
+                None,
             ) {
                 eprintln!("WEAVELO_PIPEWIRE_ERROR stage=stream error={error}");
             }
@@ -128,6 +135,39 @@ async fn prepare_capture(
     let prepared = lease.prepare_with_mailbox(first, mailbox)?;
     prepared.attach_worker(Box::new(worker), done_rx);
     Ok(prepared)
+}
+
+/// A camera owns a restricted remote and raw worker, without inventing a
+/// ScreenCast session or desktop input grant. The existing checked CPU buffer
+/// contract is reused; this is not a claim of zero-copy camera capture.
+pub(crate) struct CameraCapture {
+    pub(crate) mailbox:Arc<FrameMailbox>,
+    pub(crate) generation:u64,
+    _worker:Worker,
+}
+pub(crate) async fn prepare_camera_capture(fd:OwnedFd,node:u32,serial:u64,cookie:u32,width:u32,height:u32,fps:u32)
+    ->Result<CameraCapture,String> {
+    static GENERATION:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+    let generation=GENERATION.fetch_add(1,Ordering::Relaxed);
+    let mailbox=Arc::new(FrameMailbox::native_stream(generation,RAW_FRAME_MAX_AGE).map_err(|e|format!("{e:?}"))?);
+    let stop=Arc::new(AtomicBool::new(false));let (first,received)=oneshot::channel();
+    let frame_budget=(u64::from(width)*u64::from(height)*4).max(16*1024*1024)
+        .min(crate::linux_frame::MAX_FRAME_BYTES as u64) as usize;
+    let budget=crate::linux_frame::FrameBudget::new(frame_budget,frame_budget*2)
+        .map_err(|e|format!("Camera buffer budget: {e:?}"))?;
+    let (frames,cancel)=(mailbox.clone(),stop.clone());
+    let thread=std::thread::Builder::new().name("weavelo-camera".into()).spawn(move|| {
+        if let Err(error)=run(fd,node,Some(serial),generation,frames.clone(),cancel,first,Some(budget),Some(cookie),Some((width,height,fps))) {
+            eprintln!("WEAVELO_PIPEWIRE_ERROR stage=camera error={error}");
+        }
+        frames.close();
+    }).map_err(|e|e.to_string())?;
+    let worker=Worker{stop,mailbox:mailbox.clone(),thread:Mutex::new(Some(thread))};
+    let first=tokio::time::timeout(FIRST_FRAME_TIMEOUT,received).await
+        .map_err(|_|"Camera did not produce a native frame".to_string())?
+        .map_err(|_|"Camera stopped; check availability and its native pixel/color format".to_string())?;
+    mailbox.publish(first);
+    Ok(CameraCapture{mailbox,generation,_worker:worker})
 }
 
 struct Data {
@@ -189,16 +229,23 @@ fn run(
     stop: Arc<AtomicBool>,
     first: oneshot::Sender<OwnedFrame>,
     budget: Option<Arc<crate::linux_frame::FrameBudget>>,
+    server_cookie:Option<u32>,
+    camera_mode:Option<(u32,u32,u32)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(pw::init);
+    initialize();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_fd_rc(fd, None)?;
     let error_loop = mainloop.clone();
     let error_mailbox = mailbox.clone();
+    let identity_loop=mainloop.clone();let identity_mailbox=mailbox.clone();
     let _core_listener = core
         .add_listener_local()
+        .info(move|info| {
+            if server_cookie.is_some_and(|expected|expected!=info.cookie()) {
+                identity_mailbox.close();identity_loop.quit();
+            }
+        })
         .error(move |_, _, _, _| {
             error_mailbox.close();
             error_loop.quit();
@@ -206,7 +253,7 @@ fn run(
         .register();
     let mut properties = properties! {
         *pw::keys::MEDIA_TYPE => "Video", *pw::keys::MEDIA_CATEGORY => "Capture",
-        *pw::keys::MEDIA_ROLE => "Screen",
+        *pw::keys::MEDIA_ROLE => if camera_mode.is_some() {"Camera"} else {"Screen"},
     };
     if let Some(serial) = serial {
         properties.insert("target.object", serial.to_string());
@@ -379,7 +426,7 @@ fn run(
             }
         })
         .register()?;
-    let object = spa::pod::object!(
+    let mut object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
         spa::pod::property!(
@@ -419,6 +466,16 @@ fn run(
         (spa::param::format::FormatProperties::VideoTransferFunction,7), // sRGB
         (spa::param::format::FormatProperties::VideoColorPrimaries,1), // BT.709
     ] {rgb.properties.push(spa::pod::property!(key,spa::pod::Value::Id(spa::utils::Id(value))));}
+    if let Some((width,height,fps))=camera_mode {
+        for format in [&mut object,&mut rgb] {
+            format.properties.push(spa::pod::property!(spa::param::format::FormatProperties::VideoSize,
+                Choice,Range,Rectangle,spa::utils::Rectangle{width,height},
+                spa::utils::Rectangle{width:16,height:16},spa::utils::Rectangle{width:8192,height:8192}));
+            format.properties.push(spa::pod::property!(spa::param::format::FormatProperties::VideoFramerate,
+                Choice,Range,Fraction,spa::utils::Fraction{num:fps,denom:1},
+                spa::utils::Fraction{num:1,denom:1},spa::utils::Fraction{num:fps,denom:1}));
+        }
+    }
     let formats=[object,rgb].into_iter().map(|format| {
         spa::pod::serialize::PodSerializer::serialize(Cursor::new(Vec::new()),&spa::pod::Value::Object(format))
             .map(|result|result.0.into_inner())

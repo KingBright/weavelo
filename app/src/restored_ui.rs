@@ -3855,11 +3855,11 @@ fn drawer_devices_tab(
 }
 
 impl RestoredDashboard {
-    #[cfg(target_os="macos")]
+    #[cfg(any(target_os="macos",target_os="linux"))]
     fn request_local_camera_permission(&mut self,cx:&mut Context<Self>) {
         if self.checking_permissions{return;}
         self.checking_permissions=true;
-        self.status="Waiting for camera permission on this Mac".into();
+        self.status="Waiting for camera permission on this device".into();
         let work=tokio::spawn(host::cameras::request_access());
         cx.spawn(async move|view,cx| {
             let result=work.await.unwrap_or_else(|error|Err(error.to_string()));
@@ -4211,8 +4211,8 @@ fn local_permissions_panel(status:Option<Result<crate::sharing_permissions::Stat
             .child(div().flex_1().child(label))
             .child(div().text_color(cx.theme().content.secondary)
                 .child(access.map(Access::label).unwrap_or(if checking {"Checking…"} else {"Unchecked"})));
-        #[cfg(target_os="macos")]
-        if matches!(setting,Setting::Camera) && host::cameras::access()==0 {
+        #[cfg(any(target_os="macos",target_os="linux"))]
+        if matches!(setting,Setting::Camera) && (host::cameras::access()==0 || (cfg!(target_os="linux") && host::cameras::access()!=3)) {
             let view=cx.weak_entity();
             panel=panel.child(row.child(command_button(id,ActionVariantKind::Neutral,cx)
                 .h(px(26.0)).text_size(px(10.0)).disabled(checking).child("Allow camera")

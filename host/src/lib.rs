@@ -1101,16 +1101,24 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     #[cfg(target_os = "macos")]
     let mut video_encoder = MacVideoEncoder::new(width, height, fps, bitrate_kbps)?;
 
+    #[cfg(target_os="linux")]
+    let camera_capture=if matches!(source,protocol::session::CaptureSource::Camera(_)) {
+        Some(crate::cameras::start(source,width,height,fps).await?)
+    } else {None};
     #[cfg(target_os = "linux")]
-    let mut video_capturer = match &native_capture {
+    let mut video_capturer = if let Some(camera)=&camera_capture {
+        LinuxVideoCapturer::from_owned_mailbox(camera.native.mailbox.clone(),fps)?
+    } else {match &native_capture {
         Some(capture) if capture.matches_subscription_source(source) => {
             LinuxVideoCapturer::from_owned_mailbox(capture.mailbox(), fps)?
         }
         Some(_) => return Err("native capture source does not match the subscription".into()),
         None => LinuxVideoCapturer::new(width, height, fps)?,
-    };
+    }};
     #[cfg(target_os = "linux")]
-    let mut video_encoder = match &native_capture {
+    let mut video_encoder = if let Some(camera)=&camera_capture {
+        LinuxVideoEncoder::from_owned_frames(camera.native.generation,width,height,fps,bitrate_kbps)?
+    } else {match &native_capture {
         Some(capture) => LinuxVideoEncoder::from_owned_frames(
             capture.generation(),
             width,
@@ -1119,7 +1127,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             bitrate_kbps,
         )?,
         None => LinuxVideoEncoder::new(width, height, fps, bitrate_kbps)?,
-    };
+    }};
     #[cfg(target_os = "linux")]
     let mut native_revoked = native_capture.as_ref().map(|capture| capture.revocation());
 

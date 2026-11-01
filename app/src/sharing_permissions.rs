@@ -105,7 +105,7 @@ pub(crate) fn inspect() -> Status {
             screen: Access::SelectSource,
             control: Access::SelectSource,
             microphone: Access::OnUse,
-            camera: Access::OnUse,
+            camera: if host::cameras::access()==3 {Access::Allowed}else{Access::NeedsReview},
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

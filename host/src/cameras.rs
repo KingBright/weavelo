@@ -5,3 +5,9 @@ mod macos;
 pub use macos::{access, request_access};
 #[cfg(target_os="macos")]
 pub(crate) use macos::{list, CameraHandle};
+#[cfg(target_os="linux")]
+mod linux;
+#[cfg(target_os="linux")]
+pub use linux::{access, request_access};
+#[cfg(target_os="linux")]
+pub(crate) use linux::{list, start};

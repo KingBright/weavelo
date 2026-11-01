@@ -24,8 +24,9 @@ async fn stop(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, id: u32)
 async fn capture(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, source: &CaptureSourceInfo, id: u32) -> Result<serde_json::Value> {
     let (tx,mut video)=mpsc::channel::<VideoPacket>(16);
     let start=Instant::now();
+    let host_stats=Arc::new(SharedHostStats::default());
     conn.subscribe(SubscriptionRequest {id,source:source.source,width:1280,height:720,fps:30,bitrate_kbps:4000,audio:false},
-        tx,Arc::new(Statistics::default()),Arc::new(SharedHostStats::default())).await?;
+        tx,Arc::new(Statistics::default()),host_stats.clone()).await?;
     let mut first=None;
     let mut sequence=None;
     let mut frames=0u64;
@@ -62,17 +63,21 @@ async fn capture(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, sourc
     let sequence=sequence.ok_or("Camera did not supply its HEVC sequence header")?;
     let duration=first.unwrap().elapsed().as_secs_f64();
     fn percentiles(mut values:Vec<u64>)->serde_json::Value {
+        if values.is_empty(){return serde_json::Value::Null;}
         values.sort_unstable();
         let percentile=|p:usize|values.get((values.len().saturating_sub(1)*p)/100).copied().unwrap_or(0) as f64/1000.;
         serde_json::json!({"p50":percentile(50),"p95":percentile(95),"p99":percentile(99)})
     }
     let intervals=|times:&[u64]|times.windows(2).filter_map(|pair|pair[1].checked_sub(pair[0])).collect();
+    let host=host_stats.snapshot();
     Ok(serde_json::json!({"source":source.source,"name":source.title,"camera":source.camera,
         "first_encoded_ms":first.unwrap().duration_since(start).as_secs_f64()*1000.,
         "frames":frames,"bytes":bytes,"fps":(frames.saturating_sub(1)) as f64/duration,
         "encoded_capture_interval_ms":percentiles(intervals(&capture_times)),
         "capture_timing_samples":capture_times.len(),"encode_timing_samples":encode_costs.len(),
         "arrival_interval_ms":percentiles(intervals(&arrival_times)),"encode_ms":percentiles(encode_costs),
+        "host_telemetry":{"fps":host.fps,"encode_ms":host.latency,"bitrate_kbps":host.bitrate_kbps,
+            "packet_loss_rate":host.packet_loss_rate,"rtt_ms":host.rtt_ms},
         "coded":sequence.coded,"visible":sequence.visible,"bit_depth":sequence.bit_depth,
         "signal":sequence.signal.map(|s|serde_json::json!({"full_range":s.full_range,"primaries":s.primaries,"transfer":s.transfer,"matrix":s.matrix})),
         "presentation":"not_evaluated"}))
