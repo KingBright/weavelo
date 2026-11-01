@@ -40,6 +40,7 @@ pub struct SessionState<Texture, Pan: Default> {
     pub locked: bool,
     pub paused: bool,
     pub pending: Option<(u32, Instant)>,
+    camera_replacement: Option<CaptureSource>,
     pub activity_revision: u64,
     pub status: String,
     pub error: String,
@@ -155,6 +156,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             locked: false,
             paused: false,
             pending: None,
+            camera_replacement: None,
             activity_revision: 0,
             status: "Authenticated device connection".into(),
             error: String::new(),
@@ -223,7 +225,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         if self.video_error.is_some() {
             // A retry gets a fresh identity; an acknowledgement from the failed
             // attempt must never confirm this request or its input source.
-            let Some(id) = self.video_id.checked_add(1).filter(|id|*id < 0x1000_0000) else {
+            let Some(id) = self.video_id.checked_add(256).filter(|id|*id < 0x1000_0000) else {
                 self.error = "Reconnect before retrying this video subscription".into();
                 return;
             };
@@ -315,6 +317,10 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         if (source == self.source && self.supports_input) || self.pending.is_some() {
             return;
         }
+        if matches!(self.source,CaptureSource::Camera(_)) || matches!(source,CaptureSource::Camera(_)) {
+            self.replace_camera_view(source);
+            return;
+        }
         self.release_input();
         self.next_request = self.next_request.wrapping_add(1).max(1000);
         let request = self.next_request;
@@ -327,6 +333,13 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             self.confirmed = false;
             self.status = "Switching source".into();
         }
+    }
+    fn replace_camera_view(&mut self, source: CaptureSource) {
+        self.fail_video("Updating camera view".into());
+        self.camera_replacement=Some(source);
+        self.pending=Some((self.video_id,Instant::now()));
+        self.error.clear();
+        self.status="Updating camera view".into();
     }
     pub fn set_paused(&mut self, paused: bool) {
         if self.paused != paused { self.release_input(); }
@@ -478,6 +491,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         self.modifiers = 0;
     }
     fn fail_video(&mut self, reason: String) {
+        self.camera_replacement=None;
         self.release_input();
         if let Some(task) = self.reader_task.take() { task.abort(); }
         // Keep the file/device connection, but end the failed media request.
@@ -673,7 +687,13 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             remote_core::workspace_session::trace_control_event(self.conn.id,"gui_received",&event,
                 self.pending.map(|p|p.1.elapsed()),Some(self.pending.is_some()));
             match event {
-                SessionCommand::Sources { sources, .. } => self.sources = sources,
+                SessionCommand::Sources { sources, .. } => {
+                    let before=self.sources.iter().find(|info|info.source==self.source).and_then(|info|info.camera.as_ref());
+                    let after=sources.iter().find(|info|info.source==self.source).and_then(|info|info.camera.as_ref());
+                    let rotated=self.confirmed && before.zip(after).is_some_and(|(a,b)|a.rotation!=b.rotation||a.mirrored!=b.mirrored);
+                    self.sources=sources;
+                    if rotated && self.camera_replacement.is_none(){self.replace_camera_view(self.source);}
+                }
                 SessionCommand::Subscribed {
                     id, supports_input, ..
                 } if id == self.video_id
@@ -726,6 +746,11 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.connected = false;
                     self.confirmed = false;
                     self.error = reason;
+                }
+                SessionCommand::Unsubscribed { id } if id==self.video_id && self.camera_replacement.is_some() => {
+                    self.source=self.camera_replacement.take().unwrap();
+                    self.pending=None;
+                    self.start_video();
                 }
                 SessionCommand::Unsubscribed { id } if id == self.video_id && self.video_error.is_none() => {
                     self.fail_video("Screen sharing ended".into());
@@ -1184,6 +1209,33 @@ pub(crate) mod static_input_tests {
             events,
         );
         (session, recorded_rx, recorder, temp)
+    }
+
+    #[tokio::test]
+    async fn camera_rotation_waits_for_retirement_and_ignores_old_acknowledgements() {
+        let (mut session,_received,recorder,_temp)=recorder_session().await;
+        let camera=CaptureSourceInfo {source:CaptureSource::Camera(11),title:"Fixture camera".into(),
+            application:"Camera".into(),process_id:None,width:1280,height:720,supports_input:false,
+            camera:Some(protocol::session::CameraInfo {facing:protocol::session::CameraFacing::Back,switch_group:1,rotation:90,mirrored:false})};
+        session.source=camera.source;session.sources=vec![camera.clone()];session.confirmed=true;
+        session.request.audio=false;
+        let old=session.video_id;
+        let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();session.events.control=receiver;
+        let mut rotated=camera.clone();rotated.camera.as_mut().unwrap().rotation=180;
+        sender.send(SessionCommand::Sources {request_id:0,sources:vec![rotated],source_icons:vec![],icons:vec![]}).unwrap();
+        session.poll();
+        assert!(!session.confirmed);assert_eq!(session.video_id,old);
+        assert!(session.media.is_none());
+        sender.send(SessionCommand::Subscribed {id:old,audio_owner:None,supports_input:true}).unwrap();
+        sender.send(SessionCommand::Unsubscribed {id:old+256}).unwrap();
+        session.poll();assert_eq!(session.video_id,old);assert!(!session.confirmed);
+        sender.send(SessionCommand::Unsubscribed {id:old}).unwrap();session.poll();
+        assert_eq!(session.video_id,old+256);assert!(!session.confirmed);
+        sender.send(SessionCommand::Subscribed {id:old,audio_owner:None,supports_input:true}).unwrap();
+        session.poll();assert!(!session.confirmed);
+        sender.send(SessionCommand::Subscribed {id:old+256,audio_owner:None,supports_input:false}).unwrap();
+        session.poll();assert!(session.confirmed);assert!(!session.supports_input);
+        recorder.abort();
     }
 
     #[tokio::test]

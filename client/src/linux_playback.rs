@@ -123,6 +123,7 @@ impl DecoderState {
                 timing,
                 video_epoch: self.recovery,
                 decoded_at: Instant::now(),
+                            display_rotation: 0,
             };
             let Some(old) = s.stats.video_recovery.publish(self.recovery, || {
                 s.status.lock().unwrap().clear();

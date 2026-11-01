@@ -2,7 +2,7 @@ use super::metal_atlas::MetalAtlas;
 use crate::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
-    Surface, Underline, point, size,
+    Underline, point, size,
 };
 use anyhow::Result;
 use block::ConcreteBlock;
@@ -1121,7 +1121,7 @@ impl MetalRenderer {
                 .unwrap();
 
             align_offset(instance_offset);
-            let next_offset = *instance_offset + mem::size_of::<Surface>();
+            let next_offset = *instance_offset + mem::size_of::<SurfaceBounds>();
             if next_offset > instance_buffer.size {
                 return false;
             }
@@ -1155,6 +1155,12 @@ impl MetalRenderer {
                     SurfaceBounds {
                         bounds: surface.bounds,
                         content_mask: surface.content_mask.clone(),
+                        uv: {
+                            #[cfg(feature="native-video")]
+                            {surface.video_geometry.map(|g|g.uv_rows()).unwrap_or([[1.,0.,0.,0.],[0.,1.,0.,0.]])}
+                            #[cfg(not(feature="native-video"))]
+                            {[[1.,0.,0.,0.],[0.,1.,0.,0.]]}
+                        },
                     },
                 );
             }
@@ -1357,9 +1363,10 @@ pub struct PathSprite {
     pub bounds: Bounds<ScaledPixels>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(C)]
 pub struct SurfaceBounds {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    pub uv: [[f32;4];2],
 }

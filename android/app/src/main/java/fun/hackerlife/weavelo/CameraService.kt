@@ -110,7 +110,7 @@ class CameraService : Service() {
                 var epoch = demand.getLong("epoch")
                 val grant = demand.getLong("grant")
                 try {
-                    val plan = description.configure(demand, rotation)
+                    val plan = description.configure(demand)
                     fun key(value: Long) = "$source:$value:$rotation:${plan.encoder}"
                     if (activeKey != key(epoch)) {
                         capture.getAndSet(null)?.let { old -> delayedClose = old; old.close(); delayedClose = null }

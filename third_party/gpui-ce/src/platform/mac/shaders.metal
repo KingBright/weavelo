@@ -861,7 +861,9 @@ vertex SurfaceVertexOutput surface_vertex(
                                                  surface.content_mask.bounds);
   // We are going to copy the whole texture, so the texture position corresponds
   // to the current vertex of the unit triangle.
-  float2 texture_position = unit_vertex;
+  float3 uv_point = float3(unit_vertex, 1.0);
+  float2 texture_position = float2(dot(float3(surface.uv[0][0], surface.uv[0][1], surface.uv[0][2]), uv_point),
+                                   dot(float3(surface.uv[1][0], surface.uv[1][1], surface.uv[1][2]), uv_point));
   return SurfaceVertexOutput{
       device_position,
       texture_position,

@@ -307,6 +307,10 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
 
 @Composable
 private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long, onError: (String) -> Unit) {
+    if (pane.source.isCamera && !pane.accepted) {
+        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { Text("Updating camera…",color=ColorTextSecondary) }
+        return
+    }
     var dimensions by remember(pane.id, sessionKey, generation) {
         mutableStateOf(VideoDimensions(pane.source.width.coerceAtLeast(1), pane.source.height.coerceAtLeast(1)))
     }
@@ -321,8 +325,10 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         if (!pane.accepted) return@LaunchedEffect
         delay(250)
         // Negotiate only visible video pixels. Letterboxing/IME/toolbars are not video.
+        val quarterTurn = pane.source.rotation % 180 != 0
         VideoDimensions.fitEncoder(pane.source.width, pane.source.height,
-            measured.width.coerceAtMost(4096), measured.height.coerceAtMost(4096), 2, 2)
+            (if (quarterTurn) measured.height else measured.width).coerceAtMost(4096),
+            (if (quarterTurn) measured.width else measured.height).coerceAtMost(4096), 2, 2)
             ?.takeIf { it.width >= 32 && it.height >= 32 }?.let {
                 WorkspaceClient.settings(pane.id, sessionKey, generation, width = it.width, height = it.height)
             }
@@ -344,6 +350,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         onKey = { key,pressed -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,key=key,pressed=pressed) } })
     RemoteViewport(
         dimensions = dimensions, transformState = transform,
+        rotation = pane.source.rotation,
         enabled = pane.input && token != 0L,
         contentKey = token to dimensions,
         modifier = Modifier.fillMaxSize(),

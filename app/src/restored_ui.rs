@@ -6606,6 +6606,7 @@ fn decoded_video_frame_surface_with_fit(
 ) -> AnyElement {
     if let Some(native) = &frame.native {
         surface(native.ready.frame.clone())
+            .video_geometry(native_frame_geometry(frame).expect("native frame geometry"))
             .object_fit(fit)
             .size_full()
             .into_any_element()
@@ -6619,7 +6620,7 @@ fn decoded_video_frame_surface_with_fit(
 #[cfg(all(target_os="linux",feature="native-linux-video"))]
 fn decoded_video_frame_surface_with_fit(frame:&MacDecodedVideoFrame,fit:ObjectFit)->AnyElement {
     match &frame.native_linux {
-        Some(native)=>gpui::surface(native.frame.clone()).object_fit(fit).size_full().into_any_element(),
+        Some(native)=>gpui::surface(native.frame.clone()).video_geometry(native_frame_geometry(frame).expect("native frame geometry")).object_fit(fit).size_full().into_any_element(),
         None=>div().size_full().flex().items_center().justify_center().child("Native video is unavailable; see the decoder status.").into_any_element(),
     }
 }
@@ -6635,9 +6636,9 @@ const fn native_presentation_available()->bool {
 #[cfg(feature="gpui-native-video")]
 fn native_frame_geometry(frame:&MacDecodedVideoFrame)->Option<gpui::native_video::VideoGeometry> {
     #[cfg(all(target_os="windows",feature="native-windows-video"))]
-    { return frame.native.as_ref().map(|n|n.ready.frame.geometry()); }
+    { return frame.native.as_ref().map(|n|gpui::native_video::VideoGeometry{rotation:gpui::native_video::Rotation::from_degrees(frame.display_rotation).expect("validated camera rotation"),..n.ready.frame.geometry()}); }
     #[cfg(all(target_os="linux",feature="native-linux-video"))]
-    { return frame.native_linux.as_ref().map(|n|n.frame.geometry()); }
+    { return frame.native_linux.as_ref().map(|n|gpui::native_video::VideoGeometry{rotation:gpui::native_video::Rotation::from_degrees(frame.display_rotation).expect("validated camera rotation"),..n.frame.geometry()}); }
     #[cfg(not(any(all(target_os="windows",feature="native-windows-video"),all(target_os="linux",feature="native-linux-video"))))]
     {let _=frame;None}
 }

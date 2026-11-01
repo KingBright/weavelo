@@ -42,6 +42,8 @@ pub struct Surface {
     source: SurfaceSource,
     object_fit: ObjectFit,
     style: StyleRefinement,
+    #[cfg(feature = "native-video")]
+    video_geometry: Option<crate::native_video::VideoGeometry>,
 }
 
 /// Create a new surface element.
@@ -50,10 +52,18 @@ pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
         source: source.into(),
         object_fit: ObjectFit::Contain,
         style: Default::default(),
+        #[cfg(feature = "native-video")]
+        video_geometry: None,
     }
 }
 
 impl Surface {
+    /// Override presentation geometry without copying or replacing the native buffer.
+    #[cfg(feature = "native-video")]
+    pub fn video_geometry(mut self, geometry: crate::native_video::VideoGeometry) -> Self {
+        self.video_geometry = Some(geometry);
+        self
+    }
     /// Set the object fit for the image.
     pub fn object_fit(mut self, object_fit: ObjectFit) -> Self {
         self.object_fit = object_fit;
@@ -110,6 +120,19 @@ impl Element for Surface {
         match &self.source {
             #[cfg(target_os = "macos")]
             SurfaceSource::Surface(surface) => {
+                #[cfg(feature = "native-video")]
+                if let Some(geometry) = self.video_geometry {
+                    use crate::native_video::{VideoFit, VideoRect};
+                    let fit = match self.object_fit { ObjectFit::Fill=>VideoFit::Stretch, ObjectFit::Contain=>VideoFit::Contain,
+                        ObjectFit::Cover=>VideoFit::Cover, ObjectFit::ScaleDown=>VideoFit::ScaleDown, ObjectFit::None=>VideoFit::Native };
+                    let viewport = VideoRect { x:bounds.origin.x.0,y:bounds.origin.y.0,width:bounds.size.width.0,height:bounds.size.height.0 };
+                    if geometry.coded == [surface.get_width() as u32, surface.get_height() as u32]
+                        && let Some(rect) = geometry.destination(viewport,fit) {
+                        let output = crate::bounds(crate::point(crate::px(rect.x),crate::px(rect.y)),crate::size(crate::px(rect.width),crate::px(rect.height)));
+                        window.with_content_mask(Some(crate::ContentMask{bounds}),|window| window.paint_video_surface(output,surface.clone(),geometry));
+                    }
+                    return;
+                }
                 let size = crate::size(surface.get_width().into(), surface.get_height().into());
                 let new_bounds = self.object_fit.get_bounds(bounds, size);
                 // TODO: Add support for corner_radii
@@ -120,9 +143,10 @@ impl Element for Surface {
                 use crate::native_video::{VideoFit,VideoRect};
                 let fit=match &self.object_fit {ObjectFit::Fill=>VideoFit::Stretch,ObjectFit::Contain=>VideoFit::Contain,ObjectFit::Cover=>VideoFit::Cover,ObjectFit::ScaleDown=>VideoFit::ScaleDown,ObjectFit::None=>VideoFit::Native};
                 let viewport=VideoRect{x:bounds.origin.x.0,y:bounds.origin.y.0,width:bounds.size.width.0,height:bounds.size.height.0};
-                if let Some(rect)=frame.geometry().destination(viewport,fit) {
+                let geometry = self.video_geometry.unwrap_or_else(||frame.geometry());
+                if geometry.coded == frame.geometry().coded && let Some(rect)=geometry.destination(viewport,fit) {
                     let output=crate::bounds(crate::point(crate::px(rect.x),crate::px(rect.y)),crate::size(crate::px(rect.width),crate::px(rect.height)));
-                    window.with_content_mask(Some(crate::ContentMask{bounds}),|window|window.paint_native_video(output,frame.clone()));
+                    window.with_content_mask(Some(crate::ContentMask{bounds}),|window|window.paint_native_video_with_geometry(output,frame.clone(),geometry));
                 }
             }
             #[cfg(all(target_os="linux",feature="native-video"))]
@@ -130,9 +154,10 @@ impl Element for Surface {
                 use crate::native_video::{VideoFit,VideoRect};
                 let fit=match &self.object_fit {ObjectFit::Fill=>VideoFit::Stretch,ObjectFit::Contain=>VideoFit::Contain,ObjectFit::Cover=>VideoFit::Cover,ObjectFit::ScaleDown=>VideoFit::ScaleDown,ObjectFit::None=>VideoFit::Native};
                 let viewport=VideoRect{x:bounds.origin.x.0,y:bounds.origin.y.0,width:bounds.size.width.0,height:bounds.size.height.0};
-                if let Some(rect)=frame.geometry().destination(viewport,fit) {
+                let geometry = self.video_geometry.unwrap_or_else(||frame.geometry());
+                if geometry.coded == frame.geometry().coded && let Some(rect)=geometry.destination(viewport,fit) {
                     let output=crate::bounds(crate::point(crate::px(rect.x),crate::px(rect.y)),crate::size(crate::px(rect.width),crate::px(rect.height)));
-                    window.with_content_mask(Some(crate::ContentMask{bounds}),|window|window.paint_native_drm_video(output,frame.clone()));
+                    window.with_content_mask(Some(crate::ContentMask{bounds}),|window|window.paint_native_drm_video_with_geometry(output,frame.clone(),geometry));
                 }
             }
             #[allow(unreachable_patterns)]

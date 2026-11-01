@@ -25,10 +25,10 @@ internal data class CameraDescription(val id: String, val name: String, val faci
             .put("width", largest.width).put("height", largest.height).put("rotation", rotation(displayDegrees))
     }
     data class Configuration(val encoder: SurfaceHevcEncoder.Plan, val range: Range<Int>)
-    fun configure(demand: JSONObject, rotation: Int): Configuration {
+    fun configure(demand: JSONObject): Configuration {
         val native = sizes.maxByOrNull { it.width.toLong() * it.height } ?: error("Camera has no video modes")
-        val targetWidth = demand.getInt(if (rotation % 180 == 0) "width" else "height")
-        val targetHeight = demand.getInt(if (rotation % 180 == 0) "height" else "width")
+        val targetWidth = demand.getInt("width")
+        val targetHeight = demand.getInt("height")
         val fit = VideoDimensions.fitEncoder(native.width, native.height, targetWidth, targetHeight, 2, 2)
             ?: error("Camera viewport is too small")
         val wanted = fit.width.toLong() * fit.height

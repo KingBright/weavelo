@@ -68,6 +68,12 @@ pub enum Rotation {
     /// Rotate clockwise by 270 degrees.
     R270,
 }
+impl Rotation {
+    /// Accept only the right-angle orientations supported by native sampling.
+    pub fn from_degrees(degrees: u16) -> Option<Self> {
+        Some(match degrees { 0=>Self::R0,90=>Self::R90,180=>Self::R180,270=>Self::R270,_=>return None })
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Validated relation between resource pixels and displayed content.
 pub struct VideoGeometry {

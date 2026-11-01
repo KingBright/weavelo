@@ -169,6 +169,7 @@ impl DecoderState {
                 timing,
                 video_epoch: self.recovery,
                 decoded_at: Instant::now(),
+                            display_rotation: 0,
             };
             let Some(previous) = shared.stats.video_recovery.publish(self.recovery, || {
                 shared.status.lock().unwrap().clear();

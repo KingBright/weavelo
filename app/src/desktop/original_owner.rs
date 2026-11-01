@@ -376,9 +376,10 @@ impl OriginalOwner {
             {
                 let shared = media.shared_frame();
                 let next = shared.try_lock().ok().and_then(|mut f| f.take());
-                if let Some(frame) = next
+                if let Some(mut frame) = next
                     && s.current_video_frame(frame.video_epoch, frame.decoded_at)
                 {
+                    frame.display_rotation=s.sources.iter().find(|info|info.source==s.source).and_then(|info|info.camera.as_ref()).map_or(0,|camera|camera.rotation);
                     let frame = Arc::new(frame);
                     s.texture = Some(frame.clone());
                     let previous = entry

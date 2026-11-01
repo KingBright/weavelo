@@ -35,6 +35,8 @@ pub struct DecodedFrame {
     pub timing: protocol::FrameTimingCheckpoints,
     pub video_epoch: remote_core::video_recovery::VideoEpoch,
     pub decoded_at: Instant,
+    /// Display transform attached by the current authenticated camera view.
+    pub display_rotation: u16,
 }
 impl remote_core::VideoFrame for DecodedFrame {
     fn width(&self) -> u32 {
@@ -257,6 +259,7 @@ impl DecoderPipe {
                             timing: Default::default(),
                             video_epoch: recovery,
                             decoded_at: Instant::now(),
+                            display_rotation: 0,
                         };
                         let Some(previous) = stats.video_recovery.publish(recovery, || {
                             report.lock().unwrap().clear();

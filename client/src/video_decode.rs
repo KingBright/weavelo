@@ -71,6 +71,8 @@ pub struct MacDecodedVideoFrame {
     pub timing: protocol::FrameTimingCheckpoints,
     pub video_epoch: remote_core::video_recovery::VideoEpoch,
     pub decoded_at: std::time::Instant,
+    /// Display transform attached by the current authenticated camera view.
+    pub display_rotation: u16,
     width: u32,
     height: u32,
 }
@@ -115,7 +117,9 @@ pub fn decoded_video_frame_surface_with_fit(
         let cv_pixel_buffer = core_video::pixel_buffer::CVPixelBuffer::wrap_under_create_rule(
             frame.cv_pixel_buffer as _,
         );
+        let rotation = gpui::native_video::Rotation::from_degrees(frame.display_rotation).expect("validated camera rotation");
         gpui::surface(cv_pixel_buffer)
+            .video_geometry(gpui::native_video::VideoGeometry {coded:[frame.width,frame.height],visible:[0,0,frame.width,frame.height],pixel_aspect:[1,1],rotation})
             .object_fit(object_fit)
             .w_full()
             .h_full()
@@ -184,6 +188,7 @@ extern "C" fn decompression_callback(
             timing: protocol::FrameTimingCheckpoints::default(),
             video_epoch: Default::default(),
             decoded_at: std::time::Instant::now(),
+            display_rotation: 0,
             width,
             height,
         };

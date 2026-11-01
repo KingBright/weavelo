@@ -30,6 +30,7 @@ internal fun RemoteViewport(
     modifier: Modifier = Modifier,
     viewportModifier: Modifier = Modifier,
     touchMode: TouchMode = TouchMode.DIRECT,
+    rotation: Int = 0,
     onViewportSizeChanged: (IntSize) -> Unit = {},
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
     overlay: @Composable BoxScope.() -> Unit = {},
@@ -37,9 +38,13 @@ internal fun RemoteViewport(
 ) {
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     val onSize by rememberUpdatedState(onViewportSizeChanged)
+    require(rotation in listOf(0, 90, 180, 270)) { "Unsupported video rotation" }
+    val quarterTurn = rotation % 180 != 0
+    val displayAspect = if (quarterTurn) 1f / dimensions.aspectRatio else dimensions.aspectRatio
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        val width = minOf(maxWidth, maxHeight * dimensions.aspectRatio)
-        Box(viewportModifier.width(width).aspectRatio(dimensions.aspectRatio).clipToBounds()
+        val width = minOf(maxWidth, maxHeight * displayAspect)
+        val height = width / displayAspect
+        Box(viewportModifier.width(width).height(height).clipToBounds()
             .onSizeChanged { next ->
                 val previous = viewportSize
                 viewportSize = next
@@ -48,9 +53,11 @@ internal fun RemoteViewport(
                     next.width.toFloat(), next.height.toFloat())
                 onSize(next)
             }
-            .remoteViewportGestures(transformState, touchMode, viewportSize, enabled, contentKey, sendTouch)
+            .remoteViewportGestures(transformState, touchMode, viewportSize, enabled, contentKey to rotation, sendTouch)
         ) {
-            RemoteVideoSurface(transformState.value, Modifier.fillMaxSize(), factory)
+            RemoteVideoSurface(transformState.value,
+                Modifier.align(Alignment.Center).requiredSize(if (quarterTurn) height else width, if (quarterTurn) width else height),
+                rotation, factory)
             overlay()
         }
     }
@@ -61,6 +68,7 @@ internal fun RemoteViewport(
 internal fun RemoteVideoSurface(
     transform: ViewportTransform,
     modifier: Modifier = Modifier,
+    rotation: Int = 0,
     factory: (Context) -> SurfaceView
 ) {
     AndroidView(
@@ -69,6 +77,7 @@ internal fun RemoteVideoSurface(
             scaleY = transform.scale
             translationX = transform.offset.x
             translationY = transform.offset.y
+            rotationZ = rotation.toFloat()
         },
         factory = factory
     )

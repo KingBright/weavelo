@@ -304,7 +304,7 @@ impl VideoPipeline {
             return Ok(());
         }
         let acquired = Acquired(&entry.mutex);
-        let geometry = frame.0.geometry;
+        let geometry = surface.video_geometry.unwrap_or(frame.0.geometry);
         let rows = geometry.uv_rows();
         let color = frame.0.color.rows(frame.0.buffer.format);
         let b = surface.bounds;
@@ -508,6 +508,7 @@ pub(crate) mod validation {
                 ),
             },
             video_frame: frame,
+            video_geometry: None,
         }
     }
     pub(crate) fn run() -> Result<()> {

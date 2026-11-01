@@ -240,7 +240,7 @@ impl NativeVideo {
             return;
         };
         let frame = &prepared.frame;
-        let geometry = frame.geometry();
+        let geometry = surface.video_geometry.unwrap_or_else(||frame.geometry());
         let rows = geometry.uv_rows();
         let color = frame.0.color.rows(frame.0.format);
         let b = surface.bounds;
@@ -405,6 +405,7 @@ pub(super) fn validation_pixels(frame: DmaVideoFrame) -> Result<Vec<[u8; 4]>, St
             ),
         },
         linux_video_frame: frame.clone(),
+        video_geometry: None,
     });
     scene.finish();
     let mut pipeline = NativeVideo::new();

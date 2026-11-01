@@ -658,6 +658,8 @@ pub(crate) struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    #[cfg(feature="native-video")]
+    pub video_geometry: Option<crate::native_video::VideoGeometry>,
     #[cfg(target_os = "macos")]
     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
     #[cfg(all(target_os="windows",feature="native-video"))]

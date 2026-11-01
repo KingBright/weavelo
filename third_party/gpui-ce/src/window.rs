@@ -3291,7 +3291,16 @@ impl Window {
             bounds,
             content_mask,
             image_buffer,
+            #[cfg(feature="native-video")]
+            video_geometry:None,
         });
+    }
+
+    /// Paint the same CoreVideo allocation with shared crop/rotation geometry.
+    #[cfg(all(target_os="macos",feature="native-video"))]
+    pub fn paint_video_surface(&mut self,bounds:Bounds<Pixels>,image_buffer:CVPixelBuffer,geometry:crate::native_video::VideoGeometry) {
+        self.invalidator.debug_assert_paint();let scale=self.scale_factor();
+        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),image_buffer,video_geometry:Some(geometry)});
     }
 
     /// Paint a native video surface in the ordinary scene order, including masks.
@@ -3300,14 +3309,27 @@ impl Window {
     pub fn paint_native_video(&mut self,bounds:Bounds<Pixels>,video_frame:crate::native_video::D3dVideoFrame) {
         self.invalidator.debug_assert_paint();
         let scale=self.scale_factor();
-        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),video_frame});
+        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),video_geometry:None,video_frame});
     }
 
     /// Preserve native video in ordinary scene order and existing content masks.
     #[cfg(all(target_os="linux",feature="native-video"))]
     pub fn paint_native_drm_video(&mut self,bounds:Bounds<Pixels>,linux_video_frame:crate::native_video::DmaVideoFrame) {
         self.invalidator.debug_assert_paint();let scale=self.scale_factor();
-        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),linux_video_frame});
+        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),video_geometry:None,linux_video_frame});
+    }
+
+    /// Present a retained D3D texture using the supplied validated geometry.
+    #[cfg(all(target_os="windows",feature="native-video"))]
+    pub fn paint_native_video_with_geometry(&mut self,bounds:Bounds<Pixels>,frame:crate::native_video::D3dVideoFrame,geometry:crate::native_video::VideoGeometry) {
+        self.invalidator.debug_assert_paint();let scale=self.scale_factor();
+        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),video_frame:frame,video_geometry:Some(geometry)});
+    }
+    /// Present retained DMA-BUF planes using the supplied validated geometry.
+    #[cfg(all(target_os="linux",feature="native-video"))]
+    pub fn paint_native_drm_video_with_geometry(&mut self,bounds:Bounds<Pixels>,frame:crate::native_video::DmaVideoFrame,geometry:crate::native_video::VideoGeometry) {
+        self.invalidator.debug_assert_paint();let scale=self.scale_factor();
+        self.next_frame.scene.insert_primitive(crate::PaintSurface{order:0,bounds:bounds.scale(scale),content_mask:self.content_mask().scale(scale),linux_video_frame:frame,video_geometry:Some(geometry)});
     }
 
     /// Removes an image from the sprite atlas.

@@ -27,7 +27,7 @@ pub(crate) fn adopt_latest_frame(session: &mut OriginalGuiSession) -> bool {
     };
     let shared = media.shared_frame();
     let frame = shared.lock().expect("decoded native frame lock").take();
-    let Some(frame) = frame else {
+    let Some(mut frame) = frame else {
         return false;
     };
     if !session.current_video_frame(frame.video_epoch, frame.decoded_at)
@@ -41,6 +41,7 @@ pub(crate) fn adopt_latest_frame(session: &mut OriginalGuiSession) -> bool {
     {
         return false;
     }
+    frame.display_rotation=session.sources.iter().find(|info|info.source==session.source).and_then(|info|info.camera.as_ref()).map_or(0,|camera|camera.rotation);
     session.texture = Some(Arc::new(frame));
     true
 }
