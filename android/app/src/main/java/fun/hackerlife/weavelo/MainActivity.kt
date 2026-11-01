@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import `fun`.hackerlife.weavelo.ui.MobileConsoleScreen
 import `fun`.hackerlife.weavelo.ui.MobileViewportScreen
 import `fun`.hackerlife.weavelo.ui.QrScanScreen
@@ -24,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
@@ -76,6 +78,8 @@ class MainActivity : ComponentActivity() {
             var workspaceEndpoint by remember { mutableStateOf(WorkspaceClient.requestedSession()?.endpoint) }
             var incomingSession by remember { mutableStateOf(WorkspaceClient.requestedSession()?.takeIf { it.incomingId != null }) }
             var receivedFiles by remember { mutableStateOf(false) }
+            var receivedFileTargetPath by rememberSaveable { mutableStateOf<String?>(null) }
+            var workspaceFilePath by rememberSaveable { mutableStateOf<String?>(null) }
             var pairingMessage by remember { mutableStateOf<String?>(null) }
             val publisherStatus by PublisherClient.status.collectAsState()
             val outgoing by PublisherClient.outgoing.collectAsState()
@@ -159,7 +163,7 @@ class MainActivity : ComponentActivity() {
                                     PublisherClient.refreshOutgoing()
                                     if (devices.isEmpty()) return@runCatching null
                                     DirectedDelivery.listen(applicationContext, receiverOwner)
-                                    DirectedDelivery.poll(workspaceEndpoint != null || scanningQr ||
+                                    DirectedDelivery.poll(workspaceEndpoint != null || scanningQr || receivedFileTargetPath != null ||
                                         WorkspaceClient.starting || WorkspaceClient.active ||
                                         sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING))
                                 }.onSuccess { DirectedDelivery.failed(null) }
@@ -168,6 +172,7 @@ class MainActivity : ComponentActivity() {
                             if (incoming != null) {
                                 incomingSession = incoming
                                 sendFileOnConnect = false
+                                workspaceFilePath = null
                                 workspaceDeviceId = incoming.deviceId
                                 workspaceEndpoint = incoming.endpoint
                             }
@@ -181,8 +186,9 @@ class MainActivity : ComponentActivity() {
 
             when {
                 workspaceEndpoint != null -> {
-                    `fun`.hackerlife.weavelo.ui.WorkspaceScreen(workspaceEndpoint!!, sendFileOnConnect, workspaceDeviceId, incomingSession) {
-                        workspaceEndpoint = null; incomingSession = null
+                    `fun`.hackerlife.weavelo.ui.WorkspaceScreen(workspaceEndpoint!!, sendFileOnConnect, workspaceDeviceId, incomingSession,
+                        fileToSend = workspaceFilePath?.let(::File), onFileQueued = { workspaceFilePath = null }) {
+                        workspaceEndpoint = null; incomingSession = null; workspaceFilePath = null
                     }
                 }
                 scanningQr -> {
@@ -220,8 +226,8 @@ class MainActivity : ComponentActivity() {
                         onConnectHost = { deviceId, endpoint ->
                             scope.launch(Dispatchers.IO) { WeaveloClient.connect(deviceId, endpoint) }
                         },
-                        onConnectWorkspace = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = false; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
-                        onSendFiles = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = true; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onConnectWorkspace = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onSendFiles = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = true; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         outgoing = outgoing,
                         onSendCamera = { target -> cameraTarget = target; if (!camera.enabled) requestCamera() },
                         onSendScreen = { deviceId ->
@@ -264,7 +270,27 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-            if (receivedFiles) `fun`.hackerlife.weavelo.ui.ReceivedFilesDialog { receivedFiles = false }
+            if (receivedFiles) `fun`.hackerlife.weavelo.ui.ReceivedFilesDialog(onSendToDevice = { file ->
+                receivedFiles = false
+                receivedFileTargetPath = file.absolutePath
+            }) { receivedFiles = false }
+            if (receivedFileTargetPath != null) androidx.compose.material3.AlertDialog(
+                onDismissRequest = { receivedFileTargetPath = null },
+                title = { androidx.compose.material3.Text("Send to device") },
+                text = { androidx.compose.foundation.layout.Column {
+                    val targets = devices.filter { it.canSendFiles && it.canOpenWorkspace }
+                    if (targets.isEmpty()) androidx.compose.material3.Text("No devices available")
+                    targets.forEach { device -> androidx.compose.material3.TextButton(onClick = {
+                        workspaceFilePath = receivedFileTargetPath
+                        receivedFileTargetPath = null
+                        incomingSession = null
+                        sendFileOnConnect = false
+                        workspaceDeviceId = device.id
+                        workspaceEndpoint = device.endpoint
+                    }) { androidx.compose.material3.Text(device.name) } }
+                } }, confirmButton = {}, dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { receivedFileTargetPath = null }) { androidx.compose.material3.Text("Cancel") }
+                })
             }
         }
     }

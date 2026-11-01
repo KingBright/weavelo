@@ -35,7 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 @Composable
 fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, deviceId: String = "",
-    incoming: WorkspaceSessionRequest? = null, onClose: () -> Unit) {
+    incoming: WorkspaceSessionRequest? = null, fileToSend: File? = null,
+    onFileQueued: () -> Unit = {}, onClose: () -> Unit) {
     val context = LocalContext.current
     var sourcePicker by remember { mutableStateOf(false) }
     var actionsOpen by remember { mutableStateOf(false) }
@@ -129,6 +130,12 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             pickerSessionKey = sessionKey
             shareSelection = false
             filePicker.launch(arrayOf("*/*"))
+        }
+    }
+    LaunchedEffect(sessionKey, state.sessionKey, state.connected, state.files, fileToSend) {
+        if (fileToSend != null && state.sessionKey == sessionKey && state.connected && state.files) {
+            onFileQueued()
+            WorkspaceClient.sendFile(fileToSend, sessionKey)
         }
     }
     WeaveloTheme {
@@ -289,7 +296,10 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     state.sharedNext?.let { next -> TextButton(onClick = { WorkspaceClient.listSharedFiles(next) }, enabled = state.connected && !state.sharedBusy) { Text("Next page") } }
                 }
             } }, confirmButton = { TextButton(onClick = { sharedFilesOpen = false }) { Text("Close") } })
-        if (receivedFiles) ReceivedFilesDialog { receivedFiles = false }
+        if (receivedFiles) ReceivedFilesDialog(onSendToDevice = if (state.connected && state.files) { file ->
+            receivedFiles = false
+            WorkspaceClient.sendFile(file, sessionKey)
+        } else null) { receivedFiles = false }
     }
 }
 

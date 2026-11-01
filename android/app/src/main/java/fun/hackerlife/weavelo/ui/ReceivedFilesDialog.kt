@@ -18,7 +18,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 @Composable
-fun ReceivedFilesDialog(onClose: () -> Unit) {
+fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () -> Unit) {
     val context = LocalContext.current
     val root = remember { File(context.filesDir, "received").apply { mkdirs() }.canonicalFile }
     var directory by remember { mutableStateOf(root) }
@@ -61,6 +61,9 @@ fun ReceivedFilesDialog(onClose: () -> Unit) {
                         if (file.isFile) Row {
                             TextButton(onClick = { exporting = file; save.launch(file.name) }) { Text("Save a copy") }
                             TextButton(onClick = { open(file, true) }) { Text("Share") }
+                            onSendToDevice?.let { send ->
+                                MobileAction(MobileSymbol.Send, "Send to device", modifier = Modifier.size(44.dp)) { send(file) }
+                            }
                         }
                     }
                 }

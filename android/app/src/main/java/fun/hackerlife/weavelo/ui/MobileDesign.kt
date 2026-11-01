@@ -17,6 +17,7 @@ enum class MobileSymbol(path: String) {
     Devices("M3 4h18v13H3z M8 21h8 M12 17v4"),
     Network("M9 3h6v5H9z M3 16h6v5H3z M15 16h6v5h-6z M12 8v4 M6 16v-4h12v4"),
     Share("M3 12v7h18v-7 M12 16V3 M7 8l5-5 5 5"),
+    Send("M3 3l18 9-18 9 3-9-3-9z M6 12h15"),
     Camera("M3 7h4l2-3h6l2 3h4v13H3z M16 13a4 4 0 1 1-8 0 4 4 0 0 1 8 0"),
     Settings("M4 6h16 M4 12h16 M4 18h16 M8 3v6 M16 9v6 M10 15v6"),
     Scan("M3 8V3h5 M16 3h5v5 M21 16v5h-5 M8 21H3v-5 M8 8h2v2H8z M14 8h2v2h-2z M8 14h2v2H8z M14 14h3v3h-3z"),
