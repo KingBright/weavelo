@@ -28,6 +28,7 @@ static FILE_RECEIVER_ENABLED: std::sync::atomic::AtomicBool =
 static INPUT_SERVICE_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static DELIVERY_RECEIVER_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CAPTURE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CAMERA_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn refresh_network_ownership() {
     client().set_network_enabled(
@@ -46,7 +47,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
 ) -> jstring {
     let result = (|| -> Result<String, String> {
         let value: String = env.get_string(&payload).map_err(|e| e.to_string())?.into();
-        if operation == 0 || operation == 5 || operation == 20 {
+        if operation == 0 || operation == 5 || operation == 20 || operation == 30 {
             let value: serde_json::Value =
                 serde_json::from_str(&value).map_err(|e| e.to_string())?;
             let bind = value["bind"]
@@ -80,6 +81,8 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 publisher.set_input_service_available(INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed));
                 publisher.set_input_capture_allowed(value["control"].as_bool().unwrap_or(false));
                 CAPTURE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else if operation == 30 {
+                CAMERA_ENABLED.store(true,std::sync::atomic::Ordering::Relaxed);
             } else if operation == 20 {
                 DELIVERY_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             } else {
@@ -101,19 +104,23 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             }
             return Ok(address);
         }
-        if operation == 1 || operation == 6 || operation == 21 {
+        if operation == 1 || operation == 6 || operation == 21 || operation == 33 {
             let mut node = PUBLISHER.lock().unwrap();
             if operation == 1 {
                 CAPTURE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
                 if let Some(publisher) = node.as_ref() {
                     publisher.set_capture_available(false, false);
                 }
+            } else if operation == 33 {
+                CAMERA_ENABLED.store(false,std::sync::atomic::Ordering::Relaxed);
+                if let Some(publisher)=node.as_ref(){publisher.set_cameras(vec![])?;}
             } else if operation == 21 {
                 DELIVERY_RECEIVER_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
             } else {
                 FILE_RECEIVER_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
             }
             let stop = !CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+                && !CAMERA_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
                 && !FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
                 && !DELIVERY_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
             if let Some(publisher) = node.as_ref() {
@@ -193,13 +200,32 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             }
             2 => serde_json::to_string(&publisher.demand()).map_err(|e| e.to_string()),
             3 => {
-                let value: serde_json::Value =
-                    serde_json::from_str(&value).map_err(|e| e.to_string())?;
-                publisher.set_source_size(
-                    value["width"].as_u64().unwrap_or(0) as u32,
-                    value["height"].as_u64().unwrap_or(0) as u32,
-                );
-                Ok(String::new())
+                let value:serde_json::Value=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                let source:protocol::session::CaptureSource=serde_json::from_value(value.get("source").cloned().unwrap_or(serde_json::json!("MainDisplay"))).map_err(|error|error.to_string())?;
+                let grant=value["grant"].as_u64().ok_or("Missing capture grant")?;
+                if publisher.source_grant(source)!=Some(grant){return Err("Capture authorization changed".into());}
+                let epoch=value["epoch"].as_u64().or_else(||(source==protocol::session::CaptureSource::MainDisplay).then(||publisher.demand().epoch)).ok_or("Missing capture epoch")?;
+                let width=value["width"].as_u64().and_then(|n|u32::try_from(n).ok()).ok_or("Invalid capture width")?;
+                let height=value["height"].as_u64().and_then(|n|u32::try_from(n).ok()).ok_or("Invalid capture height")?;
+                let rotation=value["rotation"].as_u64().unwrap_or(0);
+                let rotation=u16::try_from(rotation).map_err(|_|"Invalid capture rotation")?;
+                let epoch=publisher.configure_geometry(source,epoch,width,height,rotation)?;
+                Ok(serde_json::json!({"epoch":epoch}).to_string())
+            }
+            31 => {
+                if publisher.is_finished(){return Err("Camera service stopped".into());}
+                Ok(publisher.camera_demands().to_string())
+            }
+            32 => {
+                if !CAMERA_ENABLED.load(std::sync::atomic::Ordering::Relaxed){return Err("Enable camera sharing on this phone first".into());}
+                let cameras=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                serde_json::to_string(&publisher.set_cameras(cameras)?).map_err(|error|error.to_string())
+            }
+            34 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Send {target:String,endpoint:std::net::SocketAddr,sources:Vec<protocol::session::CaptureSource>}
+                let send:Send=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                client().runtime().block_on(publisher.send_sources(send.target,send.endpoint,send.sources))?;Ok(String::new())
             }
             11 => {
                 let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
@@ -235,19 +261,18 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeFrame(
-    env: JNIEnv,
-    _class: JClass,
-    bytes: jni::objects::JByteArray,
-    pts: jni::sys::jlong,
-) {
-    if env
-        .get_array_length(&bytes)
-        .is_ok_and(|length| length > 0 && length <= 8 * 1024 * 1024)
-        && let Ok(bytes) = env.convert_byte_array(&bytes)
-        && let Some(publisher) = PUBLISHER.lock().unwrap().clone()
-    {
-        publisher.frame(bytes, pts, false);
-    }
+    mut env:JNIEnv,_class:JClass,source:JString,epoch:jni::sys::jlong,
+    bytes:jni::objects::JByteArray,pts:jni::sys::jlong,
+)->jboolean {
+    let source=env.get_string(&source).ok().and_then(|s|serde_json::from_str::<protocol::session::CaptureSource>(&String::from(s)).ok());
+    if epoch<=0{return 0;}
+    if env.get_array_length(&bytes).is_ok_and(|n|n>0&&n<=8*1024*1024)
+        &&let Some(source)=source&&let Ok(bytes)=env.convert_byte_array(&bytes) {
+        let publisher=PUBLISHER.lock().unwrap().clone();
+        if let Some(publisher)=publisher {
+            return client().runtime().block_on(publisher.frame_from(source,epoch as u64,bytes,pts,false)) as jboolean;
+        }
+    }0
 }
 
 #[cfg(target_os = "android")]
@@ -255,9 +280,12 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeFrame(
 pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativePcm(
     env: JNIEnv,
     _class: JClass,
+    grant: jni::sys::jlong,
     samples: jni::objects::JShortArray,
 ) -> jboolean {
-    static ENCODER: OnceLock<std::sync::Mutex<Option<opus::Encoder>>> = OnceLock::new();
+    static ENCODER: OnceLock<std::sync::Mutex<Option<(u64,opus::Encoder)>>> = OnceLock::new();
+    let Some(publisher)=PUBLISHER.lock().unwrap().clone()else{return 0;};
+    if grant<=0||publisher.source_grant(protocol::session::CaptureSource::MainDisplay)!=Some(grant as u64){return 0;}
     if env.get_array_length(&samples).ok() != Some(1920) {
         return 0;
     }
@@ -265,24 +293,22 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativePcm(
     if env.get_short_array_region(&samples, 0, &mut pcm).is_err() {
         return 0;
     }
-    let mut encoder = ENCODER
+    let mut slot = ENCODER
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .unwrap();
-    if encoder.is_none() {
-        *encoder = opus::Encoder::new(48000, opus::Channels::Stereo, opus::Application::Audio).ok();
+    if slot.as_ref().is_none_or(|(old,_)|*old!=grant as u64) {
+        *slot=opus::Encoder::new(48000,opus::Channels::Stereo,opus::Application::Audio).ok().map(|encoder|(grant as u64,encoder));
     }
-    let Some(encoder) = encoder.as_mut() else {
+    let Some((_,encoder)) = slot.as_mut() else {
         return 0;
     };
     let mut bytes = [0u8; 4000];
     let Ok(length) = encoder.encode(&pcm, &mut bytes) else {
         return 0;
     };
-    if let Some(publisher) = PUBLISHER.lock().unwrap().clone() {
-        publisher.frame(bytes[..length].to_vec(), 0, true);
-    }
-    1
+    drop(slot);
+    client().runtime().block_on(publisher.frame_from(protocol::session::CaptureSource::MainDisplay,grant as u64,bytes[..length].to_vec(),0,true)) as jboolean
 }
 
 /// JSON control stays off Android's main thread; media uses separate bounded queues.

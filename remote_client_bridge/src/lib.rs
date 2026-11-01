@@ -1,4 +1,5 @@
 pub mod publisher_bridge;
+mod publisher_media;
 mod publisher_input;
 mod delivery_claim_json;
 pub mod touch_mapper;
@@ -1604,9 +1605,15 @@ mod tests {
             let mut close_seen = std::collections::HashSet::new();
             let key=remote_core::session_crypto::load_session_psk();
             let mut handshakes=remote_core::session_auth::ServerHandshake::default();
-            while let Ok(remote_core::net::MultiplexedPacket::Control(message, peer)) =
-                receiver.recv().await
-            {
+            while let Ok(packet)=receiver.recv().await {
+                let (message,peer)=match packet {
+                    remote_core::net::MultiplexedPacket::Control(message,peer)=>(message,peer),
+                    remote_core::net::MultiplexedPacket::ClockProbe(probe,host_recv_us,peer)=>{
+                        let response=protocol::session_auth::ClockReply{probe,host_recv_us,host_send_us:remote_core::timing::quanta_now_us()};
+                        reply.send_control(&ControlMessage::ClockReply(response),peer).await.unwrap();continue;
+                    }
+                    _=>continue,
+                };
                 if let ControlMessage::SessionHandshake(message)=&message {
                     if let Some(key)=&key {
                         let response=handshakes.receive(key,message,peer,remote_core::session_auth::AuthTime::now(),true).unwrap();
@@ -2071,6 +2078,16 @@ mod tests {
 
     #[test]
     fn workspace_touch_uses_shared_grant_and_releases_cancelled_drag() {
+        const CHILD:&str="WEAVELO_WORKSPACE_TOUCH_FIXTURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","tests::workspace_touch_uses_shared_grant_and_releases_cancelled_drag","--nocapture"])
+                .env(CHILD,"1").output().unwrap();
+            assert!(output.status.success(),"isolated touch fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
+        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-workspace-touch-fixture");
         use protocol::realtime_input::{InputBinding, InputPayload};
         let client = RemoteBridgeClient::new();
         let (sender, mut rx, address) = test_host(&client);

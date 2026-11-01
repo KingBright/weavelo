@@ -10,8 +10,9 @@ data class OutgoingScreenState(val id: Long = 0, val active: Boolean = false, va
 
 object PublisherClient {
     external fun nativeAction(operation: Int, payload: String): String
-    external fun nativeFrame(bytes: ByteArray, ptsUs: Long)
-    external fun nativePcm(samples: ShortArray): Boolean
+    const val SCREEN_SOURCE = "\"MainDisplay\""
+    external fun nativeFrame(source: String, epoch: Long, bytes: ByteArray, ptsUs: Long): Boolean
+    external fun nativePcm(grant: Long, samples: ShortArray): Boolean
     @Volatile var controlSize: Pair<Int,Int>? = null
         internal set
     private val mutable = MutableStateFlow("")

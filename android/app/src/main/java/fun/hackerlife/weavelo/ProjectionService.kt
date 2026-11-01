@@ -23,6 +23,7 @@ class ProjectionService : Service() {
     @Volatile private var audioAllowed = false
     @Volatile private var controlAllowed = false
     private var sendTarget: String? = null
+    @Volatile private var captureGrant = 0L
     private val audioRunning = AtomicBoolean(false)
     private var audioWorker: Thread? = null
 
@@ -52,7 +53,7 @@ class ProjectionService : Service() {
                 override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1) {
                     sourceWidth = width; sourceHeight = height
                     PublisherClient.controlSize = if (controlAllowed) width to height else null
-                    runCatching { PublisherClient.action(3,JSONObject().put("width",width).put("height",height).toString()) }
+                    runCatching { PublisherClient.action(3,JSONObject().put("grant",captureGrant).put("width",width).put("height",height).toString()) }
                 } }
             }, Handler(Looper.getMainLooper()))
             running.set(true)
@@ -69,11 +70,13 @@ class ProjectionService : Service() {
         var formatKey = ""
         var codecHeader = ByteArray(0)
         var keyframe = -1L
+        var frameEpoch = 0L
         var demand = JSONObject()
         var nextDemand = 0L
         try {
             val directory = File(filesDir, "received").apply { mkdirs() }
             PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001").put("directory", directory.absolutePath).put("audio", audioAllowed).put("control",controlAllowed).toString())
+            captureGrant = JSONObject(PublisherClient.action(2)).getLong("grant")
             PublisherClient.controlSize = if (controlAllowed) sourceWidth to sourceHeight else null
             // Null surface suspends capture without releasing the authorization.
             display = capture.createVirtualDisplay("Weavelo", sourceWidth, sourceHeight, density,
@@ -99,7 +102,8 @@ class ProjectionService : Service() {
                 }
                 if (sourceSize != (sourceWidth to sourceHeight)) {
                     sourceSize = sourceWidth to sourceHeight
-                    PublisherClient.action(3, JSONObject().put("width", sourceWidth).put("height", sourceHeight).toString())
+                    PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width", sourceWidth).put("height", sourceHeight).toString())
+                    demand = JSONObject(PublisherClient.action(2))
                 }
                 val active = demand.optBoolean("active")
                 if (active) {
@@ -117,7 +121,7 @@ class ProjectionService : Service() {
                     }
                     val supported = selection ?: error("No hardware HEVC encoder supports this resolution, frame rate and bitrate")
                     val width = supported.second.width; val height = supported.second.height
-                    val key = "$width:$height:$fps:$bitrate"
+                    val key = "$width:$height:$fps:$bitrate:${demand.optLong("epoch")}"
                     if (codec == null || key != formatKey) {
                         display.surface = null
                         codec?.let { runCatching { it.stop() }; it.release() }; codec = null
@@ -137,6 +141,7 @@ class ProjectionService : Service() {
                         candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                         surface = candidate.createInputSurface(); candidate.start()
                         display.resize(width, height, density); display.surface = surface
+                        frameEpoch = demand.getLong("epoch")
                         formatKey = key; codecHeader = ByteArray(0); keyframe = -1
                     }
                     val encoder = checkNotNull(codec)
@@ -156,7 +161,7 @@ class ProjectionService : Service() {
                                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) codecHeader = bytes
                                     else {
                                         val payload = if (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) codecHeader + bytes else bytes
-                                        PublisherClient.nativeFrame(payload, info.presentationTimeUs)
+                                        if (!PublisherClient.nativeFrame(PublisherClient.SCREEN_SOURCE,frameEpoch,payload,info.presentationTimeUs)) nextDemand=0
                                     }
                                 }
                             } finally { encoder.releaseOutputBuffer(index, false) }
@@ -167,7 +172,7 @@ class ProjectionService : Service() {
                     surface?.release(); surface = null
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")
-                if (wantsAudio && !audioRunning.get()) startAudio(capture)
+                if (wantsAudio && !audioRunning.get()) startAudio(capture,captureGrant)
                 if (!wantsAudio && audioRunning.get()) stopAudio()
                 Thread.sleep(if (active) 4 else 100)
             }
@@ -185,7 +190,7 @@ class ProjectionService : Service() {
     }
 
     @Suppress("MissingPermission")
-    private fun startAudio(capture: MediaProjection) {
+    private fun startAudio(capture: MediaProjection, grant: Long) {
         if (Build.VERSION.SDK_INT < 29) return
         audioRunning.set(true)
         audioWorker = Thread({
@@ -204,7 +209,7 @@ class ProjectionService : Service() {
                 while (audioRunning.get() && running.get()) {
                     val count = record.read(samples, filled, samples.size - filled, AudioRecord.READ_BLOCKING)
                     check(count >= 0) { "Audio capture failed: $count" }; filled += count
-                    if (filled == samples.size) { check(PublisherClient.nativePcm(samples)) { "Opus encoder failed" }; filled = 0 }
+                    if (filled == samples.size) { check(PublisherClient.nativePcm(grant,samples)) { "Audio source ended or Opus encoder failed" }; filled = 0 }
                 }
             } catch (e: Exception) {
                 if (audioRunning.get()) { audioAllowed = false; PublisherClient.status("Sharing video · ${e.message}") }
