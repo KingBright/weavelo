@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+import os
 
 typealias FrameCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt32, UInt32) -> Void
 
@@ -42,14 +43,34 @@ func cameraRequestAccess(_ context: UnsafeMutableRawPointer?,
 private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let context: UnsafeMutableRawPointer?
     let callback: FrameCallback
+    var frameCount: UInt64 = 0
+    var lateFrames: UInt64 = 0
+    var firstPTS: Double = 0
+    var lastPTS: Double = 0
     init(_ context: UnsafeMutableRawPointer?, _ callback: @escaping FrameCallback) {
         self.context = context; self.callback = callback
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sample: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard CMSampleBufferDataIsReady(sample), let image = CMSampleBufferGetImageBuffer(sample) else { return }
+        let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+        if pts.isFinite {
+            if frameCount == 0 { firstPTS = pts }
+            lastPTS = pts
+        }
+        frameCount += 1
         // Transfer one retained CMSampleBuffer; the CVPixelBuffer never becomes CPU pixels.
         callback(context, Unmanaged.passRetained(sample).toOpaque(),
                  UInt32(CVPixelBufferGetWidth(image)), UInt32(CVPixelBufferGetHeight(image)))
+    }
+    func captureOutput(_ output: AVCaptureOutput, didDrop sample: CMSampleBuffer, from connection: AVCaptureConnection) {
+        lateFrames += 1
+    }
+    // Called only after this delegate is detached and its frame queue drained.
+    func recordStop() {
+        let duration = lastPTS-firstPTS
+        let fps = duration > 0 ? Double(frameCount > 0 ? frameCount-1 : 0)/duration : 0
+        Logger(subsystem: "fun.hackerlife.weavelo", category: "camera").notice(
+            "Native capture ended: frames=\(self.frameCount, privacy: .public) fps=\(fps, privacy: .public) late_frames=\(self.lateFrames, privacy: .public)")
     }
 }
 
@@ -148,6 +169,7 @@ private final class CameraSession {
         session?.stopRunning()
         output?.setSampleBufferDelegate(nil, queue: nil)
         frames.sync {}
+        delegate?.recordStop()
         lockedDevice?.unlockForConfiguration(); lockedDevice = nil
         // Release native resources before acknowledging teardown to Rust.
         delegate = nil; output = nil; session = nil
