@@ -491,7 +491,9 @@ private fun SourceIcon(source: WorkspaceSource) {
 private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
     var query by remember { mutableStateOf("") }
     val matches = remember(sources, query) {
-        sources.filter { it.title.contains(query, true) || it.application.contains(query, true) }.sortedBy { it.isWindow }
+        val hasDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
+        sources.filter { !(hasDisplay && it.source == "MainDisplay") }
+            .filter { it.title.contains(query, true) || it.application.contains(query, true) }.sortedBy { it.isWindow }
     }
     AlertDialog(onDismissRequest = onClose,
         modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(.9f),
