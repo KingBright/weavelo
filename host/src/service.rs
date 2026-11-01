@@ -1271,8 +1271,8 @@ impl Connection {
         let capture_reservation = Arc::new(WindowsVideoCaptureReservation::acquire()?);
         #[cfg(target_os = "windows")]
         let task_reservation = capture_reservation.clone();
-        let wants_audio_group = request.audio
-            || (legacy && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE"));
+        let wants_audio_group = !matches!(request.source,CaptureSource::Camera(_))
+            && (request.audio || (legacy && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE")));
         let audio_key = if wants_audio_group {
             Some(
                 selected

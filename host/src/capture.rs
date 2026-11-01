@@ -61,6 +61,8 @@ impl SCStreamOutputTrait for StreamOutput {
 pub struct MacVideoCapturer {
     slot: Arc<remote_core::LatestFrameSlot<MacVideoFrame>>,
     stream: Option<SCStream>,
+    camera: Option<crate::cameras::CameraHandle>,
+    camera_started: bool,
     stream_running: bool,
     pending_stop: Option<crate::lifecycle::NativeStopReceipt>,
     resources: Option<Arc<crate::lifecycle::Resources>>,
@@ -79,6 +81,8 @@ impl MacVideoCapturer {
         Self {
             slot: Arc::new(remote_core::LatestFrameSlot::new()),
             stream: None,
+            camera: None,
+            camera_started: false,
             stream_running: false,
             pending_stop: None,
             resources: None,
@@ -102,6 +106,12 @@ impl MacVideoCapturer {
         self
     }
     fn stop_owned_stream(&mut self) {
+        self.camera_started=false;
+        if let Some(camera)=self.camera.take() {
+            let (receipt,completion)=crate::lifecycle::NativeStopCompletion::new(self.resources.clone());
+            self.pending_stop=Some(receipt);
+            camera.stop_owned(completion);
+        }
         if let Some(stream) = self.stream.take() {
             let (receipt, completion) =
                 crate::lifecycle::NativeStopCompletion::new(self.resources.clone());
@@ -111,6 +121,16 @@ impl MacVideoCapturer {
                 completion.complete(result.map_err(|error| error.to_string()))
             });
         }
+    }
+    fn start_camera(&mut self)->Result<(),Box<dyn Error+Send+Sync>> {
+        drop(self.slot.take());
+        self.minimum_capture_ts_us=remote_core::timing::quanta_now_us();
+        self.camera=Some(crate::cameras::CameraHandle::start(self.source,self.target_width,self.target_height,self.target_fps,self.slot.clone())?);
+        self.camera_started=true;
+        if let Some(resources)=&self.resources {
+            resources.native_streams.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(())
     }
     async fn await_owned_stop(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         if let Some(receipt) = &self.pending_stop {
@@ -156,6 +176,11 @@ impl MacVideoCapturer {
         self.target_height = height;
         self.target_fps = fps;
         self.pacer.reset(fps);
+        if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
+            let started=self.camera_started;
+            self.stop_owned_stream();self.camera_started=started;
+            return Ok(());
+        }
         if let Some(stream) = &self.stream {
             stream.update_configuration(&self.configuration(self.source_size))?;
         }
@@ -166,6 +191,10 @@ impl MacVideoCapturer {
             return Ok(());
         }
         self.geometry_checked = std::time::Instant::now();
+        if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
+            return if self.camera.as_ref().is_some_and(|camera|camera.is_running()) {Ok(())}
+                else {Err("Camera stopped or its permission was revoked".into())};
+        }
         let (_, size) = crate::capture_sources::filter(self.source)?;
         if size != self.source_size {
             self.source_size = size;
@@ -183,6 +212,9 @@ impl VideoCapturer for MacVideoCapturer {
 
     async fn start(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.await_owned_stop().await?;
+        if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
+            return self.start_camera();
+        }
         let (filter, size) = crate::capture_sources::filter(self.source)?;
         self.source_size = size;
         let config = self.configuration(size);
@@ -209,13 +241,20 @@ impl VideoCapturer for MacVideoCapturer {
     }
 
     async fn pause(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if matches!(self.source,protocol::session::CaptureSource::Camera(_)) && self.camera_started {
+            self.stop_owned_stream();self.camera_started=true;
+        }
         self.minimum_capture_ts_us = u64::MAX;
         drop(self.slot.take());
         Ok(())
     }
 
     async fn resume(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if self.stream.is_none() { return Err("capture owner has ended".into()); }
+        if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
+            if !self.camera_started {return Err("capture owner has ended".into());}
+            self.await_owned_stop().await?;
+            if self.camera.is_none(){self.start_camera()?;}
+        } else if self.stream.is_none() { return Err("capture owner has ended".into()); }
         self.minimum_capture_ts_us = remote_core::timing::quanta_now_us();
         drop(self.slot.take());
         self.pacer.reset(self.target_fps);
@@ -223,6 +262,10 @@ impl VideoCapturer for MacVideoCapturer {
     }
 
     async fn capture_frame(&mut self) -> Result<Self::Frame, Box<dyn Error + Send + Sync>> {
+        if matches!(self.source,protocol::session::CaptureSource::Camera(_)) && self.camera.is_none() {
+            if !self.camera_started {return Err("capture owner has ended".into());}
+            self.await_owned_stop().await?;self.start_camera()?;
+        }
         loop {
             self.refresh_geometry()?;
             match tokio::time::timeout(
@@ -236,7 +279,7 @@ impl VideoCapturer for MacVideoCapturer {
                 Ok(_) => continue,
                 Err(_) => {
                     // Check if stream is still active
-                    if self.stream.is_none() {
+                    if self.stream.is_none() && self.camera.is_none() {
                         return Err("Capture stream stopped".into());
                     }
                 }

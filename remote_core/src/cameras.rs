@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 pub const MAX_CAMERAS: usize = 32;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeCamera {
     pub key: String,
     pub name: String,

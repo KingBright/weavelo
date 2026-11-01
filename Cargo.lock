@@ -3164,6 +3164,7 @@ dependencies = [
  "remote_platform",
  "screencapturekit 1.5.4",
  "serde",
+ "serde_json",
  "tokio",
  "video-toolbox-sys",
  "windows 0.61.3",

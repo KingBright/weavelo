@@ -8,6 +8,7 @@ mod capture;
 #[cfg(target_os = "windows")]
 mod capture_readiness;
 pub mod capture_sources;
+pub mod cameras;
 mod source_catalog;
 mod source_artwork;
 mod connection_services;
@@ -1089,7 +1090,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     } = initial;
 
     #[cfg(target_os = "macos")]
-    let _display_power = display_power::DisplayPowerGuard::activate();
+    let _display_power = (!matches!(source,protocol::session::CaptureSource::Camera(_)))
+        .then(display_power::DisplayPowerGuard::activate);
 
     // 2. Setup A/V Pipeline
     #[cfg(target_os = "macos")]

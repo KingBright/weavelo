@@ -68,6 +68,7 @@ pub(crate) struct Status {
     pub screen: Access,
     pub control: Access,
     pub microphone: Access,
+    pub camera: Access,
 }
 
 pub(crate) fn inspect() -> Status {
@@ -95,6 +96,7 @@ pub(crate) fn inspect() -> Status {
             screen: checked(unsafe { CGPreflightScreenCaptureAccess() }),
             control: checked(unsafe { AXIsProcessTrusted() && CGPreflightPostEventAccess() }),
             microphone: microphone_access(),
+            camera: if host::cameras::access()==3 {Access::Allowed}else{Access::NeedsReview},
         }
     }
     #[cfg(target_os = "linux")]
@@ -103,6 +105,7 @@ pub(crate) fn inspect() -> Status {
             screen: Access::SelectSource,
             control: Access::SelectSource,
             microphone: Access::OnUse,
+            camera: Access::OnUse,
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -111,6 +114,7 @@ pub(crate) fn inspect() -> Status {
             screen: Access::SystemManaged,
             control: Access::SystemManaged,
             microphone: Access::SystemManaged,
+            camera: Access::SystemManaged,
         }
     }
 }
@@ -143,6 +147,7 @@ pub(crate) enum Setting {
     Screen,
     Control,
     Microphone,
+    Camera,
 }
 
 pub(crate) fn settings_uri(setting: Setting) -> Option<&'static str> {
@@ -158,12 +163,14 @@ pub(crate) fn settings_uri(setting: Setting) -> Option<&'static str> {
             Setting::Microphone => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
             }
+            Setting::Camera => "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
         })
     }
     #[cfg(target_os = "windows")]
     {
         match setting {
             Setting::Microphone => Some("ms-settings:privacy-microphone"),
+            Setting::Camera => Some("ms-settings:privacy-webcam"),
             // The existing Win32 desktop capture/SendInput adapters do not use
             // GraphicsCapture consent or an Accessibility permission switch.
             Setting::Screen | Setting::Control => None,

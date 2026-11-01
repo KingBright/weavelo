@@ -3845,6 +3845,25 @@ fn drawer_devices_tab(
 }
 
 impl RestoredDashboard {
+    #[cfg(target_os="macos")]
+    fn request_local_camera_permission(&mut self,cx:&mut Context<Self>) {
+        if self.checking_permissions{return;}
+        self.checking_permissions=true;
+        self.status="Waiting for camera permission on this Mac".into();
+        let work=tokio::spawn(host::cameras::request_access());
+        cx.spawn(async move|view,cx| {
+            let result=work.await.unwrap_or_else(|error|Err(error.to_string()));
+            let _=view.update(cx,|this,cx| {
+                this.checking_permissions=false;
+                this.status=match result {
+                    Ok(true)=>"Camera permission allowed".into(),
+                    Ok(false)=>"Camera permission was not allowed; review Camera in system settings".into(),
+                    Err(error)=>error,
+                };
+                this.refresh_local_permissions(cx);cx.notify();
+            });
+        }).detach();cx.notify();
+    }
     fn refresh_local_permissions(&mut self, cx: &mut Context<Self>) {
         if self.checking_permissions { return; }
         self.checking_permissions=true;
@@ -4176,11 +4195,20 @@ fn local_permissions_panel(status:Option<Result<crate::sharing_permissions::Stat
         ("permission-screen","Screen & windows",Setting::Screen,status.as_ref().map(|s|s.screen)),
         ("permission-control","Remote control",Setting::Control,status.as_ref().map(|s|s.control)),
         ("permission-audio","Microphone",Setting::Microphone,status.as_ref().map(|s|s.microphone)),
+        ("permission-camera","Camera",Setting::Camera,status.as_ref().map(|s|s.camera)),
     ] {
         let row=div().flex().items_center().justify_between().gap_2().text_size(px(11.0))
             .child(div().flex_1().child(label))
             .child(div().text_color(cx.theme().content.secondary)
                 .child(access.map(Access::label).unwrap_or(if checking {"Checking…"} else {"Unchecked"})));
+        #[cfg(target_os="macos")]
+        if matches!(setting,Setting::Camera) && host::cameras::access()==0 {
+            let view=cx.weak_entity();
+            panel=panel.child(row.child(command_button(id,ActionVariantKind::Neutral,cx)
+                .h(px(26.0)).text_size(px(10.0)).disabled(checking).child("Allow camera")
+                .on_click(move|_,_,cx|{let _=view.update(cx,|this,cx|this.request_local_camera_permission(cx));})));
+            continue;
+        }
         let row=if let Some(uri)=crate::sharing_permissions::settings_uri(setting) {
             row.child(command_button(id,ActionVariantKind::Neutral,cx).h(px(26.0)).text_size(px(10.0))
                 .child("Open settings").on_click(move |_,_,cx|cx.open_url(uri)))

@@ -101,6 +101,22 @@ fn accessible_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
 }
 
 pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
+    let screens=list_screens();
+    #[cfg(target_os="macos")]
+    {
+        let cameras=crate::cameras::list();
+        return match (screens,cameras) {
+            (Ok(mut screens),Ok(cameras))=>{screens.extend(cameras);Ok(screens)},
+            (Err(_),Ok(cameras)) if !cameras.is_empty()=>Ok(cameras),
+            (Ok(screens),Err(_))=>Ok(screens),
+            (Err(error),_)=>Err(error),
+        };
+    }
+    #[cfg(not(target_os="macos"))]
+    screens
+}
+
+fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
     #[cfg(target_os = "windows")]
     {
         crate::capture_readiness::ffmpeg_program()?;
