@@ -1265,7 +1265,7 @@ async fn initial_open(
             }
         }
     }
-    Err("peer did not accept a version 2 connection; update the peer".into())
+    Err(format!("Peer did not acknowledge session version {SESSION_VERSION}"))
 }
 
 #[cfg(test)]
