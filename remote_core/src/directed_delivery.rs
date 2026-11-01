@@ -204,8 +204,12 @@ struct IncomingState {
     expires: Instant,
     state: DeliveryState,
     reason: String,
+    stage: &'static str,
 }
 impl Incoming {
+    pub fn mark_receiver_stage(&self, stage: &'static str) {
+        self.inner.lock().unwrap().stage=stage;
+    }
     pub fn snapshot(&self) -> (u64, Instant, DeliveryState) {
         let s = self.inner.lock().unwrap();
         (s.revision, s.expires, s.state)
@@ -284,6 +288,17 @@ impl Broker {
     pub fn upgrade_busy(&self) -> bool {
         let state=self.state.lock().unwrap();
         !state.tickets.is_empty() || state.incoming.values().any(|offer|offer.alive())
+    }
+    /// Scalar same-user diagnostics. Tickets and private source paths stay private.
+    pub fn diagnostics(&self) -> serde_json::Value {
+        let state=self.state.lock().unwrap();
+        let incoming=state.incoming.values().map(|offer| {
+            let current=offer.inner.lock().unwrap();
+            serde_json::json!({"connection":offer.peer.connection,"request":offer.request,"revision":current.revision,
+                "state":current.state,"stage":current.stage,"reason":current.reason,
+                "remaining_ms":current.expires.saturating_duration_since(Instant::now()).as_millis()})
+        }).collect::<Vec<_>>();
+        serde_json::json!({"incoming":incoming,"outgoing_tickets":state.tickets.len()})
     }
     pub fn set_identity(&self, id: String) {
         self.state.lock().unwrap().identity = Some(id);
@@ -402,6 +417,7 @@ impl Broker {
                 expires: Instant::now() + LEASE,
                 state: DeliveryState::Pending,
                 reason: String::new(),
+                stage:"queued",
             }),
         });
         if self.tx.try_send(offer.clone()).is_err() {

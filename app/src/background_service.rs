@@ -42,6 +42,7 @@ struct Snapshot {
     peers: DiscoveryPeerSnapshot,
     pairing: MeshPairingSnapshot,
     outgoing_streams: usize,
+    delivery:serde_json::Value,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -351,7 +352,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::CaptureSources{..}|Request::Sharing{..}|Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
-    Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing, outgoing_streams: host::lifecycle::active_video_streams() })
+    Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing, outgoing_streams: host::lifecycle::active_video_streams(), delivery:runtime.owner.delivery.diagnostics() })
 }
 
 fn answer_negotiation(expected: String, hash: String, offer: Offer, generation: String, executable_sha256: String) -> Response {
@@ -864,6 +865,7 @@ mod service_contract_tests {
             executable_sha256: "fixture-trusted-hash".into(),
             pid: 123,
             outgoing_streams: 0,
+            delivery:serde_json::json!({"incoming":[],"outgoing_tickets":0}),
             peers: DiscoveryPeerSnapshot::default(),
             pairing: MeshPairingSnapshot {
                 network_name: "fixture".into(),

@@ -69,6 +69,7 @@ pub(crate) async fn receive_worker(
     mut rx: tokio::sync::mpsc::Receiver<Arc<Incoming>>,
 ) {
     while let Some(offer) = rx.recv().await {
+        offer.mark_receiver_stage("worker_received");
         let _end = EndOffer(offer.clone());
         if !offer.alive() {
             continue;
@@ -85,6 +86,7 @@ async fn receive(
     offer: &Arc<Incoming>,
 ) -> Result<(), Error> {
     let directory = if owner_mode == crate::background_service::OwnerMode::Background { profile.join("gui-state") } else { profile.to_owned() };
+    offer.mark_receiver_stage("reading_gui_status");
     let mut status = ipc(directory.clone(), Request::Status).await;
     if status.is_err() {
         // Only absence permits activation. Ownership/permissions and version
@@ -119,6 +121,7 @@ async fn receive(
         }
     }
     let status = status?;
+    offer.mark_receiver_stage("checking_gui_identity");
     if status["ok"] != true
         || status["executable_sha256"].as_str() != Some(hash)
         || status["renderer"].as_str() != Some(crate::gui_backend::ORIGINAL_RENDERER)
@@ -148,6 +151,7 @@ async fn receive(
     if lease_ms < 1_000 {
         return Err("Sending intent expired".into());
     }
+    offer.mark_receiver_stage("opening_receiving_window");
     let response = ipc(
         directory.clone(),
         Request::Receive {
@@ -179,6 +183,7 @@ async fn receive(
             return Err("Sending intent ended during GUI activation".into());
         }
         offer.finish(DeliveryState::Accepted, "");
+        offer.mark_receiver_stage("waiting_for_frame");
         let mut first_frame = FirstFrameDeadline::new(Instant::now());
         let mut applied = 1;
         while offer.alive() {
