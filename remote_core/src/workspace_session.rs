@@ -69,6 +69,62 @@ enum Command {
     Clipboard(Option<Arc<dyn EnvelopeIngress>>),
 }
 
+#[cfg(test)]
+mod peer_health_tests {
+    use super::*;
+    use crate::net::{MultiplexedPacket, UdpMultiplexer};
+    use protocol::{ControlMessage, session::{CaptureSource, DeliveryState}};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    #[tokio::test]
+    async fn session_and_telemetry_traffic_remain_live_without_clock_replies() {
+        assert!(crate::session_crypto::load_session_psk().is_none());
+        let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target = server.local_addr().unwrap();
+        let (sender, receiver) = server.split();
+        let telemetry = Arc::new(AtomicBool::new(false));
+        let replies = Arc::new(AtomicU32::new(0));
+        let mode = telemetry.clone();
+        let count = replies.clone();
+        let peer = tokio::spawn(async move {
+            loop {
+                let MultiplexedPacket::Control(ControlMessage::Session(command), addr) = receiver.recv().await.unwrap() else {continue;};
+                let reply = match *command {
+                    SessionCommand::Open {connection_id, version} => ControlMessage::Session(Box::new(
+                        SessionCommand::Opened {connection_id, version, max_subscriptions:8,
+                            files:false, clipboard:false, window_capture:false})),
+                    SessionCommand::DeliveryOffer {request_id, revision, ..} => {
+                        count.fetch_add(1, Ordering::Relaxed);
+                        if mode.load(Ordering::Relaxed) {
+                            ControlMessage::HostTelemetry {fps:30.0, encode_latency_ms:1.0, jitter_ms:0.0, bitrate_kbps:1000}
+                        } else {ControlMessage::Session(Box::new(SessionCommand::DeliveryReceipt {
+                            request_id, revision, state:DeliveryState::Receiving, reason:String::new()}))}
+                    }
+                    _ => continue,
+                };
+                sender.send_control(&reply, addr).await.unwrap();
+            }
+        });
+        let (connection, _events) = WorkspaceConnection::connect_media(target).await.unwrap();
+        let mut revision = 0;
+        for telemetry_only in [false, true] {
+            telemetry.store(telemetry_only, Ordering::Relaxed);
+            let until = Instant::now() + Duration::from_millis(6_300);
+            while Instant::now() < until {
+                revision += 1;
+                connection.control(SessionCommand::DeliveryOffer {request_id:1, revision,
+                    source_device_id:"source".into(), target_device_id:"target".into(), ticket:[3;32],
+                    sources:vec![CaptureSource::MainDisplay]}).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(replies.load(Ordering::Relaxed) >= 10);
+            assert!(connection.peer_is_responsive(), "valid current-peer traffic was ignored; telemetry={telemetry_only}");
+        }
+        connection.close().await;
+        peer.abort();
+    }
+}
+
 pub struct WorkspaceEvents {
     pub control: mpsc::UnboundedReceiver<SessionCommand>,
     pub audio: mpsc::Receiver<AudioIngressEvent>,
@@ -975,6 +1031,10 @@ impl Actor {
             reason: confirmation_timeout_reason(key.0).into(),
         });
     }
+    fn note_peer_response(&self, last_response: &mut Instant) {
+        *last_response = Instant::now();
+        self.last_response_tx.send_replace(*last_response);
+    }
     async fn run(&mut self, mut cancel: broadcast::Receiver<()>) {
         let mut last_pong = Instant::now();
         let mut rejected_count = 0u64;
@@ -1088,6 +1148,7 @@ impl Actor {
                 packet = self.receiver.recv() => {
                     match packet {
                         Ok(MultiplexedPacket::Control(ControlMessage::Session(command), addr)) if addr == self.target => {
+                            self.note_peer_response(&mut last_pong);
                             let command = *command;
                             match &command {
                                 SessionCommand::TextCommitted{binding,request_id} => {
@@ -1128,19 +1189,21 @@ impl Actor {
                         }
                         Ok(MultiplexedPacket::ClockReply(reply,received_us,addr)) if addr==self.target => {
                             // Liveness follows authenticated session traffic, never clock fit quality.
-                            last_pong=Instant::now();self.last_response_tx.send_replace(last_pong);
+                            self.note_peer_response(&mut last_pong);
                             if clock.complete_probe(reply.probe.probe_id,reply.probe.client_send_us,reply.host_recv_us,reply.host_send_us,received_us).is_ok(){
                                 let estimate=clock.estimate(received_us);
                                 for view in self.subscriptions.values_mut(){view.handler.update_clock_estimate(estimate.clone());}
                             }
                         },
                         Ok(MultiplexedPacket::Control(ControlMessage::Pong { .. }, addr)) if addr==self.target && self.sender.peer_session_id(self.target).is_none()=>{
-                            last_pong=Instant::now();self.last_response_tx.send_replace(last_pong);
+                            self.note_peer_response(&mut last_pong);
                         },
                         Ok(MultiplexedPacket::Control(ControlMessage::HostTelemetry { fps, encode_latency_ms, jitter_ms, bitrate_kbps }, addr)) if addr == self.target => {
+                            self.note_peer_response(&mut last_pong);
                             for view in self.subscriptions.values() { view.host_stats.apply_host_telemetry(fps,encode_latency_ms,jitter_ms,bitrate_kbps); }
                         },
                         Ok(MultiplexedPacket::Control(ControlMessage::PipelineTelemetry(report), addr)) if addr == self.target => {
+                            self.note_peer_response(&mut last_pong);
                             for view in self.subscriptions.values() { view.host_stats.set_pipeline_report((*report).clone()); }
                         },
                         Ok(MultiplexedPacket::Data(envelope, addr)) if addr == self.target => self.envelope(envelope).await,

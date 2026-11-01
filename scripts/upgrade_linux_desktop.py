@@ -260,7 +260,9 @@ class Native:
         return found
     def query(self,*args):
         r=subprocess.run([str(self.exe),*args],env=self.env,capture_output=True,text=True,timeout=20)
-        require(r.returncode==0,'Product command rejected or outcome unknown; inspect original state, do not replay')
+        detail=r.stderr.strip()[-1000:]
+        require(r.returncode==0,'Product command rejected or outcome unknown; inspect original state, do not replay'
+                +(f': {detail}' if detail else ''))
         return json.loads(r.stdout)
     def observe(self,sha):
         pids=self.owners(sha);config=self.configuration()
