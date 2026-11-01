@@ -1,7 +1,7 @@
 use crate::{capture::MacVideoFrame, lifecycle::NativeStopCompletion};
 use protocol::session::{CaptureSource, CaptureSourceInfo};
 use remote_core::{cameras::{CameraRegistry, NativeCamera}, LatestFrameSlot};
-use std::{ffi::{c_char,c_void,CStr,CString},ptr::NonNull,sync::{Arc,Mutex,OnceLock}};
+use std::{ffi::{c_char,c_void,CStr,CString},ptr::NonNull,sync::{Arc,Mutex,OnceLock,atomic::{AtomicU64,Ordering}}};
 
 type FrameCallback=extern "C" fn(*mut c_void,*mut c_void,u32,u32);
 unsafe extern "C" {
@@ -40,23 +40,36 @@ pub async fn request_access()->Result<bool,String> {
 }
 pub(crate) struct CameraHandle {
     native:Option<NonNull<c_void>>,
+    frames:Arc<CameraFrames>,
+}
+struct CameraFrames {
     slot:Arc<LatestFrameSlot<MacVideoFrame>>,
+    count:AtomicU64,
+    first:AtomicU64,
+    last:AtomicU64,
 }
 // Only owned calls move between worker threads. AVFoundation owns its serial callback/stop queues.
 unsafe impl Send for CameraHandle {}
 extern "C" fn frame(context:*mut c_void,sample:*mut c_void,width:u32,height:u32) {
     let Some(sample_buffer)=screencapturekit::cm::CMSampleBuffer::from_raw(sample) else{return;};
-    let slot=unsafe{&*context.cast::<LatestFrameSlot<MacVideoFrame>>()};
+    let frames=unsafe{&*context.cast::<CameraFrames>()};
     let capture_ts=remote_core::timing::quanta_now_us();
+    if frames.count.fetch_add(1,Ordering::Relaxed)==0 {frames.first.store(capture_ts,Ordering::Relaxed);}
+    frames.last.store(capture_ts,Ordering::Relaxed);
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u32;
-    slot.push(MacVideoFrame {width,height,sample_buffer,capture_time_ms:now,timing:protocol::FrameTimingCheckpoints::new(capture_ts)});
+    frames.slot.push(MacVideoFrame {width,height,sample_buffer,capture_time_ms:now,timing:protocol::FrameTimingCheckpoints::new(capture_ts)});
 }
 struct StopContext {
-    _slot:Arc<LatestFrameSlot<MacVideoFrame>>,
+    frames:Arc<CameraFrames>,
     completion:Option<NativeStopCompletion>,
 }
 extern "C" fn stopped(context:*mut c_void) {
     let mut context=unsafe{Box::from_raw(context.cast::<StopContext>())};
+    let frames=&context.frames;
+    let count=frames.count.load(Ordering::Relaxed);
+    let elapsed=frames.last.load(Ordering::Relaxed).saturating_sub(frames.first.load(Ordering::Relaxed));
+    let fps=if elapsed>0 {count.saturating_sub(1) as f64*1_000_000./elapsed as f64} else {0.};
+    eprintln!("Camera native capture completed: frames={count} fps={fps:.2} elapsed_ms={}",elapsed/1000);
     if let Some(done)=context.completion.take(){done.complete(Ok(()));}
 }
 impl CameraHandle {
@@ -68,15 +81,16 @@ impl CameraHandle {
         let camera=registry().lock().unwrap_or_else(|e|e.into_inner()).resolve(source).cloned().ok_or("The selected camera is no longer available")?;
         let key=CString::new(camera.key).map_err(|_|"Invalid native camera identity")?;
         let mut error=std::ptr::null_mut();
-        let raw=unsafe{weavelo_camera_start(key.as_ptr(),width,height,fps,Arc::as_ptr(&slot).cast_mut().cast(),frame,&mut error)};
+        let frames=Arc::new(CameraFrames{slot,count:AtomicU64::new(0),first:AtomicU64::new(0),last:AtomicU64::new(0)});
+        let raw=unsafe{weavelo_camera_start(key.as_ptr(),width,height,fps,Arc::as_ptr(&frames).cast_mut().cast(),frame,&mut error)};
         match NonNull::new(raw) {
-            Some(native)=>Ok(Self{native:Some(native),slot}),
+            Some(native)=>Ok(Self{native:Some(native),frames}),
             None=>Err(unsafe{owned_string(error)}.unwrap_or_else(|_|"Native camera failed to start".into())),
         }
     }
     fn stop(&mut self,completion:Option<NativeStopCompletion>) {
         let Some(native)=self.native.take() else{return;};
-        let context=Box::into_raw(Box::new(StopContext{_slot:self.slot.clone(),completion}));
+        let context=Box::into_raw(Box::new(StopContext{frames:self.frames.clone(),completion}));
         unsafe{weavelo_camera_stop(native.as_ptr(),context.cast(),stopped)};
     }
     pub(crate) fn stop_owned(mut self,completion:NativeStopCompletion) {self.stop(Some(completion));}

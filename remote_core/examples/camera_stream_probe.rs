@@ -30,7 +30,10 @@ async fn capture(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, sourc
     let mut sequence=None;
     let mut frames=0u64;
     let mut bytes=0u64;
-    let timeout=tokio::time::sleep(Duration::from_secs(15));tokio::pin!(timeout);
+    let mut capture_times=Vec::new();
+    let mut arrival_times=Vec::new();
+    let mut encode_costs=Vec::new();
+    let timeout=tokio::time::sleep(Duration::from_secs(20));tokio::pin!(timeout);
     loop {
         tokio::select! {
             _=&mut timeout=>return Err("Camera did not deliver a bounded HEVC stream".into()),
@@ -41,19 +44,35 @@ async fn capture(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, sourc
                 _=>{},
             },
             packet=video.recv()=>{
-                let (packet,_,_)=packet.ok_or("Camera video route closed")?;
+                let (packet,timing,_)=packet.ok_or("Camera video route closed")?;
                 if packet.header.ssrc!=id {return Err("Video crossed a subscription boundary".into());}
                 first.get_or_insert_with(Instant::now);frames+=1;bytes+=packet.payload.len() as u64;
+                if capture_times.len()<4096 {
+                    if timing.capture_ts_us!=0 {capture_times.push(timing.capture_ts_us);}
+                    arrival_times.push(first.unwrap().elapsed().as_micros() as u64);
+                    if timing.encode_done_ts_us>timing.encode_queue_ts_us {
+                        encode_costs.push(u64::from(timing.encode_done_ts_us-timing.encode_queue_ts_us));
+                    }
+                }
                 if sequence.is_none() {sequence=remote_core::hevc_sequence::sequence_info(&packet.payload)?;}
-                if first.unwrap().elapsed()>=Duration::from_secs(3) {break;}
+                if first.unwrap().elapsed()>=Duration::from_secs(10) {break;}
             }
         }
     }
     let sequence=sequence.ok_or("Camera did not supply its HEVC sequence header")?;
     let duration=first.unwrap().elapsed().as_secs_f64();
+    fn percentiles(mut values:Vec<u64>)->serde_json::Value {
+        values.sort_unstable();
+        let percentile=|p:usize|values.get((values.len().saturating_sub(1)*p)/100).copied().unwrap_or(0) as f64/1000.;
+        serde_json::json!({"p50":percentile(50),"p95":percentile(95),"p99":percentile(99)})
+    }
+    let intervals=|times:&[u64]|times.windows(2).filter_map(|pair|pair[1].checked_sub(pair[0])).collect();
     Ok(serde_json::json!({"source":source.source,"name":source.title,"camera":source.camera,
         "first_encoded_ms":first.unwrap().duration_since(start).as_secs_f64()*1000.,
         "frames":frames,"bytes":bytes,"fps":(frames.saturating_sub(1)) as f64/duration,
+        "encoded_capture_interval_ms":percentiles(intervals(&capture_times)),
+        "capture_timing_samples":capture_times.len(),"encode_timing_samples":encode_costs.len(),
+        "arrival_interval_ms":percentiles(intervals(&arrival_times)),"encode_ms":percentiles(encode_costs),
         "coded":sequence.coded,"visible":sequence.visible,"bit_depth":sequence.bit_depth,
         "signal":sequence.signal.map(|s|serde_json::json!({"full_range":s.full_range,"primaries":s.primaries,"transfer":s.transfer,"matrix":s.matrix})),
         "presentation":"not_evaluated"}))
