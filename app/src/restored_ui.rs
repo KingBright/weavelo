@@ -879,6 +879,11 @@ impl RestoredDashboard {
                     "last_delivery":self.last_delivery_snapshot(),
                     "stream_activity":self.stream_activity(),
                     "sessions":self.owner.diagnostic_snapshot(),
+                    "ui_windows":cx.windows().into_iter().filter_map(|handle|handle.update(cx,|_,window,_| {
+                        let bounds=window.window_bounds().get_bounds();
+                        serde_json::json!({"title":window.window_title(),"visible":window.is_window_visible(),
+                            "active":window.is_window_active(),"bounds":[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)]})
+                    }).ok()).collect::<Vec<_>>(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
                     })).collect::<Vec<_>>()}),
