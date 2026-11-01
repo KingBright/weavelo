@@ -15,6 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +67,7 @@ fun MobileConsoleScreen(
     onSendFiles: (String, String) -> Unit = { _, _ -> },
     outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState = `fun`.hackerlife.weavelo.OutgoingScreenState(),
     onSendScreen: (String) -> Unit = {},
+    onSendCamera: (String) -> Unit = {},
     onStopSending: (Long) -> Unit = {},
     publishing: Boolean = false,
     receivingFiles: Boolean = false,
@@ -76,6 +78,7 @@ fun MobileConsoleScreen(
     onControlSettings: () -> Unit = {},
     onShareControlledScreen: () -> Unit = {},
     onShareScreen: (Boolean) -> Unit = {},
+    onShareCamera: () -> Unit = {},
     onStopSharing: () -> Unit = {},
     onBrowseFiles: () -> Unit = {},
     onJoinCode: (String) -> Unit = {},
@@ -232,7 +235,7 @@ fun MobileConsoleScreen(
                         onConnectHost = onConnectHost,
                         onConnectWorkspace = onConnectWorkspace,
                         onSendFiles = onSendFiles,
-                        outgoing = outgoing, onSendScreen = onSendScreen, onStopSending = onStopSending
+                        outgoing = outgoing, onSendScreen = onSendScreen, onSendCamera = onSendCamera, onStopSending = onStopSending
                     )
                     "Mesh P2P" -> MeshP2pTabContent(
                         devices = devices,
@@ -252,6 +255,7 @@ fun MobileConsoleScreen(
                         onControlSettings = onControlSettings,
                         onShareControlledScreen = onShareControlledScreen,
                         onShareScreen = onShareScreen,
+                        onShareCamera = onShareCamera,
                         onStopSharing = onStopSharing,
                         onBrowseFiles = onBrowseFiles
                     )
@@ -308,7 +312,8 @@ fun QuickActionButton(text: String, modifier: Modifier = Modifier, enabled: Bool
 @Composable
 fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true,
     canSendFiles: Boolean = false, onSendFiles: () -> Unit = {},
-    canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {}, onConnect: () -> Unit) {
+    canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {},
+    canSendCamera: Boolean = false, onSendCamera: () -> Unit = {}, onConnect: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
         .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(20.dp))
         .clickable(enabled = enabled, onClick = onConnect).padding(14.dp),
@@ -327,6 +332,8 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                 overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
+            MobileAction(MobileSymbol.Camera, "Send camera to $name", canSendCamera,
+                modifier = Modifier.size(44.dp), onClick = onSendCamera)
             MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
                 if (sending) "Stop sending to $name" else "Send this screen to $name", canSendScreen,
                 modifier = Modifier.size(44.dp), onClick = onSendScreen)
@@ -385,6 +392,7 @@ private fun DevicesTabContent(
     onSendFiles: (String, String) -> Unit,
     outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState,
     onSendScreen: (String) -> Unit,
+    onSendCamera: (String) -> Unit,
     onStopSending: (Long) -> Unit
 ) {
     var detailsOpen by remember { mutableStateOf(false) }
@@ -430,6 +438,8 @@ private fun DevicesTabContent(
                     canSendScreen = nativeAvailable && (outgoing.active && outgoing.target == device.id || !outgoing.active && device.canReceiveScreen),
                     sending = outgoing.active && outgoing.target == device.id,
                     onSendScreen = { if (outgoing.active && outgoing.target == device.id) onStopSending(outgoing.id) else onSendScreen(device.id) },
+                    canSendCamera = nativeAvailable && !outgoing.active && device.canReceiveScreen,
+                    onSendCamera = { onSendCamera(device.id) },
                     onSendFiles = { onSendFiles(device.id, device.endpoint) },
                     onConnect = { onConnectWorkspace(device.id, device.endpoint) }
                 )
@@ -729,10 +739,12 @@ private fun SecurityTabContent(
     onControlSettings: () -> Unit,
     onShareControlledScreen: () -> Unit,
     onShareScreen: (Boolean) -> Unit,
+    onShareCamera: () -> Unit,
     onStopSharing: () -> Unit,
     onBrowseFiles: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val camera by `fun`.hackerlife.weavelo.CameraPublisher.state.collectAsState()
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
     var permissionRevision by remember { mutableStateOf(0) }
     var securityDetails by remember { mutableStateOf(false) }
@@ -760,7 +772,7 @@ private fun SecurityTabContent(
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text("Sharing & permissions", color = ColorTextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Text("Choose a screen or app, and set control and audio permissions.",
+            Text("Share a screen, app or camera with your devices.",
                 color = ColorTextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
         }
         item {
@@ -769,6 +781,10 @@ private fun SecurityTabContent(
                 SharingPermissionRow(MobileSymbol.Share, "Screen or app", if (publishing) "Sharing" else "Not sharing",
                     if (publishing) "Stop" else "Share", nativeAvailable) {
                     if (publishing) onStopSharing() else onShareScreen(false)
+                }
+                SharingPermissionRow(MobileSymbol.Camera, "Camera", camera.status,
+                    if (camera.enabled) "Stop" else "Share", nativeAvailable) {
+                    if (camera.enabled) `fun`.hackerlife.weavelo.CameraPublisher.stop(context) else onShareCamera()
                 }
                 SharingPermissionRow(MobileSymbol.Control, "Remote control", if (controlReady) "Allowed" else "Needs permission",
                     if (controlReady) "Settings" else "Allow", nativeAvailable, onControlSettings)

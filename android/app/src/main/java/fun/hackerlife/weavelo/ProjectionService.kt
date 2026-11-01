@@ -8,7 +8,6 @@ import android.media.*
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
-import android.view.Surface
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -64,12 +63,9 @@ class ProjectionService : Service() {
 
     private fun publish(capture: MediaProjection, density: Int) {
         var display: VirtualDisplay? = null
-        var codec: MediaCodec? = null
-        var surface: Surface? = null
+        var codec: SurfaceHevcEncoder? = null
         var sourceSize = 0 to 0
         var formatKey = ""
-        var codecHeader = ByteArray(0)
-        var keyframe = -1L
         var frameEpoch = 0L
         var demand = JSONObject()
         var nextDemand = 0L
@@ -89,13 +85,8 @@ class ProjectionService : Service() {
                     .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true) }
                 sendTarget = null
             }
-            val info = MediaCodec.BufferInfo()
-            val hardwareEncoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter {
-                it.isEncoder && it.supportedTypes.any { type -> type.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, true) } &&
-                    (if (Build.VERSION.SDK_INT >= 29) it.isHardwareAccelerated else !it.name.startsWith("OMX.google.") && !it.name.startsWith("c2.android."))
-            }
             var selectionKey = ""
-            var selection: Pair<MediaCodecInfo, VideoDimensions>? = null
+            var selection: SurfaceHevcEncoder.Plan? = null
             while (running.get()) {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 100
@@ -109,67 +100,27 @@ class ProjectionService : Service() {
                 if (active) {
                     val targetW = demand.optInt("width", 1280); val targetH = demand.optInt("height", 720)
                     val fps = demand.optInt("fps", 30); val bitrate = demand.optInt("bitrate_kbps", 5000)
-                    val bits = Math.multiplyExact(bitrate, 1000)
                     val requested = "$sourceWidth:$sourceHeight:$targetW:$targetH:$fps:$bitrate"
                     if (selectionKey != requested) {
-                        selection = hardwareEncoders.asSequence().mapNotNull { encoderInfo ->
-                            val cap = encoderInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC).videoCapabilities
-                            val size = VideoDimensions.fitEncoder(sourceWidth, sourceHeight, targetW, targetH, cap.widthAlignment, cap.heightAlignment)
-                            if (size != null && cap.areSizeAndRateSupported(size.width, size.height, fps.toDouble()) && cap.bitrateRange.contains(bits)) encoderInfo to size else null
-                        }.firstOrNull()
+                        selection = SurfaceHevcEncoder.fit(sourceWidth, sourceHeight, targetW, targetH, fps, bitrate)
                         selectionKey = requested
                     }
                     val supported = selection ?: error("No hardware HEVC encoder supports this resolution, frame rate and bitrate")
-                    val width = supported.second.width; val height = supported.second.height
-                    val key = "$width:$height:$fps:$bitrate:${demand.optLong("epoch")}"
+                    val key = "$supported:${demand.optLong("epoch")}"
                     if (codec == null || key != formatKey) {
                         display.surface = null
-                        codec?.let { runCatching { it.stop() }; it.release() }; codec = null
-                        surface?.release(); surface = null
-                        val candidate = MediaCodec.createByCodecName(supported.first.name)
+                        codec?.close(); codec = null
+                        val candidate = SurfaceHevcEncoder(supported)
                         codec = candidate
-                        if (Build.VERSION.SDK_INT >= 29) check(candidate.codecInfo.isHardwareAccelerated) { "A hardware HEVC encoder is required" }
-                        val capabilities = candidate.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC).videoCapabilities
-                        check(capabilities.areSizeAndRateSupported(width, height, fps.toDouble())) { "Hardware cannot encode ${width}×${height} at $fps fps" }
-                        check(capabilities.bitrateRange.contains(bits)) { "Bitrate is outside this encoder's supported range" }
-                        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, width, height).apply {
-                            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                            setInteger(MediaFormat.KEY_BIT_RATE, bits); setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2); setInteger(MediaFormat.KEY_PRIORITY, 0)
-                            if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                        }
-                        candidate.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                        surface = candidate.createInputSurface(); candidate.start()
-                        display.resize(width, height, density); display.surface = surface
+                        display.resize(supported.width, supported.height, density); display.surface = candidate.surface
                         frameEpoch = demand.getLong("epoch")
-                        formatKey = key; codecHeader = ByteArray(0); keyframe = -1
+                        formatKey = key
                     }
                     val encoder = checkNotNull(codec)
-                    if (keyframe != demand.optLong("keyframe")) {
-                        keyframe = demand.optLong("keyframe")
-                        encoder.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
-                    }
-                    repeat(8) {
-                        val index = encoder.dequeueOutputBuffer(info, 0)
-                        if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                            encoder.outputFormat.getByteBuffer("csd-0")?.let { buffer -> codecHeader = ByteArray(buffer.remaining()).also { buffer.get(it) } }
-                        } else if (index >= 0) {
-                            try {
-                                if (info.size > 0) {
-                                    val output = checkNotNull(encoder.getOutputBuffer(index)); output.position(info.offset); output.limit(info.offset + info.size)
-                                    val bytes = ByteArray(info.size); output.get(bytes)
-                                    if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) codecHeader = bytes
-                                    else {
-                                        val payload = if (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) codecHeader + bytes else bytes
-                                        if (!PublisherClient.nativeFrame(PublisherClient.SCREEN_SOURCE,frameEpoch,payload,info.presentationTimeUs)) nextDemand=0
-                                    }
-                                }
-                            } finally { encoder.releaseOutputBuffer(index, false) }
-                        }
-                    }
+                    encoder.requestKeyframe(demand.optLong("keyframe"))
+                    if (!encoder.drain { bytes, pts -> PublisherClient.nativeFrame(PublisherClient.SCREEN_SOURCE, frameEpoch, bytes, pts) }) nextDemand = 0
                 } else if (codec != null) {
-                    display.surface = null; runCatching { codec?.stop() }; codec?.release(); codec = null
-                    surface?.release(); surface = null
+                    display.surface = null; codec?.close(); codec = null
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")
                 if (wantsAudio && !audioRunning.get()) startAudio(capture,captureGrant)
@@ -182,7 +133,7 @@ class ProjectionService : Service() {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
             display?.surface = null; display?.release()
-            runCatching { codec?.stop() }; codec?.release(); surface?.release()
+            codec?.close()
             runCatching { PublisherClient.action(1) }
             if (PublisherClient.active) PublisherClient.status("Screen sharing stopped", false)
             stopSelf()

@@ -227,6 +227,13 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 let send:Send=serde_json::from_str(&value).map_err(|error|error.to_string())?;
                 client().runtime().block_on(publisher.send_sources(send.target,send.endpoint,send.sources))?;Ok(String::new())
             }
+            35 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Failure {source:protocol::session::CaptureSource,epoch:u64,reason:String}
+                let failure:Failure=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                if failure.reason.len()>1024{return Err("Camera failure detail is too long".into());}
+                publisher.fail_source(failure.source,failure.epoch,failure.reason);Ok(String::new())
+            }
             11 => {
                 let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
                 Ok(publisher.input_execution_valid(value["generation"].as_u64().ok_or("missing input generation")?,

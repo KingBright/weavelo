@@ -79,12 +79,14 @@ class MainActivity : ComponentActivity() {
             var pairingMessage by remember { mutableStateOf<String?>(null) }
             val publisherStatus by PublisherClient.status.collectAsState()
             val outgoing by PublisherClient.outgoing.collectAsState()
+            val camera by CameraPublisher.state.collectAsState()
+            var cameraTarget by remember { mutableStateOf<String?>(null) }
             val incomingError by DirectedDelivery.error.collectAsState()
             val receiverState by FileReceiverClient.state.collectAsState()
             val controlReady by RemoteControlService.connected.collectAsState()
             fun joinNetwork(raw: String) {
                 if (joiningNetwork) return
-                if (WorkspaceClient.active || PublisherClient.active || FileReceiverClient.ownsNetwork ||
+                if (WorkspaceClient.active || PublisherClient.active || camera.enabled || FileReceiverClient.ownsNetwork ||
                     sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING)) {
                     pairingMessage = "error:Disconnect active sessions and stop file reception and screen sharing before changing networks."
                     return
@@ -125,6 +127,24 @@ class MainActivity : ComponentActivity() {
                 projection.launch(intent)
             }
             val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> requestProjection(granted,publishControl) }
+            val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (granted) CameraPublisher.start(this)
+                else { cameraTarget = null; CameraPublisher.update(CameraSharingState(status = "Camera permission was not granted")) }
+            }
+            fun requestCamera() {
+                if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) CameraPublisher.start(this)
+                else cameraPermission.launch(Manifest.permission.CAMERA)
+            }
+            if (cameraTarget != null && camera.enabled) androidx.compose.material3.AlertDialog(
+                onDismissRequest = { cameraTarget = null }, title = { androidx.compose.material3.Text("Send camera") },
+                text = { androidx.compose.foundation.layout.Column {
+                    camera.sources.forEach { source -> androidx.compose.material3.TextButton(onClick = {
+                        val target = cameraTarget ?: return@TextButton
+                        cameraTarget = null
+                        scope.launch(Dispatchers.IO) { runCatching { CameraPublisher.send(target, source) }
+                            .onFailure { CameraPublisher.update(camera.copy(status = it.message ?: "Could not send camera")) } }
+                    }) { androidx.compose.material3.Text(source.name) } }
+                } }, confirmButton = {}, dismissButton = { androidx.compose.material3.TextButton(onClick = { cameraTarget = null }) { androidx.compose.material3.Text("Cancel") } })
 
             LaunchedEffect(Unit) {
                 lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -203,6 +223,7 @@ class MainActivity : ComponentActivity() {
                         onConnectWorkspace = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = false; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         onSendFiles = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = true; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         outgoing = outgoing,
+                        onSendCamera = { target -> cameraTarget = target; if (!camera.enabled) requestCamera() },
                         onSendScreen = { deviceId ->
                             if (PublisherClient.active) scope.launch(Dispatchers.IO) {
                                 runCatching { PublisherClient.sendScreen(deviceId) }.onFailure { PublisherClient.status(it.message ?: "Could not send screen") }
@@ -234,6 +255,7 @@ class MainActivity : ComponentActivity() {
                             else requestProjection(audio)
                         },
                         onStopSharing = { PublisherClient.stop(this) },
+                        onShareCamera = { requestCamera() },
                         onBrowseFiles = { receivedFiles = true },
                         onJoinCode = ::joinNetwork,
                         showInvitationInput = manualInvitationRequested,
