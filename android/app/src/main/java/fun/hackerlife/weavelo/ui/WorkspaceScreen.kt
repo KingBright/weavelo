@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import `fun`.hackerlife.weavelo.*
@@ -492,12 +493,16 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
     val matches = remember(sources, query) {
         sources.filter { it.title.contains(query, true) || it.application.contains(query, true) }.sortedBy { it.isWindow }
     }
-    AlertDialog(onDismissRequest = onClose, title = { Text("Screens and app windows") }, text = {
+    AlertDialog(onDismissRequest = onClose,
+        modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(.9f),
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        title = { Text("Screens & apps", maxLines = 1) }, text = {
         Column(Modifier.fillMaxWidth()) {
             OutlinedTextField(query, { query = it }, label = { Text("Search apps and windows") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
                 itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
+                  Column(Modifier.fillMaxWidth()) {
                     if (index == 0 || matches[index - 1].isWindow != source.isWindow) {
                         Text(if (source.isWindow) "App windows" else "Entire screens",
                             style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
@@ -510,6 +515,7 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
                             if (source.isWindow && source.application.isNotBlank()) Text(source.application, style = MaterialTheme.typography.labelMedium)
                         }
                     }
+                  }
                 }
                 if (matches.isEmpty()) item { Text("No matching screen or app window") }
             }
