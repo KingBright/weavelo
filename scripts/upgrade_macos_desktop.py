@@ -663,7 +663,10 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 guard.verify_app(selected['app'], policy)
                 require(membership_metadata(selected['profile']) == context['membership']
                         and gate.hash_file(selected['plist']) == current_pins['plist'], 'Profile or launch policy changed')
-            runtime = control.start(before, signed['executable_sha256'])
+            start_before = before
+            if stopped_resume and data['owners_before'].get('frontend_pid'):
+                start_before = dict(before, gui={'pid': data['owners_before']['frontend_pid']})
+            runtime = control.start(start_before, signed['executable_sha256'])
             data['runtime'] = runtime
             checkpoint('activated')
             require(membership_metadata(selected['profile']) == context['membership']

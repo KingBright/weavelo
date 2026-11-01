@@ -70,6 +70,7 @@ class UpgradeTests(unittest.TestCase):
                 if owner.stop_hook: owner.stop_hook()
             def start(self, before, expected):
                 owner.calls.append('start')
+                owner.started_with = before
                 if owner.start_hook: owner.start_hook()
                 return {'background_pid':201,'frontend_pid':202,'native_pairing_cli_verified':True,
                         'executable_sha256':expected}
@@ -511,6 +512,7 @@ class UpgradeTests(unittest.TestCase):
             result=self.apply(pins,resume=digest,no_new=True)
         self.assertEqual(result['phase'],'completed')
         self.assertTrue(result['resumed_after_verified_stop'])
+        self.assertEqual(self.started_with['gui'], {'pid': 102})
         self.assertEqual(result['owners_before'],{'background_pid':101,'frontend_pid':102})
         self.assertEqual(self.calls.count('stop'),1)
         self.assertEqual(self.app_bytes(),b'new-image')

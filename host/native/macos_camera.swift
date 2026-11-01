@@ -14,6 +14,7 @@ private func devices() -> [AVCaptureDevice] {
 
 @_cdecl("weavelo_camera_catalog")
 func cameraCatalog() -> UnsafeMutablePointer<CChar>? {
+    return autoreleasepool {
     let cameras: [[String: Any]] = devices().map { device in
         let size = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let facing = device.position == .front ? "Front" : device.position == .back ? "Back" : "Unspecified"
@@ -23,18 +24,19 @@ func cameraCatalog() -> UnsafeMutablePointer<CChar>? {
     guard let data = try? JSONSerialization.data(withJSONObject: cameras),
           let text = String(data: data, encoding: .utf8) else { return nil }
     return strdup(text)
+    }
 }
 
 @_cdecl("weavelo_camera_free_string")
 func cameraFreeString(_ text: UnsafeMutablePointer<CChar>?) { free(text) }
 
 @_cdecl("weavelo_camera_access")
-func cameraAccess() -> Int32 { Int32(AVCaptureDevice.authorizationStatus(for: .video).rawValue) }
+func cameraAccess() -> Int32 { autoreleasepool { Int32(AVCaptureDevice.authorizationStatus(for: .video).rawValue) } }
 
 @_cdecl("weavelo_camera_request_access")
 func cameraRequestAccess(_ context: UnsafeMutableRawPointer?,
                          _ done: @escaping @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void) {
-    AVCaptureDevice.requestAccess(for: .video) { granted in done(context, granted ? 3 : 2) }
+    autoreleasepool { AVCaptureDevice.requestAccess(for: .video) { granted in done(context, granted ? 3 : 2) } }
 }
 
 private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -52,14 +54,16 @@ private final class CameraOutput: NSObject, AVCaptureVideoDataOutputSampleBuffer
 }
 
 private final class CameraSession {
+    let control: DispatchQueue
     var session: AVCaptureSession?
     var output: AVCaptureVideoDataOutput?
     var delegate: CameraOutput?
     var lockedDevice: AVCaptureDevice?
     let frames = DispatchQueue(label: "fun.hackerlife.weavelo.camera.frames", qos: .userInteractive)
 
-    init(_ key: String, _ width: UInt32, _ height: UInt32, _ fps: UInt32,
+    init(_ control: DispatchQueue, _ key: String, _ width: UInt32, _ height: UInt32, _ fps: UInt32,
          _ context: UnsafeMutableRawPointer?, _ callback: @escaping FrameCallback) throws {
+        self.control = control
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
             throw NSError(domain: "WeaveloCamera", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 "Camera permission is required on this Mac. Open Weavelo Sharing & permissions."])
@@ -158,17 +162,29 @@ func cameraStart(_ key: UnsafePointer<CChar>?, _ width: UInt32, _ height: UInt32
         error?.pointee = strdup("Invalid camera configuration"); return nil
     }
     do {
-        return Unmanaged.passRetained(try CameraSession(String(cString: key), width, height, fps, context, callback)).toOpaque()
+        let name = String(cString: key)
+        let control = DispatchQueue(label: "fun.hackerlife.weavelo.camera.control", qos: .userInitiated)
+        return try control.sync {
+            try autoreleasepool {
+                Unmanaged.passRetained(try CameraSession(control, name, width, height, fps, context, callback)).toOpaque()
+            }
+        }
     } catch let reason { error?.pointee = strdup(reason.localizedDescription); return nil }
 }
 
 @_cdecl("weavelo_camera_stop")
 func cameraStop(_ handle: UnsafeMutableRawPointer, _ context: UnsafeMutableRawPointer?,
                 _ done: @escaping @convention(c) (UnsafeMutableRawPointer?) -> Void) {
-    DispatchQueue.global(qos: .userInitiated).async {
-        let owner = Unmanaged<CameraSession>.fromOpaque(handle)
-        autoreleasepool { owner.takeUnretainedValue().stop() }
-        owner.release()
+    let owner = Unmanaged<CameraSession>.fromOpaque(handle)
+    let camera = owner.takeUnretainedValue()
+    // Create, configure, stop and release AVFoundation on the same native
+    // queue. KVO/autoreleased inputs must not survive in a Tokio thread's TLS
+    // until executor teardown, nor cross the device configuration-lock owner.
+    camera.control.async {
+        autoreleasepool {
+            camera.stop()
+            owner.release()
+        }
         done(context)
     }
 }
@@ -176,5 +192,7 @@ func cameraStop(_ handle: UnsafeMutableRawPointer, _ context: UnsafeMutableRawPo
 @_cdecl("weavelo_camera_running")
 func cameraRunning(_ handle: UnsafeMutableRawPointer) -> Bool {
     let owner = Unmanaged<CameraSession>.fromOpaque(handle).takeUnretainedValue()
-    return AVCaptureDevice.authorizationStatus(for: .video) == .authorized && owner.session?.isRunning == true
+    return owner.control.sync {
+        autoreleasepool { AVCaptureDevice.authorizationStatus(for: .video) == .authorized && owner.session?.isRunning == true }
+    }
 }
