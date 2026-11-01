@@ -44,6 +44,7 @@ pub(crate) struct CameraHandle {
 }
 struct CameraFrames {
     slot:Arc<LatestFrameSlot<MacVideoFrame>>,
+    resources:Option<Arc<crate::lifecycle::Resources>>,
     count:AtomicU64,
     first:AtomicU64,
     last:AtomicU64,
@@ -53,6 +54,7 @@ unsafe impl Send for CameraHandle {}
 extern "C" fn frame(context:*mut c_void,sample:*mut c_void,width:u32,height:u32) {
     let Some(sample_buffer)=screencapturekit::cm::CMSampleBuffer::from_raw(sample) else{return;};
     let frames=unsafe{&*context.cast::<CameraFrames>()};
+    if let Some(resources)=&frames.resources {resources.native_camera_frames.fetch_add(1,Ordering::Relaxed);}
     let capture_ts=remote_core::timing::quanta_now_us();
     if frames.count.fetch_add(1,Ordering::Relaxed)==0 {frames.first.store(capture_ts,Ordering::Relaxed);}
     frames.last.store(capture_ts,Ordering::Relaxed);
@@ -76,12 +78,12 @@ impl CameraHandle {
     pub(crate) fn is_running(&self)->bool {
         self.native.is_some_and(|native|unsafe{weavelo_camera_running(native.as_ptr())})
     }
-    pub(crate) fn start(source:CaptureSource,width:u32,height:u32,fps:u32,slot:Arc<LatestFrameSlot<MacVideoFrame>>)->Result<Self,String> {
+    pub(crate) fn start(source:CaptureSource,width:u32,height:u32,fps:u32,slot:Arc<LatestFrameSlot<MacVideoFrame>>,resources:Option<Arc<crate::lifecycle::Resources>>)->Result<Self,String> {
         list()?;
         let camera=registry().lock().unwrap_or_else(|e|e.into_inner()).resolve(source).cloned().ok_or("The selected camera is no longer available")?;
         let key=CString::new(camera.key).map_err(|_|"Invalid native camera identity")?;
         let mut error=std::ptr::null_mut();
-        let frames=Arc::new(CameraFrames{slot,count:AtomicU64::new(0),first:AtomicU64::new(0),last:AtomicU64::new(0)});
+        let frames=Arc::new(CameraFrames{slot,resources,count:AtomicU64::new(0),first:AtomicU64::new(0),last:AtomicU64::new(0)});
         let raw=unsafe{weavelo_camera_start(key.as_ptr(),width,height,fps,Arc::as_ptr(&frames).cast_mut().cast(),frame,&mut error)};
         match NonNull::new(raw) {
             Some(native)=>Ok(Self{native:Some(native),frames}),

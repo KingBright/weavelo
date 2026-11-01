@@ -102,6 +102,7 @@ impl MacVideoCapturer {
         self
     }
     pub(crate) fn with_resources(mut self, resources: Arc<crate::lifecycle::Resources>) -> Self {
+        resources.capture_target_fps.store(u64::from(self.target_fps), std::sync::atomic::Ordering::Relaxed);
         self.resources = Some(resources);
         self
     }
@@ -125,7 +126,7 @@ impl MacVideoCapturer {
     fn start_camera(&mut self)->Result<(),Box<dyn Error+Send+Sync>> {
         drop(self.slot.take());
         self.minimum_capture_ts_us=remote_core::timing::quanta_now_us();
-        self.camera=Some(crate::cameras::CameraHandle::start(self.source,self.target_width,self.target_height,self.target_fps,self.slot.clone())?);
+        self.camera=Some(crate::cameras::CameraHandle::start(self.source,self.target_width,self.target_height,self.target_fps,self.slot.clone(),self.resources.clone())?);
         self.camera_started=true;
         if let Some(resources)=&self.resources {
             resources.native_streams.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
@@ -175,6 +176,7 @@ impl MacVideoCapturer {
         self.target_width = width;
         self.target_height = height;
         self.target_fps = fps;
+        if let Some(resources)=&self.resources { resources.capture_target_fps.store(u64::from(fps),std::sync::atomic::Ordering::Relaxed); }
         self.pacer.reset(fps);
         if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
             let started=self.camera_started;
@@ -274,9 +276,12 @@ impl VideoCapturer for MacVideoCapturer {
             )
             .await
             {
-                Ok(frame) if frame.timing.capture_ts_us >= self.minimum_capture_ts_us
-                    && self.pacer.admit(frame.timing.capture_ts_us) => return Ok(frame),
-                Ok(_) => continue,
+                Ok(frame) => {
+                    if let Some(resources)=&self.resources {resources.raw_capture_samples.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+                    if frame.timing.capture_ts_us < self.minimum_capture_ts_us {continue;}
+                    if self.pacer.admit(frame.timing.capture_ts_us) {return Ok(frame);}
+                    if let Some(resources)=&self.resources {resources.capture_pacing_skips.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
+                }
                 Err(_) => {
                     // Check if stream is still active
                     if self.stream.is_none() && self.camera.is_none() {
