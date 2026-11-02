@@ -1,3 +1,6 @@
+#[path="restored_management.rs"]
+mod management;
+use management::{ManagementRoot, WindowPurpose, management_activity_panel, reopen_management_window, show_management_window};
 #[path="restored_text_input.rs"]
 mod remote_text_input;
 #[path="restored_acceptance.rs"]
@@ -105,9 +108,9 @@ fn run_original_dashboard(
     let startup_error = Arc::new(Mutex::new(None));
     let init_error = startup_error.clone();
     crate::desktop::foreground_runtime::run(move || {
-        Application::new()
-            .with_assets(UiAsset)
-            .run(move |cx: &mut App| {
+        let application = Application::new().with_assets(UiAsset);
+        application.on_reopen(show_management_window);
+        application.run(move |cx: &mut App| {
                 apply_product_window_appearance();
                 if let Err(error) = component::init(cx) {
                     *init_error.lock().expect("GUI startup error lock") = Some(error.to_string());
@@ -155,45 +158,30 @@ fn open_restored_window(
 ) -> Option<WindowHandle<RestoredDashboard>> {
     if exit_group.stopping.load(Ordering::Acquire) {return None;}
     let primary = instance.is_some();
-    let attached = instance.as_ref().is_some_and(|i| i.is_frontend());
-    let window_bounds = cx.primary_display().map(|display| {
-        let work = display.visible_bounds();
-        let window_size = size(
-            px(1280.).min((work.size.width-px(32.)).max(px(1.))),
-            px(800.).min((work.size.height-px(48.)).max(px(1.))),
-        );
-        Bounds::centered_at(work.center(), window_size)
-    }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), size(px(1280.), px(800.))));
-    let options = WindowOptions {
-            app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
-        window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-        window_min_size: Some(size(px(800.).min(window_bounds.size.width), px(560.).min(window_bounds.size.height))),
-        titlebar: Some(TitlebarOptions {
-            title: Some(
-                if std::env::var_os("WEAVELO_RESTORED_TEST_OUTPUT").is_some() {
-                    "Weavelo restored GUI review"
-                } else {
-                    "Weavelo"
-                }
-                .into(),
-            ),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let options = restored_window_options(cx);
     cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| RestoredDashboard::new(runtime, instance, activation, background, exit_group, window, cx));
+        if primary { cx.set_global(ManagementRoot(view.clone())); }
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |_window, cx| {
             if weak.update(cx, |this, _| this.exit_group.stopping.load(Ordering::Acquire)).unwrap_or(false) { return false; }
-            if primary && attached {
-                let _ = weak.update(cx, |this, cx| { this.begin_gui_quit(None, false, cx); });
-                false
-            } else if primary {
-                let _ = weak.update(cx, |this, cx| this.begin_full_exit(cx));
-                false
+            if primary {
+                // The management presentation does not own the GUI service,
+                // transfers or any stream. ManagementRoot keeps its coordinator.
+                let _ = weak.update(cx, |this, _| {
+                    this.owner.release_input();
+                    this.window_active = false;
+                    this.window_visible = Some(false);
+                });
+                true
             } else {
-                let _ = weak.update(cx, |this, _| this.owner.close_received_window());
+                // A PiP retains this exact stream controller until its final
+                // presentation closes. Closing one surface only releases input.
+                let _ = weak.update(cx, |this, _| {
+                    this.owner.release_input();
+                    this.pointer_input = PointerInputTracker::default();
+                    this.window_active = false;
+                });
                 true
             }
         });
@@ -225,19 +213,38 @@ fn open_restored_window(
                     if view.activation.swap(false, Ordering::AcqRel) {
                         cx.activate(true);
                         let handle = view.window_handle;
-                        let _ = handle.update(cx, |_, window, _| window.activate_window());
+                        if handle.update(cx, |_, window, _| window.activate_window()).is_err()
+                            && view.purpose == WindowPurpose::Management {
+                            let retained = cx.entity();
+                            cx.defer(move |cx| { reopen_management_window(retained, cx); });
+                        }
                     }
                     #[cfg(any(unix, windows))]
                     view.poll_directed_receive(cx);
                     if view.delivery_closed.as_ref().is_some_and(|closed|closed.load(Ordering::Acquire)) {
                         let handle=view.window_handle;
-                        cx.defer(move |cx| {let _=handle.update(cx,|_,window,_|window.remove_window());});
+                        let pips=view.pip_windows.clone();
+                        cx.defer(move |cx| {
+                            for pip in pips {let _=pip.update(cx,|_,window,_|window.remove_window());}
+                            let _=handle.update(cx,|_,window,_|window.remove_window());
+                        });
                         return Duration::from_secs(1);
                     }
                     owned_gui_stage(1);
-                    view.window_visible = view.window_handle.update(cx, |_, window, _| window.is_window_visible()).ok().flatten();
+                    let primary=view.window_handle.update(cx, |_,window,_|window.is_window_visible());
+                    view.window_visible=primary.as_ref().ok().copied().flatten();
+                    if primary.is_err() {
+                        let mut pip_visible=false;
+                        view.pip_windows.retain(|handle| match handle.update(cx,|_,window,_|window.is_window_visible()) {
+                            Ok(visible)=>{pip_visible|=visible.unwrap_or(true);true},Err(_)=>false,
+                        });
+                        view.window_visible=Some(pip_visible);
+                    }
                     view.sync_media_pause();
                     view.owner.poll();
+                    // PiP's producer survives its primary presentation. Native
+                    // frames still pass through the same latest-frame mailbox.
+                    if primary.is_err() {view.drain_latest_frame();}
                     refresh_pairing_state(view.mesh_pairing.as_ref(),
                         &mut view.mesh_pairing_snapshot, &mut view.device_name_editor);
                     owned_gui_stage(2);
@@ -265,6 +272,34 @@ fn open_restored_window(
     .ok()
 }
 
+fn restored_window_options(cx: &App) -> WindowOptions {
+    let window_bounds = cx.primary_display().map(|display| {
+        let work = display.visible_bounds();
+        let window_size = size(
+            px(1280.).min((work.size.width-px(32.)).max(px(1.))),
+            px(800.).min((work.size.height-px(48.)).max(px(1.))),
+        );
+        Bounds::centered_at(work.center(), window_size)
+    }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), size(px(1280.), px(800.))));
+    WindowOptions {
+            app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
+        window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+        window_min_size: Some(size(px(800.).min(window_bounds.size.width), px(560.).min(window_bounds.size.height))),
+        titlebar: Some(TitlebarOptions {
+            title: Some(
+                if std::env::var_os("WEAVELO_RESTORED_TEST_OUTPUT").is_some() {
+                    "Weavelo restored GUI review"
+                } else {
+                    "Weavelo"
+                }
+                .into(),
+            ),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 fn product_window_appearance() -> WindowAppearance {
     // The video canvas and translucent control surfaces are intentionally dark.
     WindowAppearance::Dark
@@ -288,6 +323,7 @@ fn apply_product_window_appearance() {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawerTab {
     Devices,
+    Activity,
     DeviceGroup,
     Security,
     Network,
@@ -350,6 +386,9 @@ struct FrontendExitGroup {
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
 }
 impl FrontendExitGroup {
+    fn can_change_network(&self) -> bool {
+        self.owners().iter().all(|owner| owner.can_change_network())
+    }
     fn owners(&self) -> Vec<Arc<OriginalOwner>> {
         let mut owners=self.owners.lock().unwrap();
         owners.retain(|owner|owner.strong_count()>0);
@@ -405,6 +444,8 @@ impl ApplicationArtwork {
 }
 
 struct RestoredDashboard {
+    purpose: WindowPurpose,
+    device_query: String,
     source_selection: Option<source_selection::Selection>,
     source_query_inflight: bool,
     artwork_cache: std::cell::RefCell<ApplicationArtwork>,
@@ -424,6 +465,7 @@ struct RestoredDashboard {
     exit_group: Arc<FrontendExitGroup>,
     background: Option<crate::background_service::Client>,
     window_handle: AnyWindowHandle,
+    pip_windows: Vec<AnyWindowHandle>,
     started: Instant,
     render_calls: u64,
     test_connect_started: bool,
@@ -517,24 +559,8 @@ impl RestoredDashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe_window_activation(window, |this, window, cx| {
-            this.window_active = window.is_window_active();
-            if this.window_active && this.drawer_open && this.active_tab==DrawerTab::Security {
-                this.refresh_local_permissions(cx);
-            }
-            this.window_visible = window.is_window_visible();
-            if !this.window_active {
-                this.owner.release_input();
-                this.pointer_input = PointerInputTracker::default();
-            }
-            this.sync_media_pause();
-            cx.notify();
-        })
-        .detach();
-        cx.observe_window_bounds(window, |this, _window, _cx| {
-            this.owner.release_input();
-            this.pointer_input = PointerInputTracker::default();
-        }).detach();
+        Self::observe_window(window, cx);
+        let purpose = if instance.is_some() { WindowPurpose::Management } else { WindowPurpose::Stream };
         let owner = OriginalOwner::new(runtime.owner.clone());
         exit_group.owners.lock().unwrap().push(Arc::downgrade(&owner));
         let mesh_pairing = runtime.mesh_pairing.clone();
@@ -565,6 +591,8 @@ impl RestoredDashboard {
             *exit_group.gui_generation.lock().unwrap() = Some(adapter.generation.clone());
         }
         Self {
+            purpose,
+            device_query: String::new(),
             native_window_title: "Weavelo".into(),
             runtime,
             owner,
@@ -581,6 +609,7 @@ impl RestoredDashboard {
             quitting: false,
             full_exit_pending: false, exit_group, background,
             window_handle: window.window_handle(),
+            pip_windows: Vec::new(),
             started: Instant::now(),
             render_calls: 0,
             test_connect_started: false,
@@ -607,7 +636,7 @@ impl RestoredDashboard {
             video_surface_bounds: Arc::new(Mutex::new(None)),
             input_session_id: None,
             status: "Ready".into(),
-            drawer_open: true,
+            drawer_open: purpose == WindowPurpose::Management,
             active_tab: DrawerTab::Devices,
             device_list_state: DeviceListState::default(),
             #[cfg(target_os = "linux")]
@@ -640,6 +669,26 @@ impl RestoredDashboard {
             last_toolbar_activity: Instant::now(),
             capture_error_seen: None,
         }
+    }
+
+    fn observe_window(window: &mut Window, cx: &mut Context<Self>) {
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.window_active = window.is_window_active();
+            if this.window_active && this.drawer_open && this.active_tab == DrawerTab::Security {
+                this.refresh_local_permissions(cx);
+            }
+            this.window_visible = window.is_window_visible();
+            if !this.window_active {
+                this.owner.release_input();
+                this.pointer_input = PointerInputTracker::default();
+            }
+            this.sync_media_pause();
+            cx.notify();
+        }).detach();
+        cx.observe_window_bounds(window, |this, _, _| {
+            this.owner.release_input();
+            this.pointer_input = PointerInputTracker::default();
+        }).detach();
     }
 
     fn check_toolbar_auto_hide(&mut self, cx: &mut Context<Self>) {
@@ -961,7 +1010,7 @@ impl RestoredDashboard {
             cx.notify();
             return;
         }
-        if !self.owner.can_change_network() {
+        if !self.exit_group.can_change_network() {
             self.pairing_image_status("Disconnect current sessions before changing this device name.",
                 MeshPairingMessageKind::Warning);
             cx.notify();
@@ -1003,7 +1052,7 @@ impl RestoredDashboard {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
         if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
-        if !self.owner.can_change_network() {
+        if !self.exit_group.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
         }
@@ -1024,7 +1073,7 @@ impl RestoredDashboard {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
         if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
-        if !self.owner.can_change_network() {
+        if !self.exit_group.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
         }
@@ -1052,7 +1101,7 @@ impl RestoredDashboard {
             self.pairing_image_status("Stop sending before changing the device network.", MeshPairingMessageKind::Warning);
             return;
         }
-        if !self.owner.can_change_network() {
+        if !self.exit_group.can_change_network() {
             self.pairing_image_status("Disconnect current sessions before changing the device network.", MeshPairingMessageKind::Warning);
             return;
         }
@@ -1119,10 +1168,12 @@ impl RestoredDashboard {
 
         let scale_mode = self.scale_mode;
         let owner = self.owner.clone();
+        let primary = cx.entity();
         let result = cx.open_window(window_options, move |_window, cx| {
             let view = cx.new(|_cx| PopoutStreamView {
                 artwork_cache: Default::default(),
                 owner,
+                _primary: primary,
                 native_window_title: String::new(),
                 presentation_frame,
                 host_stats,
@@ -1130,7 +1181,7 @@ impl RestoredDashboard {
                 telemetry_hud_collapsed: true,
             });
             cx.spawn({
-                let view = view.clone();
+                let view = view.downgrade();
                 async move |cx| {
                     loop {
                         let Ok(interval) = view.update(&mut *cx, |view, cx| {
@@ -1155,7 +1206,7 @@ impl RestoredDashboard {
             view
         });
         self.status = match result {
-            Ok(_) => "PiP window opened".to_string(),
+            Ok(handle) => {self.pip_windows.push(handle.into());"PiP window opened".to_string()},
             Err(err) => format!("PiP failed: {err}"),
         };
     }
@@ -2080,6 +2131,7 @@ fn stream_video_canvas_surface(
 struct PopoutStreamView {
     artwork_cache: ApplicationArtwork,
     owner: Arc<OriginalOwner>,
+    _primary: Entity<RestoredDashboard>,
     native_window_title: String,
     presentation_frame: FrameSlot,
     host_stats: Option<Arc<SharedHostStats>>,
@@ -2299,6 +2351,13 @@ impl Render for PopoutStreamView {
     }
 }
 
+impl Drop for RestoredDashboard {
+    fn drop(&mut self) {
+        self.owner.release_input();
+        self.owner.close_received_window();
+    }
+}
+
 impl Render for RestoredDashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         owned_gui_stage(5);
@@ -2306,6 +2365,10 @@ impl Render for RestoredDashboard {
         self.drain_latest_frame();
         owned_gui_stage(6);
         let snapshot = self.snapshot();
+        if self.purpose == WindowPurpose::Management {
+            window.set_window_title("Weavelo");
+            return self.management_view(&snapshot, cx);
+        }
         let role = snapshot.role.clone();
         self.capture_supports_input = snapshot.active_capture_supports_input;
         if self.capture_error_seen != snapshot.capture_source_error {
@@ -2458,6 +2521,7 @@ impl Render for RestoredDashboard {
             ))
             .when(show_drawer, |this| {
                 this.child(slide_over_management_drawer(
+                    false, self.window_handle, &self.device_query,
                     &snapshot.devices,
                     &role,
                     self.mesh_pairing_snapshot.clone(),
@@ -2531,6 +2595,7 @@ impl Render for RestoredDashboard {
                     }
                 }))
                 .child(ely_gpui_component::primitives::FocusScope::new(&self.root_focus).root().size_full().child(tree)))
+            .into_any_element()
     }
 }
 
@@ -3598,6 +3663,9 @@ fn drawer_trigger_capsule(
 
 #[allow(clippy::too_many_arguments)]
 fn slide_over_management_drawer(
+    management: bool,
+    current_window: AnyWindowHandle,
+    device_query: &str,
     devices: &[AppDevice],
     role: &RoleState,
     mesh_pairing_snapshot: Option<MeshPairingSnapshot>,
@@ -3623,10 +3691,8 @@ fn slide_over_management_drawer(
     let view = cx.weak_entity();
 
     div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .w(px(390.0))
+        .when(!management, |panel| panel.absolute().top_0().left_0().w(px(390.0)))
+        .when(management, |panel| panel.w_full())
         .h_full()
         .flex()
         .flex_col()
@@ -3662,10 +3728,10 @@ fn slide_over_management_drawer(
                                 .text_color(theme.content.primary)
                                 .whitespace_nowrap()
                                 .truncate()
-                                .child("Device & Network Control"),
+                                .child(if management { "Weavelo" } else { "Device & Network Control" }),
                         ),
                 )
-                .child(
+                .when(!management, |header| header.child(
                     command_button("close_drawer_btn", ActionVariantKind::Neutral, cx)
                         .size(px(28.0))
                         .flex_none()
@@ -3680,42 +3746,36 @@ fn slide_over_management_drawer(
                         .text_size(px(11.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("X"),
-                ),
-        )
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap_1()
-                .p_2()
-                .bg(theme.surface.sunken)
-                .child(drawer_tab_button(
-                    "Devices",
-                    DrawerTab::Devices,
-                    active_tab,
-                    cx,
-                ))
-                .child(drawer_tab_button(
-                    "Pairing",
-                    DrawerTab::DeviceGroup,
-                    active_tab,
-                    cx,
-                ))
-                .child(drawer_tab_button("Files", DrawerTab::Files, active_tab, cx))
-                .child(drawer_tab_button(
-                    "Sharing",
-                    DrawerTab::Security,
-                    active_tab,
-                    cx,
-                ))
-                .child(drawer_tab_button(
-                    "Settings",
-                    DrawerTab::Network,
-                    active_tab,
-                    cx,
                 )),
         )
+        .when(management, |panel| panel.child(
+            div().flex().items_center().gap_2().p_3()
+                .child(component::text_input("device-search").content(device_query.to_owned())
+                    .on_change({ let view=cx.weak_entity(); move |text, _, cx| {
+                        let _=view.update(cx, |this,cx| {this.device_query=text.to_string();cx.notify();});
+                    }}))
+                .child(command_button("add-device",ActionVariantKind::Primary,cx).child("Add device")
+                    .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
+        ))
+        .child(div().flex_none().flex().items_center().gap_1().p_2().bg(theme.surface.sunken)
+            .children(if management {
+                vec![("Devices",DrawerTab::Devices),("Activity",DrawerTab::Activity),
+                    ("Transfers",DrawerTab::Files),("Settings",DrawerTab::Network)]
+            } else {
+                vec![("Devices",DrawerTab::Devices),("Pairing",DrawerTab::DeviceGroup),
+                    ("Files",DrawerTab::Files),("Sharing",DrawerTab::Security),("Settings",DrawerTab::Network)]
+            }.into_iter().map(|(label,tab)| {
+                let selected=if management && matches!(active_tab,DrawerTab::DeviceGroup|DrawerTab::Security) {
+                    DrawerTab::Network
+                } else {active_tab};
+                drawer_tab_button(label,tab,selected,cx)
+            })))
+        .when(management && matches!(active_tab,DrawerTab::DeviceGroup|DrawerTab::Security|DrawerTab::Network), |panel| {
+            panel.child(div().flex_none().flex().gap_2().px_4().py_2()
+                .child(drawer_tab_button("Preferences",DrawerTab::Network,active_tab,cx))
+                .child(drawer_tab_button("Sharing & permissions",DrawerTab::Security,active_tab,cx))
+                .child(drawer_tab_button("Pairing & device name",DrawerTab::DeviceGroup,active_tab,cx)))
+        })
         .child(
             div()
                 .id("drawer_scrollable_container")
@@ -3724,6 +3784,7 @@ fn slide_over_management_drawer(
                 .overflow_y_scroll()
                 .p_4()
                 .child(match active_tab {
+                    DrawerTab::Activity => management_activity_panel(current_window, #[cfg(any(unix, windows))] activity, cx).into_any_element(),
                     DrawerTab::Devices => drawer_devices_tab(
                         devices,
                         role,
@@ -4132,8 +4193,22 @@ impl RestoredDashboard {
         if self.exit_group.stopping.load(Ordering::Acquire) { return; }
         let Some(effect) = self.device_list_state.reduce(action) else { cx.notify(); return; };
         match effect {
-            DeviceListEffect::ConnectStream(device_id) => self.start_stream_connection(device_id, None, cx),
+            DeviceListEffect::ConnectStream(device_id) => self.open_device_window(&device_id, cx),
             DeviceListEffect::ConnectFiles(device_id) => {
+                if self.purpose == WindowPurpose::Stream {
+                    if let Some(root) = cx.try_global::<ManagementRoot>().map(|root| root.0.clone()) {
+                        cx.defer(move |cx| {
+                            let handle = root.read(cx).window_handle;
+                            if handle.update(cx, |_, window, _| window.activate_window()).is_err() {
+                                reopen_management_window(root.clone(), cx);
+                            }
+                            root.update(cx, |this, cx| {
+                                this.dispatch_device_action(DeviceListAction::OpenFiles(device_id), cx);
+                            });
+                        });
+                    }
+                    return;
+                }
                 self.invalidate_source_commands();
                 let ticket = self.session_commands.begin();
                 self.owner.release_input(); self.drawer_open=true; self.active_tab=DrawerTab::Files;
@@ -6148,6 +6223,55 @@ mod input_tests {
     use protocol::InputEvent;
     use remote_core::role::RoleKind;
     use std::time::{Duration, Instant};
+
+    #[gpui::test]
+    fn management_close_retains_coordinator_and_other_windows(cx: &mut TestAppContext) {
+        use super::{FrontendExitGroup, ManagementRoot, WindowPurpose, open_restored_window, reopen_management_window};
+        let executor = tokio::runtime::Runtime::new().unwrap();
+        let _entered = executor.enter();
+        let backend = executor.block_on(crate::UnifiedServiceOwner::start(
+            crate::UnifiedServiceOwnerConfig::default(),
+        )).unwrap();
+        let runtime = std::sync::Arc::new(crate::UnifiedRuntimeHandle::from_workspace_owner(std::sync::Arc::new(backend)));
+        let profile = tempfile::tempdir().unwrap();
+        let instance = super::Instance::acquire_for_renderer(profile.path(), crate::gui_backend::ORIGINAL_RENDERER).unwrap().unwrap();
+        let group = std::sync::Arc::new(FrontendExitGroup::default());
+        let manager = cx.update(|cx| {
+            crate::product_components::component::init(cx).unwrap();
+            crate::product_components::theme::install(super::product_window_appearance(), super::weavelo_themes(), cx);
+            open_restored_window(runtime.clone(), Some(instance), Default::default(), None, None, group.clone(), cx).unwrap()
+        });
+        let manager_view = manager.root(cx).unwrap();
+        manager_view.update(cx, |this, _| this.status = "Retained local work".into());
+        let stream = cx.update(|cx| open_restored_window(runtime, None, Default::default(), None, None, group.clone(), cx).unwrap());
+        let stream_view = stream.root(cx).unwrap();
+        assert_eq!(stream_view.read_with(cx, |this, _| this.purpose), WindowPurpose::Stream);
+        stream_view.update(cx, |this, cx| this.open_popout_pip_window(cx));
+        let pip = stream_view.read_with(cx, |this, _| this.pip_windows[0]);
+        let mut visual = gpui::VisualTestContext::from_window(manager.into(), cx);
+        assert!(visual.simulate_close(), "management close should close only its presentation");
+        manager.update(cx, |_, window, _| window.remove_window()).unwrap();
+        assert!(manager.update(cx, |_, _, _| ()).is_err());
+        assert!(stream.update(cx, |_, _, _| ()).is_ok(), "stream remains independently open");
+        assert!(!group.stopping.load(std::sync::atomic::Ordering::Acquire));
+        cx.update(|cx| {
+            let retained = cx.global::<ManagementRoot>().0.clone();
+            assert_eq!(retained, manager_view);
+            assert_eq!(retained.read(cx).status, "Retained local work");
+            reopen_management_window(retained.clone(), cx);
+            assert!(retained.read(cx).window_handle.update(cx, |_, _, _| ()).is_ok());
+        });
+        let stream_weak = stream_view.downgrade();
+        drop(stream_view);
+        let mut visual = gpui::VisualTestContext::from_window(stream.into(), cx);
+        assert!(visual.simulate_close());
+        stream.update(cx, |_, window, _| window.remove_window()).unwrap();
+        assert!(stream_weak.upgrade().is_some(), "PiP retains its exact stream controller");
+        assert!(pip.update(cx, |_, _, _| ()).is_ok());
+        pip.update(cx, |_, window, _| window.remove_window()).unwrap();
+        cx.run_until_parked();
+        assert!(stream_weak.upgrade().is_none(), "last presentation releases the stream; timer must not retain it");
+    }
 
     #[test]
     fn product_appearance_matches_the_dark_video_and_glass_surfaces() {

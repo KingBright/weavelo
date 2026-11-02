@@ -1366,7 +1366,7 @@ pub(crate) mod static_input_tests {
     #[tokio::test]
     async fn paused_input_keeps_intent_and_retries_only_with_current_frame_and_grant() {
         let (mut session, mut received, recorder, _temp) = recorder_session().await;
-        let (video, _) = tokio::sync::mpsc::channel(1);
+        let (video, _) = remote_core::video_queue::channel(1);
         session.conn.subscribe(session.request.clone(), video, session.stats.clone(), session.host_stats.clone()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while !session.conn.input_ready(session.video_id, 0) {
@@ -1482,7 +1482,7 @@ pub(crate) mod static_input_tests {
             session.source = source;
             for revision in [0, 12] {
                 session.source_revision = revision;
-                let (video,_)=tokio::sync::mpsc::channel(1);
+                let (video,_)=remote_core::video_queue::channel(1);
                 session.conn.subscribe(session.request.clone(),video,session.stats.clone(),session.host_stats.clone()).await.unwrap();
                 if revision!=0 {session.conn.control(SessionCommand::SwitchSource{id:session.video_id,request_id:revision,source}).await.unwrap();}
                 tokio::time::timeout(Duration::from_secs(2),async {
@@ -1527,7 +1527,7 @@ pub(crate) mod static_input_tests {
     #[tokio::test]
     async fn deselected_view_releases_input_while_another_consumer_keeps_payload_active() {
         let (mut session, _received, recorder, _temp) = recorder_session().await;
-        let (video, _packets) = tokio::sync::mpsc::channel(1);
+        let (video, _packets) = remote_core::video_queue::channel(1);
         session
             .conn
             .subscribe(
@@ -1583,7 +1583,7 @@ pub(crate) mod static_input_tests {
     #[tokio::test]
     async fn delayed_ack_and_poll_preserve_the_only_current_output_without_reusing_old_paint() {
         let (mut session, _received, recorder, _temp) = recorder_session().await;
-        let (video, _packets) = tokio::sync::mpsc::channel(1);
+        let (video, _packets) = remote_core::video_queue::channel(1);
         session
             .conn
             .subscribe(

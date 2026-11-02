@@ -120,7 +120,7 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
         );
         session.media =
             Some(client::ClientMediaRuntime::start_video_only(session.stats.clone()).unwrap());
-        let (video,_)=tokio::sync::mpsc::channel(1);
+        let (video,_)=remote_core::video_queue::channel(1);
         session.conn.subscribe(session.request.clone(),video,session.stats.clone(),session.host_stats.clone()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2),async {
             while !session.conn.input_ready(session.video_id,0) {tokio::time::sleep(Duration::from_millis(5)).await;}
