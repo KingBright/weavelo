@@ -81,6 +81,16 @@ Android 63 接续小步修复：已结束的定向接收清除画面，所有者
 
 努比亚只读检查发现 `log.tag=S`，普通日志被系统静音，未修改任何日志、权限或安全设置。63 在 Android 已有 Service `dump` 接口提供连接编号、代次、连接 / 结束状态和画面计数，用于关联 Studio 既有 `InspectConnection` 标量诊断；不输出票据、会话密钥、窗口标题、地址、文本或文件。首轮增量 Kotlin 编译不能解析未修改文件的顶层声明，保留证据后仅对本次检查使用 `-Pkotlin.incremental=false`，完整 Kotlin 编译和 76 项 JVM 检查通过，未清理缓存或改永久构建设置。新增两项所有权生命周期回归覆盖文件未完成保留、完成后新投送、迟到旧清理与普通拉取隔离；最终 `android63-kotlin-check-final.log` 与 `android63-release-regression-final.log` 均通过，后者 1,041 项通过、19 项跳过。63 尚未安装。
 
+63 已正式签名、发布并安装两部手机：源 `1bbf090`，Book 构建 `cbb0a26a-6aee-4174-83c8-f92985b2b488`、发布 `2f699be9-4ebf-4ad2-b097-3fe84b77ef21` 均退出 0，APK SHA 为 `1237daf0e0c9ddc1951a0cd3175569fc72e1a2b7330671d6e9d427c34a83f507`，沿用原 Android 签名。`nubia63-install.json` / `redmi63-install.json` 确认 62→63。只读服务诊断实际返回 connection_id `3707669065`，Studio 既有诊断可按此编号看到该连接采集 / 编码帧数；观察到自有 Weavelo 接收窗均为 36，不把它当作失败来源的采集证据。
+
+Studio 77 全屏实机：Book 73 自有窗口 `Window(8995)` 投送到 Studio，生成固定接收窗 `Window(17330)`；再由努比亚观察并操作该窗。实际进入全屏后来源从 1280×833 变为 1920×1080，画面继续，操作栏无自定义最小化，全屏系统按钮未显示（`nubia62-studio77-toolbar-detail.jpg`、`nubia62-studio77-receiver-fullscreen.jpg`、`nubia63-studio77-focused-fullscreen-toolbar.jpg`）。退出点击尚未验收：一轮明确返回 `INPUT_UNAVAILABLE: Restore the selected window on the host desktop before controlling it`，对应接收窗已在另一桌面而管理窗活跃；从管理页 Activity 的 Open 实测能重新激活接收窗（`nubia63-studio77-manager-activity.jpg`），再点仍需核对落点。保留输入安全判断，未把问题先归为权限或坐标。
+
+为区分真实全屏尺寸与恢复用尺寸，私有 GUI 状态改读实际全局 `window.bounds()`，增加 full-screen 标记、视口尺寸和鼠标相对位置；只在请求状态时读取，不添加逐帧日志或 UI 诊断入口。这是下一次签名安装后的定位依据，尚不宣称退出全屏或窗口拉流 bug 已修复。
+
+另已实测目录混入原生标题栏按钮小窗：Studio 同进程的 `Window(17387)` / `Window(17386)` / `Window(17391)` 都显示为「Window」、66×20，且错误宣称可输入（`studio77-caption-catalog-sources.json`）。现在来源目录复用现有输入焦点校验中已确认的标题栏几何规则：同进程、普通窗口层、66×20、父窗左上角 6 像素；不按名称或尺寸单独过滤，不排除正常离屏应用窗口、实际小内容窗或弹窗。每次目录只读取一次 WindowServer 快照，在 AX 尺寸及图标查询前排除这些内部表面。输入命中及焦点保护保持原规则，新增检查覆盖离屏父窗和真实内容 / 弹窗保留。`native-window-context-tests.log` 的 22 项宿主窗口 / 输入检查及 39 项 GUI 检查通过，1 项默认跳过；`native-window-context-release.log` 为 1,041 项通过、19 项跳过。真实目录验证仍待安装，不把此项当作所有无首帧问题已修复。
+
+Android 63 接续实机两轮：Studio 77 向红米发送管理窗口，真实出画（`redmi63-incoming-cycle1.png`）；停止请求 `25740-1793640621651529000` 后红米自动回设备列表，原 Book→Studio 接收仍为 1。无需手动 Disconnect 发起第二请求 `27444-1793640825600149000`，再次进入接收，手机没有等待首帧提示；停止后再次自动回设备列表。Book 自有发送 `28784-1793637996674764000` 也已定向停止。这两轮没有活动文件任务，文件保留仍由生命周期回归覆盖。
+
 Studio 74 的 after 为 `studio74-via-redmi.png` 与 `studio74-via-nubia-before.png`；后者完整截图 SHA 为 `cee4cf7fdbb2c9ece293594f9da1ba8b7cad83f4c46b47895d88b50f7fac9ba7`。努比亚的实际触摸切换 Activity 后，接收端出现 `INPUT_UNAVAILABLE: input expired after target validation`（`studio74-nubia-activity-preview.jpg`，全分辨率原件保留在 Book 同名任务证据目录）；当前仅定位到原生目标校验后的截止时间，不推断为权限缺失。两次 Studio → 红米、一次 Studio → 努比亚测试投送已按各自请求 ID 停止。红米的原始 ADB 触摸注入被系统拒绝，未修改系统安全设置。
 
 ## 已知问题与接续条件

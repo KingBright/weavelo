@@ -954,8 +954,12 @@ impl RestoredDashboard {
                     "stream_activity":self.stream_activity(),
                     "sessions":self.owner.diagnostic_snapshot(),
                     "ui_windows":cx.windows().into_iter().filter_map(|handle|handle.update(cx,|_,window,_| {
-                        let bounds=window.window_bounds().get_bounds();
+                        let bounds=window.bounds();
+                        let viewport=window.viewport_size();
+                        let pointer=window.mouse_position();
                         serde_json::json!({"title":window.window_title(),"visible":window.is_window_visible(),
+                            "fullscreen":window.is_fullscreen(),"viewport":[f32::from(viewport.width),f32::from(viewport.height)],
+                            "pointer":[f32::from(pointer.x),f32::from(pointer.y)],
                             "active":window.is_window_active(),"bounds":[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)]})
                     }).ok()).collect::<Vec<_>>(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({

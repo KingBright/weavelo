@@ -126,6 +126,7 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
     {
         use screencapturekit::prelude::*;
         let content = SCShareableContent::get()?;
+        let native_captions = crate::window_input::native_frame_caption_ids()?;
         let mut sources = Vec::new();
         for display in content.displays() {
             sources.push(CaptureSourceInfo {
@@ -142,6 +143,9 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
             });
         }
         for window in content.windows() {
+            if native_captions.contains(&window.window_id()) {
+                continue;
+            }
             let Some(app) = window.owning_application() else {
                 continue;
             };

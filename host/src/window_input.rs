@@ -161,14 +161,12 @@ fn observed_native_caption_geometry(child: &WindowDescription, parent: &WindowDe
         && (child.bounds.origin.y - parent.bounds.origin.y - 6.).abs() <= 1.
 }
 
-fn frame_accessory(child: &WindowDescription, parent: &WindowDescription) -> bool {
+fn frame_accessory_shape(child: &WindowDescription, parent: &WindowDescription) -> bool {
     child.id != parent.id
         && child.pid == parent.pid
         && child.layer == 0
         && parent.layer == 0
         && (child.unnamed || observed_native_caption_geometry(child, parent))
-        && parent.visible
-        && parent.alpha > 0.
         && parent.bounds.size.width >= 160.
         && parent.bounds.size.height >= 80.
         && child.bounds.size.width <= 112.
@@ -177,6 +175,19 @@ fn frame_accessory(child: &WindowDescription, parent: &WindowDescription) -> boo
         && child.bounds.origin.y >= parent.bounds.origin.y
         && child.bounds.origin.x + child.bounds.size.width <= parent.bounds.origin.x + 120.
         && child.bounds.origin.y + child.bounds.size.height <= parent.bounds.origin.y + 40.
+}
+fn frame_accessory(child: &WindowDescription, parent: &WindowDescription) -> bool {
+    parent.visible && parent.alpha > 0. && frame_accessory_shape(child, parent)
+}
+fn catalog_frame_caption_ids(list: &[WindowDescription]) -> std::collections::HashSet<u32> {
+    list.iter().filter(|child| child.generic_frame_caption &&
+        list.iter().any(|parent| frame_accessory_shape(child, parent)))
+        .map(|child| child.id).collect()
+}
+/// These native traffic-light surfaces have no independent application content.
+/// Read one WindowServer snapshot, including parents in other desktop spaces.
+pub(crate) fn native_frame_caption_ids() -> Result<std::collections::HashSet<u32>, String> {
+    Ok(catalog_frame_caption_ids(&windows(16, 0)?))
 }
 fn front_of_app(windows: &[WindowDescription], pid: i32) -> Option<u32> {
     windows
@@ -467,6 +478,29 @@ mod tests {
         // Do not normalize the hit-test path: clicking the actual accessory is not
         // permission to send arbitrary pointer input through it.
         assert_eq!(top_at(&[caption, parent], CGPoint::new(160., 30.)), Some(9));
+    }
+    #[test]
+    fn source_catalog_omits_only_verified_native_captions_even_for_offscreen_parents() {
+        let mut parent = w(1, 10, 150.);
+        let mut caption = w(9, 10, 156.);
+        caption.generic_frame_caption = true;
+        caption.bounds = CGRect::new(&CGPoint::new(156., 26.), &CGSize::new(66., 20.));
+        let mut small_content = caption;
+        small_content.id = 12;
+        small_content.bounds.origin.y += 50.;
+        let mut dialog = w(14, 10, 170.);
+        dialog.layer = 8;
+        for visible in [true, false] {
+            parent.visible = visible;
+            caption.visible = visible;
+            let hidden = catalog_frame_caption_ids(&[caption, small_content, dialog, parent]);
+            assert_eq!(hidden, [9].into_iter().collect());
+            assert_eq!(frame_accessory(&caption, &parent), visible);
+        }
+        let mut other_process = parent;
+        other_process.pid = 20;
+        assert!(catalog_frame_caption_ids(&[caption, other_process]).is_empty());
+        assert!(catalog_frame_caption_ids(&[small_content, dialog, parent]).is_empty());
     }
     #[test]
     fn generic_caption_is_not_a_blanket_focus_bypass() {
