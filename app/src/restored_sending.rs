@@ -62,6 +62,33 @@ impl SendingContext {
 }
 
 impl RestoredDashboard {
+    pub(super) fn stop_sending_requests(&mut self, requests: &[String], cx: &mut Context<Self>) {
+        {
+            let mut senders = self.directed_send.lock().unwrap();
+            for request in requests { senders.remove(request); }
+        }
+        let windows: Vec<_> = cx.windows().into_iter().filter(|window| {
+            let Some(handle) = window.downcast::<RestoredDashboard>() else { return false; };
+            if *window == self.window_handle {
+                return self.sending_context.as_ref().is_some_and(|context| requests.contains(&context.request));
+            }
+            handle.read(cx).is_ok_and(|view| Arc::ptr_eq(&view.directed_send, &self.directed_send)
+                && view.sending_context.as_ref().is_some_and(|context| requests.contains(&context.request)))
+        }).collect();
+        // Native close keeps a sender alive; explicit Stop closes only this
+        // request's presentations after cancelling its retained worker.
+        cx.defer(move |cx| for window in windows {
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+        });
+        self.poll_sending_context();
+        cx.notify();
+    }
+
+    pub(super) fn stop_all_sending(&mut self, cx: &mut Context<Self>) {
+        let requests = self.directed_send.lock().unwrap().keys().cloned().collect::<Vec<_>>();
+        self.stop_sending_requests(&requests, cx);
+    }
+
     pub(super) fn send_activity(&self) -> Vec<SendActivity> {
         let devices = self.owner.snapshot().devices;
         self.directed_send
@@ -405,9 +432,7 @@ impl RestoredDashboard {
                                         })
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
-                                                this.directed_send.lock().unwrap().remove(&request);
-                                                this.poll_sending_context();
-                                                cx.notify();
+                                                this.stop_sending_requests(&[request.clone()], cx);
                                             }),
                                         ),
                                     ),
@@ -562,6 +587,11 @@ mod tests {
                 .find(|window| *window != manager.into())
                 .unwrap()
         });
+        view.update(cx, |this, cx| {
+            assert!(this.open_sending_window("send-b", Vec::new(), Arc::new(Default::default()), cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| cx.windows().len()), 3);
         {
             let mut visual = gpui::VisualTestContext::from_window(reopened, cx);
             visual.run_until_parked();
@@ -572,6 +602,8 @@ mod tests {
         }
         cx.run_until_parked();
         assert!(*first_stop.borrow(), "explicit stop cancels this worker");
+        assert!(reopened.update(cx, |_, _, _| ()).is_err(), "Stop closes this sending window");
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2, "manager and other sender remain open");
         assert!(!*second_stop.borrow(), "another target keeps sending");
         assert!(group.directed_send.lock().unwrap().contains_key("send-b"));
         assert!(Arc::ptr_eq(
@@ -584,7 +616,10 @@ mod tests {
                 .owner,
             &files.owner
         ));
-        group.directed_send.lock().unwrap().clear();
+        view.update(cx, |this, cx| this.stop_all_sending(cx));
+        cx.run_until_parked();
+        assert!(*second_stop.borrow());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1, "Stop all closes senders and retains management");
         cx.update(|cx| {
             for window in cx.windows() {
                 let _ = window.update(cx, |_, window, _| window.remove_window());

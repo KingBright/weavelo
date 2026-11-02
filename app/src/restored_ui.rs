@@ -933,7 +933,7 @@ impl RestoredDashboard {
             }
             if let Request::StopSend {request_id,..}=command.request {
                 let current=self.directed_send.lock().unwrap().get(&request_id).is_some_and(|sender|!sender.is_finished());
-                if current {self.directed_send.lock().unwrap().remove(&request_id);}
+                if current {self.stop_sending_requests(&[request_id.clone()],cx);}
                 let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
             }
             let mut newly_accepted = None;
@@ -3485,7 +3485,7 @@ fn drawer_devices_tab(
                         command_button("stop_directed_send", ActionVariantKind::Neutral, cx)
                             .size(px(18.)).rounded_full().tooltip(tooltip("Stop all sends started here").build()).child("×")
                             .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
-                                this.directed_send.lock().unwrap().clear();cx.notify();
+                                this.stop_all_sending(cx);
                             }); })
                     )))
             })

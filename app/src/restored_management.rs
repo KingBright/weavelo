@@ -249,7 +249,7 @@ pub(super) fn management_activity_panel(
             .child(command_button(format!("sending-open-{request}"),ActionVariantKind::Neutral,cx).child("Open")
                 .on_click(cx.listener(move|this,_,_,cx| {this.open_sending_window(&open_request,Vec::new(),Arc::new(Default::default()),cx);})))
             .child(command_button(format!("sending-stop-{request}"),ActionVariantKind::Neutral,cx).disabled(send.finished).child("Stop this send")
-                .on_click(cx.listener(move|this,_,_,cx| {this.directed_send.lock().unwrap().remove(&request);cx.notify();}))));
+                .on_click(cx.listener(move|this,_,_,cx| {this.stop_sending_requests(&[request.clone()],cx);}))));
     }
     #[cfg(any(unix, windows))]
     if activity.sharing > 0 {

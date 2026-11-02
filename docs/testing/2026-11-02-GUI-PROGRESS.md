@@ -198,4 +198,18 @@ HO5 沿用已授权的唯一 `Display(2147483649)` 主动投送至 Studio，实�
 
 红米 67 通过普通来源选择拉到 cube 的 Weavelo 管理应用窗口，截图 `redmi67-cube-current-manager-actual.png`；随后用同一来源主动投送也已实际出画，截图 `redmi67-cube-active-manager-actual.png`，对应连接 `656168565`。Windows 的协议来源是目录分配的 `Window(4)`，不是原生 HWND；先前 QA 误传 HWND 得到“来源结束”已明确排除，不记录为产品采集故障。没有把这些成功窗口当作此前特定应用零首帧问题的普遍修复。
 
-源码同时移除发送控制窗残留的自定义最小化按钮，保留全屏 / 恢复，与接收窗一致。两项发送窗口生命周期回归通过，签名发布回归 1,041 项通过、19 项跳过（`sending-fullscreen-only-tests.log`、`sending-fullscreen-only-release.log`）。此六行界面改动尚未随新桌面包安装；当前实机全屏证据仍对应 84 及既有接收窗。
+发送控制窗残留的自定义最小化按钮已移除，保留全屏 / 恢复，与接收窗一致。两项发送窗口生命周期回归通过，签名发布回归 1,041 项通过、19 项跳过（`sending-fullscreen-only-tests.log`、`sending-fullscreen-only-release.log`）。四台电脑现均已安装来源 `933a0ae`；两台 Mac 为 20261103.85，并分别保留原签名。实际 GUI PID 为 Studio 49792、Book 75449、HO5 2297682、cube 21500，均为 restored-original-gpui。安装后状态证据为 `studio85-installed-status.json`、Book 的 `book85-installed-status.json`、HO5 的 `ho5-fullscreen-current-installed-status.json`、cube 的 `cube-fullscreen-current-installed-status.json`。
+
+85 的 macOS NAS 包已正式发布并公开校验，SHA-256 `7cf0405f5cab01973ca070ca4fc2fd2a7ec204b219f6472a59038eece8d5e173`（`studio85-nas-verified.json`）。NAS 的 Windows / Linux 旧条目保留，不能将各机新版安装概括成这些条目也已更新。
+
+红米结束 cube 投送后，未操作 Disconnect 或重进页面，立即接入 Studio 的自有原生窗口，连接 `3663228716` 实际出画（`redmi67-sequential-incoming-actual.png`）。努比亚也通过普通来源选择直接拉到 Linux 唯一 Display 1，原始 PNG SHA-256 `aa246ad0220353ffbc9a5892f75bb7e02230768e445bb8b43be1c13a02cc2284`；Linux 新版安装后再次出画，努比亚 Disconnect 后 HO5 的 Sharing 自动归零，未手动刷新状态（`ho5-fullscreen-after-nubia-disconnect-status.json`）。
+
+努比亚实际看到了 Studio 85 的发送控制窗，操作栏只保留 Files、New source 和全屏。双重投送测试创建的第二个发送窗与第一窗完全重叠；点击第一窗的全屏按钮被正确拒绝为“另一窗口覆盖”，没有向覆盖窗口注入输入。该场景不计作发送窗全屏 / 关闭的物理通过，也未放宽命中规则。原始图为 Book 的 `nubia67-studio85-sender-windowed-actual.png`。CUA 对新进程仍返回 -10005，未继续重复或通过禁止的应用画面绕行。
+
+静止的自有 AppKit 窗口正常采集约 60 FPS，背景返回后也有实际画面，尚未复现先前特定应用零首帧。最初未带活动复用标志的 ADB 启动创建了重复 Activity，引入连接更换；已区别于产品验收，后续使用明确的现有 Activity 复用。没有基于“静止帧被丢弃”这一未确认假设修改媒体代码。
+
+## 明确停止发送时关闭对应控制窗
+
+此前 Stop this send、活动页停止及本机状态停止只取消了发送任务，留下结束的控制窗。现共用按请求 ID 停止的方法：取消对应发送并关闭它的展示窗；普通系统关闭预览仍保持后台发送。其它目标、管理窗口、文件上下文及输入命中校验保持原有所有权。现有真实 GPUI 夹具已扩展为同时打开两个发送窗：停止一个后仅其窗口关闭，另一路及文件上下文保留；停止全部后仅管理窗保留。
+
+两项发送生命周期检查及 1,041 项签名发布回归通过（19 项发布检查跳过），证据 `sending-stop-closes-window-tests.log`、`sending-stop-closes-window-release-final.log`。该后续停止修复尚待新桌面包安装，不能与上述 85 的已安装状态混淆。
