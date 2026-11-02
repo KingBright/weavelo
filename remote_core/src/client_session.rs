@@ -424,7 +424,7 @@ pub struct ClientSessionReceiverConfig {
     pub active_session_id: Arc<AtomicU32>,
     pub host_stats: Arc<SharedHostStats>,
     pub audio_tx: mpsc::Sender<AudioIngressEvent>,
-    pub decode_tx: mpsc::Sender<VideoPacket>,
+    pub decode_tx: crate::video_queue::VideoSender,
     pub clipboard_control: Option<Arc<dyn EnvelopeIngress>>,
     pub file_transfer_control: Option<Arc<dyn EnvelopeIngress>>,
     pub session_event_tx: Option<mpsc::UnboundedSender<ClientSessionEvent>>,
@@ -767,7 +767,7 @@ pub(crate) struct MediaPacketHandler {
     receiver_session_id: Arc<AtomicU32>,
     host_stats: Arc<SharedHostStats>,
     audio_tx: mpsc::Sender<AudioIngressEvent>,
-    decode_tx: mpsc::Sender<VideoPacket>,
+    decode_tx: crate::video_queue::VideoSender,
     session_event_tx: Option<mpsc::UnboundedSender<ClientSessionEvent>>,
     video_jitter_buffer: JitterBuffer,
     video_expected_seq_init: bool,
@@ -795,7 +795,7 @@ impl MediaPacketHandler {
         receiver_session_id: Arc<AtomicU32>,
         host_stats: Arc<SharedHostStats>,
         audio_tx: mpsc::Sender<AudioIngressEvent>,
-        decode_tx: mpsc::Sender<VideoPacket>,
+        decode_tx: crate::video_queue::VideoSender,
         session_event_tx: Option<mpsc::UnboundedSender<ClientSessionEvent>>,
     ) -> Self {
         Self {
@@ -1168,15 +1168,15 @@ impl MediaPacketHandler {
 
             self.stats_net.video_jitter_buffer_pop.fetch_add(1, Relaxed);
             let source_epoch = self.stats_net.video_recovery.snapshot().epoch.source;
-            if self
-                .decode_tx
-                .try_send((ordered_pkt, timing, source_epoch))
-                .is_err()
-            {
-                self.needs_keyframe = true;
-                self.stats_net
-                    .video_decode_queue_dropped
-                    .fetch_add(1, Relaxed);
+            match self.decode_tx.try_send((ordered_pkt, timing, source_epoch)) {
+                Ok(result) => {
+                    self.needs_keyframe |= result.needs_keyframe;
+                    self.stats_net.video_decode_queue_dropped.fetch_add(result.dropped, Relaxed);
+                }
+                Err(_) => {
+                    self.needs_keyframe = true;
+                    self.stats_net.video_decode_queue_dropped.fetch_add(1, Relaxed);
+                }
             }
         }
     }
@@ -1235,7 +1235,7 @@ mod tests {
         session_event_tx: mpsc::UnboundedSender<ClientSessionEvent>,
     ) -> MediaPacketHandler {
         let (audio_tx, _audio_rx) = mpsc::channel(4);
-        let (decode_tx, _decode_rx) = mpsc::channel::<VideoPacket>(4);
+        let (decode_tx, _decode_rx) = crate::video_queue::channel(4);
         let host_stats = Arc::new(SharedHostStats::default());
         MediaPacketHandler::new(
             Statistics::new(),
@@ -1283,7 +1283,7 @@ mod tests {
         let sender_mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
         let (sender, _sender_rx) = sender_mux.split();
         let (audio_tx, _audio_rx) = mpsc::channel(4);
-        let (decode_tx, _decode_rx) = mpsc::channel::<VideoPacket>(4);
+        let (decode_tx, _decode_rx) = crate::video_queue::channel(4);
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let host_stats = Arc::new(SharedHostStats::default());
         let receiver = spawn_client_session_receiver(ClientSessionReceiverConfig {
@@ -1353,7 +1353,7 @@ mod tests {
         let active_session_id = Arc::new(AtomicU32::new(7));
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
         let (audio_tx, _audio_rx) = mpsc::channel(4);
-        let (decode_tx, mut decode_rx) = mpsc::channel::<VideoPacket>(4);
+        let (decode_tx, mut decode_rx) = crate::video_queue::channel(4);
         let host_stats = Arc::new(SharedHostStats::default());
         let mut handler = MediaPacketHandler::new(
             Statistics::new(),
@@ -1473,7 +1473,7 @@ mod tests {
     async fn video_recovery_requests_are_throttled_and_stop_at_a_keyframe_or_session_end() {
         let session = Arc::new(AtomicU32::new(7));
         let (audio_tx, _audio_rx) = mpsc::channel(4);
-        let (decode_tx, _decode_rx) = mpsc::channel(8);
+        let (decode_tx, _decode_rx) = crate::video_queue::channel(8);
         let mut handler = MediaPacketHandler::new(
             Statistics::new(),
             session.clone(),
@@ -1523,7 +1523,7 @@ mod tests {
         stats.video_recovery.track_output();
         let id = Arc::new(AtomicU32::new(7));
         let (audio_tx, _audio_rx) = mpsc::channel(2);
-        let (decode_tx, mut decoded) = mpsc::channel(2);
+        let (decode_tx, mut decoded) = crate::video_queue::channel(2);
         let mut h = MediaPacketHandler::new(
             stats.clone(),
             id.clone(),
@@ -1573,7 +1573,7 @@ mod tests {
         stats.video_recovery.track_output();
         let session = Arc::new(AtomicU32::new(7));
         let (audio, _) = mpsc::channel(1);
-        let (video, mut received) = mpsc::channel(4);
+        let (video, mut received) = crate::video_queue::channel(4);
         let mut handler = MediaPacketHandler::new(
             stats.clone(),
             session.clone(),
@@ -1640,7 +1640,7 @@ mod tests {
         let sender_mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
         let (sender, sender_rx) = sender_mux.split();
         let (audio_tx, _audio_rx) = mpsc::channel(1);
-        let (decode_tx, mut decode_rx) = mpsc::channel(4);
+        let (decode_tx, mut decode_rx) = crate::video_queue::channel(4);
         let task = spawn_client_session_receiver(ClientSessionReceiverConfig {
             bind_addr: addr,
             udp_receiver,
@@ -1733,7 +1733,7 @@ mod tests {
         ] {
             let (event_tx, _) = mpsc::unbounded_channel();
             let mut handler = test_media_handler(Arc::new(AtomicU32::new(7)), event_tx);
-            let (decode_tx, mut decode_rx) = mpsc::channel(4);
+            let (decode_tx, mut decode_rx) = crate::video_queue::channel(4);
             handler.decode_tx = decode_tx;
             handler.update_clock_estimate(estimate);
             let mut host_timing = FrameTimingCheckpoints::new(1_000_000);
@@ -1754,7 +1754,7 @@ mod tests {
     async fn future_host_capture_is_unavailable_instead_of_clipped_to_send_stage() {
         let (event_tx, _) = mpsc::unbounded_channel();
         let mut handler = test_media_handler(Arc::new(AtomicU32::new(7)), event_tx);
-        let (decode_tx, mut decode_rx) = mpsc::channel(4);
+        let (decode_tx, mut decode_rx) = crate::video_queue::channel(4);
         handler.decode_tx = decode_tx;
         handler.update_clock_estimate(Some(synchronized_estimate(0)));
         let mut host_timing =

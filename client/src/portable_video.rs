@@ -15,7 +15,6 @@ use std::{
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::mpsc,
     task::JoinHandle,
 };
 
@@ -313,7 +312,7 @@ impl DecoderPipe {
 }
 
 pub fn spawn_decoder(
-    packets: mpsc::Receiver<remote_core::client_session::VideoPacket>,
+    packets: remote_core::video_queue::VideoReceiver,
     shared: Arc<Mutex<Option<DecodedFrame>>>,
     stats: Arc<Statistics>,
     epoch: Arc<AtomicU64>,
@@ -323,7 +322,7 @@ pub fn spawn_decoder(
 }
 
 pub fn spawn_decoder_with_signal(
-    mut packets: mpsc::Receiver<remote_core::client_session::VideoPacket>,
+    mut packets: remote_core::video_queue::VideoReceiver,
     shared: Arc<Mutex<Option<DecodedFrame>>>,
     stats: Arc<Statistics>,
     epoch: Arc<AtomicU64>,
@@ -427,7 +426,7 @@ mod tests {
         stats.video_recovery.reset_source(|| ());
         let epoch = stats.video_recovery.source_counter();
         let error = Arc::new(Mutex::new(String::new()));
-        let (tx, rx) = mpsc::channel(4);
+        let (tx, rx) = remote_core::video_queue::channel(4);
         let task = spawn_decoder(rx, shared.clone(), stats.clone(), epoch, error.clone());
         let payload = include_bytes!("../tests/fixtures/desktop-test.h265").to_vec();
         assert!(remote_core::media_plane::is_hevc_keyframe(&payload));

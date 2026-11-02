@@ -1,6 +1,5 @@
 //! Bounded HEVC boundary diagnostic, only inside a coordinated synthetic-screen slot.
 use super::*;
-use tokio::sync::mpsc;
 use std::sync::Mutex;
 use std::io::Write;
 
@@ -25,7 +24,7 @@ async fn inspect(target:SocketAddr,output:&std::path::Path,nonce:&str,inputs:boo
     let stats=Statistics::new();
     let media=client::ClientMediaRuntime::start_video_only(stats.clone()).map_err(|e|e.to_string())?;
     let status=media.decode_status.clone();
-    let (tx,mut rx)=mpsc::channel::<remote_core::client_session::VideoPacket>(32);
+    let (tx,mut rx)=remote_core::video_queue::channel(32);
     let decoder=media.decode_tx.clone();let samples=Arc::new(Mutex::new(Samples::default()));
     let captured=samples.clone();
     let tee=tokio::spawn(async move{

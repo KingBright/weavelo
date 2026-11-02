@@ -48,6 +48,7 @@ pub mod timing;
 pub mod trace;
 pub mod traits;
 pub mod video_recovery;
+pub mod video_queue;
 pub mod workspace_session;
 mod workspace_input;
 

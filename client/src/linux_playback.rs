@@ -16,7 +16,7 @@ use std::{
     },
     time::Instant,
 };
-use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
 type Packet = remote_core::client_session::VideoPacket;
 static LIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
 pub fn active_workers() -> u64 {
@@ -228,7 +228,7 @@ impl Drop for WorkerCount {
     }
 }
 pub fn spawn_decoder(
-    packets: mpsc::Receiver<Packet>,
+    packets: remote_core::video_queue::VideoReceiver,
     frame: Arc<Mutex<Option<DecodedFrame>>>,
     stats: Arc<Statistics>,
     epoch: Arc<AtomicU64>,
@@ -282,7 +282,7 @@ pub fn spawn_decoder(
         let _ = done_rx.await;
     }))
 }
-async fn run(mut packets: mpsc::Receiver<Packet>, mut cancel: watch::Receiver<bool>, s: &Shared) {
+async fn run(mut packets: remote_core::video_queue::VideoReceiver, mut cancel: watch::Receiver<bool>, s: &Shared) {
     let mut decoder = DecoderState::new(s.epoch.load(Ordering::Acquire));
     decoder.recovery = s.stats.video_recovery.snapshot().epoch;
     loop {

@@ -39,7 +39,7 @@ fn file_status(event:&FileTransferEvent)->String {
 #[derive(Default)]
 struct Queues {
     events: VecDeque<serde_json::Value>,
-    video: HashMap<u32, VecDeque<EncodedVideoNalu>>,
+    video: HashMap<u32, remote_core::video_queue::EncodedQueue<EncodedVideoNalu>>,
     audio: HashMap<u32, VecDeque<EncodedAudioPacket>>,
 }
 impl Queues {
@@ -342,7 +342,7 @@ impl MobileWorkspace {
             .lock()
             .unwrap()
             .insert(id, WorkspaceTouch::new());
-        let (tx, mut rx) = mpsc::channel(4);
+        let (tx, mut rx) = remote_core::video_queue::channel(4);
         self.connection
             .subscribe(
                 request,
@@ -355,35 +355,22 @@ impl MobileWorkspace {
         let connection = Arc::downgrade(&self.connection);
         let task = tokio::spawn(async move {
             let mut waiting = true;
-            while let Some((packet, timing, _source_epoch)) = rx.recv().await {
+            while let Some((packet, timing, source_epoch)) = rx.recv().await {
                 let keyframe = hevc_keyframe(&packet.payload);
-                let overflow = {
+                if waiting && !keyframe {continue;}
+                let (result, discarded) = {
                     let mut state = state.lock().unwrap();
-                    let queue = state.video.entry(id).or_default();
-                    let overflow = queue.len() >= 4;
-                    if overflow {
-                        queue.clear();
-                        waiting = true;
-                    }
-                    if !waiting || keyframe {
-                        waiting = false;
-                        queue.push_back(EncodedVideoNalu {
-                            data: packet.payload,
-                            keyframe,
-                            pts_us: timing.capture_ts_us as i64,
-                        });
-                    }
-                    overflow
+                    let queue = state.video.entry(id).or_insert_with(||remote_core::video_queue::EncodedQueue::new(4));
+                    queue.push(EncodedVideoNalu {
+                        data: packet.payload, keyframe, pts_us: timing.capture_ts_us as i64,
+                    }, keyframe, source_epoch)
                 };
-                if overflow && let Some(connection) = connection.upgrade() {
-                    let _ = connection
-                        .sender
-                        .send_control(
-                            &ControlMessage::RequestKeyframe { session_id: id },
-                            connection.target,
-                        )
-                        .await;
+                drop(discarded);
+                if result.needs_keyframe && !waiting && let Some(connection) = connection.upgrade() {
+                    let _ = connection.sender.send_control(
+                        &ControlMessage::RequestKeyframe { session_id: id }, connection.target).await;
                 }
+                waiting = result.needs_keyframe;
             }
         });
         if let Some(old) = self.pumps.lock().unwrap().insert(id, task.abort_handle()) {

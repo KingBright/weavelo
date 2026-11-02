@@ -290,7 +290,7 @@ pub struct RemoteBridgeClient {
     pub devices_rx: watch::Receiver<Vec<BridgeDiscoveredDevice>>,
     touch_tracker: Arc<Mutex<TouchStateTracker>>,
     host_stats: Arc<SharedHostStats>,
-    nalu_queue: Arc<Mutex<VecDeque<EncodedVideoNalu>>>,
+    nalu_queue: Arc<Mutex<remote_core::video_queue::EncodedQueue<EncodedVideoNalu>>>,
     audio_queue: Arc<Mutex<VecDeque<EncodedAudioPacket>>>,
     live: Mutex<Option<LiveSession>>,
     virtual_keys: Mutex<touch_mapper::VirtualKeyboard>,
@@ -344,7 +344,7 @@ impl RemoteBridgeClient {
             devices_rx,
             touch_tracker: Arc::new(Mutex::new(TouchStateTracker::default())),
             host_stats: Arc::new(SharedHostStats::default()),
-            nalu_queue: Arc::new(Mutex::new(VecDeque::with_capacity(8))),
+            nalu_queue: Arc::new(Mutex::new(remote_core::video_queue::EncodedQueue::new(8))),
             audio_queue: Arc::new(Mutex::new(VecDeque::with_capacity(16))),
             live: Mutex::new(None),
             virtual_keys: Mutex::new(touch_mapper::VirtualKeyboard::default()),
@@ -911,7 +911,7 @@ async fn start_live_session(
     stream_rates: (u32, u32),
     paused: bool,
     host_stats: Arc<SharedHostStats>,
-    nalu_queue: Arc<Mutex<VecDeque<EncodedVideoNalu>>>,
+    nalu_queue: Arc<Mutex<remote_core::video_queue::EncodedQueue<EncodedVideoNalu>>>,
     audio_queue: Arc<Mutex<VecDeque<EncodedAudioPacket>>>,
     _active_session_id: Arc<AtomicU32>,
     telemetry_tx: watch::Sender<BridgeTelemetry>,
@@ -926,7 +926,7 @@ async fn start_live_session(
     let mut session_event_rx = events.control;
     host_stats.media_pause.begin_session(target, session_id);
     host_stats.media_pause.set_paused(paused);
-    let (decode_tx, mut decode_rx) = mpsc::channel(64);
+    let (decode_tx, mut decode_rx) = remote_core::video_queue::channel(64);
     connection
         .subscribe(
             manual_subscription(session_id, stream_rates),
@@ -988,7 +988,7 @@ async fn start_live_session(
     let decode_pump = tokio::spawn(async move {
         let mut waiting_for_keyframe = true;
         let mut received_video = false;
-        while let Some((packet, timing, _source_epoch)) = decode_rx.recv().await {
+        while let Some((packet, timing, source_epoch)) = decode_rx.recv().await {
             if media_stats.media_pause.is_paused() {
                 waiting_for_keyframe = true;
                 continue;
@@ -1002,23 +1002,19 @@ async fn start_live_session(
                 keyframe,
                 pts_us: timing.capture_ts_us as i64,
             };
-            if let Ok(mut queue) = nalu_queue.lock() {
-                if queue.len() >= 8 {
-                    queue.clear();
-                    waiting_for_keyframe = true;
-                    let sender = recovery_connection.sender.clone();
-                    tokio::spawn(async move {
-                        let _ = sender
-                            .send_control(&ControlMessage::RequestKeyframe { session_id }, target)
-                            .await;
-                    });
-                }
-                if waiting_for_keyframe && !keyframe {
-                    continue;
-                }
-                waiting_for_keyframe = false;
+            if waiting_for_keyframe && !keyframe {continue;}
+            let (result, discarded) = {
+                let mut queue = nalu_queue.lock().unwrap();
+                queue.push(nalu, keyframe, source_epoch)
+            };
+            drop(discarded);
+            if result.needs_keyframe && !waiting_for_keyframe {
+                let _ = recovery_connection.sender.send_control(
+                    &ControlMessage::RequestKeyframe { session_id }, target).await;
+            }
+            waiting_for_keyframe = result.needs_keyframe;
+            if result.accepted {
                 *activity.lock().unwrap() = Some(Instant::now());
-                queue.push_back(nalu);
                 if !received_video {
                     received_video = true;
                     let _ = state_tx.send(BridgeSessionState::Streaming);
@@ -1849,7 +1845,7 @@ mod tests {
                     timestamp: 1,
                     ssrc: session_id,
                 },
-                payload: vec![0, 0, 0, 1, if keyframe { 38 } else { 2 }, 1, 42],
+                payload: vec![0, 0, 0, 1, if keyframe { 38 } else { 2 }, 1, sequence_number as u8],
             };
             client
                 .runtime()
@@ -1872,20 +1868,26 @@ mod tests {
             .unwrap()
             .unwrap();
         });
-        // Eight unread frames plus one overflow: discard the broken prediction chain.
-        for sequence in 2..=9 {
+        // Keep the initial keyframe unread, then fill its prediction tail.
+        for sequence in 2..=8 {
             send_video(sequence, false);
         }
         client.runtime().block_on(async {
             tokio::time::timeout(Duration::from_secs(1), async {
+                while client.nalu_queue.lock().unwrap().len() != 8 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }).await.expect("the native consumer queue fills before overflow");
+        });
+        while receiver.try_recv().is_ok() {}
+        send_video(9, false);
+        client.runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
-                    // Shared receiver recovery can also request the missing
-                    // initial IDR. Wait for the overflow state as well as a
-                    // request, rather than assuming exactly one startup request.
                     if matches!(
                         next_control(&mut receiver).await.0,
                         ControlMessage::RequestKeyframe { .. }
-                    ) && client.nalu_queue.lock().unwrap().is_empty()
+                    ) && client.nalu_queue.lock().unwrap().len() == 1
                     {
                         break;
                     }
@@ -1894,7 +1896,10 @@ mod tests {
             .await
             .expect("overflow requests a recovery keyframe")
         });
-        assert!(client.nalu_queue.lock().unwrap().is_empty());
+        let retained = client.poll_video_nalu().expect("overflow retains the pending keyframe");
+        assert!(retained.keyframe);
+        assert_eq!(retained.data.last(), Some(&1));
+        assert!(client.poll_video_nalu().is_none());
         send_video(10, false);
         send_video(11, true);
         client.runtime().block_on(async {
@@ -1909,7 +1914,9 @@ mod tests {
             .await
             .unwrap();
         });
-        assert!(client.poll_video_nalu().unwrap().keyframe);
+        let recovered = client.poll_video_nalu().unwrap();
+        assert!(recovered.keyframe);
+        assert_eq!(recovered.data.last(), Some(&11));
         assert!(client.poll_video_nalu().is_none());
         client.disconnect();
     }

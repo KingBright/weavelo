@@ -4,7 +4,7 @@ use crate::Statistics;
 use crate::workspace_input::InputState;
 pub use crate::workspace_input::TextInputOwner;
 use crate::client_session::{
-    AudioIngressEvent, EnvelopeIngress, MediaPacketHandler, SharedHostStats, VideoPacket,
+    AudioIngressEvent, EnvelopeIngress, MediaPacketHandler, SharedHostStats,
 };
 use crate::file_transfer_runtime::{
     FileTransferCommand, FileTransferEvent, FileTransferRuntimeConfig, run_file_transfer_runtime,
@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
-type VideoIngress = mpsc::Sender<VideoPacket>;
+type VideoIngress = crate::video_queue::VideoSender;
 type PointerUpdate = Arc<std::sync::Mutex<Option<(protocol::realtime_input::RealtimeInput, Instant)>>>;
 
 #[derive(Default)]
@@ -1468,8 +1468,8 @@ mod tests {
             audio_rx,
         )
     }
-    fn source_switch_view(actor: &mut Actor, id: u32) -> mpsc::Receiver<VideoPacket> {
-        let (decode_tx, decode_rx) = mpsc::channel(8);
+    fn source_switch_view(actor: &mut Actor, id: u32) -> crate::video_queue::VideoReceiver {
+        let (decode_tx, decode_rx) = crate::video_queue::channel(8);
         let handler = MediaPacketHandler::new(
             Statistics::new(),
             Arc::new(AtomicU32::new(id)),
@@ -1526,7 +1526,7 @@ mod tests {
         let task = tokio::spawn(async move {
             Box::pin(actor.run(cancel_rx)).await;
         });
-        let (video, _video_rx) = mpsc::channel(1);
+        let (video, _video_rx) = crate::video_queue::channel(1);
         let stats = Statistics::new();
         stats.video_recovery.track_output();
         let request = SubscriptionRequest {
@@ -1723,6 +1723,10 @@ mod tests {
         actor
             .packet(source_video(7, 10), FrameTimingCheckpoints::default())
             .await;
+        let old = packets.try_recv().unwrap();
+        actor
+            .packet(source_video(7, 11), FrameTimingCheckpoints::default())
+            .await;
         actor
             .request(SessionCommand::SwitchSource {
                 id: 7,
@@ -1739,8 +1743,9 @@ mod tests {
         actor
             .packet(source_video(7, 20), FrameTimingCheckpoints::default())
             .await;
-        let old = packets.try_recv().unwrap();
         let current = packets.try_recv().unwrap();
+        assert_eq!(current.0.header.sequence_number, 20);
+        assert!(packets.is_empty(), "the old source must leave no queued tail");
         assert_ne!(old.2, current.2, "queued old IDR must retain its old epoch");
         assert!(actor.accept_control(&SessionCommand::Activity {
             id: 7,
@@ -2223,7 +2228,7 @@ mod tests {
         let (control_tx, mut controls) = mpsc::unbounded_channel();
         let (audio_tx, _audio_rx) = mpsc::channel(4);
         let (files_tx, _files_rx) = mpsc::channel(4);
-        let (video_tx, mut video_rx) = mpsc::channel(2);
+        let (video_tx, mut video_rx) = crate::video_queue::channel(2);
         let stats = Statistics::new();
         let view = View {
             host_stats: Arc::new(SharedHostStats::default()),
@@ -2268,7 +2273,7 @@ mod tests {
         // encrypted control replies continue through the same UDP socket.
         for seq in 0..30u16 {
             let mut payload = vec![0x44; 5000];
-            payload[..5].copy_from_slice(&[0, 0, 1, 0x26, 1]);
+            payload[..5].copy_from_slice(&[0, 0, 1, if seq == 0 { 0x26 } else { 0x02 }, 1]);
             let packet = RtpPacket {
                 header: protocol::RtpHeader {
                     version: 2,

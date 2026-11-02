@@ -342,7 +342,7 @@ pub fn decoded_video_frame_surface(_frame: &MacDecodedVideoFrame) {}
 pub fn decoded_video_frame_surface_with_fit(_frame: &MacDecodedVideoFrame, _mode: u8) {}
 
 #[cfg(target_os = "macos")]
-type VideoIngressQueue = Mutex<mpsc::Receiver<remote_core::client_session::VideoPacket>>;
+type VideoIngressQueue = Mutex<remote_core::video_queue::VideoReceiver>;
 
 #[cfg(target_os = "macos")]
 enum VideoPayloadEvent {
@@ -406,7 +406,7 @@ async fn next_video_payload_event(queue: &VideoIngressQueue,
 pub struct ClientMediaRuntime {
     pub audio_playback: AudioPlaybackControl,
     pub audio_tx: mpsc::Sender<AudioPlayerEvent>,
-    pub decode_tx: mpsc::Sender<remote_core::client_session::VideoPacket>,
+    pub decode_tx: remote_core::video_queue::VideoSender,
     pub status: ClientMediaRuntimeStatus,
     pub decode_status: Arc<Mutex<String>>,
     #[cfg(target_os = "macos")]
@@ -476,7 +476,7 @@ impl ClientMediaRuntime {
         let decode_epoch = stats.video_recovery.source_counter();
         #[cfg(target_os = "macos")]
         let (video_payload, mut payload_rx) = tokio::sync::watch::channel((0_u64, true));
-        let (decode_tx, decode_rx) = mpsc::channel::<remote_core::client_session::VideoPacket>(8);
+        let (decode_tx, decode_rx) = remote_core::video_queue::channel(8);
         #[cfg(target_os = "macos")]
         let video_ingress = Arc::new(Mutex::new(decode_rx));
 
@@ -872,7 +872,7 @@ pub async fn run_client_binary() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     // Decouple decoding from receiving
     let (decode_tx, mut decode_rx) =
-        tokio::sync::mpsc::channel::<remote_core::client_session::VideoPacket>(8);
+        remote_core::video_queue::channel(8);
 
     // Decode Task
     spawn(async move {
@@ -1651,7 +1651,7 @@ mod payload_boundary_tests {
     use std::time::Duration;
     #[tokio::test]
     async fn payload_boundary_resume_idr_queued_before_watch_is_preserved() {
-        let (input, rx) = mpsc::channel(8);
+        let (input, rx) = remote_core::video_queue::channel(8);
         let queue = Mutex::new(rx);
         let (state, mut changes) = tokio::sync::watch::channel((0_u64, true));
         let packet = |sequence_number| protocol::RtpPacket {
@@ -1699,7 +1699,7 @@ mod payload_boundary_tests {
     async fn payload_boundary_fence_between_changed_pending_and_packet_ready() {
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
-        let (input, rx) = mpsc::channel(8);
+        let (input, rx) = remote_core::video_queue::channel(8);
         let queue = Mutex::new(rx);
         let (state, mut changes) = tokio::sync::watch::channel((1_u64, false));
         let observed = changes.clone();

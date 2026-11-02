@@ -20,7 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
 type Packet = remote_core::client_session::VideoPacket;
 static LIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
 /// Diagnostic observation only; never used to infer that frames were displayed.
@@ -370,7 +370,7 @@ fn resolve_color(frame: &D3dDecodedFrame) -> Result<VideoColor> {
 }
 
 pub fn spawn_decoder(
-    packets: mpsc::Receiver<Packet>,
+    packets: remote_core::video_queue::VideoReceiver,
     frame: Arc<Mutex<Option<DecodedFrame>>>,
     stats: Arc<Statistics>,
     epoch: Arc<AtomicU64>,
@@ -425,7 +425,7 @@ pub fn spawn_decoder(
     }))
 }
 async fn run(
-    mut packets: mpsc::Receiver<Packet>,
+    mut packets: remote_core::video_queue::VideoReceiver,
     mut cancel: watch::Receiver<bool>,
     shared: &Shared,
     fps: u32,

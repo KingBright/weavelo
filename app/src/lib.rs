@@ -988,7 +988,7 @@ impl From<ClientMediaRuntimeStatus> for UnifiedViewerMediaStatus {
 }
 
 type ViewerAudioTx = mpsc::Sender<client::audio_player::AudioPlayerEvent>;
-type ViewerDecodeTx = mpsc::Sender<remote_core::client_session::VideoPacket>;
+type ViewerDecodeTx = remote_core::video_queue::VideoSender;
 
 struct ViewerMediaChannels {
     audio_tx: ViewerAudioTx,
@@ -1161,7 +1161,7 @@ fn spawn_viewer_media_sinks(
     media_sink_tasks: &mut Vec<AbortOnDropTask>,
 ) -> (ViewerAudioTx, ViewerDecodeTx) {
     let (audio_tx, mut audio_rx) = mpsc::channel(256);
-    let (decode_tx, mut decode_rx) = mpsc::channel(256);
+    let (decode_tx, mut decode_rx) = remote_core::video_queue::channel(256);
     media_sink_tasks.push(AbortOnDropTask(tokio::spawn(async move {
         while audio_rx.recv().await.is_some() {}
     })));
