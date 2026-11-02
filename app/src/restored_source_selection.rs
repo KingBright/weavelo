@@ -212,12 +212,18 @@ impl RestoredDashboard {
                     let device=self.owner.validate_source_selection(binding,&sources)?;
                     if self.stream_device.as_ref().is_some_and(|expected|expected!=&device) {return Err("Device context changed; reopen sources".into());}
                     let mut sources=sources.into_iter();
+                    let mut discard_browser=false;
                     if self.stream_source.is_none() && self.stream_device.as_deref()==Some(device.as_str()) {
                         let first=sources.next().ok_or("Choose a source")?;
-                        self.start_stream_connection_capture(device.clone(),None,Some(first.source),cx);
+                        if self.focus_stream_source(&device,first.source,cx) {discard_browser=true;}
+                        else {self.start_stream_connection_capture(device.clone(),None,Some(first.source),cx);}
                     }
                     for source in sources {
                         if !self.open_stream_source(device.clone(),source.source,cx) {return Err("Could not open the viewing window".into());}
+                    }
+                    if discard_browser {
+                        let handle=self.window_handle;
+                        cx.defer(move|cx|{let _=handle.update(cx,|_,window,_|window.remove_window());});
                     }
                     Ok(())
                 }

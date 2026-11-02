@@ -251,6 +251,37 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
         1,
         "the first choice uses its source-browser window"
     );
+    let (runtime, group) = view.read_with(cx, |this, _| {
+        (this.runtime.clone(), this.exit_group.clone())
+    });
+    let browser = cx.update(|cx| {
+        open_restored_window(
+            runtime,
+            None,
+            Default::default(),
+            Some(device.into()),
+            None,
+            group,
+            cx,
+        )
+        .unwrap()
+    });
+    let browser_view = browser.root(cx).unwrap();
+    pump_until(cx, &browser_view, |this| {
+        this.owner.snapshot().source_catalog_revision == 1
+    });
+    browser_view.update(cx, |this, cx| this.confirm_source_selection(cx));
+    cx.run_until_parked();
+    assert!(
+        browser.update(cx, |_, _, _| ()).is_err(),
+        "choosing an existing source closes only its unused browser"
+    );
+    assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    assert!(
+        observed.try_recv().is_err(),
+        "the existing source is focused without a second subscription"
+    );
+    drop(browser_view);
     owner.close_all();
     window
         .update(cx, |_, window, _| window.remove_window())

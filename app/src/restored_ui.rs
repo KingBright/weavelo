@@ -1838,6 +1838,17 @@ impl RestoredDashboard {
     }
 
     fn open_device_window(&mut self, device_id: &str, cx: &mut Context<Self>) {
+        for handle in cx.windows() {
+            if handle == self.window_handle { continue; }
+            let Some(handle) = handle.downcast::<RestoredDashboard>() else { continue; };
+            let existing = handle.read(cx).is_ok_and(|view| view.purpose == WindowPurpose::Stream
+                && view.stream_device.as_deref() == Some(device_id) && view.stream_source.is_none());
+            if existing {
+                cx.activate(true);
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                return;
+            }
+        }
         if self.exit_group.stopping.load(Ordering::Acquire) { return; }
         let device = self
             .runtime
@@ -2351,7 +2362,9 @@ impl Render for RestoredDashboard {
             self.stream_device.as_ref().and_then(|id|snapshot.devices.iter().find(|device|&device.device_id==id))
                 .map(|device|device.display_name.as_str())
         });
-        let title = if active_session.is_none() && self.native_window_title!="Weavelo" && !self.native_window_title.is_empty() {
+        let title = if self.stream_source.is_none() {
+            format!("Choose a source · {} — Weavelo", peer.or(self.stream_device.as_deref()).unwrap_or("Device"))
+        } else if active_session.is_none() && self.native_window_title!="Weavelo" && !self.native_window_title.is_empty() {
             self.native_window_title.clone()
         } else {remote_window_title(peer.or(self.stream_device.as_deref()),source)};
         if title != self.native_window_title {
@@ -3478,7 +3491,7 @@ fn drawer_devices_tab(
         },
     ))
     .child(crate::desktop::device_drawer::DeviceDrawer::new(
-        model.project(state.filter), state.filter,
+        model.project(state.filter), state.clone(),
         move |action, cx| {
             if let Err(error) = view.update(cx, |this, cx| this.dispatch_device_action(action.clone(), cx)) {
                 eprintln!("Device drawer action target closed: {error}");

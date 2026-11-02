@@ -96,9 +96,38 @@ impl RestoredDashboard {
         if self.exit_group.stopping.load(Ordering::Acquire) {
             return false;
         }
-        if self.stream_device.as_deref() == Some(device.as_str())
-            && self.stream_source == Some(source)
-        {
+        if self.focus_stream_source(&device, source, cx) {
+            return true;
+        }
+        let Some(handle) = open_restored_window(
+            self.runtime.clone(),
+            None,
+            Default::default(),
+            None,
+            self.background.clone(),
+            self.exit_group.clone(),
+            cx,
+        ) else {
+            self.status = "Could not open the stream window".into();
+            return false;
+        };
+        let opened = handle
+            .update(cx, |this, _, cx| {
+                this.start_stream_connection_capture(device, None, Some(source), cx)
+            })
+            .is_ok();
+        if opened {
+            self.show_apps_menu = false;
+        }
+        opened
+    }
+    pub(super) fn focus_stream_source(
+        &mut self,
+        device: &str,
+        source: CaptureSource,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.stream_device.as_deref() == Some(device) && self.stream_source == Some(source) {
             let handle = self.window_handle;
             let retained = cx.entity();
             cx.defer(move |cx| {
@@ -125,7 +154,7 @@ impl RestoredDashboard {
                 }
                 let matches = {
                     let view = primary.read(cx);
-                    view.stream_device.as_deref() == Some(device.as_str())
+                    view.stream_device.as_deref() == Some(device)
                         && view.stream_source == Some(source)
                 };
                 if matches {
@@ -145,8 +174,7 @@ impl RestoredDashboard {
                 continue;
             };
             let matches = handle.read(cx).is_ok_and(|view| {
-                view.stream_device.as_deref() == Some(device.as_str())
-                    && view.stream_source == Some(source)
+                view.stream_device.as_deref() == Some(device) && view.stream_source == Some(source)
             });
             if matches {
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
@@ -154,26 +182,6 @@ impl RestoredDashboard {
                 return true;
             }
         }
-        let Some(handle) = open_restored_window(
-            self.runtime.clone(),
-            None,
-            Default::default(),
-            None,
-            self.background.clone(),
-            self.exit_group.clone(),
-            cx,
-        ) else {
-            self.status = "Could not open the stream window".into();
-            return false;
-        };
-        let opened = handle
-            .update(cx, |this, _, cx| {
-                this.start_stream_connection_capture(device, None, Some(source), cx)
-            })
-            .is_ok();
-        if opened {
-            self.show_apps_menu = false;
-        }
-        opened
+        false
     }
 }

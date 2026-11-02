@@ -101,7 +101,6 @@ impl DeviceListViewModel {
                     _ if device.online => DeviceConnectionStatus::Available,
                     _ => DeviceConnectionStatus::Standby,
                 };
-                let active = connection.is_active();
                 DeviceRowViewModel {
                     device_id: device.device_id.clone(),
                     display_name: device.display_name.clone(),
@@ -109,7 +108,8 @@ impl DeviceListViewModel {
                     scope: device.scope,
                     online: device.online,
                     connection,
-                    can_connect: device.is_streamable() && !active,
+                    can_connect: device.is_streamable()
+                        && connection != DeviceConnectionStatus::Connecting,
                     can_open_files: device.online,
                     can_open_workspace: device.online,
                 }
@@ -119,9 +119,11 @@ impl DeviceListViewModel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct DeviceListState {
     pub filter: DeviceFilterKind,
+    pub more: Option<String>,
+    pub details: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +134,8 @@ pub(crate) enum DeviceListAction {
     OpenWorkspace(String),
     CopyReceiveCommand(String),
     SendScreen(String),
+    More(String),
+    Details(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +152,16 @@ impl DeviceListState {
     /// through the existing OriginalOwner; this module starts no tasks or runtimes.
     pub(crate) fn reduce(&mut self, action: DeviceListAction) -> Option<DeviceListEffect> {
         match action {
+            DeviceListAction::More(device) => {
+                self.more = (self.more.as_ref() != Some(&device)).then_some(device);
+                self.details = None;
+                None
+            }
+            DeviceListAction::Details(device) => {
+                self.details = (self.details.as_ref() != Some(&device)).then_some(device);
+                self.more = None;
+                None
+            }
             DeviceListAction::SelectFilter(filter) => {
                 self.filter = filter;
                 None
@@ -158,8 +172,12 @@ impl DeviceListState {
             DeviceListAction::OpenFiles(device_id) => {
                 Some(DeviceListEffect::ConnectFiles(device_id))
             }
-            DeviceListAction::SendScreen(device_id) => Some(DeviceListEffect::SendScreen(device_id)),
-            DeviceListAction::CopyReceiveCommand(device_id) => Some(DeviceListEffect::CopyReceiveCommand(device_id)),
+            DeviceListAction::SendScreen(device_id) => {
+                Some(DeviceListEffect::SendScreen(device_id))
+            }
+            DeviceListAction::CopyReceiveCommand(device_id) => {
+                Some(DeviceListEffect::CopyReceiveCommand(device_id))
+            }
             DeviceListAction::OpenWorkspace(device_id) => {
                 Some(DeviceListEffect::OpenWorkspace(device_id))
             }
@@ -170,11 +188,18 @@ impl DeviceListState {
 /// This prepares a command for the existing remote-host channel; it does not
 /// claim to execute a remote action. IDs are data, never shell fragments.
 pub(crate) fn receive_command(source: &str, receiver: &str) -> Result<String, &'static str> {
-    if [source, receiver].iter().any(|id| id.is_empty() || id.len() > 256
-        || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))) {
+    if [source, receiver].iter().any(|id| {
+        id.is_empty()
+            || id.len() > 256
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    }) {
         return Err("Device identity cannot be represented in a receive command");
     }
-    Ok(format!("\"$HOME/Applications/Weavelo/Weavelo.app/Contents/MacOS/weavelo\" --gui-receive '{source}' 60 --receiver '{receiver}'"))
+    Ok(format!(
+        "\"$HOME/Applications/Weavelo/Weavelo.app/Contents/MacOS/weavelo\" --gui-receive '{source}' 60 --receiver '{receiver}'"
+    ))
 }
 
 fn matches_filter(filter: DeviceFilterKind, scope: DiscoveryScope) -> bool {
@@ -217,7 +242,8 @@ mod tests {
         assert_eq!(first.rows[1].display_name, "cube");
         devices[1].online = false;
         devices[1].display_name = "Office cube".into();
-        let reconnect = DeviceListViewModel::project(&devices, &RoleState::Idle, DeviceFilterKind::All);
+        let reconnect =
+            DeviceListViewModel::project(&devices, &RoleState::Idle, DeviceFilterKind::All);
         assert_eq!(reconnect.rows[1].device_id, first.rows[1].device_id);
         assert_eq!(reconnect.rows[1].display_name, "Office cube");
         assert_eq!(reconnect.rows[0].display_name, first.rows[0].display_name);
@@ -246,6 +272,19 @@ mod tests {
     #[test]
     fn state_actions_return_effects_without_starting_runtime_work() {
         let mut state = DeviceListState::default();
+        assert_eq!(state.reduce(DeviceListAction::More("peer-a".into())), None);
+        assert_eq!(state.more.as_deref(), Some("peer-a"));
+        assert_eq!(
+            state.reduce(DeviceListAction::Details("peer-b".into())),
+            None
+        );
+        assert_eq!(state.details.as_deref(), Some("peer-b"));
+        assert!(state.more.is_none());
+        assert_eq!(
+            state.reduce(DeviceListAction::Details("peer-b".into())),
+            None
+        );
+        assert!(state.details.is_none());
         assert_eq!(
             state.reduce(DeviceListAction::SelectFilter(DeviceFilterKind::Relay)),
             None
@@ -284,7 +323,10 @@ mod tests {
         }
         .project(DeviceFilterKind::All);
         assert_eq!(before.rows[0].connection.label(), "Session connected");
-        assert!(!before.rows[0].can_connect);
+        assert!(
+            before.rows[0].can_connect,
+            "an active view does not prevent opening its source picker"
+        );
         assert!(after.rows[0].can_connect);
         assert!(!after.rows[1].can_connect);
         assert_eq!(after.rows[1].device_id, "b");
@@ -306,7 +348,9 @@ mod tests {
         assert!(receive_command("source", "$(other)").is_err());
         assert!(receive_command("source", "").is_err());
         let command = receive_command("source-1", "receiver-2").unwrap();
-        assert_eq!(command, "\"$HOME/Applications/Weavelo/Weavelo.app/Contents/MacOS/weavelo\" --gui-receive 'source-1' 60 --receiver 'receiver-2'");
+        assert_eq!(
+            command,
+            "\"$HOME/Applications/Weavelo/Weavelo.app/Contents/MacOS/weavelo\" --gui-receive 'source-1' 60 --receiver 'receiver-2'"
+        );
     }
-
 }

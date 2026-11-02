@@ -101,7 +101,9 @@ impl RestoredDashboard {
                 enabled: self.owner.file_transfer_enabled(),
             },
         };
-        let controls = self.media_controls(cx).child(scale_mode_control(self.scale_mode, cx));
+        let controls = if self.active_tab == DrawerTab::Network {
+            self.media_controls(cx).child(scale_mode_control(self.scale_mode, cx))
+        } else { div() };
         let transfers = if self.active_tab == DrawerTab::Files { self.transfers_panel(cx) } else { div() };
         div()
             .relative()
@@ -164,13 +166,15 @@ pub(super) fn management_activity_panel(
             let handle = handle.downcast::<RestoredDashboard>()?;
             let view = handle.read(cx).ok()?;
             let snapshot = view.owner.snapshot();
-            let title = remote_window_title(
+            let title = if !view.native_window_title.is_empty() && view.native_window_title != "Weavelo" {
+                view.native_window_title.clone()
+            } else { remote_window_title(
                 snapshot
                     .role
                     .session()
                     .map(|s| s.peer.display_name.as_str()),
                 confirmed_source(&snapshot.sources, snapshot.active_source),
-            );
+            ) };
             Some((handle, title, view.status.clone()))
         })
         .collect();
