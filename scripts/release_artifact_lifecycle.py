@@ -113,12 +113,54 @@ def project_authority(arguments):
             yield state
 
     helper.lock = project_lock
+    original_companion = helper.companion
+
+    def project_companion(name):
+        module = original_companion(name)
+        if name == 'rust_release':
+            original_backend = module.backend
+
+            def project_backend(authority):
+                cleaner = original_backend(authority)
+                cleaner.assert_idle = lambda root, paths, verified_control_pids=(): project_output_idle(
+                    cleaner, root, paths, verified_control_pids)
+                return cleaner
+
+            module.backend = project_backend
+        return module
+
+    helper.companion = project_companion
     previous = sys.argv
     try:
         sys.argv = [str(HELPER), *arguments]
         return helper.main()
     finally:
         sys.argv = previous
+
+
+def project_output_idle(cleaner, root, paths, verified_control_pids=()):
+    """Protect the exact output users, without inspecting unrelated services/builds.
+
+    The project producer already serializes compilation and package replacement.
+    These are package outputs, not installed service or application paths.
+    """
+    require(Path(root).samefile(ROOT), 'Current output belongs to another project')
+    output = cleaner.checked_run(['/bin/ps', '-axo', 'pid=,comm=,args='], timeout=10)
+    require(output.strip(), 'Empty output-user inspection')
+    for line in output.splitlines():
+        fields = line.strip().split(None, 2)
+        require(len(fields) >= 2 and fields[0].isdigit(), 'Invalid output-user inspection')
+        pid = int(fields[0])
+        command = fields[2] if len(fields) == 3 else fields[1]
+        if pid not in (*verified_control_pids, os.getpid()) and any(str(path) in command for path in paths):
+            raise Refusal('Process references current output')
+    for path in paths:
+        path = Path(path)
+        if path.exists():
+            command = (['/usr/sbin/lsof', '-nP', '+D', str(path), '-Fn'] if path.is_dir() else
+                       ['/usr/sbin/lsof', '-nP', '-Fn', '--', str(path)])
+            require(not cleaner.checked_run(command, empty_code=True).strip(), 'Current output has open files')
+    return []
 
 
 def macos_output_root():

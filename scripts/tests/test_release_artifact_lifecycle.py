@@ -32,11 +32,16 @@ class ReleaseHookTests(unittest.TestCase):
         def original_lock(project, global_cleanup=False):
             calls.append((project, global_cleanup))
             yield ('current', 'state')
-        helper = SimpleNamespace(lock=original_lock)
+        cleaner = SimpleNamespace(assert_idle=Mock(side_effect=AssertionError('global scan')))
+        release = SimpleNamespace(backend=lambda authority: cleaner)
+        helper = SimpleNamespace(lock=original_lock, companion=lambda name: release)
         def main():
             with helper.lock(str(self.root), global_cleanup=True) as state:
                 self.assertEqual(state, ('current', 'state'))
             self.assertEqual(sys.argv[1], 'release-preflight')
+            with patch.object(hook, 'project_output_idle', return_value=[]) as idle:
+                helper.companion('rust_release').backend(helper).assert_idle(self.root, [], (123,))
+                idle.assert_called_once_with(cleaner, self.root, [], (123,))
         helper.main = main
         spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None))
         previous = sys.argv
@@ -45,6 +50,25 @@ class ReleaseHookTests(unittest.TestCase):
             hook.project_authority(['release-preflight', '--project', str(self.root)])
         self.assertEqual(calls, [(str(self.root), False)])
         self.assertIs(sys.argv, previous)
+
+    def test_current_outputs_ignore_unrelated_builds_and_services(self):
+        output = self.root / 'current.zip'; output.write_bytes(b'current')
+        cleaner = SimpleNamespace(checked_run=Mock(side_effect=['123 /usr/bin/xcodebuild xcodebuild /other/project\n', '']),
+            launch_references=Mock(side_effect=AssertionError('unrelated launch service scan')),
+            compiler_activity=Mock(side_effect=AssertionError('unrelated compiler scan')))
+        self.assertEqual(hook.project_output_idle(cleaner, self.root, [output]), [])
+        self.assertEqual(cleaner.checked_run.call_args_list[-1].args[0][-1], str(output))
+        cleaner.launch_references.assert_not_called()
+        cleaner.compiler_activity.assert_not_called()
+
+    def test_current_output_active_users_still_prevent_replacement(self):
+        output = self.root / 'current.zip'; output.write_bytes(b'current')
+        cleaner = SimpleNamespace(checked_run=Mock(return_value=f'123 reader reader {output}\n'))
+        with self.assertRaisesRegex(hook.Refusal, 'Process references current output'):
+            hook.project_output_idle(cleaner, self.root, [output])
+        cleaner.checked_run.side_effect = ['123 reader reader /other/project\n', 'p123\nncurrent.zip\n']
+        with self.assertRaisesRegex(hook.Refusal, 'Current output has open files'):
+            hook.project_output_idle(cleaner, self.root, [output])
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='rp-current-hook-')
