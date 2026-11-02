@@ -26,11 +26,11 @@ pub(super) fn show_management_window(cx: &mut App) {
         .update(cx, |_, window, _| window.activate_window())
         .is_err()
     {
-        reopen_management_window(view, cx);
+        reopen_restored_window(view, cx);
     }
 }
 
-pub(super) fn reopen_management_window(view: Entity<RestoredDashboard>, cx: &mut App) {
+pub(super) fn reopen_restored_window(view: Entity<RestoredDashboard>, cx: &mut App) {
     if view.read(cx).exit_group.stopping.load(Ordering::Acquire) {
         return;
     }
@@ -39,6 +39,7 @@ pub(super) fn reopen_management_window(view: Entity<RestoredDashboard>, cx: &mut
     let result = cx.open_window(options, move |window, cx| {
         view.update(cx, |this, cx| {
             this.window_handle = window.window_handle();
+            this.native_window_title.clear();
             RestoredDashboard::observe_window(window, cx);
             this.window_active = window.is_window_active();
             this.window_visible = window.is_window_visible();
@@ -53,6 +54,8 @@ pub(super) fn reopen_management_window(view: Entity<RestoredDashboard>, cx: &mut
                 }
                 this.window_active = false;
                 this.window_visible = Some(false);
+                this.owner.release_input();
+                this.pointer_input = PointerInputTracker::default();
                 true
             })
             .unwrap_or(true)
@@ -61,9 +64,9 @@ pub(super) fn reopen_management_window(view: Entity<RestoredDashboard>, cx: &mut
     });
     if let Err(error) = result {
         retained.update(cx, |this, _| {
-            this.status = format!("Could not open management: {error}")
+            this.status = format!("Could not reopen window: {error}")
         });
-        eprintln!("Weavelo management window: {error}");
+        eprintln!("Weavelo window: {error}");
     }
 }
 
@@ -153,7 +156,9 @@ pub(super) fn management_activity_panel(
         .windows()
         .into_iter()
         .filter_map(|handle| {
-            if handle == current_window { return None; }
+            if handle == current_window {
+                return None;
+            }
             let handle = handle.downcast::<RestoredDashboard>()?;
             let view = handle.read(cx).ok()?;
             let snapshot = view.owner.snapshot();

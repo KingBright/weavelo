@@ -1,6 +1,8 @@
 #[path="restored_management.rs"]
 mod management;
-use management::{ManagementRoot, WindowPurpose, management_activity_panel, reopen_management_window, show_management_window};
+#[path="restored_streams.rs"]
+mod stream_windows;
+use management::{ManagementRoot, WindowPurpose, management_activity_panel, reopen_restored_window, show_management_window};
 #[path="restored_text_input.rs"]
 mod remote_text_input;
 #[path="restored_acceptance.rs"]
@@ -187,6 +189,8 @@ fn open_restored_window(
         });
         if let Some(device) = device {
             view.update(cx, |this, cx| {
+                this.stream_device=Some(device.clone());
+                this.stream_source=Some(protocol::session::CaptureSource::MainDisplay);
                 let ticket = this.session_commands.begin();
                 let owner = this.owner.clone();
                 cx.spawn(async move |view, cx| {
@@ -216,7 +220,7 @@ fn open_restored_window(
                         if handle.update(cx, |_, window, _| window.activate_window()).is_err()
                             && view.purpose == WindowPurpose::Management {
                             let retained = cx.entity();
-                            cx.defer(move |cx| { reopen_management_window(retained, cx); });
+                            cx.defer(move |cx| { reopen_restored_window(retained, cx); });
                         }
                     }
                     #[cfg(any(unix, windows))]
@@ -446,6 +450,8 @@ impl ApplicationArtwork {
 struct RestoredDashboard {
     purpose: WindowPurpose,
     device_query: String,
+    stream_device: Option<String>,
+    stream_source: Option<protocol::session::CaptureSource>,
     source_selection: Option<source_selection::Selection>,
     source_query_inflight: bool,
     artwork_cache: std::cell::RefCell<ApplicationArtwork>,
@@ -593,6 +599,8 @@ impl RestoredDashboard {
         Self {
             purpose,
             device_query: String::new(),
+            stream_device: None,
+            stream_source: None,
             native_window_title: "Weavelo".into(),
             runtime,
             owner,
@@ -837,6 +845,8 @@ impl RestoredDashboard {
             request_id:request.to_owned(),close:close.clone(),source:capture,owner:Arc::downgrade(&owner),watchdog,
         };
         if let Err(error)=handle.update(cx,|this,_,cx| {
+            this.stream_device=Some(device.to_owned());
+            this.stream_source=Some(capture);
             this.delivery_closed=Some(close);
             this.start_stream_connection(device.to_owned(),Some(request.to_owned()),cx)
         }) {
@@ -2148,7 +2158,9 @@ impl Render for PopoutStreamView {
         let source_icons = &artwork;
         let source = confirmed_source(&snapshot.sources, snapshot.active_source);
         let peer = snapshot.role.session().map(|s| s.peer.display_name.as_str());
-        let title = remote_window_title(peer, source);
+        let title = if peer.is_none() && !self.native_window_title.is_empty() {
+            self.native_window_title.clone()
+        } else {remote_window_title(peer,source)};
         if title != self.native_window_title {
             window.set_window_title(&format!("PiP · {title}"));
             self.native_window_title = title.clone();
@@ -2391,8 +2403,15 @@ impl Render for RestoredDashboard {
         owned_gui_stage(8);
         self.sync_input_session(&role, cx);
         let active_session = role.session().cloned();
+        if matches!(role,RoleState::Viewing(_)) {self.stream_source=Some(snapshot.active_capture_source);}
         let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
-        let title = remote_window_title(active_session.as_ref().map(|s| s.peer.display_name.as_str()), source);
+        let peer=active_session.as_ref().map(|s|s.peer.display_name.as_str()).or_else(|| {
+            self.stream_device.as_ref().and_then(|id|snapshot.devices.iter().find(|device|&device.device_id==id))
+                .map(|device|device.display_name.as_str())
+        });
+        let title = if active_session.is_none() && self.native_window_title!="Weavelo" && !self.native_window_title.is_empty() {
+            self.native_window_title.clone()
+        } else {remote_window_title(peer.or(self.stream_device.as_deref()),source)};
         if title != self.native_window_title {
             window.set_window_title(&title);
             self.native_window_title = title;
@@ -3220,7 +3239,6 @@ fn display_switcher_control(
         } else {
             format!("Display {} · view", index + 1)
         };
-        let action_label = label.clone();
         let is_selected = capture_source_is_selected(selected, &source, index);
         control = control.child(
             command_button(
@@ -3237,9 +3255,8 @@ fn display_switcher_control(
             .px_2()
             .text_size(px(9.0))
             .on_click(move |_event, _window, cx| {
-                let label = action_label.clone();
                 let _ = view.update(cx, |this, cx| {
-                    this.start_capture_source_switch(binding.clone(), source.clone(), label, cx);
+                    this.open_enumerated_source(binding.clone(), source.clone(), cx);
                     cx.notify();
                 });
             })
@@ -3324,8 +3341,8 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
 fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::CaptureSourceInfo>) -> String {
     match peer {
         Some(peer) => match source {
-            Some(source) => format!("{} · {peer} — Weavelo", capture_source_label(source)),
-            None => format!("{peer} — Weavelo"),
+            Some(source) => format!("{} · {peer} · Receiving — Weavelo", capture_source_label(source)),
+            None => format!("{peer} · Receiving — Weavelo"),
         },
         None => "Weavelo".into(),
     }
@@ -3413,6 +3430,11 @@ fn capture_source_menu(
         .disabled(multiple_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
         .on_click(move|_,_,cx| {let _=multiple_view.update(cx,|this,cx|this.begin_remote_source_selection(multiple_binding.clone(),cx));})
         .child("Open several windows…"));
+    let replace_view=view.clone();let replace_binding=source_binding.cloned();
+    menu=menu.child(command_button("island_menu_replace",ActionVariantKind::Neutral,cx)
+        .disabled(replace_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
+        .on_click(move|_,_,cx| {let _=replace_view.update(cx,|this,cx|this.begin_remote_source_replacement(replace_binding.clone(),cx));})
+        .child("Replace current source…"));
     if let Some(error) = error {
         menu = menu.child(
             div()
@@ -3432,7 +3454,6 @@ fn capture_source_menu(
         };
         let detail = source.title.clone();
         let badge = capture_source_badge(&source, source_icons, &theme);
-        let action_label = label.clone();
         let selected = capture_source_is_selected(selected, &source, index);
         menu = menu.child(
             command_button(
@@ -3449,9 +3470,8 @@ fn capture_source_menu(
             .px_2()
             .text_size(px(10.0))
             .on_click(move |_event, _window, cx| {
-                let label = action_label.clone();
                 let _ = view.update(cx, |this, cx| {
-                    this.start_capture_source_switch(binding.clone(), source.clone(), label, cx);
+                    this.open_enumerated_source(binding.clone(), source.clone(), cx);
                     cx.notify();
                 });
             })
@@ -3498,9 +3518,8 @@ fn capture_source_menu(
                 .px_2()
                 .text_size(px(10.0))
                 .on_click(move |_event, _window, cx| {
-                    let label = action_label.clone();
-                    let _ = view.update(cx, |this, cx| {
-                        this.start_capture_source_switch(binding.clone(), source.clone(), label, cx);
+                        let _ = view.update(cx, |this, cx| {
+                        this.open_enumerated_source(binding.clone(), source.clone(), cx);
                         cx.notify();
                     });
                 })
@@ -4134,6 +4153,15 @@ impl RestoredDashboard {
     }
     fn start_stream_connection_capture(&mut self, device_id:String,receive:Option<String>,capture:Option<protocol::session::CaptureSource>,cx:&mut Context<Self>) {
         if self.exit_group.stopping.load(Ordering::Acquire) { return; }
+        if self.stream_device.as_ref().is_some_and(|device|device != &device_id) {
+            self.status="Open the other device in a new stream window".into();cx.notify();return;
+        }
+        if capture.zip(self.stream_source).is_some_and(|(requested,current)|requested!=current) {
+            self.status="Open the other source in a new stream window".into();cx.notify();return;
+        }
+        let capture=capture.or(self.stream_source).or(Some(protocol::session::CaptureSource::MainDisplay));
+        self.stream_device=Some(device_id.clone());
+        self.stream_source=capture;
                 self.invalidate_source_commands();
                 let ticket = self.session_commands.begin();
                 self.status = format!("Connecting to {device_id}");
@@ -4200,7 +4228,7 @@ impl RestoredDashboard {
                         cx.defer(move |cx| {
                             let handle = root.read(cx).window_handle;
                             if handle.update(cx, |_, window, _| window.activate_window()).is_err() {
-                                reopen_management_window(root.clone(), cx);
+                                reopen_restored_window(root.clone(), cx);
                             }
                             root.update(cx, |this, cx| {
                                 this.dispatch_device_action(DeviceListAction::OpenFiles(device_id), cx);
@@ -6226,7 +6254,7 @@ mod input_tests {
 
     #[gpui::test]
     fn management_close_retains_coordinator_and_other_windows(cx: &mut TestAppContext) {
-        use super::{FrontendExitGroup, ManagementRoot, WindowPurpose, open_restored_window, reopen_management_window};
+        use super::{FrontendExitGroup, ManagementRoot, WindowPurpose, open_restored_window, reopen_restored_window};
         let executor = tokio::runtime::Runtime::new().unwrap();
         let _entered = executor.enter();
         let backend = executor.block_on(crate::UnifiedServiceOwner::start(
@@ -6246,6 +6274,15 @@ mod input_tests {
         let stream = cx.update(|cx| open_restored_window(runtime, None, Default::default(), None, None, group.clone(), cx).unwrap());
         let stream_view = stream.root(cx).unwrap();
         assert_eq!(stream_view.read_with(cx, |this, _| this.purpose), WindowPurpose::Stream);
+        let source=protocol::session::CaptureSource::Window(77);
+        stream_view.update(cx,|this,_| {this.stream_device=Some("fixture-device-a".into());this.stream_source=Some(source);});
+        let window_count=cx.update(|cx|cx.windows().len());
+        manager_view.update(cx,|this,cx|assert!(this.open_stream_source("fixture-device-a".into(),source,cx)));
+        assert_eq!(cx.update(|cx|cx.windows().len()),window_count,"same source focuses its existing presentation");
+        stream_view.update(cx,|this,cx|this.start_stream_connection_capture("fixture-device-b".into(),None,Some(source),cx));
+        assert_eq!(stream_view.read_with(cx,|this,_|this.stream_device.clone()).as_deref(),Some("fixture-device-a"));
+        stream_view.update(cx,|this,cx|this.start_stream_connection_capture("fixture-device-a".into(),None,Some(protocol::session::CaptureSource::Window(88)),cx));
+        assert_eq!(stream_view.read_with(cx,|this,_|this.stream_source),Some(source),"new-source requests cannot silently replace this stream");
         stream_view.update(cx, |this, cx| this.open_popout_pip_window(cx));
         let pip = stream_view.read_with(cx, |this, _| this.pip_windows[0]);
         let mut visual = gpui::VisualTestContext::from_window(manager.into(), cx);
@@ -6258,7 +6295,7 @@ mod input_tests {
             let retained = cx.global::<ManagementRoot>().0.clone();
             assert_eq!(retained, manager_view);
             assert_eq!(retained.read(cx).status, "Retained local work");
-            reopen_management_window(retained.clone(), cx);
+            reopen_restored_window(retained.clone(), cx);
             assert!(retained.read(cx).window_handle.update(cx, |_, _, _| ()).is_ok());
         });
         let stream_weak = stream_view.downgrade();
@@ -6268,6 +6305,12 @@ mod input_tests {
         stream.update(cx, |_, window, _| window.remove_window()).unwrap();
         assert!(stream_weak.upgrade().is_some(), "PiP retains its exact stream controller");
         assert!(pip.update(cx, |_, _, _| ()).is_ok());
+        let owners=group.owners().len();
+        manager_view.update(cx,|this,cx|assert!(this.open_stream_source("fixture-device-a".into(),source,cx)));
+        let restored=stream_weak.read_with(cx,|this,_|this.window_handle).unwrap();
+        assert!(restored.update(cx,|_,_,_|()).is_ok(),"opening a PiP-only stream restores its same primary controller");
+        assert_eq!(group.owners().len(),owners,"restoring a presentation must not start another connection owner");
+        restored.update(cx,|_,window,_|window.remove_window()).unwrap();
         pip.update(cx, |_, window, _| window.remove_window()).unwrap();
         cx.run_until_parked();
         assert!(stream_weak.upgrade().is_none(), "last presentation releases the stream; timer must not retain it");

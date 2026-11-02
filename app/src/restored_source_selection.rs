@@ -5,6 +5,7 @@ use remote_core::shared_files::{ShareScope, current_share_scope};
 pub(super) enum Target {
     Send(String),
     Open(SourceViewBinding),
+    Replace(SourceViewBinding),
 }
 pub(super) struct Selection {
     target: Target,
@@ -40,6 +41,7 @@ impl Selection {
         if self.pending_delivery() {return;}
         if !self.sources.iter().any(|item|item.source==source) {self.error=Some("The source list changed".into());return;}
         if self.selected.contains(&source) {self.selected.retain(|selected|*selected!=source);self.error=None;}
+        else if matches!(self.target,Target::Replace(_)) {self.selected=vec![source];self.error=None;}
         else if self.selected.len()<MAX_SUBSCRIPTIONS {self.selected.push(source);self.error=None;}
         else {self.error=Some("Choose up to eight sources".into());}
     }
@@ -54,7 +56,7 @@ impl Selection {
         self.selected.retain(|id| sources.iter().any(|source| source.source == *id));
         if self.selected.is_empty() {self.selected=sources.first().map(|source|vec![source.source]).unwrap_or_default();}
         self.sources=sources;self.artwork=artwork;self.loading=false;
-        self.error=self.sources.is_empty().then(||"Choose a screen in Sharing & permissions first".into());
+        self.error=self.sources.is_empty().then(||if self.is_delivery() {"Choose a local source in Sharing & permissions."}else{"No shared sources are available on the remote device."}.into());
     }
 }
 
@@ -119,10 +121,16 @@ impl RestoredDashboard {
         cx.notify();
     }
     pub(super) fn begin_remote_source_selection(&mut self,binding:Option<SourceViewBinding>,cx:&mut Context<Self>) {
+        self.begin_remote_sources(binding,false,cx);
+    }
+    pub(super) fn begin_remote_source_replacement(&mut self,binding:Option<SourceViewBinding>,cx:&mut Context<Self>) {
+        self.begin_remote_sources(binding,true,cx);
+    }
+    fn begin_remote_sources(&mut self,binding:Option<SourceViewBinding>,replace:bool,cx:&mut Context<Self>) {
         let Some(binding)=binding.filter(|binding|self.owner.source_binding_is_current(binding)) else {return;};
         let snapshot=self.owner.snapshot();
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
-        let mut selection=Selection {target:Target::Open(binding),scope:current_share_scope(),title:"Choose screens & app windows".into(),
+        let mut selection=Selection {target:if replace {Target::Replace(binding)}else{Target::Open(binding)},scope:current_share_scope(),title:if replace {"Replace current source"}else{"Open screens & app windows"}.into(),
             sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,pending_request:None,error:None};
         let artwork=self.artwork_cache.borrow_mut().update(snapshot.source_icons);
         selection.replace((*snapshot.sources).clone(),artwork);
@@ -142,26 +150,22 @@ impl RestoredDashboard {
                 Target::Send(device)=>self.send_screen(device.clone(),selection.selected.clone()),
                 Target::Open(binding)=>{
                     let device=self.owner.validate_source_selection(binding,&sources)?;
-                    if self.exit_group.owners().len().saturating_sub(1)+sources.len()>MAX_SUBSCRIPTIONS {
-                        return Err("Close a viewing window to open these sources".into());
-                    }
-                    let mut sources=sources.into_iter();
-                    let first=sources.next().ok_or("Choose a source")?;
-                    if !self.start_capture_source_switch(Some(binding.clone()),first.clone(),first.title.clone(),cx) {
-                        return Err("The source list changed; choose the sources again".into());
-                    }
                     for source in sources {
-                        let handle=open_restored_window(self.runtime.clone(),None,Arc::new(AtomicBool::new(false)),None,
-                            self.background.clone(),self.exit_group.clone(),cx).ok_or("Could not open the viewing window")?;
-                        handle.update(cx,|this,_,cx|this.start_stream_connection_capture(device.clone(),None,Some(source.source),cx))
-                            .map_err(|error|error.to_string())?;
+                        if !self.open_stream_source(device.clone(),source.source,cx) {return Err("Could not open the viewing window".into());}
                     }
                     Ok(())
+                }
+                Target::Replace(binding)=>{
+                    if sources.len()!=1 {return Err("Choose one source to replace this stream".into());}
+                    self.owner.validate_source_selection(binding,&sources)?;
+                    let source=sources.into_iter().next().ok_or("Choose a source")?;
+                    if self.start_capture_source_switch(Some(binding.clone()),source.clone(),source.title.clone(),cx) {Ok(())}
+                    else {Err("The source list changed; choose again".into())}
                 }
             }
         })();
         if let Err(error)=result {
-            if delivery {selection.loading=false;selection.error=Some(error.clone());self.source_selection=Some(selection);}
+            selection.loading=false;selection.error=Some(error.clone());self.source_selection=Some(selection);
             self.status=error;
         } else if delivery {
             selection.error=None;
@@ -227,7 +231,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         .p_4().flex().flex_col().gap_3().bg(color_glass_card()).border_1().border_color(color_border_fine()).rounded_xl().shadow_2xl()
         .on_any_mouse_down(cx.listener(|_,_,_,cx|cx.stop_propagation()))
         .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(selection.title.clone()))
-        .child(div().text_size(px(11.)).text_color(theme.content.secondary).child("Select one or more screens or app windows."))
+        .child(div().text_size(px(11.)).text_color(theme.content.secondary).child(if matches!(selection.target,Target::Replace(_)) {"Choose one source for this stream."}else{"Select screens, app windows or cameras to open separately."}))
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child("Loading sources…")))
         .when(selection.pending_delivery(),|panel|panel.child(div().text_size(px(11.)).child("Connecting to receiver…")))
@@ -241,7 +245,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
             .child(command_button("source_selection_confirm",ActionVariantKind::Primary,cx)
                 .disabled(selection.loading||selection.pending_delivery()||selection.selected.is_empty())
                 .on_click(move|_,_,cx|{let _=confirm.update(cx,|this,cx|this.confirm_source_selection(cx));})
-                .child(if selection.pending_delivery() {"Connecting…"}else if matches!(selection.target,Target::Send(_)) {"Send"}else{"Open"})));
+                .child(if selection.pending_delivery() {"Connecting…"}else if matches!(selection.target,Target::Send(_)) {"Send"}else if matches!(selection.target,Target::Replace(_)) {"Replace"}else{"Open"})));
     div().occlude().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x00000088)).child(panel)
 }
 
