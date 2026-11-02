@@ -49,12 +49,13 @@ pub(super) fn reopen_restored_window(view: Entity<RestoredDashboard>, cx: &mut A
         });
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |this, _| {
+            weak.update(cx, |this, cx| {
                 if this.exit_group.stopping.load(Ordering::Acquire) {
                     return false;
                 }
                 this.window_active = false;
                 this.window_visible = Some(false);
+                this.prepare_stream_close(cx);
                 this.owner.release_input();
                 this.pointer_input = PointerInputTracker::default();
                 true

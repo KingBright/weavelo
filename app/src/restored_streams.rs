@@ -4,6 +4,27 @@ use super::*;
 use protocol::session::{CaptureSource, CaptureSourceInfo};
 
 impl RestoredDashboard {
+    pub(super) fn prepare_stream_close(&mut self, cx: &mut Context<Self>) {
+        if self.purpose != WindowPurpose::Stream { return; }
+        self.session_commands.begin();
+        self.invalidate_source_commands();
+        self.source_selection=None;
+        self.owner.release_input();
+        self.pointer_input=PointerInputTracker::default();
+        self.owner.close_received_window();
+        self.owner.close_all();
+        self.current_frame=None;
+        let pips=std::mem::take(&mut self.pip_windows);
+        cx.defer(move|cx|for pip in pips {let _=pip.update(cx,|_,window,_|window.remove_window());});
+    }
+
+    pub(super) fn end_stream_window(&mut self, cx: &mut Context<Self>) {
+        if self.purpose != WindowPurpose::Stream { return; }
+        self.prepare_stream_close(cx);
+        let handle=self.window_handle;
+        cx.defer(move|cx| {let _=handle.update(cx,|_,window,_|window.remove_window());});
+    }
+
     pub(super) fn idle_stream_stage(&self, cx: &mut Context<Self>) -> AnyElement {
         let source_selected=self.stream_source.is_some();
         let title=if source_selected {"Disconnected"} else {"Choose a source"};

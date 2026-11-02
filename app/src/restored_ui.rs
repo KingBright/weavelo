@@ -11,6 +11,9 @@ use sending::{SendActivity, SendingContext};
 #[cfg(test)]
 #[path="restored_source_browser_tests.rs"]
 mod source_browser_tests;
+#[cfg(test)]
+#[path="restored_stream_lifetime_tests.rs"]
+mod stream_lifetime_tests;
 use management::{ManagementRoot, WindowPurpose, management_activity_panel, reopen_restored_window, show_management_window};
 #[path="restored_text_input.rs"]
 mod remote_text_input;
@@ -186,9 +189,10 @@ fn open_restored_window(
                 });
                 true
             } else {
-                // A PiP retains this exact stream controller until its final
-                // presentation closes. Closing one surface only releases input.
-                let _ = weak.update(cx, |this, _| {
+                // Closing a receive window ends only this logical stream and
+                // its PiPs. A sending control window keeps its retained sender.
+                let _ = weak.update(cx, |this, cx| {
+                    this.prepare_stream_close(cx);
                     this.owner.release_input();
                     this.pointer_input = PointerInputTracker::default();
                     this.window_active = false;
@@ -5864,8 +5868,8 @@ mod input_tests {
         });
         let stream_weak = stream_view.downgrade();
         drop(stream_view);
-        let mut visual = gpui::VisualTestContext::from_window(stream.into(), cx);
-        assert!(visual.simulate_close());
+        // A lost primary presentation can still be restored from its PiP.
+        // Explicit user close now ends the stream; that path is tested separately.
         stream.update(cx, |_, window, _| window.remove_window()).unwrap();
         assert!(stream_weak.upgrade().is_some(), "PiP retains its exact stream controller");
         assert!(pip.update(cx, |_, _, _| ()).is_ok());

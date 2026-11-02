@@ -609,9 +609,10 @@ impl RestoredDashboard {
             .child(div().text_size(px(11.)).child(self.status.clone()))
             .child(
                 command_button("island_disconnect", ActionVariantKind::Danger, cx)
+                    .debug_selector(||"end-current-stream".into())
                     .child("End this stream")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.dispatch_session_action(SessionTabsAction::Disconnect, cx)
+                        this.end_stream_window(cx)
                     })),
             );
         #[cfg(any(unix, windows))]
