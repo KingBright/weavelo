@@ -6,6 +6,7 @@ use super::*;
 pub(super) enum WindowPurpose {
     Management,
     Stream,
+    Sending,
 }
 
 /// A closed management window leaves the frontend coordinator alive. Its
@@ -165,6 +166,7 @@ pub(super) fn management_activity_panel(
             }
             let handle = handle.downcast::<RestoredDashboard>()?;
             let view = handle.read(cx).ok()?;
+            if view.purpose == WindowPurpose::Sending { return None; }
             let snapshot = view.owner.snapshot();
             let title = if !view.native_window_title.is_empty() && view.native_window_title != "Weavelo" {
                 view.native_window_title.clone()
@@ -184,7 +186,11 @@ pub(super) fn management_activity_panel(
             .font_weight(FontWeight::SEMIBOLD)
             .child("Activity"),
     );
-    if streams.is_empty() {
+    #[cfg(any(unix, windows))]
+    let has_sends = !activity.sends.is_empty();
+    #[cfg(not(any(unix, windows)))]
+    let has_sends = false;
+    if streams.is_empty() && !has_sends {
         panel = panel.child(
             div()
                 .text_size(px(12.))
@@ -228,6 +234,21 @@ pub(super) fn management_activity_panel(
                     }),
                 ),
         );
+    }
+    #[cfg(any(unix, windows))]
+    for send in activity.sends {
+        let request=send.request_id.clone();
+        let open_request=request.clone();
+        panel=panel.child(div().flex().items_center().gap_3().p_3().rounded_lg()
+            .bg(color_glass_card()).border_1().border_color(color_border_fine())
+            .child(icon(IconName::Sharing).size(px(16.)))
+            .child(div().min_w_0().flex_1()
+                .child(div().truncate().text_size(px(12.)).child(format!("{} → {}",send.source,send.target_name)))
+                .child(div().truncate().text_size(px(10.)).text_color(cx.theme().content.secondary).child(send.status)))
+            .child(command_button(format!("sending-open-{request}"),ActionVariantKind::Neutral,cx).child("Open")
+                .on_click(cx.listener(move|this,_,_,cx| {this.open_sending_window(&open_request,Vec::new(),Arc::new(Default::default()),cx);})))
+            .child(command_button(format!("sending-stop-{request}"),ActionVariantKind::Neutral,cx).disabled(send.finished).child("Stop this send")
+                .on_click(cx.listener(move|this,_,_,cx| {this.directed_send.lock().unwrap().remove(&request);cx.notify();}))));
     }
     #[cfg(any(unix, windows))]
     if activity.sharing > 0 {

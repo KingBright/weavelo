@@ -5,6 +5,9 @@ mod stream_windows;
 #[path="restored_stream_controls.rs"]
 mod stream_controls;
 use stream_controls::{DeviceFiles, StreamPanel};
+#[path="restored_sending.rs"]
+mod sending;
+use sending::{SendActivity, SendingContext};
 #[cfg(test)]
 #[path="restored_source_browser_tests.rs"]
 mod source_browser_tests;
@@ -356,12 +359,13 @@ pub fn should_auto_hide_toolbar(
     !toolbar_hovered && !menu_open && now.saturating_duration_since(last_activity) >= hide_delay
 }
 
-#[derive(Clone, Copy, Default, serde::Serialize)]
+#[derive(Clone, Default, serde::Serialize)]
 struct StreamActivity {
     sharing: usize,
     receiving: usize,
     can_stop_sending: bool,
     can_stop_receiving: bool,
+    sends: Vec<SendActivity>,
 }
 
 /// Only the existing views in this GUI process; no persistent registry or IPC authority.
@@ -441,6 +445,7 @@ struct RestoredDashboard {
     stream_panel: StreamPanel,
     stream_device: Option<String>,
     stream_source: Option<protocol::session::CaptureSource>,
+    sending_context: Option<SendingContext>,
     source_selection: Option<source_selection::Selection>,
     source_query_inflight: bool,
     artwork_cache: std::cell::RefCell<ApplicationArtwork>,
@@ -523,11 +528,15 @@ struct RestoredDashboard {
 impl RestoredDashboard {
     #[cfg(any(unix, windows))]
     fn stream_activity(&self) -> StreamActivity {
+        // Drop the sender guard before collecting per-send presentation data.
+        // Struct-field temporaries otherwise survive the entire initializer.
+        let can_stop_sending=self.directed_send.lock().unwrap().values().any(|sender|!sender.is_finished());
         StreamActivity {
             sharing: self.background.as_ref().map_or(0, |background| background.outgoing_streams()),
             receiving: self.exit_group.owners().iter().map(|owner| owner.receiving_streams()).sum(),
-            can_stop_sending: self.directed_send.lock().unwrap().values().any(|sender|!sender.is_finished()),
+            can_stop_sending,
             can_stop_receiving: self.directed_receive.as_ref().is_some_and(|adapter| !adapter.leases.is_empty()),
+            sends: self.send_activity(),
         }
     }
     #[cfg(any(unix, windows))]
@@ -593,6 +602,7 @@ impl RestoredDashboard {
             stream_panel: StreamPanel::default(),
             stream_device: None,
             stream_source: None,
+            sending_context: None,
             native_window_title: "Weavelo".into(),
             runtime,
             owner,
@@ -857,13 +867,7 @@ impl RestoredDashboard {
             // source picker or management presentation has been closed.
             for sender in self.directed_send.lock().unwrap().values() { sender.poll(); }
         }
-        let progress=self.source_selection.as_ref().and_then(|selection|selection.pending_request())
-            .and_then(|request|self.directed_send.lock().unwrap().get(request)
-                .map(|sender|(sender.request_id.clone(),sender.progress())));
-        if let Some(selection)=self.source_selection.as_mut()
-            && selection.observe_delivery(progress.as_ref().map(|(request,progress)|(request.as_str(),progress))) {
-            self.source_selection=None;
-        }
+        self.poll_sending_context();
         use crate::desktop::directed_receive::{Request, Lease};
         if let Some(adapter) = self.directed_receive.as_mut() {
             adapter.leases.retain(|_, lease| lease.current());
@@ -911,6 +915,7 @@ impl RestoredDashboard {
             }
             if let Request::Send {request_id,target_device_id,sources,..}=command.request {
                 let result=self.send_screen_request(target_device_id,sources,request_id.clone());
+                if result.is_ok() { self.open_sending_window(&request_id,Vec::new(),Arc::new(Default::default()),cx); }
                 let response=match result {
                     Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().get(&request_id).unwrap().cancellation()),
                     Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
@@ -2334,6 +2339,9 @@ impl Render for RestoredDashboard {
         if self.purpose == WindowPurpose::Management {
             window.set_window_title("Weavelo");
             return self.management_view(&snapshot, cx);
+        }
+        if self.purpose == WindowPurpose::Sending {
+            return self.sending_view(&snapshot,window,cx);
         }
         let role = snapshot.role.clone();
         self.capture_supports_input = snapshot.active_capture_supports_input;

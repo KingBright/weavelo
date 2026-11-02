@@ -77,7 +77,7 @@ impl RestoredDashboard {
     }
 
     pub(super) fn open_device_files(&mut self, device: String, cx: &mut Context<Self>) {
-        if self.purpose == WindowPurpose::Stream && self.stream_device.as_ref() != Some(&device) {
+        if self.purpose != WindowPurpose::Management && self.stream_device.as_ref() != Some(&device) {
             self.status = "This window belongs to another device".into();
             return;
         }
@@ -101,7 +101,7 @@ impl RestoredDashboard {
         }
     }
 
-    fn device_label(&self, device: &str) -> String {
+    pub(super) fn device_label(&self, device: &str) -> String {
         self.owner
             .snapshot()
             .devices

@@ -106,6 +106,17 @@ mod sender {
         pub fn is_finished(&self) -> bool {
             self.task.is_finished()
         }
+        #[cfg(test)]
+        pub(crate) fn waiting_fixture(request_id: &str, target: &str,
+            sources: Vec<protocol::session::CaptureSource>) -> (Self, tokio::sync::watch::Receiver<bool>) {
+            let (stop, observed) = tokio::sync::watch::channel(false);
+            let mut cancelled = observed.clone();
+            let task = tokio::spawn(async move { let _ = cancelled.changed().await; });
+            (Self {request_id:request_id.into(),target:target.into(),sources,stop,
+                heartbeat:Arc::new(Mutex::new(Instant::now())),
+                status:Arc::new(Mutex::new(SendProgress {status:"Contacting target".into(),started:false,
+                    result:None,confirmation_timeout:None})),task}, observed)
+        }
     }
     impl Drop for SendHandle {
         fn drop(&mut self) {

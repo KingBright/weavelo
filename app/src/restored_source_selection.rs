@@ -8,6 +8,22 @@ pub(super) enum Target {
     Replace(SourceViewBinding),
 }
 struct CatalogState { revision:u64, ready:bool }
+pub(super) fn local_source_catalog(client: &crate::background_service::Client)
+    -> Result<(Vec<CaptureSourceInfo>, remote_core::application_icons::SourceIconAssets, Option<String>), String>
+{
+    let sources=client.capture_sources().map_err(|error|error.to_string())?;
+    #[cfg(target_os="linux")]
+    let message=if sources.is_empty() {
+        client.sharing_call(crate::sharing_permissions::SharingCall::Status).map_err(|error|error.to_string())?.message
+    } else {None};
+    #[cfg(not(target_os="linux"))]
+    let message:Option<String>=None;
+    let command=host::capture_sources::with_artwork(sources);
+    let SessionCommand::Sources {sources,source_icons,icons,..}=command else {return Err("Invalid local source directory".into());};
+    let mut cache=remote_core::application_icons::SourceIconCache::default();
+    cache.update(sources.iter().map(|source|source.source),&source_icons,&icons)?;
+    Ok((sources,cache.assets(),message))
+}
 pub(super) struct Selection {
     target: Target,
     scope: ShareScope,
@@ -16,32 +32,14 @@ pub(super) struct Selection {
     selected: Vec<CaptureSource>,
     artwork: SourceArtwork,
     loading: bool,
-    pending_request: Option<String>,
     error: Option<String>,
     catalog: Option<CatalogState>,
 }
 impl Selection {
     pub(super) fn is_delivery(&self) -> bool { matches!(self.target, Target::Send(_)) }
     pub(super) fn local_delivery_is_current(&self) -> bool {self.is_delivery()&&self.scope==current_share_scope()}
-    pub(super) fn pending_delivery(&self) -> bool { self.pending_request.is_some() }
-    pub(super) fn pending_request(&self) -> Option<&str> { self.pending_request.as_deref() }
-    pub(super) fn observe_delivery(&mut self, progress:Option<(&str,&crate::desktop::directed_send::SendProgress)>) -> bool {
-        let Some(pending)=self.pending_request.as_deref() else {return false;};
-        let Some((_,progress))=progress.filter(|(request,_)|*request==pending) else {
-            self.pending_request=None;self.error=Some("Sending cancelled".into());return false;
-        };
-        if progress.started {return true;}
-        if let Some(result)=&progress.result {
-            self.pending_request=None;
-            self.error=Some(match result {
-                Err(error)=>format!("Could not send: {error}"),
-                Ok(())=>"Receiver ended delivery before video started".into(),
-            });
-        }
-        false
-    }
     fn toggle(&mut self,source:CaptureSource) {
-        if self.pending_delivery() || !self.catalog_ready() {return;}
+        if !self.catalog_ready() {return;}
         if !self.sources.iter().any(|item|item.source==source) {self.error=Some("The source list changed".into());return;}
         if self.selected.contains(&source) {self.selected.retain(|selected|*selected!=source);self.error=None;}
         else if matches!(self.target,Target::Replace(_)) {self.selected=vec![source];self.error=None;}
@@ -80,34 +78,19 @@ impl RestoredDashboard {
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
         let scope=current_share_scope();
         self.source_selection=Some(Selection {target:Target::Send(device),scope,title:format!("Send to {name}"),
-            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,pending_request:None,error:None,catalog:None});
+            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None,catalog:None});
         self.refresh_delivery_sources(cx);
         cx.notify();
     }
     pub(super) fn refresh_delivery_sources(&mut self, cx:&mut Context<Self>) {
         let Some(selection)=self.source_selection.as_mut() else {return;};
-        if selection.pending_delivery() {return;}
         let Target::Send(device)=&selection.target else {return;};
         let device=device.clone();let scope=selection.scope;
         let Some(client)=self.background.clone() else {
             selection.loading=false;selection.error=Some("Sharing service is unavailable".into());cx.notify();return;
         };
         selection.loading=true;
-        let work=tokio::task::spawn_blocking(move || {
-            let sources=client.capture_sources().map_err(|error|error.to_string())?;
-            #[cfg(target_os="linux")]
-            let message=if sources.is_empty() {
-                client.sharing_call(crate::sharing_permissions::SharingCall::Status)
-                    .map_err(|error|error.to_string())?.message
-            } else {None};
-            #[cfg(not(target_os="linux"))]
-            let message:Option<String>=None;
-            let command=host::capture_sources::with_artwork(sources);
-            let SessionCommand::Sources {sources,source_icons,icons,..}=command else {return Err("Invalid local source directory".into());};
-            let mut cache=remote_core::application_icons::SourceIconCache::default();
-            cache.update(sources.iter().map(|source|source.source),&source_icons,&icons)?;
-            Ok::<_,String>((sources,cache.assets(),message))
-        });
+        let work=tokio::task::spawn_blocking(move || local_source_catalog(&client));
         cx.spawn(async move |view,cx| {
             let result=work.await.unwrap_or_else(|_|Err("Source lookup stopped; try again".into()));
             let _=view.update(cx,|this,cx| {
@@ -141,7 +124,7 @@ impl RestoredDashboard {
         let query=binding.clone();
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
         let mut selection=Selection {target:if replace {Target::Replace(binding)}else{Target::Open(binding)},scope:current_share_scope(),title:if replace {"Replace current source"}else{"Open screens & app windows"}.into(),
-            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,pending_request:None,error:None,catalog:None};
+            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,error:None,catalog:None};
         let artwork=self.artwork_cache.borrow_mut().update(snapshot.source_icons);
         selection.replace((*snapshot.sources).clone(),artwork);
         if selection.sources.iter().any(|source|source.source==snapshot.active_source) {selection.selected=vec![snapshot.active_source];}
@@ -197,8 +180,6 @@ impl RestoredDashboard {
     }
     pub(super) fn confirm_source_selection(&mut self,cx:&mut Context<Self>) {
         let Some(mut selection)=self.source_selection.take() else {return;};
-        if selection.pending_delivery() {self.source_selection=Some(selection);return;}
-        let delivery=selection.is_delivery();
         let result=(|| -> Result<(),String> {
             if selection.loading || !selection.catalog_ready() || selection.scope!=current_share_scope() {return Err("The source selection changed; try again".into());}
             protocol::session::validate_delivery_sources(&selection.selected)?;
@@ -206,7 +187,10 @@ impl RestoredDashboard {
                 .cloned().ok_or("The source list changed".to_owned())).collect::<Result<Vec<_>,_>>()?;
             match &selection.target {
                 Target::Send(device)=>{
-                    selection.pending_request=Some(self.send_screen(device.clone(),selection.selected.clone())?);
+                    for source in sources {
+                        let request=self.send_screen(device.clone(),vec![source.source])?;
+                        self.open_sending_window(&request,vec![source],selection.artwork.clone(),cx);
+                    }
                     Ok(())
                 },
                 Target::Open(binding)=>{
@@ -241,17 +225,11 @@ impl RestoredDashboard {
         if let Err(error)=result {
             selection.loading=false;selection.error=Some(error.clone());self.source_selection=Some(selection);
             self.status=error;
-        } else if delivery {
-            selection.error=None;
-            self.source_selection=Some(selection);
         }
         cx.notify();
     }
     pub(super) fn cancel_source_selection(&mut self,cx:&mut Context<Self>) {
-        let pending=self.source_selection.take().and_then(|selection|selection.pending_request);
-        if let Some(pending)=pending {
-            self.directed_send.lock().unwrap().remove(&pending);
-        }
+        self.source_selection=None;
         if self.purpose==WindowPurpose::Stream && self.stream_device.is_some() && self.stream_source.is_none() {
             let handle=self.window_handle;
             cx.defer(move|cx|{let _=handle.update(cx,|_,window,_|window.remove_window());});
@@ -272,7 +250,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         }
         let selected=selection.selected.contains(&source.source);let id=source.source;let view=view.clone();
         rows=rows.child(command_button(format!("source_selection_{id:?}"),if selected {ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx)
-            .w_full().min_h(px(34.)).px_2().gap_2().disabled(selection.pending_delivery()||!selection.catalog_ready())
+            .w_full().min_h(px(34.)).px_2().gap_2().disabled(!selection.catalog_ready())
             .on_click(move|_,_,cx| {let _=view.update(cx,|this,cx| {
                 if let Some(selection)=this.source_selection.as_mut() {
                     selection.toggle(id);
@@ -296,7 +274,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                 ("delivery-control","Screen + control",crate::sharing_permissions::ShareKind::ControlledDisplay),
             ] {
                 choices=choices.child(command_button(id,ActionVariantKind::Neutral,cx)
-                    .h(px(26.)).text_size(px(10.)).disabled(sharing_pending||selection.pending_delivery())
+                    .h(px(26.)).text_size(px(10.)).disabled(sharing_pending)
                     .on_click(cx.listener(move|this,_,_,cx|this.dispatch_local_share(crate::desktop::local_share::Action::Select(kind),cx)))
                     .child(label));
             }
@@ -310,7 +288,6 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         .child(div().text_size(px(11.)).text_color(theme.content.secondary).child(if matches!(selection.target,Target::Replace(_)) {"Choose one source for this stream."}else if selection.is_delivery(){"Select screens, app windows or cameras to send."}else{"Select screens, app windows or cameras to open separately."}))
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child("Loading sources…")))
-        .when(selection.pending_delivery(),|panel|panel.child(div().text_size(px(11.)).child("Connecting to receiver…")))
         .child(rows)
         .when_some(selection.error.as_ref(),|panel,error|panel.child(div().text_size(px(11.)).text_color(theme.status.error.bg).child(error.clone())))
         .child(div().flex().items_center().justify_end().gap_2()
@@ -322,9 +299,9 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                 let _=view.update(cx,|this,cx|{this.cancel_source_selection(cx);cx.notify();});
             }).child("Cancel"))
             .child(command_button("source_selection_confirm",ActionVariantKind::Primary,cx)
-                .disabled(selection.loading||!selection.catalog_ready()||selection.pending_delivery()||selection.selected.is_empty())
+                .disabled(selection.loading||!selection.catalog_ready()||selection.selected.is_empty())
                 .on_click(move|_,_,cx|{let _=confirm.update(cx,|this,cx|this.confirm_source_selection(cx));})
-                .child(if selection.pending_delivery() {"Connecting…"}else if matches!(selection.target,Target::Send(_)) {"Send"}else if matches!(selection.target,Target::Replace(_)) {"Replace"}else{"Open"})));
+                .child(if matches!(selection.target,Target::Send(_)) {"Send"}else if matches!(selection.target,Target::Replace(_)) {"Replace"}else{"Open"})));
     div().occlude().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x00000088)).child(panel)
 }
 
@@ -334,56 +311,11 @@ mod tests {
     use std::sync::Arc;
     fn selection()->Selection {
         Selection {target:Target::Send("receiver".into()),scope:Some([3;32]),title:"Send".into(),
-            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,pending_request:None,error:None,catalog:None}
+            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None,catalog:None}
     }
     fn source(source:CaptureSource)->CaptureSourceInfo {
         CaptureSourceInfo {source,title:format!("{source:?}"),application:String::new(),process_id:None,
             width:1280,height:720,supports_input:false, camera: None, }
-    }
-    fn pending_selection()->Selection {
-        let mut selection=selection();
-        selection.replace(vec![source(CaptureSource::Display(1))],Arc::new(Default::default()));
-        selection.pending_request=Some("attempt-1".into());selection
-    }
-    fn progress(started:bool,result:Option<Result<(),String>>)->crate::desktop::directed_send::SendProgress {
-        crate::desktop::directed_send::SendProgress {status:"Connecting…".into(),started,result,confirmation_timeout:None}
-    }
-    #[test]
-    fn asynchronous_failure_keeps_the_selected_source_and_can_be_retried() {
-        let mut selection=pending_selection();
-        assert!(!selection.observe_delivery(Some(("attempt-1",&progress(false,None)))));
-        selection.toggle(CaptureSource::Display(1));
-        assert_eq!(selection.selected,vec![CaptureSource::Display(1)]);
-        assert!(!selection.observe_delivery(Some(("attempt-1",&progress(false,Some(Err("Receiver is busy".into())))))));
-        assert!(!selection.pending_delivery());
-        assert_eq!(selection.selected,vec![CaptureSource::Display(1)]);
-        assert!(selection.error.as_ref().unwrap().contains("Receiver is busy"));
-        selection.pending_request=Some("attempt-2".into());selection.error=None;
-        assert!(!selection.observe_delivery(Some(("attempt-2",&progress(false,None)))));
-        assert!(selection.observe_delivery(Some(("attempt-2",&progress(true,None)))));
-    }
-    #[test]
-    fn stale_attempt_cannot_dismiss_a_new_source_selection() {
-        let mut selection=pending_selection();
-        assert!(!selection.observe_delivery(Some(("older-attempt",&progress(true,Some(Ok(())))))));
-        assert!(!selection.pending_delivery());
-        assert_eq!(selection.error.as_deref(),Some("Sending cancelled"));
-        assert_eq!(selection.selected,vec![CaptureSource::Display(1)]);
-    }
-    #[test]
-    fn receiver_ending_before_first_frame_keeps_a_visible_failure() {
-        let mut selection=pending_selection();
-        assert!(!selection.observe_delivery(Some(("attempt-1",&progress(false,Some(Ok(())))))));
-        assert!(selection.error.as_ref().unwrap().contains("before video started"));
-        assert!(!selection.pending_delivery());
-    }
-    #[test]
-    fn successful_first_frame_dismisses_the_waiting_dialog_only_for_its_attempt() {
-        let mut selection=pending_selection();
-        assert!(selection.observe_delivery(Some(("attempt-1",&progress(true,Some(Ok(())))))));
-        let mut cancelled=pending_selection();
-        assert!(!cancelled.observe_delivery(None));
-        assert!(!cancelled.pending_delivery());
     }
     #[test]
     fn concrete_display_replaces_its_alias_and_duplicate_catalog_entries() {
