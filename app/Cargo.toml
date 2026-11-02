@@ -58,6 +58,11 @@ path = "examples/original_gpui_probe.rs"
 required-features = ["gpui-restoration"]
 
 [[example]]
+name = "native_window_activation"
+path = "examples/native_window_activation.rs"
+required-features = ["gpui-restoration"]
+
+[[example]]
 name = "restored_gui_acceptance"
 path = "examples/restored_gui_acceptance.rs"
 required-features = ["gpui-restoration"]

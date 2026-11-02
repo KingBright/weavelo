@@ -212,4 +212,16 @@ HO5 沿用已授权的唯一 `Display(2147483649)` 主动投送至 Studio，实�
 
 此前 Stop this send、活动页停止及本机状态停止只取消了发送任务，留下结束的控制窗。现共用按请求 ID 停止的方法：取消对应发送并关闭它的展示窗；普通系统关闭预览仍保持后台发送。其它目标、管理窗口、文件上下文及输入命中校验保持原有所有权。现有真实 GPUI 夹具已扩展为同时打开两个发送窗：停止一个后仅其窗口关闭，另一路及文件上下文保留；停止全部后仅管理窗保留。
 
-两项发送生命周期检查及 1,041 项签名发布回归通过（19 项发布检查跳过），证据 `sending-stop-closes-window-tests.log`、`sending-stop-closes-window-release-final.log`。该后续停止修复尚待新桌面包安装，不能与上述 85 的已安装状态混淆。
+两项发送生命周期检查及 1,041 项签名发布回归通过（19 项发布检查跳过），证据 `sending-stop-closes-window-tests.log`、`sending-stop-closes-window-release-final.log`。
+
+该修复 `c810e13` 现已正式构建并兼容安装四台电脑，两台 Mac 为 20261103.86；原签名、成员、配置与既有启动方式保留。实际 GUI 为 Studio 67996、Book 7438、HO5 2330547、cube 20568，均核对到同一源码及 restored-original-gpui。状态记录分别为 `studio86-installed-status.json`、Book 的 `book86-installed-status.json`、HO5 / cube 的 `*-stop-current-installed-status.json`。
+
+努比亚 67 通过普通来源选择拉取 Studio 的唯一发送控制窗，避免额外定向投送控制窗造成重叠。实际点击全屏后为 1920×1080，系统标题栏按钮隐藏；再点可见恢复按钮，回到 1280×833（内容 1280×801）。红米同时接收原管理窗口，画面继续。随后努比亚实际点 Stop this send，该控制窗关闭；Studio 仅剩管理窗，Sending 为空、Sharing 为零，红米自动返回 Devices。努比亚收到来源结束后仍可选择其它来源；最后明确断开了这条自有测试连接。物理图在 Book 的 `nubia67-studio86-sender-fullscreen-actual.png` / `nubia67-studio86-sender-restored-actual.png`，状态为 `studio86-sender-after-first-fullscreen-tap.json`、`studio86-sender-after-restore.json`、`studio86-after-physical-stop-current-status.json`。
+
+Linux 20,263,013 字节和 Windows 51,521,864 字节的正式运行包均通过 Weavelo 本身发送至 Studio；接收端另行计算 SHA-256，分别为 `85444faca57dddb9f7adbe5b0d65aa5360c140672126df86507ca376c455b66e` 与 `1998b4071ab14994d46cd6c14c6a876acb331877a2885ca5739d85aa89ca86f8`，与正式来源包一致。普通发送记录的 `remote_content_verified` 为 false，没有将其当作接收端独立校验；独立证据为 `ho5-current-package-native-receiver-independent-sha.json`、`cube-current-package-native-receiver-independent-sha.json`。
+
+三个桌面 NAS 条目现均已正式发布到同一 `c810e13` 并公开下载校验（`native86-nas-verified.json`）。macOS 为 `Weavelo-desktop-macos-arm64-20261103.86-c810e13.zip`，SHA-256 `90e9c319dac513b810d5eecf4cb4859384138dd21ed589479ad0cfa82c48a11a`；Windows / Linux 为对应的 `*-c810e13.zip`，使用上述独立校验过的原包。初次临时目录因 `/var` 链接路径在上传前被拒绝，解析自有目录真实路径后正常发布，未绕过签名检查或修改已发布字节。
+
+## 原生最小化恢复对照
+
+新增可独立运行的 `native_window_activation` 示例，只创建一个 400×180 的原生窗口：先显示、最小化，再调用产品共用的 `activate_window` 并读取真实平台可见性和焦点。不启动产品配置、网络、录屏或输入注入，也不作为产品外观验收。当前未改动的 macOS 后端实测为 true → false → true，恢复后有焦点（`native-activation-baseline.json`）；因此没有凭源码表象增加 `deminiaturize` 或修改媒体路径。最小化后找回产品会话仍需结合实际活动入口验收，不能用这个夹具替代。
