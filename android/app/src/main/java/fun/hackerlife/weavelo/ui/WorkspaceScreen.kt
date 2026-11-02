@@ -378,12 +378,6 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val token = surfaceToken
     var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
     var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
-    LaunchedEffect(pane.inputError) {
-        if (pane.inputError != null) {
-            keyboardVisible = false
-            keyboardBinding = null
-        }
-    }
     val keyboardOwner = keyboardBinding
     RemoteKeyboard(identity = listOf(pane.id,sessionKey,generation,token,keyboardOwner), visible = keyboardVisible,
         enabled = pane.input && token != 0L && keyboardOwner != null,
