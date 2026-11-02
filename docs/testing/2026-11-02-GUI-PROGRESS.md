@@ -156,3 +156,15 @@ Studio 80（`73e7179` / `20261103.80`）按原签名正式安装后，努比亚 
 Studio 82（`c7e2d05` / `20261103.82`）已按原签名安装。努比亚 63 拉取专用原生输入窗口 `Window(17514)`，一次触摸仅产生一次真实按钮动作；连续拖动正确释放且未显示控制不可用，但终点停在 (410,185)，预期为 (420,190)。同一流的原生采集为 640×452，content / bounding 均完整覆盖，无缩放边距。这复现了独立于采集的最后采样丢失：触摸 Up 只发松键，未发抬手新坐标。证据为 `input-fixture-baseline.json`、`input-fixture-after-click.json`、`input-fixture-after-drag.json` 和 `nubia63-studio82-after-native-drag-counters.json`。夹具仅观察自己的窗口，不捕获或注入全局输入；不是产品外观验收。
 
 现将最终坐标放到松键之前：共享移动端直触映射补齐 Up 坐标，桌面接收窗也使用 MouseUp 自身的位置，并仅对已按下的按钮执行；离开画面和取消仍保持原释放规则。已有移动手势回归改用不同于上一 Move 的 Up 点；真实 GPUI 事件路由 / 本地协议记录夹具同样验证末点紧邻松键，并保留面板隔离和键盘检查。15 项共享手势检查、1 项显式 GPUI 回环及 1,041 项发布回归通过（19 项发布检查跳过；`final-pointer-position-tests.log`、`final-pointer-position-release.log`）。Android 版本码升为 64，仍待原身份签名安装后的实际终点与键盘挤压验收。
+
+Android 64 已用原签名正式发布并升级两部指定手机，APK SHA-256 `66912fd28b0691ef59cdddbcc493ee94fc5ebf17967d773d409b6b7e6da9164e`，来源 `ff8e66a`。Studio 83 与 Book 83 均已按各自原身份正式安装；Book 实际 GUI 为 640×600 视口（`book83-installed-status.json`），尚需真实外观 / 接收窗交互复核。努比亚 64→Studio 83 实际拖动终点 (519.998,229.999) 对应目标 (520,230)，末点修复已实测生效（`input-fixture-nubia64-after-drag.json`、Book `nubia64-studio83-inputfixture.png`）。
+
+原生窗口还验证了输入法提交：努比亚 63→Studio 82 输入 `abc`，拼音组合阶段不改远端字段，确认后准确出现 `abc你好`，退格得到 `abc你`，隐藏键盘没有重复提交。努比亚 64 可见键盘对照复用了此前授权，临时选已启用百度 OEM 输入法，视频由 y=1139 上移到 y=642，宽高不变；键盘可见时点同一远端按钮，真实次数从 1 变 2，随后视口恢复且已核对默认输入法恢复微信（Book `nubia64-inset-ime-restore.json`）。未把输入事件计数当作远端 Return 或 emoji 验收。
+
+红米 64 出画与键盘布局通过，视口 y=704→379、宽高不变（`redmi64-fixture-keyboard-inset.png`）。系统拒绝了自动触摸注入；标准 ADB 触点连应用自身键盘按钮也未触发，因此不把红米触摸记为通过。键盘结束还出现 `remote keyboard source changed`，属于另需修复的产品路径，不归咎于触摸工具。
+
+## 输入法与局部布局取消
+
+桥接层原先把局部手势取消翻译成整份输入租约释放，会使同一来源的输入法上下文失效。现保留既有消息协议，局部布局 / Touch Cancel 只发送实际按住鼠标的松键，保留同源文字归属与键盘状态；冻结超时、来源隐藏、采集重置 / 结束仍释放全部输入并拒绝旧键盘。Android 版本码升为 65，待原签名升级实测。
+
+12 项工作区回归通过，包含本地完整协议夹具：取消拖动能松键、同源文字归属不变、界面冻结仍由 watchdog 释放、Surface end 仍使旧键盘失效；签名发布回归 1,041 项通过、19 项跳过（`ime-layout-owner-tests-final.log`、`ime-layout-owner-release.log`）。夹具的取消事件读取已改用正确的 Event 过滤，并加 2 秒等待上限，避免测试自身无限等待。真实红米文字问题是否因此解决仍待新包复测。

@@ -2159,6 +2159,8 @@ mod tests {
             // No frame: report the blocked input without accumulating a press.
             assert!(workspace.touch(&gesture("Down", 0.1)).unwrap_err().contains("first video frame"));
             workspace.surface(&surface("ready")).unwrap();
+            let keyboard_request = serde_json::json!({"id":256,"token":1}).to_string();
+            let keyboard_owner = workspace.keyboard_context(&keyboard_request).unwrap();
             workspace.touch(&gesture("Move", 0.8)).unwrap();
             workspace.touch(&gesture("Down", 0.1)).unwrap();
             workspace.touch(&gesture("Move", 0.8)).unwrap();
@@ -2169,10 +2171,14 @@ mod tests {
             assert!(matches!(drag.payload, InputPayload::Event(protocol::InputEvent::MouseDown(0))));
             workspace.surface(&surface("cancel")).unwrap();
             workspace.touch(&gesture("Up", 0.8)).unwrap();
-            loop {
-                let packet = next_input(&mut rx, false).await;
-                if matches!(packet.payload, InputPayload::Release) { assert_eq!(packet.binding, binding); break; }
-            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let packet = next_input(&mut rx, true).await;
+                    if matches!(packet.payload, InputPayload::Event(protocol::InputEvent::MouseUp(0))) { assert_eq!(packet.binding, binding); break; }
+                }
+            }).await.expect("layout cancellation must release the pointer");
+            assert_eq!(workspace.keyboard_context(&keyboard_request).unwrap(), keyboard_owner,
+                "an IME/layout gesture cancellation must retain composition in the same source");
             let held = next_input(&mut rx, false).await;
             assert!(matches!(held.payload, InputPayload::Held(held) if held.is_empty()));
             // The UI producer now goes silent while the native transport keeps running.
@@ -2193,6 +2199,9 @@ mod tests {
             let raw = serde_json::json!({"Input":{"id":256,"event":{"Touch":{
                 "action":"Down","pointer_id":7,"normalized_x":0.5,"normalized_y":0.5,"pressure":1.0}}}});
             assert!(workspace.command(&raw.to_string()).await.is_err());
+            workspace.surface(&surface("end")).unwrap();
+            assert!(workspace.keyboard_context(&keyboard_request).is_err(),
+                "a detached surface must still invalidate the keyboard");
             drop(workspace);
         });
         std::fs::remove_dir_all(directory).unwrap();

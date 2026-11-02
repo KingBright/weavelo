@@ -395,13 +395,22 @@ impl MobileWorkspace {
         }
         let mut touches = self.touches.lock().unwrap();
         if let Some(touch) = touches.get_mut(&event.id) {
-            let release = if event.phase == "alive" {
-                touch.alive(event.token, std::time::Instant::now())
+            let (release, events) = if event.phase == "alive" {
+                (touch.alive(event.token, std::time::Instant::now()), Vec::new())
             } else {
                 touch.surface(event.token, &event.phase)
             };
             if let Some(binding) = release {
                 self.connection.try_bound_input(binding, None);
+            }
+            if let Some(binding) = touch.binding() {
+                for event in events {
+                    if !self.connection.try_bound_input(binding, Some(event)) {
+                        touch.cancel();
+                        self.connection.try_bound_input(binding, None);
+                        return Err("remote pointer release queue is full".into());
+                    }
+                }
             }
             if event.phase=="alive" {
                 if let Some(binding)=touch.healthy_binding(event.token){

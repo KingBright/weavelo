@@ -37,6 +37,12 @@ impl WorkspaceTouch {
         self.last_intent = None;
         self.binding.take()
     }
+    fn cancel_pointer(&mut self) -> Vec<InputEvent> {
+        // A local layout/IME inset change ends the gesture, not composition in
+        // the same source. Full suspension/end still uses cancel() above.
+        self.last_intent = None;
+        self.tracker.cancel_all()
+    }
     pub fn expire(&mut self, now: Instant) -> Option<InputBinding> {
         if self.last_intent.is_some_and(|last| {
             now.saturating_duration_since(last).as_millis()
@@ -79,32 +85,32 @@ impl WorkspaceTouch {
         self.visible = visible;
         if visible { None } else { self.invalidate() }
     }
-    pub fn surface(&mut self, token: u64, phase: &str) -> Option<InputBinding> {
+    pub fn surface(&mut self, token: u64, phase: &str) -> (Option<InputBinding>, Vec<InputEvent>) {
         if phase == "begin" {
             if token == 0 || token <= self.surface {
-                return None;
+                return (None, Vec::new());
             }
             let release = self.cancel();
             self.surface = token;
             self.attached = self.visible;
             self.frame_ready = false;
-            return release;
+            return (release, Vec::new());
         }
         if token != self.surface || !self.attached {
-            return None;
+            return (None, Vec::new());
         }
         match phase {
             "ready" => {
                 self.frame_ready = self.visible;
-                None
+                (None, Vec::new())
             }
             "reset" => {
                 self.frame_ready = false;
-                self.cancel()
+                (self.cancel(), Vec::new())
             }
-            "end" => self.invalidate(),
-            "cancel" => self.cancel(),
-            _ => None,
+            "end" => (self.invalidate(), Vec::new()),
+            "cancel" => (None, self.cancel_pointer()),
+            _ => (None, Vec::new()),
         }
     }
     pub fn keyboard_binding(&self,token:u64,current:Option<InputBinding>)->Option<InputBinding> {
@@ -154,7 +160,7 @@ impl WorkspaceTouch {
             return (self.cancel().or(release), Vec::new());
         };
         if action == TouchAction::Cancel {
-            return (self.cancel().or(release), Vec::new());
+            return (release, self.cancel_pointer());
         }
         let events = self.tracker.process_touch(
             action,
@@ -267,12 +273,8 @@ mod tests {
                 .chain(&drag)
                 .any(|event| matches!(event, InputEvent::Touch { .. }))
         );
-        assert_eq!(
-            touch
-                .touch(1, event(TouchAction::Cancel, 7, 0.8), grant, now)
-                .0,
-            grant
-        );
+        assert_eq!(touch.touch(1, event(TouchAction::Cancel, 7, 0.8), grant, now),
+            (None, vec![InputEvent::MouseUp(0)]));
         assert!(
             touch
                 .touch(1, event(TouchAction::Up, 7, 0.8), grant, now)
