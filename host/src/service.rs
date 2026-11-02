@@ -1772,7 +1772,14 @@ async fn inject_fresh(
     #[cfg(not(all(unix, any(test, target_os = "linux"))))]
     let result = injector.inject_target_before(target, event,deadline);
     if let Err(error) = result {
-        let _ = owner.release(injector).await;
+        // Cancel held state and revoke this exact lease, but a missed event
+        // deadline is not a permanent loss of input capability. The existing
+        // binding heartbeat obtains a fresh empty lease; never replay the event.
+        if let Err(cleanup) = owner.release(injector).await {
+            owner.during_control(injector, input_error(peer, udp, addr, id, &cleanup.to_string())).await;
+            return false;
+        }
+        if error.is::<remote_core::InputExpired>() { return false; }
         owner.during_control(injector, input_error(peer, udp, addr, id, &error.to_string())).await;
         return false;
     }
@@ -2927,6 +2934,61 @@ mod failure_admission_tests {
             Ok(())
         }
         fn release_all_input(&self) {self.0.store(0,std::sync::atomic::Ordering::SeqCst);}
+    }
+    struct NativeExpiryProbe {
+        held: Arc<std::sync::atomic::AtomicUsize>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        permission_denied: bool,
+    }
+    impl InputInjector for NativeExpiryProbe {
+        fn inject_input(&self, event: InputEvent) -> Result<(), Box<dyn Error + Send + Sync>> {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.calls.fetch_add(1, SeqCst);
+            if matches!(event, InputEvent::MouseDown(0)) { self.held.store(1, SeqCst); }
+            if matches!(event, InputEvent::MouseMoveAbsolute {..}) {
+                return Err(if self.permission_denied { "host input permission denied".into() }
+                    else { remote_core::InputExpired("after target validation").into() });
+            }
+            Ok(())
+        }
+        fn release_all_input(&self) { self.held.store(0, std::sync::atomic::Ordering::SeqCst); }
+    }
+    #[tokio::test]
+    async fn native_input_expiry_cancels_the_gesture_without_disabling_control_or_replaying_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        for permission_denied in [false, true] {
+            let (mut peer, addr) = fixture_peer(31).await;
+            let (sub, _) = mock_subscription(CaptureSource::MainDisplay);
+            sub.settings.send_modify(|s| s.paused = false);
+            peer.subscriptions.insert(100, sub);
+            let SessionCommand::InputBinding { binding, .. } = peer.input_binding(31,100,10,1).unwrap() else { panic!() };
+            let held = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let injector = LazyInputInjector(std::sync::Mutex::new(Some((InputTarget::Desktop,
+                Box::new(NativeExpiryProbe { held: held.clone(), calls: calls.clone(), permission_denied })))));
+            let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+            let (udp, _) = mux.split();
+            let mut owner = ActiveInput::default();
+            let until = Some(std::time::Instant::now() + Duration::from_secs(1));
+            assert!(inject_fresh(&injector,&mut owner,&mut peer,&udp,addr,100,InputEvent::MouseDown(0),until).await);
+            owner.binding = Some(binding);
+            owner.lease_revocation = Some(peer.input_leases[&100].lease.revocation());
+            assert!(!inject_fresh(&injector,&mut owner,&mut peer,&udp,addr,100,
+                InputEvent::MouseMoveAbsolute { x: 100, y: 200 },until).await);
+            assert_eq!(held.load(SeqCst), 0);
+            assert!(owner.owner.is_none() && owner.binding.is_none());
+            assert_eq!(calls.load(SeqCst), 2, "expired input is never replayed");
+            assert!(peer.input_leases[&100].lease.expired(host_input_time_ms()));
+            assert_eq!(peer.subscriptions[&100].last_input_error.is_some(), permission_denied,
+                "real permission failures must still reach the client");
+            if !permission_denied {
+                let SessionCommand::InputBinding { binding: fresh, .. } = peer.input_binding(31,100,10,2).unwrap() else { panic!() };
+                assert_ne!(fresh.epoch, binding.epoch);
+                assert!(inject_fresh(&injector,&mut owner,&mut peer,&udp,addr,100,InputEvent::MouseDown(0),until).await);
+                assert_eq!(held.load(SeqCst), 1);
+                assert_eq!(calls.load(SeqCst), 3);
+            }
+        }
     }
     #[tokio::test]
     async fn duplicate_or_stale_capture_controls_cannot_release_the_new_target() {

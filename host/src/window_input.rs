@@ -225,33 +225,33 @@ fn focus_for_click_with(
     bounds: impl FnOnce() -> Result<(), String>,
     mut frontmost: impl FnMut() -> bool,
     activate: impl FnOnce() -> i32,
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     bounds()?;
     if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-        return Err("input expired before application activation".into());
+        return Err(remote_core::InputExpired("before application activation").into());
     }
     let active = frontmost();
     if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-        return Err("input expired before application activation".into());
+        return Err(remote_core::InputExpired("before application activation").into());
     }
     if active {
         return Ok(());
     }
     let status = activate();
     if status != 0 {
-        return Err(format!("The selected application could not be activated ({status}); input was not redirected"));
+        return Err(format!("The selected application could not be activated ({status}); input was not redirected").into());
     }
     // AX accepts activation before AppKit finishes it. Wait only after that one
     // write; already-active input never sleeps or repeats its AX round trip.
     let until = deadline.unwrap_or_else(|| std::time::Instant::now() + std::time::Duration::from_millis(100));
     loop {
         if std::time::Instant::now() >= until {
-            return Err("input expired while waiting for application activation".into());
+            return Err(remote_core::InputExpired("while waiting for application activation").into());
         }
         let active = frontmost();
         // A blocking AX read must not renew or outlive the original event budget.
         if std::time::Instant::now() >= until {
-            return Err("input expired while waiting for application activation".into());
+            return Err(remote_core::InputExpired("while waiting for application activation").into());
         }
         if active { return Ok(()); }
         std::thread::sleep(std::time::Duration::from_millis(5)
@@ -307,7 +307,7 @@ impl WindowTarget {
         self.app_frontmost()
             && windows(1 | 16, 0).is_ok_and(|list| front_of_app(&list, self.pid) == Some(self.id))
     }
-    pub fn focus_for_click(&self, deadline: Option<std::time::Instant>) -> Result<(), String> {
+    pub fn focus_for_click(&self, deadline: Option<std::time::Instant>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let name = CFString::new("AXFrontmost");
         let yes = CFBoolean::true_value();
         focus_for_click_with(
@@ -394,7 +394,7 @@ mod tests {
                 || { if !delay_in_bounds { wait(); } false },
                 || { focus.set(focus.get() + 1); 0 });
             if result.is_ok() { input.set(input.get() + 1); }
-            assert!(result.unwrap_err().contains("expired"));
+            assert!(result.unwrap_err().is::<remote_core::InputExpired>());
             assert_eq!(focus.get(), 0);
             assert_eq!(input.get(), 0);
         }
@@ -437,7 +437,7 @@ mod tests {
             std::thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2));
             true
         }, || { writes.set(writes.get() + 1); 0 });
-        assert!(result.unwrap_err().contains("expired"));
+        assert!(result.unwrap_err().is::<remote_core::InputExpired>());
         assert_eq!(writes.get(), 1);
     }
     #[test]
@@ -448,7 +448,7 @@ mod tests {
             std::thread::sleep(deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2));
             true
         }, || panic!("expired input must never activate an app"));
-        assert!(result.unwrap_err().contains("expired"));
+        assert!(result.unwrap_err().is::<remote_core::InputExpired>());
     }
     fn w(id: u32, pid: i32, x: f64) -> WindowDescription {
         WindowDescription {

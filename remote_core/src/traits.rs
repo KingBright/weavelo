@@ -260,10 +260,20 @@ pub trait ClipboardFileStore {
     ) -> Result<PathBuf, Box<dyn Error + Send + Sync>>;
 }
 
+/// One event missed its existing deadline; this does not revoke OS permission.
+#[derive(Debug)]
+pub struct InputExpired(pub &'static str);
+impl std::fmt::Display for InputExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "input expired {}", self.0)
+    }
+}
+impl Error for InputExpired {}
+
 pub trait InputInjector {
     fn inject_input(&self, event: InputEvent) -> Result<(), Box<dyn Error + Send + Sync>>;
     fn inject_input_before(&self,event:InputEvent,deadline:std::time::Instant) -> Result<(),Box<dyn Error+Send+Sync>> {
-        if std::time::Instant::now()>=deadline {return Err("input expired before native dispatch".into());}
+        if std::time::Instant::now()>=deadline {return Err(InputExpired("before native dispatch").into());}
         self.inject_input(event)
     }
     fn release_all_input(&self) {}

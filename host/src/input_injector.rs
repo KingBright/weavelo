@@ -724,7 +724,7 @@ impl InputInjector for MacInputInjector {
         deadline: std::time::Instant,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         if Instant::now() >= deadline {
-            return Err("input expired before target validation".into());
+            return Err(remote_core::InputExpired("before target validation").into());
         }
         let started = Instant::now();
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
@@ -735,12 +735,12 @@ impl InputInjector for MacInputInjector {
             eprintln!("MACOS_INPUT_EXPIRED phase=target_validation access_us={} target_us={} budget_us={}",
                 access_checked.duration_since(started).as_micros(), access_checked.elapsed().as_micros(),
                 deadline.saturating_duration_since(started).as_micros());
-            return Err("input expired after target validation".into());
+            return Err(remote_core::InputExpired("after target validation").into());
         }
         if let InputEvent::Text(text) = &event { return self.commit_text(text, Some(deadline)); }
         self.inject(event, Some(deadline));
         if Instant::now() >= deadline {
-            return Err("input expired during native dispatch".into());
+            return Err(remote_core::InputExpired("during native dispatch").into());
         }
         Ok(())
     }

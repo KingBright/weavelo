@@ -144,3 +144,11 @@ Apple SDK 和当前运行时均确认 `includeChildWindows` 默认为 true。现
 Studio 80（`73e7179` / `20261103.80`）按原签名正式安装后，努比亚 63 和红米 63 均实际拉取固定接收窗 `Window(17456)`、进入全屏、点击画面上可见的退出按钮，并恢复到 1280×833。两部手机同时观看时，任一端切换均未结束另一端或 Book→Studio 的原始流；最后状态为共享 2、接收 1。努比亚全屏采集恢复为 buffer 986×554、有效内容约 984.89×554、screen rect 1920×1080，额外 32 点标题栏不再改变缩放。编码取偶数尺寸仍有少量边缘像素舍入，未声称亚像素精度或物理显示延迟已经验收。
 
 实际画面为 Book 证据目录中的 `nubia63-studio80-fullscreen.png` / `nubia63-studio80-restored.png`，以及 Studio 证据目录中的 `redmi63-studio80-fullscreen.png` / `redmi63-studio80-restored.png`。两次本机状态分别保留在 `studio80-after-visible-fullscreen-exit.json` 与 `studio80-redmi-after-visible-fullscreen-exit.json`；原生采集标量见 `nubia63-studio80-after-enter-counters.json`、`redmi63-studio80-after-enter-counters.json`。全屏系统按钮未出现、恢复后标题栏出现，操作栏仅保留全屏按钮，没有自定义最小化。本结论覆盖上述自有应用窗口和两部手机，不关闭此前特定应用 0 首帧、Linux / Windows 完整交互、U5 托盘与 U6 移动页面等剩余事项。
+
+努比亚 63→Studio 80 另已直接拉取系统设置「储存空间」窗口 `Window(17033)`，真实出画（Book：`nubia63-studio80-systemsettings.png`），连接 `2904842676` 的捕获与编码均持续增长。这补充普通应用窗口验证，仍不代替此前特定应用 0 首帧的结论。Studio 80 正式 NAS 发布及公网包校验通过，macOS 包 SHA-256 为 `672019bc4444f35eec1d50e0289b196c89280ef7ed92ab1f115a245791a65424`，Linux / Windows 发布条目保持原值（`studio80-nas-verified.json`）。
+
+## 原生输入过期与控制可用性
+
+此前实机已记录 `input expired after target validation` 被当作 `INPUT_UNAVAILABLE`，使一次输入超时变成整个控制暂停。现使用共享的原生输入过期错误类型，涵盖 Mac 目标校验、激活等待和原生分发的既有截止时间。宿主取消当前手势、释放按住状态并撤销该输入租约；过期事件不重放，由既有绑定心跳获取新空租约。真正的权限 / 目标错误，以及无法确认的清理失败，仍按现有错误路径上报。没有延长 250ms 预算、跳过窗口校验或新增协议。
+
+针对性检查以原生替身制造目标校验后的过期，验证旧租约撤销、按键释放、不重放、下一次新绑定可用，同时验证真实权限错误仍上报；该项及 23 项窗口 / 焦点检查通过。签名发布回归 1,041 项通过、19 项跳过（`native-input-expiry-tests.log`、`native-input-expiry-release.log`）。尚待新包的真实拖动与持续输入验收；已提交文本的部分完成 / 未知结果仍保留单独拒绝与防重复处理，不能概括为所有输入中断均已解决。
