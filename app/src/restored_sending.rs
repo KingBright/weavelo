@@ -316,12 +316,6 @@ impl RestoredDashboard {
                             })),
                     )
                     .child(
-                        command_button("sending-minimize", ActionVariantKind::Neutral, cx)
-                            .tooltip(tooltip("Minimize").build())
-                            .child(icon(IconName::Minimize).size(px(14.)))
-                            .on_click(|_, window, _| window.minimize_window()),
-                    )
-                    .child(
                         command_button("sending-fullscreen", ActionVariantKind::Neutral, cx)
                             .tooltip(
                                 tooltip(if fullscreen { "Restore" } else { "Fullscreen" }).build(),

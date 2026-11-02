@@ -187,3 +187,15 @@ Studio 84 正式 NAS 发布已安装条目并校验公开 ZIP，SHA-256 8b688f7a
 Android 66 已按原签名发布并升级两部手机，APK SHA-256 e33ccf003e70ebb9d1a7b0a15233e7b402302de5bb3e67946952ea82f4e7f7bc。Book 83→努比亚 66 的单应用投送正常首帧，定向连接 ID 3603936051 已正确保留，首次采样捕获 / 编码均 69 帧，后续 1856 帧；这验证诊断关联及正常路径，仍不关闭先前偶发零首帧问题。
 
 红米 66 的拒绝路径复测发现自动收起键盘可使后续回车触发本地返回。67 移除这项自动界面跳转，保留原始错误、严格文字归属与当前键盘入口，由明确的用户动作重新获取编辑上下文。正常文字测试的追加断言曾失败：原生字段最终为 vw，已记录实际值，不将未确认的原生选中态归为重复输入；下一次用显式右方向键定位光标，再检查恢复和不重放。
+
+## 四台电脑与 Android 67 接续验收
+
+两台 Mac 的 20261103.84、HO5 与 cube 的 `60cae98` 均已通过各自正式包及兼容升级入口安装。Mac 保留各机原授权签名；Linux 使用已验证的 FFmpeg / Opus 本机 SDK，Windows 沿用原安装位置与成员身份。实际 GUI 均为 restored-original-gpui，管理窗口视口约 640×600；不是把编译成功记为安装成功。安装记录分别为 `studio84-installed-status.json`、Book 的 `book84-installed-status.json`、HO5 的 `ho5-current-installed-status.json`、cube 的 `cube-current-installed-status.json`。
+
+两部指定手机已原签名升级 67，来源 `34a74c1`，APK SHA-256 `75d09a53975000f233d565424e041602373766f2259ace676fd5a4358ffe1800`。努比亚通过普通设备、来源选择入口拉取 Studio 的自有原生输入窗口，已看到实际画面。故意把 Studio 焦点切至另一自有 Weavelo 窗口后，文字被 `INPUT_UNAVAILABLE` 正确拒绝，按回车仍留在原流、保留键盘入口和具体原因，原生字段不变。明确隐藏键盘、点击远端输入框并重新打开键盘后，右方向键定位，再提交 `789 `，字段精确等于先前值加这四个字符；被拒绝的 `456 ` 没有重放。微信输入法保持原选择。证据 `nubia67-rejected-input-explicit-recovery-accepted.json`，这覆盖 67 的实际拒绝与恢复路径。
+
+HO5 沿用已授权的唯一 `Display(2147483649)` 主动投送至 Studio，实际接收窗 `Display 1 · bazzite · Receiving — Weavelo` 已出画；连接 `3446458774` 的原生解码及场景提交持续增长。该接收窗再投至努比亚，实际截图 `nubia67-ho5-current-manager-actual.png` 可见 Linux 桌面及发送控制窗。它证明这条主动发送与两层链路出画，不等于 Linux 全部窗口授权、输入或性能验收。
+
+红米 67 通过普通来源选择拉到 cube 的 Weavelo 管理应用窗口，截图 `redmi67-cube-current-manager-actual.png`；随后用同一来源主动投送也已实际出画，截图 `redmi67-cube-active-manager-actual.png`，对应连接 `656168565`。Windows 的协议来源是目录分配的 `Window(4)`，不是原生 HWND；先前 QA 误传 HWND 得到“来源结束”已明确排除，不记录为产品采集故障。没有把这些成功窗口当作此前特定应用零首帧问题的普遍修复。
+
+源码同时移除发送控制窗残留的自定义最小化按钮，保留全屏 / 恢复，与接收窗一致。两项发送窗口生命周期回归通过，签名发布回归 1,041 项通过、19 项跳过（`sending-fullscreen-only-tests.log`、`sending-fullscreen-only-release.log`）。此六行界面改动尚未随新桌面包安装；当前实机全屏证据仍对应 84 及既有接收窗。
