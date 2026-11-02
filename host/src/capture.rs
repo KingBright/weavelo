@@ -58,7 +58,10 @@ impl SCStreamOutputTrait for StreamOutput {
                 let rect = sample.content_rect().map(|r| [r.origin().x, r.origin().y, r.size().width, r.size().height]);
                 *resources.native_capture_geometry.lock().unwrap() = Some(crate::lifecycle::NativeCaptureGeometry {
                     source: self.source, buffer: [buffer.width() as u32, buffer.height() as u32],
-                    content_rect: rect, content_scale: sample.content_scale(), scale_factor: sample.scale_factor(),
+                    content_rect: rect,
+                    bounding_rect: sample.bounding_rect().map(|r| [r.origin().x, r.origin().y, r.size().width, r.size().height]),
+                    screen_rect: sample.screen_rect().map(|r| [r.origin().x, r.origin().y, r.size().width, r.size().height]),
+                    content_scale: sample.content_scale(), scale_factor: sample.scale_factor(),
                 });
                 self.last_format.store(format, Relaxed);
             }
@@ -177,6 +180,11 @@ impl MacVideoCapturer {
             // The visual rectangle must be the same rectangle used for normalized input.
             // Shadows are decorations outside the AX/CG window bounds.
             config.set_ignores_shadows_single_window(true);
+            // SCK otherwise includes associated native windows by default. In
+            // fullscreen AppKit parks a hidden titlebar above the selected
+            // content; that extra 32pt changes scaling without changing its
+            // input bounds. A fixed-window source owns this window only.
+            config.set_includes_child_windows(false);
             config.set_scales_to_fit(true);
         }
         config

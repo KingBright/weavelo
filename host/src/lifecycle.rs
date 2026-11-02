@@ -64,6 +64,10 @@ pub struct NativeCaptureGeometry {
     pub source: protocol::session::CaptureSource,
     pub buffer: [u32; 2],
     pub content_rect: Option<[f64; 4]>,
+    #[serde(default)]
+    pub bounding_rect: Option<[f64; 4]>,
+    #[serde(default)]
+    pub screen_rect: Option<[f64; 4]>,
     pub content_scale: Option<f64>,
     pub scale_factor: Option<f64>,
 }
