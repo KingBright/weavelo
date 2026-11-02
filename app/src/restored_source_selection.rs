@@ -24,6 +24,7 @@ impl Selection {
     pub(super) fn is_delivery(&self) -> bool { matches!(self.target, Target::Send(_)) }
     pub(super) fn local_delivery_is_current(&self) -> bool {self.is_delivery()&&self.scope==current_share_scope()}
     pub(super) fn pending_delivery(&self) -> bool { self.pending_request.is_some() }
+    pub(super) fn pending_request(&self) -> Option<&str> { self.pending_request.as_deref() }
     pub(super) fn observe_delivery(&mut self, progress:Option<(&str,&crate::desktop::directed_send::SendProgress)>) -> bool {
         let Some(pending)=self.pending_request.as_deref() else {return false;};
         let Some((_,progress))=progress.filter(|(request,_)|*request==pending) else {
@@ -74,9 +75,6 @@ impl Selection {
 impl RestoredDashboard {
     pub(super) fn begin_delivery_selection(&mut self, device:String,cx:&mut Context<Self>) {
         if self.background.is_none() {self.status="Sharing service is unavailable".into();cx.notify();return;}
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|!sender.is_finished()) {
-            self.status="Stop the current delivery before choosing another target".into();cx.notify();return;
-        }
         let name=self.owner.snapshot().devices.iter().find(|item|item.device_id==device)
             .map(|item|item.display_name.clone()).unwrap_or_else(||device.clone());
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
@@ -207,7 +205,10 @@ impl RestoredDashboard {
             let sources=selection.selected.iter().map(|id|selection.sources.iter().find(|source|source.source==*id)
                 .cloned().ok_or("The source list changed".to_owned())).collect::<Result<Vec<_>,_>>()?;
             match &selection.target {
-                Target::Send(device)=>self.send_screen(device.clone(),selection.selected.clone()),
+                Target::Send(device)=>{
+                    selection.pending_request=Some(self.send_screen(device.clone(),selection.selected.clone())?);
+                    Ok(())
+                },
                 Target::Open(binding)=>{
                     let device=self.owner.validate_source_selection(binding,&sources)?;
                     if self.stream_device.as_ref().is_some_and(|expected|expected!=&device) {return Err("Device context changed; reopen sources".into());}
@@ -242,7 +243,6 @@ impl RestoredDashboard {
             self.status=error;
         } else if delivery {
             selection.error=None;
-            selection.pending_request=self.directed_send.lock().unwrap().as_ref().map(|sender|sender.request_id.clone());
             self.source_selection=Some(selection);
         }
         cx.notify();
@@ -250,8 +250,7 @@ impl RestoredDashboard {
     pub(super) fn cancel_source_selection(&mut self,cx:&mut Context<Self>) {
         let pending=self.source_selection.take().and_then(|selection|selection.pending_request);
         if let Some(pending)=pending {
-            let mut sender=self.directed_send.lock().unwrap();
-            if sender.as_ref().is_some_and(|sender|sender.request_id==pending) {sender.take();}
+            self.directed_send.lock().unwrap().remove(&pending);
         }
         if self.purpose==WindowPurpose::Stream && self.stream_device.is_some() && self.stream_source.is_none() {
             let handle=self.window_handle;

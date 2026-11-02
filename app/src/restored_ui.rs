@@ -370,7 +370,7 @@ struct FrontendExitGroup {
     stopping: AtomicBool,
     upgrade_operations: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(any(unix, windows))]
-    directed_send: Arc<Mutex<Option<crate::desktop::directed_send::SendHandle>>>,
+    directed_send: Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
     gui_generation: Mutex<Option<String>>,
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
@@ -451,7 +451,7 @@ struct RestoredDashboard {
     #[cfg(any(unix, windows))]
     directed_receive: Option<crate::desktop::directed_receive::Adapter>,
     #[cfg(any(unix, windows))]
-    directed_send: Arc<Mutex<Option<crate::desktop::directed_send::SendHandle>>>,
+    directed_send: Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
     delivery_closed: Option<Arc<AtomicBool>>,
     activation: Arc<AtomicBool>,
     bound_source: Option<(u32, Instant)>,
@@ -526,25 +526,25 @@ impl RestoredDashboard {
         StreamActivity {
             sharing: self.background.as_ref().map_or(0, |background| background.outgoing_streams()),
             receiving: self.exit_group.owners().iter().map(|owner| owner.receiving_streams()).sum(),
-            can_stop_sending: self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|!sender.is_finished()),
-            can_stop_receiving: self.directed_receive.as_ref().is_some_and(|adapter| adapter.lease.is_some()),
+            can_stop_sending: self.directed_send.lock().unwrap().values().any(|sender|!sender.is_finished()),
+            can_stop_receiving: self.directed_receive.as_ref().is_some_and(|adapter| !adapter.leases.is_empty()),
         }
     }
     #[cfg(any(unix, windows))]
-    fn sending_snapshot(&self) -> Option<serde_json::Value> {
-        self.directed_send.lock().unwrap().as_ref().filter(|sender|!sender.is_finished()).map(|sender|serde_json::json!({
-            "request_id":sender.request_id,"target":sender.target,
+    fn sending_snapshot(&self) -> Vec<serde_json::Value> {
+        self.directed_send.lock().unwrap().values().filter(|sender|!sender.is_finished()).map(|sender|serde_json::json!({
+            "request_id":sender.request_id,"target":sender.target,"sources":sender.sources,
             "finished":sender.is_finished(),"status":sender.poll(),
-        }))
+        })).collect()
     }
     #[cfg(any(unix, windows))]
-    fn last_delivery_snapshot(&self) -> Option<serde_json::Value> {
-        self.directed_send.lock().unwrap().as_ref().filter(|sender|sender.is_finished()).map(|sender| {
+    fn last_delivery_snapshot(&self) -> Vec<serde_json::Value> {
+        self.directed_send.lock().unwrap().values().filter(|sender|sender.is_finished()).map(|sender| {
             let progress=sender.progress();
-            serde_json::json!({"request_id":sender.request_id,"target":sender.target,
+            serde_json::json!({"request_id":sender.request_id,"target":sender.target,"sources":sender.sources,
                 "started":progress.started,"status":progress.status,"error":progress.result.and_then(Result::err),
                 "confirmation_timeout":progress.confirmation_timeout})
-        })
+        }).collect()
     }
     fn new(
         runtime: Arc<UnifiedRuntimeHandle>,
@@ -814,7 +814,8 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn stop_directed_receive(&mut self) {
-        if self.directed_receive.as_mut().and_then(|adapter| adapter.lease.take()).is_some() {
+        if let Some(adapter) = self.directed_receive.as_mut() {
+            adapter.leases.clear();
             // Each receive window owns its exact subscription and watchdog.
             self.status = "Directed receive stopped".into();
         }
@@ -851,16 +852,21 @@ impl RestoredDashboard {
 
     #[cfg(any(unix, windows))]
     fn poll_directed_receive(&mut self, cx: &mut Context<Self>) {
-        let pending=self.source_selection.as_ref().is_some_and(source_selection::Selection::pending_delivery);
-        let progress=self.directed_send.lock().unwrap().as_ref()
-            .filter(|sender|pending||!sender.is_finished()).map(|sender|(sender.request_id.clone(),sender.progress()));
+        if self.purpose == WindowPurpose::Management {
+            // The retained coordinator keeps every sender alive, even when its
+            // source picker or management presentation has been closed.
+            for sender in self.directed_send.lock().unwrap().values() { sender.poll(); }
+        }
+        let progress=self.source_selection.as_ref().and_then(|selection|selection.pending_request())
+            .and_then(|request|self.directed_send.lock().unwrap().get(request)
+                .map(|sender|(sender.request_id.clone(),sender.progress())));
         if let Some(selection)=self.source_selection.as_mut()
             && selection.observe_delivery(progress.as_ref().map(|(request,progress)|(request.as_str(),progress))) {
             self.source_selection=None;
         }
         use crate::desktop::directed_receive::{Request, Lease};
-        if self.directed_receive.as_ref().and_then(|a| a.lease.as_ref()).is_some_and(|lease| !lease.current()) {
-            self.stop_directed_receive();
+        if let Some(adapter) = self.directed_receive.as_mut() {
+            adapter.leases.retain(|_, lease| lease.current());
         }
         loop {
             let Some(command) = self.directed_receive.as_mut().and_then(|a| a.commands.try_recv().ok()) else { break; };
@@ -906,17 +912,17 @@ impl RestoredDashboard {
             if let Request::Send {request_id,target_device_id,sources,..}=command.request {
                 let result=self.send_screen_request(target_device_id,sources,request_id.clone());
                 let response=match result {
-                    Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().as_ref().unwrap().cancellation()),
+                    Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().get(&request_id).unwrap().cancellation()),
                     Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
                 };
                 let _=command.reply.send(response);continue;
             }
             if let Request::StopSend {request_id,..}=command.request {
-                let current=self.directed_send.lock().unwrap().as_ref().is_some_and(|sender|sender.request_id==request_id&&!sender.is_finished());
-                if current {self.directed_send.lock().unwrap().take();}
+                let current=self.directed_send.lock().unwrap().get(&request_id).is_some_and(|sender|!sender.is_finished());
+                if current {self.directed_send.lock().unwrap().remove(&request_id);}
                 let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
             }
-            let mut newly_accepted = false;
+            let mut newly_accepted = None;
             let response = match command.request {
                 Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} | Request::Send {..} | Request::StopSend {..} => unreachable!(),
                 Request::NetworkDiagnostics => serde_json::json!({
@@ -928,9 +934,9 @@ impl RestoredDashboard {
                 Request::Status => serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,"gui_close":crate::desktop::upgrade_quit::GUI_CLOSE_CAPABILITY,
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
-                    "lease":adapter.lease.as_ref().map(|lease|lease.snapshot()),
+                    "leases":adapter.leases.values().map(|lease|lease.snapshot()).collect::<Vec<_>>(),
                     "sending":self.sending_snapshot(),
-                    "last_delivery":self.last_delivery_snapshot(),
+                    "last_deliveries":self.last_delivery_snapshot(),
                     "stream_activity":self.stream_activity(),
                     "sessions":self.owner.diagnostic_snapshot(),
                     "ui_windows":cx.windows().into_iter().filter_map(|handle|handle.update(cx,|_,window,_| {
@@ -942,13 +948,8 @@ impl RestoredDashboard {
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
                     })).collect::<Vec<_>>()}),
                 Request::Receive { request_id, source_device_id, sources, lease_ms, claim, .. } => {
-                    let tabs = self.owner.session_tabs();
-                    let viewing = self.exit_group.owners().len().saturating_sub(1)
-                        + usize::from(!tabs.tabs.is_empty() || tabs.connecting.is_some());
-                    if adapter.lease.is_some() {
-                        serde_json::json!({"ok":false,"error":"A directed delivery is already open"})
-                    } else if viewing.saturating_add(sources.len()) > protocol::session::MAX_SUBSCRIPTIONS {
-                        serde_json::json!({"ok":false,"error":"Close a viewing window to receive these sources"})
+                    if adapter.leases.contains_key(&request_id) {
+                        serde_json::json!({"ok":false,"error":"This directed delivery is already open"})
                     } else if !self.owner.snapshot().devices.iter().any(|d| d.device_id == source_device_id && d.is_streamable()) {
                         serde_json::json!({"ok":false,"error":"Source is not a currently available paired streaming device"})
                     } else {
@@ -968,33 +969,32 @@ impl RestoredDashboard {
                             for handle in handles { let _=handle.update(cx,|_,window,_|window.remove_window()); }
                             serde_json::json!({"ok":false,"error":error})
                         } else {
-                            self.directed_receive.as_mut().unwrap().lease = Some(Lease {
+                            self.directed_receive.as_mut().unwrap().leases.insert(request_id.clone(), Lease {
                                 request_id:request_id.clone(),source:source_device_id, expires,
                                 windows:members, revision:1,
                                 _upgrade_operation:crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations),
                             });
-                            newly_accepted = true;
+                            newly_accepted = Some(request_id.clone());
                             serde_json::json!({"ok":true,"state":"accepted","generation":generation,"request_id":request_id,"lease_ms":lease_ms})
                         }
                     }
                 }
                 Request::Renew { request_id,revision,lease_ms,.. } => {
-                    let accepted=adapter.lease.as_mut().filter(|l|l.request_id==request_id).is_some_and(|lease| {
+                    let accepted=adapter.leases.get_mut(&request_id).is_some_and(|lease| {
                         lease.renew(revision, Duration::from_millis(lease_ms))
                     });
                     serde_json::json!({"ok":accepted,"state":if accepted{"accepted"}else{"ended"},"generation":generation,"request_id":request_id})
                 }
                 Request::Stop { request_id, .. } => {
-                    if adapter.lease.as_ref().is_some_and(|lease| lease.request_id == request_id) {
-                        self.stop_directed_receive();
+                    if adapter.leases.remove(&request_id).is_some() {
                         serde_json::json!({"ok":true,"state":"stopped","generation":generation,"request_id":request_id})
                     } else { serde_json::json!({"ok":false,"error":"Receive lease is no longer current"}) }
                 }
             };
-            let response = if newly_accepted { crate::desktop::directed_receive::Reply::accepted(response, self.directed_receive.as_ref().and_then(|adapter|adapter.lease.as_ref()).map(|lease|lease.owners()).unwrap_or_default()) } else { response.into() };
-            if command.reply.send(response).is_err() && newly_accepted {
+            let response = if let Some(request) = newly_accepted.as_ref() { crate::desktop::directed_receive::Reply::accepted(response, self.directed_receive.as_ref().and_then(|adapter|adapter.leases.get(request)).map(|lease|lease.owners()).unwrap_or_default()) } else { response.into() };
+            if command.reply.send(response).is_err() && let Some(request) = newly_accepted {
                 // A lost acknowledgement never leaves a newly accepted lease running.
-                self.stop_directed_receive();
+                self.directed_receive.as_mut().unwrap().leases.remove(&request);
             }
         }
     }
@@ -1008,7 +1008,7 @@ impl RestoredDashboard {
 
     fn save_device_name(&mut self, use_default: bool, cx: &mut Context<Self>) {
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|send| !send.is_finished()) {
+        if self.directed_send.lock().unwrap().values().any(|send| !send.is_finished()) {
             self.pairing_image_status("Finish the file transfer before changing this device name.",
                 MeshPairingMessageKind::Warning);
             cx.notify();
@@ -1055,7 +1055,7 @@ impl RestoredDashboard {
     fn create_mesh_group(&mut self) {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
+        if self.directed_send.lock().unwrap().values().any(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
         if !self.exit_group.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
@@ -1076,7 +1076,7 @@ impl RestoredDashboard {
     fn join_mesh_group_from_payload(&mut self, invite_code: &str) {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
+        if self.directed_send.lock().unwrap().values().any(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
         if !self.exit_group.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
@@ -1101,7 +1101,7 @@ impl RestoredDashboard {
 
     fn scan_pairing_image(&mut self, cx: &mut Context<Self>) {
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s| !s.is_finished()) {
+        if self.directed_send.lock().unwrap().values().any(|s| !s.is_finished()) {
             self.pairing_image_status("Stop sending before changing the device network.", MeshPairingMessageKind::Warning);
             return;
         }
@@ -1962,7 +1962,7 @@ impl RestoredDashboard {
         } else if idle_only {
             let adapter=self.directed_receive.as_ref().unwrap();
             let states=self.exit_group.owners().iter().map(|o|o.diagnostic_snapshot()).collect::<Vec<_>>();
-            upgrade_quit::idle(&states,adapter.lease.is_some(),adapter.active_operations.load(Ordering::Acquire))
+            upgrade_quit::idle(&states,!adapter.leases.is_empty(),adapter.active_operations.load(Ordering::Acquire))
         } else {Ok(())};
         if let Err(error)=refusal {
             self.exit_group.stopping.store(false,Ordering::Release);
@@ -1973,7 +1973,7 @@ impl RestoredDashboard {
         for owner in self.exit_group.owners() {owner.set_input_locked(true);owner.release_input();}
         self.pointer_input=PointerInputTracker::default();
         self.session_commands.begin();self.invalidate_source_commands();
-        self.stop_directed_receive();self.directed_send.lock().unwrap().take();
+        self.stop_directed_receive();self.directed_send.lock().unwrap().clear();
         let group=self.exit_group.clone();
         cx.spawn(async move |view,cx| {
             if let Err(error)=group.close_verified().await {
@@ -2002,7 +2002,7 @@ impl RestoredDashboard {
         #[cfg(any(unix, windows))]
         self.stop_directed_receive();
         #[cfg(any(unix, windows))]
-        self.directed_send.lock().unwrap().take();
+        self.directed_send.lock().unwrap().clear();
         self.status = "Releasing connections and stopping Weavelo…".into();
         let group = self.exit_group.clone(); let runtime = self.runtime.clone(); let background = self.background.clone();
         cx.spawn(async move |view, cx| {
@@ -3459,9 +3459,9 @@ fn drawer_devices_tab(
                 row.child(stream_activity_badge(IconName::Sharing, format!("Sharing · {}", activity.sharing))
                     .when(activity.can_stop_sending, |badge| badge.child(
                         command_button("stop_directed_send", ActionVariantKind::Neutral, cx)
-                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop sending").build()).child("×")
+                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop all sends started here").build()).child("×")
                             .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
-                                this.directed_send.lock().unwrap().take();cx.notify();
+                                this.directed_send.lock().unwrap().clear();cx.notify();
                             }); })
                     )))
             })
@@ -3470,7 +3470,7 @@ fn drawer_devices_tab(
                 row.child(stream_activity_badge(IconName::Receiving, format!("Receiving · {}", activity.receiving))
                     .when(activity.can_stop_receiving, |badge| badge.child(
                         command_button("stop_directed_receive", ActionVariantKind::Neutral, cx)
-                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop receiving").build()).child("×")
+                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop all directed receives").build()).child("×")
                             .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
                                 this.stop_directed_receive();cx.notify();
                             }); })
@@ -3754,22 +3754,30 @@ impl RestoredDashboard {
     }
 
     #[cfg(any(unix, windows))]
-    fn send_screen(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>)->Result<(),String>{
-        let request_id=format!("{}-{}",std::process::id(),crate::unix_now_ms());
-        self.send_screen_request(device_id,sources,request_id)
+    fn send_screen(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>)->Result<String,String>{
+        if let Some(request)=self.directed_send.lock().unwrap().values()
+            .find(|sender|!sender.is_finished()&&sender.target==device_id&&sender.sources==sources)
+            .map(|sender|sender.request_id.clone()) {return Ok(request);}
+        let request_id=format!("{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos());
+        self.send_screen_request(device_id,sources,request_id.clone())?;
+        Ok(request_id)
     }
     #[cfg(any(unix, windows))]
     fn send_screen_request(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>,request_id:String)->Result<(),String>{
         protocol::session::validate_delivery_sources(&sources).map_err(str::to_owned)?;
         if self.exit_group.stopping.load(Ordering::Acquire) {return Err("GUI exit is already requested".into());}
-        if self.directed_send.lock().unwrap().as_ref().is_some_and(|s|!s.is_finished()){return Err("Stop the current delivery before choosing another target".into());}
         let profile=self.background.as_ref().ok_or("Sharing service is unavailable")?.profile_directory().to_owned();
         let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(&profile).load().map_err(|e|e.to_string())?.ok_or("Missing device identity")?;
         if device_id==identity.node_id {return Err("Choose another device to receive the screen".into());}
         let generation=self.exit_group.gui_generation.lock().unwrap().clone().ok_or("GUI generation is unavailable")?;
         let routes=self.runtime.owner.discovery_snapshot_rx().map(|rx|crate::desktop::model::candidate_routes(&rx.borrow(),&device_id)).unwrap_or_default();
         if routes.is_empty(){return Err("Target is not currently available".into());}
-        *self.directed_send.lock().unwrap()=Some(crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
+        let mut senders=self.directed_send.lock().unwrap();
+        if senders.contains_key(&request_id) {return Err("This sending request already exists".into());}
+        // Keep a small recent result set without limiting independent live sends.
+        let finished:Vec<_>=senders.iter().filter(|(_,sender)|sender.is_finished()).map(|(id,_)|id.clone()).collect();
+        for id in finished.iter().take(finished.len().saturating_sub(protocol::session::MAX_SUBSCRIPTIONS)) {senders.remove(id);}
+        senders.insert(request_id.clone(),crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
         self.status="Contacting target to receive this screen".into();Ok(())
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {

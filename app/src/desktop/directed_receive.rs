@@ -135,7 +135,7 @@ pub(crate) struct Adapter {
     pub executable_sha256: String,
     pub commands: mpsc::Receiver<Command>,
     pub computer_use: std::sync::Arc<super::computer_use_ipc::Dispatcher>,
-    pub lease: Option<Lease>,
+    pub leases: std::collections::BTreeMap<String, Lease>,
     seen: HashMap<String,u64>,
     admission_clock: Option<(u64,Instant)>,
     pub active_operations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -256,7 +256,7 @@ impl Adapter {
             generation,
             commands,
             computer_use,
-            lease: None,
+            leases: Default::default(),
             seen: HashMap::new(),
             admission_clock:None,
             active_operations:Default::default(),
@@ -377,7 +377,7 @@ fn length(header: [u8; 4]) -> Result<usize, Error> {
 }
 impl Drop for Adapter {
     fn drop(&mut self) {
-        self.lease.take();
+        self.leases.clear();
         self.task.abort();
         crate::private_ipc::remove_endpoint(&self.path);
     }
@@ -609,6 +609,45 @@ mod tests {
         assert!(!lease.renew(1,Duration::from_secs(60)));
         drop(lease);assert!(!second.directed_receive_current("group"));
         assert!(flags.iter().all(|flag|flag.load(Ordering::Acquire)));assert_eq!(counter.load(Ordering::Acquire),0);
+    }
+    #[tokio::test]
+    async fn independent_receives_keep_their_own_renewal_cancellation_and_expiry() {
+        use protocol::session::{CaptureSource, DeliveryClaimProof};
+        use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+        let directory=private_fixture();
+        let mut adapter=Adapter::start(directory.path()).unwrap();
+        let backend=Arc::new(crate::UnifiedServiceOwner::start(crate::UnifiedServiceOwnerConfig::default()).await.unwrap());
+        let owners=[super::super::original_owner::OriginalOwner::new(backend.clone()),
+            super::super::original_owner::OriginalOwner::new(backend)];
+        let counter=Arc::new(AtomicUsize::new(0));
+        let mut flags=Vec::new();
+        for (index,owner) in owners.iter().enumerate() {
+            let request=format!("receive-{index}");
+            let source=CaptureSource::Window(10+index as u32);
+            let watchdog=owner.begin_directed_receive(&request,"same-peer",source,Duration::from_secs(15)).unwrap();
+            owner.set_receive_claim(&request,Some(DeliveryClaimProof {ticket:[index as u8;32],target_device_id:"receiver".into(),request_id:index as u64+1,sources:vec![source]}));
+            let close=Arc::new(AtomicBool::new(false));flags.push(close.clone());
+            adapter.leases.insert(request.clone(),Lease {
+                _upgrade_operation:super::super::upgrade_quit::Operation::begin(&counter),
+                request_id:request.clone(),source:"same-peer".into(),expires:Instant::now()+Duration::from_secs(15),revision:1,
+                windows:vec![ReceiveWindow {request_id:request,close,source,owner:Arc::downgrade(owner),watchdog}],
+            });
+        }
+        assert_eq!(counter.load(Ordering::Acquire),2);
+        assert!(adapter.leases.get_mut("receive-1").unwrap().renew(2,Duration::from_secs(30)));
+        adapter.leases.remove("receive-0");
+        assert!(flags[0].load(Ordering::Acquire));
+        assert!(!owners[0].directed_receive_current("receive-0"));
+        assert!(owners[1].directed_receive_current("receive-1"));
+        assert!(!flags[1].load(Ordering::Acquire));
+        assert_eq!(counter.load(Ordering::Acquire),1);
+        assert!(!adapter.leases.get_mut("receive-1").unwrap().renew(1,Duration::from_secs(30)));
+        adapter.leases.get_mut("receive-1").unwrap().expires=Instant::now();
+        adapter.leases.retain(|_,lease|lease.current());
+        assert!(adapter.leases.is_empty());
+        assert!(!owners[1].directed_receive_current("receive-1"));
+        assert!(flags[1].load(Ordering::Acquire));
+        assert_eq!(counter.load(Ordering::Acquire),0);
     }
     #[tokio::test]
     async fn unconsumed_accepted_reply_revokes_even_after_successful_oneshot_send() {

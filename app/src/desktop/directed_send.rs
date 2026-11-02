@@ -29,6 +29,7 @@ mod sender {
     pub(crate) struct SendHandle {
         pub target: String,
         pub request_id: String,
+        pub sources: Vec<protocol::session::CaptureSource>,
         stop: tokio::sync::watch::Sender<bool>,
         heartbeat: Arc<Mutex<Instant>>,
         status: Arc<Mutex<SendProgress>>,
@@ -54,6 +55,7 @@ mod sender {
             }));
             let progress = status.clone();
             let peer = target.clone();
+            let selected_sources = sources.clone();
             let task = tokio::spawn(async move {
                 let _upgrade_operation=upgrade_operation;
                 let result = run(
@@ -82,6 +84,7 @@ mod sender {
             Self {
                 request_id,
                 target,
+                sources: selected_sources,
                 stop,
                 heartbeat,
                 status,
