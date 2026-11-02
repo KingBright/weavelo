@@ -9,10 +9,14 @@ mod mac;
 mod linux;
 #[cfg(target_os = "windows")]
 mod windows;
+mod menu;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
-#[derive(Clone, Copy, Debug)]
-pub(super) enum Action { Open, Quit }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Action {
+    Open, Quit,
+    Ui { generation: Option<String>, call: crate::desktop::menu::Call },
+}
 
 /// Close the current frontend through its authenticated same-user endpoint.
 /// A startup race or changed owner is an error, never a process signal.
@@ -52,7 +56,7 @@ async fn open_gui(profile: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-async fn actions(profile: PathBuf, runtime: Arc<UnifiedRuntimeHandle>,
+async fn actions(profile: PathBuf, runtime: Arc<UnifiedRuntimeHandle>, source: menu::Source,
     stop: impl Future<Output = ()> + Send + 'static, mut receiver: mpsc::UnboundedReceiver<Action>) -> Result<(), Error> {
     let hash = background_service::executable_hash()?;
     tokio::pin!(stop);
@@ -62,6 +66,10 @@ async fn actions(profile: PathBuf, runtime: Arc<UnifiedRuntimeHandle>,
             result = tokio::signal::ctrl_c() => { result?;runtime.owner.shutdown_host().await?;return Ok(()); },
             action = receiver.recv() => match action {
                 Some(Action::Open) => if let Err(error) = open_gui(&profile).await { eprintln!("Weavelo tray: {error}"); },
+                Some(Action::Ui {generation,call}) => {
+                    if let Err(error)=menu::dispatch(&profile,&hash,generation,call).await {eprintln!("Weavelo menu: {error}");}
+                    source.refresh();
+                }
                 Some(Action::Quit) => {
                     let selected = profile.clone();let expected = hash.clone();
                     let closed = tokio::task::spawn_blocking(move || close_gui(&selected, &expected)).await?;
@@ -77,15 +85,16 @@ async fn actions(profile: PathBuf, runtime: Arc<UnifiedRuntimeHandle>,
 
 pub(crate) async fn run(profile: PathBuf, runtime: Arc<UnifiedRuntimeHandle>, stopped: Arc<Notify>) -> Result<(), Error> {
     let (sender,receiver) = mpsc::unbounded_channel();
+    let (source,_menu_monitor)=menu::Source::start(profile.clone(),runtime.clone(),background_service::executable_hash()?);
     // Register before creating native UI: a concurrent verified shutdown must
     // also be observed when Notify::notify_waiters runs during initialization.
     let mut stop = Box::pin(stopped.notified_owned());
     stop.as_mut().enable();
-    let future = actions(profile, runtime, stop, receiver);
+    let future = actions(profile, runtime, source.clone(), stop, receiver);
     #[cfg(target_os = "macos")]
-    { mac::run(sender, future).await }
+    { mac::run(sender, source, future).await }
     #[cfg(target_os = "linux")]
-    { let _tray = linux::Tray::start(sender).await?;future.await }
+    { let _tray = linux::Tray::start(sender,source).await?;future.await }
     #[cfg(target_os = "windows")]
-    { let _tray = windows::Tray::start(sender)?;future.await }
+    { let _tray = windows::Tray::start(sender,source)?;future.await }
 }

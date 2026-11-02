@@ -24,6 +24,8 @@ mod computer_use_transport_tests;
 #[serde(deny_unknown_fields)]
 pub(crate) enum Request {
     Status,
+    Menu,
+    MenuAction { generation: String, request_id: String, deadline_ms: u64, call: super::menu::Call },
     NetworkDiagnostics,
     UpgradeQuit { generation:String, executable_sha256:String, request_id:String, deadline_ms:u64 },
     CloseGui { generation:String, executable_sha256:String, request_id:String, deadline_ms:u64 },
@@ -268,7 +270,15 @@ impl Adapter {
         if projected.is_none_or(|value|now_ms>value){self.admission_clock=Some((now_ms,instant));}
         let now_ms=projected.map_or(now_ms,|value|now_ms.max(value));
         match request {
-            Request::Status | Request::NetworkDiagnostics => Ok(()),
+            Request::Status | Request::Menu | Request::NetworkDiagnostics => Ok(()),
+            Request::MenuAction {generation,request_id,deadline_ms,call} => {
+                valid_request(&self.generation,generation,request_id,*deadline_ms,now_ms)?;
+                if !call.valid() {return Err("Invalid menu target");}
+                self.seen.retain(|_,deadline|*deadline>now_ms);
+                if self.seen.len()>=256 || self.seen.contains_key(request_id) {return Err("Menu action replay refused");}
+                self.seen.insert(request_id.clone(),*deadline_ms);
+                Ok(())
+            }
             Request::UpgradeQuit {generation,executable_sha256,request_id,deadline_ms}
             | Request::CloseGui {generation,executable_sha256,request_id,deadline_ms} => {
                 if executable_sha256 != &self.executable_sha256 {return Err("GUI executable changed");}
@@ -383,8 +393,12 @@ impl Drop for Adapter {
     }
 }
 pub(crate) fn exchange(directory: &Path, request: &Request) -> Result<serde_json::Value, Error> {
-    let timeout = if matches!(request, Request::CloseGui {..}) {15} else {3};
-    let mut socket = crate::private_ipc::connect(directory, SOCKET, Duration::from_secs(timeout))?;
+    let timeout = match request {
+        Request::CloseGui {..} => Duration::from_secs(15),
+        Request::Menu => Duration::from_millis(500),
+        _ => Duration::from_secs(3),
+    };
+    let mut socket = crate::private_ipc::connect(directory, SOCKET, timeout)?;
     let bytes = serde_json::to_vec(request)?;
     length((bytes.len() as u32).to_be_bytes())?;
     socket.write_all(&(bytes.len() as u32).to_be_bytes())?;
@@ -419,6 +433,15 @@ pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Val
     }
     let request = match args {
         [cmd] if cmd == "--gui-status-json" => Request::Status,
+        [cmd] if cmd == "--gui-menu-json" => Request::Menu,
+        [cmd, action] if cmd == "--gui-action" => {
+            let call:super::menu::Call=serde_json::from_str(action)?;
+            if !call.valid() {return Err("Invalid menu target".into());}
+            let snapshot=exchange(directory,&Request::Menu)?;
+            let generation=snapshot["generation"].as_str().ok_or("Missing GUI generation")?.to_owned();
+            Request::MenuAction {generation,request_id:format!("menu-{}-{}",std::process::id(),crate::unix_now_ms()),
+                deadline_ms:crate::unix_now_ms().saturating_add(ADMISSION_MS),call}
+        }
         [cmd] if cmd == "--gui-network-diagnostics-json" => Request::NetworkDiagnostics,
         [cmd, source] | [cmd, source, _] if cmd == "--gui-receive" => {
             let seconds: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(60);
@@ -474,6 +497,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         dir
+    }
+    #[tokio::test]
+    async fn menu_actions_refuse_stale_owner_expiration_and_replay() {
+        let dir=private_fixture();
+        let mut adapter=Adapter::start(dir.path()).unwrap();
+        let request=|generation:String,id:&str,deadline_ms,call|Request::MenuAction {generation,request_id:id.into(),deadline_ms,call};
+        let call=super::super::menu::Call::Manager(super::super::menu::Section::Transfers);
+        assert!(adapter.admit(&request("old".into(),"stale",200,call.clone()),100).is_err());
+        assert!(adapter.admit(&request(adapter.generation.clone(),"expired",99,call.clone()),100).is_err());
+        assert!(adapter.admit(&request(adapter.generation.clone(),"bad",200,super::super::menu::Call::StopSend(String::new())),100).is_err());
+        let admitted=request(adapter.generation.clone(),"once",200,call);
+        assert!(adapter.admit(&admitted,100).is_ok());
+        assert!(adapter.admit(&admitted,100).is_err());
     }
     #[tokio::test]
     async fn explicit_gui_close_keeps_owner_deadline_and_shared_replay_checks() {

@@ -7,6 +7,8 @@ use std::sync::{Arc, Weak};
 pub(crate) mod foreground_runtime;
 pub(crate) mod device_list;
 #[cfg(feature = "gpui-restoration")]
+pub(crate) mod menu;
+#[cfg(feature = "gpui-restoration")]
 pub(crate) mod device_drawer;
 #[cfg(feature = "gpui-restoration")]
 pub(crate) mod session_recovery;

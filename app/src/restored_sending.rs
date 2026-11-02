@@ -67,6 +67,7 @@ impl RestoredDashboard {
             let mut senders = self.directed_send.lock().unwrap();
             for request in requests { senders.remove(request); }
         }
+        for request in requests { self.exit_group.send_labels.lock().unwrap().remove(request); }
         let windows: Vec<_> = cx.windows().into_iter().filter(|window| {
             let Some(handle) = window.downcast::<RestoredDashboard>() else { return false; };
             if *window == self.window_handle {
@@ -91,9 +92,9 @@ impl RestoredDashboard {
 
     pub(super) fn send_activity(&self) -> Vec<SendActivity> {
         let devices = self.owner.snapshot().devices;
-        self.directed_send
-            .lock()
-            .unwrap()
+        let senders = self.directed_send.lock().unwrap();
+        let labels = self.exit_group.send_labels.lock().unwrap();
+        senders
             .values()
             .map(|sender| SendActivity {
                 request_id: sender.request_id.clone(),
@@ -103,12 +104,12 @@ impl RestoredDashboard {
                     .find(|device| device.device_id == sender.target)
                     .map(|device| device.display_name.clone())
                     .unwrap_or_else(|| sender.target.clone()),
-                source: sender
+                source: labels.get(&sender.request_id).cloned().unwrap_or_else(|| sender
                     .sources
                     .iter()
                     .map(|source| source_name(*source))
                     .collect::<Vec<_>>()
-                    .join(", "),
+                    .join(", ")),
                 status: sender.poll(),
                 finished: sender.is_finished(),
             })
@@ -162,6 +163,10 @@ impl RestoredDashboard {
                         .filter(|source| context.sources.contains(&source.source))
                         .collect();
                     context.artwork = ApplicationArtwork::default().update(assets);
+                    let label=context.label();
+                    if this.directed_send.lock().unwrap().get(&request).is_some_and(|s|!s.is_finished()) {
+                        this.exit_group.send_labels.lock().unwrap().insert(request.clone(),label);
+                    }
                     cx.notify();
                 }
             });
@@ -226,6 +231,9 @@ impl RestoredDashboard {
             self.status = "This sending request has ended".into();
             return false;
         };
+        if !context.catalog.is_empty() {
+            self.exit_group.send_labels.lock().unwrap().insert(request.into(),context.label());
+        }
         let Some(window) = open_restored_window(
             self.runtime.clone(),
             None,
@@ -517,7 +525,8 @@ mod tests {
         view.update(cx, |this, cx| {
             assert!(this.open_sending_window(
                 "send-a",
-                Vec::new(),
+                vec![CaptureSourceInfo {source:CaptureSource::Window(7),title:"Retained fixture window".into(),application:String::new(),
+                    process_id:None,width:640,height:480,supports_input:false,camera:None}],
                 Arc::new(Default::default()),
                 cx
             ))
@@ -572,6 +581,9 @@ mod tests {
         assert_eq!(group.directed_send.lock().unwrap().len(), 2);
         assert!(!*first_stop.borrow());
         assert!(!*second_stop.borrow());
+        assert!(view.read_with(cx,|this,_|this.send_activity()).iter().any(|send|
+            send.request_id=="send-a" && send.source.contains("Retained fixture window")),
+            "native menus retain the real source label after its preview closes");
         view.update(cx, |this, cx| {
             assert!(this.open_sending_window(
                 "send-a",

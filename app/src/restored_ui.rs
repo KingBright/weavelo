@@ -8,6 +8,8 @@ use stream_controls::{DeviceFiles, StreamPanel};
 #[path="restored_sending.rs"]
 mod sending;
 use sending::{SendActivity, SendingContext};
+#[path="restored_menu.rs"]
+mod native_menu;
 #[cfg(test)]
 #[path="restored_source_browser_tests.rs"]
 mod source_browser_tests;
@@ -384,6 +386,7 @@ struct FrontendExitGroup {
     upgrade_operations: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(any(unix, windows))]
     directed_send: Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
+    send_labels: Mutex<std::collections::BTreeMap<String, String>>,
     gui_generation: Mutex<Option<String>>,
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
@@ -884,7 +887,7 @@ impl RestoredDashboard {
         loop {
             let Some(command) = self.directed_receive.as_mut().and_then(|a| a.commands.try_recv().ok()) else { break; };
             if command.reply.is_closed() { continue; }
-            if self.exit_group.stopping.load(Ordering::Acquire) && !matches!(&command.request, Request::Status | Request::NetworkDiagnostics) {
+            if self.exit_group.stopping.load(Ordering::Acquire) && !matches!(&command.request, Request::Status | Request::Menu | Request::NetworkDiagnostics) {
                 let _=command.reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested; observe original outcome"}).into());continue;
             }
             let adapter = self.directed_receive.as_mut().unwrap();
@@ -892,6 +895,14 @@ impl RestoredDashboard {
                 let _ = command.reply.send(serde_json::json!({"ok":false,"error":error}).into()); continue;
             }
             let generation = adapter.generation.clone();
+            if let Request::MenuAction {call,..}=command.request {
+                let result=self.dispatch_menu_action(call,cx);
+                let body=match result {
+                    Ok(())=>serde_json::json!({"ok":true}),
+                    Err(error)=>{self.status=error.clone();serde_json::json!({"ok":false,"error":error})},
+                };
+                let _=command.reply.send(body.into());continue;
+            }
             if matches!(&command.request, Request::UpgradeQuit {..} | Request::CloseGui {..}) {
                 let idle_only = matches!(&command.request, Request::UpgradeQuit {..});
                 self.begin_gui_quit(Some(command),idle_only,cx);continue;
@@ -938,7 +949,8 @@ impl RestoredDashboard {
             }
             let mut newly_accepted = None;
             let response = match command.request {
-                Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} | Request::Send {..} | Request::StopSend {..} => unreachable!(),
+                Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} | Request::Send {..} | Request::StopSend {..} | Request::MenuAction {..} => unreachable!(),
+                Request::Menu => serde_json::to_value(self.native_menu_snapshot(&generation,cx)).unwrap(),
                 Request::NetworkDiagnostics => serde_json::json!({
                     "ok":true, "generation":generation, "pid":std::process::id(),
                     "executable_sha256":adapter.executable_sha256,
@@ -1538,9 +1550,7 @@ impl RestoredDashboard {
                         "Pause media · keep connected"
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.manual_media_paused = !this.manual_media_paused;
-                        this.sync_media_pause();
-                        cx.notify();
+                        this.set_stream_paused(!this.manual_media_paused,cx);
                     })),
             ))
             .child(
@@ -3800,7 +3810,9 @@ impl RestoredDashboard {
         if senders.contains_key(&request_id) {return Err("This sending request already exists".into());}
         // Keep a small recent result set without limiting independent live sends.
         let finished:Vec<_>=senders.iter().filter(|(_,sender)|sender.is_finished()).map(|(id,_)|id.clone()).collect();
-        for id in finished.iter().take(finished.len().saturating_sub(protocol::session::MAX_SUBSCRIPTIONS)) {senders.remove(id);}
+        for id in finished.iter().take(finished.len().saturating_sub(protocol::session::MAX_SUBSCRIPTIONS)) {
+            senders.remove(id);self.exit_group.send_labels.lock().unwrap().remove(id);
+        }
         senders.insert(request_id.clone(),crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
         self.status="Contacting target to receive this screen".into();Ok(())
     }

@@ -282,6 +282,28 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
         "the existing source is focused without a second subscription"
     );
     drop(browser_view);
+    // The native menu uses the established media owner, never a new stream.
+    let (runtime,group)=view.read_with(cx,|view,_|(view.runtime.clone(),view.exit_group.clone()));
+    let manager=cx.update(|cx|open_restored_window(runtime,None,Default::default(),None,None,group,cx).unwrap());
+    let manager_view=manager.root(cx).unwrap();
+    manager_view.update(cx,|view,_|view.purpose=super::WindowPurpose::Management);
+    let target=manager_view.update(cx,|manager,cx| {
+        let snapshot=manager.native_menu_snapshot("fixture",cx);
+        assert_eq!(snapshot.receiving.len(),1);
+        assert!(snapshot.receiving[0].can_pause);
+        snapshot.receiving[0].target.clone()
+    });
+    for paused in [true,false] {
+        manager_view.update(cx,|manager,cx|manager.dispatch_menu_action(crate::desktop::menu::Call::Stream {
+            target:target.clone(),action:crate::desktop::menu::StreamAction::Pause(paused)
+        },cx).unwrap());
+        assert_eq!(view.read_with(cx,|view,_|view.manual_media_paused),paused);
+        assert_eq!(owner.media_state().0,paused);
+        assert_eq!(owner.active_connection().unwrap().id,connection);
+    }
+    assert_eq!(cx.update(|cx|cx.windows().len()),2);
+    manager.update(cx,|_,window,_|window.remove_window()).unwrap();
+    drop(manager_view);
     owner.close_all();
     window
         .update(cx, |_, window, _| window.remove_window())

@@ -1,8 +1,21 @@
-use super::{Action, Error};
-use cocoa::{appkit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSEventType},
-    base::{id, nil, BOOL, YES}, foundation::{NSAutoreleasePool, NSPoint, NSSize, NSString}};
-use objc::{class, msg_send, sel, sel_impl, declare::ClassDecl, runtime::{Object, Sel}};
+use super::{
+    Action, Error,
+    menu::{Entry, Menu, Source},
+};
+use cocoa::{
+    appkit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSEventType},
+    base::{BOOL, YES, id, nil},
+    foundation::{NSAutoreleasePool, NSPoint, NSSize, NSString},
+};
+use objc::{
+    class,
+    declare::ClassDecl,
+    msg_send,
+    runtime::{Object, Sel},
+    sel, sel_impl,
+};
 use std::future::Future;
+use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
 fn string(value: &str) -> id {
@@ -12,40 +25,127 @@ fn string(value: &str) -> id {
         string
     }
 }
-extern "C" fn open(this: &Object, _: Sel, _: id) { send(this, Action::Open); }
-extern "C" fn quit(this: &Object, _: Sel, _: id) { send(this, Action::Quit); }
-extern "C" fn reopen(this: &Object, _: Sel, _: id, _: BOOL) -> BOOL { send(this, Action::Open);YES }
-extern "C" fn terminate(this: &Object, _: Sel, _: id) -> usize { send(this, Action::Quit);0 }
-fn send(this: &Object, action: Action) {
+extern "C" fn open(this: &Object, _: Sel, _: id) {
+    send(this, Action::Open);
+}
+extern "C" fn quit(this: &Object, _: Sel, _: id) {
+    send(this, Action::Quit);
+}
+extern "C" fn reopen(this: &Object, _: Sel, _: id, _: BOOL) -> BOOL {
+    send(this, Action::Open);
+    YES
+}
+extern "C" fn terminate(this: &Object, _: Sel, _: id) -> usize {
+    send(this, Action::Quit);
+    0
+}
+struct State {
+    actions: UnboundedSender<Action>,
+    source: Source,
+    menu: Mutex<Menu>,
+}
+fn state(this: &Object) -> Option<&State> {
     unsafe {
-        let sender = (*this.get_ivar::<*const std::ffi::c_void>("actions")).cast::<UnboundedSender<Action>>();
-        if let Some(sender) = sender.as_ref() { let _ = sender.send(action); }
+        (*this.get_ivar::<*const std::ffi::c_void>("actions"))
+            .cast::<State>()
+            .as_ref()
+    }
+}
+fn send(this: &Object, action: Action) {
+    if let Some(state) = state(this) {
+        let _ = state.actions.send(action);
+    }
+}
+extern "C" fn perform_menu(this: &Object, _: Sel, item: id) {
+    if let Some(state) = state(this) {
+        let tag: isize = unsafe { msg_send![item, tag] };
+        if let Some(action) = state.menu.lock().unwrap().action(tag as i32) {
+            let _ = state.actions.send(action);
+        }
+    }
+}
+unsafe fn populate(menu: id, entries: &[Entry], target: id) {
+    unsafe {
+        let _: () = msg_send![menu,setAutoenablesItems: false];
+        for entry in entries {
+            let item: id = msg_send![class!(NSMenuItem), alloc];
+            let item: id = msg_send![item,initWithTitle:string(&entry.label) action:sel!(performWeaveloMenu:) keyEquivalent:string("")];
+            let _: () = msg_send![item,setTarget:target];
+            let _: () = msg_send![item,setTag:entry.id as isize];
+            let _: () = msg_send![item,setEnabled:entry.enabled];
+            if !entry.children.is_empty() {
+                let submenu: id = msg_send![class!(NSMenu), new];
+                populate(submenu, &entry.children, target);
+                let _: () = msg_send![item,setSubmenu:submenu];
+                let _: () = msg_send![submenu, release];
+            }
+            let _: () = msg_send![menu,addItem:item];
+            let _: () = msg_send![item, release];
+        }
+    }
+}
+extern "C" fn update_menu(this: &Object, _: Sel, menu: id) {
+    let Some(state) = state(this) else {
+        return;
+    };
+    state.source.refresh();
+    let mut tree = state.menu.lock().unwrap();
+    tree.rebuild(&state.source.current());
+    unsafe {
+        let _: () = msg_send![menu, removeAllItems];
+        populate(menu, &tree.roots, this as *const Object as id);
     }
 }
 
 /// AppKit owns only a status item and menu, with no renderer or video buffers.
 /// Its event loop stays on the process's main thread; service work stays on Tokio.
-pub(super) async fn run(sender: UnboundedSender<Action>,
-    future: impl Future<Output = Result<(), Error>> + Send + 'static) -> Result<(), Error> {
+pub(super) async fn run(
+    sender: UnboundedSender<Action>,
+    source: Source,
+    future: impl Future<Output = Result<(), Error>> + Send + 'static,
+) -> Result<(), Error> {
     let runtime = tokio::runtime::Handle::current();
     let job = crate::desktop::foreground_runtime::run(move || unsafe {
         let main: BOOL = msg_send![class!(NSThread), isMainThread];
-        if main != YES { return Err::<_, Error>("The macOS tray requires the main thread".into()); }
+        if main != YES {
+            return Err::<_, Error>("The macOS tray requires the main thread".into());
+        }
         let pool = NSAutoreleasePool::new(nil);
         let app = NSApplication::sharedApplication(nil);
-        app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
+        app.setActivationPolicy_(
+            NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
+        );
         let mut delegate = ClassDecl::new("WeaveloTrayActions", class!(NSObject))
             .ok_or("Weavelo tray actions were already registered")?;
         delegate.add_ivar::<*const std::ffi::c_void>("actions");
         delegate.add_method(sel!(openWeavelo:), open as extern "C" fn(&Object, Sel, id));
         delegate.add_method(sel!(quitWeavelo:), quit as extern "C" fn(&Object, Sel, id));
-        delegate.add_method(sel!(applicationShouldHandleReopen:hasVisibleWindows:),
-            reopen as extern "C" fn(&Object, Sel, id, BOOL) -> BOOL);
-        delegate.add_method(sel!(applicationShouldTerminate:),
-            terminate as extern "C" fn(&Object, Sel, id) -> usize);
+        delegate.add_method(
+            sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+            reopen as extern "C" fn(&Object, Sel, id, BOOL) -> BOOL,
+        );
+        delegate.add_method(
+            sel!(applicationShouldTerminate:),
+            terminate as extern "C" fn(&Object, Sel, id) -> usize,
+        );
+        delegate.add_method(
+            sel!(performWeaveloMenu:),
+            perform_menu as extern "C" fn(&Object, Sel, id),
+        );
+        delegate.add_method(
+            sel!(menuNeedsUpdate:),
+            update_menu as extern "C" fn(&Object, Sel, id),
+        );
         let target: id = msg_send![delegate.register(), new];
-        let sender = Box::new(sender);
-        (*target).set_ivar("actions", (sender.as_ref() as *const UnboundedSender<Action>).cast::<std::ffi::c_void>());
+        let state = Box::new(State {
+            actions: sender,
+            source,
+            menu: Mutex::new(Menu::default()),
+        });
+        (*target).set_ivar(
+            "actions",
+            (state.as_ref() as *const State).cast::<std::ffi::c_void>(),
+        );
         // Finder/Dock activation can target the running accessory instance.
         // Route it to the same single-instance GUI launcher as the tray menu.
         let _: () = msg_send![app, setDelegate: target];
@@ -60,13 +160,7 @@ pub(super) async fn run(sender: UnboundedSender<Action>,
         let _: () = msg_send![image, release];
         let _: () = msg_send![button, setToolTip: string("Weavelo")];
         let menu: id = msg_send![class!(NSMenu), new];
-        for (label, action) in [("Open Weavelo", sel!(openWeavelo:)), ("Quit Weavelo", sel!(quitWeavelo:))] {
-            let entry: id = msg_send![class!(NSMenuItem), alloc];
-            let entry: id = msg_send![entry, initWithTitle:string(label) action:action keyEquivalent:string("")];
-            let _: () = msg_send![entry, setTarget: target];
-            let _: () = msg_send![menu, addItem: entry];
-            let _: () = msg_send![entry, release];
-        }
+        let _: () = msg_send![menu,setDelegate:target];
         let _: () = msg_send![item, setMenu: menu];
         let menu_address = menu as usize;
         let worker = runtime.spawn(future);
@@ -89,10 +183,11 @@ pub(super) async fn run(sender: UnboundedSender<Action>,
         app.run();
         let _: () = msg_send![status_bar, removeStatusItem: item];
         let _: () = msg_send![item, release];
+        let _: () = msg_send![menu,setDelegate:nil];
         let _: () = msg_send![menu, release];
         let _: () = msg_send![app, setDelegate: nil];
         let _: () = msg_send![target, release];
-        drop(sender);
+        drop(state);
         pool.drain();
         Ok(job)
     })??;
