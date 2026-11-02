@@ -344,23 +344,11 @@ impl RestoredDashboard {
                 );
             }
         }
-        row = row
-            .child(
-                command_button("island_minimize_window", ActionVariantKind::Neutral, cx)
-                    .size(px(28.))
-                    .p_0()
-                    .tooltip(tooltip("Minimize this window").build())
-                    .child(icon(IconName::Minimize).size(px(13.)))
-                    .on_click(cx.listener(|this, _, window, _| {
-                        this.owner.release_input();
-                        window.minimize_window();
-                    })),
-            )
-            .child(
+        row = row.child(
                 command_button("island_toggle_fullscreen", ActionVariantKind::Neutral, cx)
                     .size(px(28.))
                     .p_0()
-                    .tooltip(tooltip("Fullscreen / restore · F11").build())
+                    .tooltip(tooltip(if fullscreen { "Exit fullscreen · F11" } else { "Fullscreen · F11" }).build())
                     .child(icon(IconName::Maximize(fullscreen)).size(px(13.)))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.owner.release_input();

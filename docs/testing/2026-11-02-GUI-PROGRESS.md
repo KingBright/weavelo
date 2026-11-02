@@ -17,6 +17,7 @@
 | 发送控制窗口 | Studio 76 实际打开独立发送窗；GUI 多选拆成独立来源请求，关闭 / 重开专项检查通过 | 实际控件点击、后台连续性与其他设备验收 |
 | 紧凑管理与会话边界 | Studio 76 主窗实测外框 640×633（内容高 600）；会话页面移除全局设备设置入口，断开后保留该来源及重连入口 | 设置滚动及会话操作检查 |
 | 关闭和 End stream | Studio 76 已安装；显式关闭和 End 共用当前流清理并退出窗口，39 项 GUI 检查通过 | 实际点击与远端连接结束验收 |
+| 全屏与窗口入口 | 已移除接收主窗 / PiP 操作栏中的最小化；保留全屏 / 退出全屏，macOS 在系统全屏完成 / 退出事件中隐藏 / 恢复三按钮 | 39 项 GUI 检查及签名发布回归通过；等待正式构建、安装和实际全屏验证 |
 | 原生 tray / menubar | 待完成；目前仅 Open / Quit | 设备、流、传输、设置的明确目标快捷操作 |
 | Android 管理 / 单流页面 | 待完成 | 保留原生视频、手势、IME、旋转与服务 |
 | Android 输入失败反馈 | Android 62 已由原签名正式构建、发布并安装到红米与努比亚；被拒绝的触摸 / 键盘原因按画面显示，保留来源与时效校验 | 单次点击与键盘绑定已有实机结果；持续输入及全部方向仍待验证 |
@@ -70,6 +71,10 @@ Android 62 后续交付：`c8315ac` 已在 MacBook 的原 `main` checkout 正式
 
 62 实机复测：`nubia62-book-window.jpg` 是努比亚主动选择 MacBook 73 的 Weavelo 单窗口后的真实画面，普通点击键盘按钮后为 Hide keyboard，证明取得键盘绑定，不证明 IME 可见或文字注入。`redmi62-studio-window.png` 为红米主动拉取 Studio 76 管理窗；`redmi62-studio-after-settings-tap.png` 显示手机实际触摸已将宿主从 Devices 切到 Settings。`redmi62-cube-window.png` 是红米主动拉取 Windows 73 的 Weavelo 单窗口，已有真实画面。Linux 来源目录当前只返回 Display 1，`redmi62-linux-screen.png` 确认整屏成功；代码只发布该配对网络内实际获准的 portal 来源，不能把整屏权限当成窗口权限。用户原先失败的目标 / 应用仍未补充，未关闭该问题。列表使用 LazyColumn，仅首屏标签不能证明其它窗口不存在；搜索可找到 Studio 的自有窗口。
 
+用户已补充目标为努比亚 → Mac Studio，并要求自行复现。62 在同一条链路上拉取 Studio 76 的 Weavelo 与系统设置「储存空间」均有真实画面（`nubia62-studio-window.jpg`、`nubia62-studio-systemsettings.jpg`）。继续选择 ChatGPT 时稳定提示 `Waiting for video from this device.`；对应 Studio 来源为 `Window(16937)`、进程 50594、1138×2069，宿主 outgoing_streams 为 1（`nubia62-studio-chatgpt-host-state.json`）。没有视频包不能归因为手机解码；窗口可见性、采集与编码的具体断点仍待核对，未关闭此 bug。
+
+用户进一步要求取消拉流操作栏的最小化，仅保留全屏切换。已移除主接收窗与 PiP 的自定义最小化按钮，全屏提示区分进入 / 退出；macOS 在 AppKit `windowDidEnterFullScreen:` / `windowDidExitFullScreen:` 后隐藏 / 恢复系统三按钮，不增加逐帧原生调用。`fullscreen-window-tests.log` 的 39 项 GUI 检查通过、1 项默认跳过；`fullscreen-window-release-regression.log` 为 1,041 项通过、19 项跳过。源码已验证，尚未安装或声明实机全屏通过。
+
 Studio 74 的 after 为 `studio74-via-redmi.png` 与 `studio74-via-nubia-before.png`；后者完整截图 SHA 为 `cee4cf7fdbb2c9ece293594f9da1ba8b7cad83f4c46b47895d88b50f7fac9ba7`。努比亚的实际触摸切换 Activity 后，接收端出现 `INPUT_UNAVAILABLE: input expired after target validation`（`studio74-nubia-activity-preview.jpg`，全分辨率原件保留在 Book 同名任务证据目录）；当前仅定位到原生目标校验后的截止时间，不推断为权限缺失。两次 Studio → 红米、一次 Studio → 努比亚测试投送已按各自请求 ID 停止。红米的原始 ADB 触摸注入被系统拒绝，未修改系统安全设置。
 
 ## 已知问题与接续条件
@@ -81,7 +86,7 @@ Studio 74 的 after 为 `studio74-via-redmi.png` 与 `studio74-via-nubia-before.
 | 离屏或被系统缩成缩略图的 macOS 应用窗口无首帧 | Book 曾显示约 122×146 缩略图；Studio 73 主窗口 OS 不在屏幕上，30 秒未得到首帧；对应整屏成功。`video73-round1-studio-offscreen-main-failed.json` | 单独核对窗口实际可见性与采集回调；正常激活后的成功不能充当修复证明 |
 | Mac 单窗口触摸在目标校验后过期 | 努比亚 61 → Studio 74 的 Weavelo 窗口，实际切到 Activity 后显示 `input expired after target validation` | 核对原生校验耗时及过期输入结果处理，保持截止时间、来源与权限校验；尚未稳定验收 |
 | Android 接收整屏时输入状态不明 | 努比亚 61 接收 Studio 75 整屏，应用内触摸未改变目标页面，随后键盘按钮不再满足可用条件；视频仍有真实画面 | 分别核对输入授权、桥接绑定、画面就绪和事件送达，不先归因坐标或系统权限 |
-| Android 拉取具体应用窗口失败 | 62 已实拍确认努比亚 → Book、红米 → Studio / Windows 的 Weavelo 单窗口；Linux 只列出已授权 Display 1，整屏实拍成功；用户原目标 / 应用待补充 | 继续核对未授权窗口、初始无包 / 恢复与用户实际目标，不把自有应用成功当成所有窗口都可用 |
+| Android 拉取具体应用窗口失败 | 用户目标已确认努比亚 → Studio；62 的 Weavelo / 系统设置窗口成功，ChatGPT `Window(16937)` 稳定无视频包。Linux 当前只授权整屏 | 读取对应连接采集 / 编码计数并核对窗口状态；不把其他窗口成功当成修复 |
 | 管理设备行的活动汇总 | Studio 76 顶部与发送窗已显示真实 Sending，设备行仍可能显示 Available | 后续共用逐设备活动摘要，避免把管理实体自身角色当作全部会话 |
 | Windows 单窗口输入被覆盖判断拒绝 | 返回 `INPUT_UNAVAILABLE: The selected window is covered at this pointer position`；不能先归因为 DPI / 权限 | 保留窗口与点位证据，独立复现遮挡判断；整屏成功不代替单窗口 |
 | 全方向输入、音频、图片剪贴板与通知 | 有部分实际链路记录；尚无最后版本全部方向连续验收 | 按版本与方向补测；解码计数不代替物理呈现或听感 |

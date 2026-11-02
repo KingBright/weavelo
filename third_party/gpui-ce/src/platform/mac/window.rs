@@ -308,6 +308,14 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
             window_will_exit_fullscreen as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
+            sel!(windowDidEnterFullScreen:),
+            window_did_enter_fullscreen as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(windowDidExitFullScreen:),
+            window_did_exit_fullscreen as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
             sel!(windowDidMove:),
             window_did_move as extern "C" fn(&Object, Sel, id),
         );
@@ -422,6 +430,23 @@ struct MacWindowState {
 }
 
 impl MacWindowState {
+    fn set_fullscreen_buttons_hidden(&self, hidden: bool) {
+        // AppKit owns the fullscreen transition. Update chrome only after it
+        // completes, and restore native controls when returning to a window.
+        unsafe {
+            for kind in [
+                NSWindowButton::NSWindowCloseButton,
+                NSWindowButton::NSWindowMiniaturizeButton,
+                NSWindowButton::NSWindowZoomButton,
+            ] {
+                let button: id = msg_send![self.native_window, standardWindowButton: kind];
+                if button != nil {
+                    let _: () = msg_send![button, setHidden: if hidden { YES } else { NO }];
+                }
+            }
+        }
+    }
+
     fn move_traffic_light(&self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
             if self.is_fullscreen() {
@@ -1967,6 +1992,16 @@ extern "C" fn window_will_exit_fullscreen(this: &Object, _: Sel, _: id) {
             lock.native_window.setTitlebarAppearsTransparent_(YES);
         }
     }
+}
+
+extern "C" fn window_did_enter_fullscreen(this: &Object, _: Sel, _: id) {
+    let state = unsafe { get_window_state(this) };
+    state.lock().set_fullscreen_buttons_hidden(true);
+}
+
+extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
+    let state = unsafe { get_window_state(this) };
+    state.lock().set_fullscreen_buttons_hidden(false);
 }
 
 pub(crate) fn is_macos_version_at_least(version: NSOperatingSystemVersion) -> bool {

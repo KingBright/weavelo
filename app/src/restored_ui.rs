@@ -2216,10 +2216,6 @@ impl Render for PopoutStreamView {
                 .tooltip(tooltip(if fullscreen { "Exit fullscreen" } else { "Fullscreen" }).build())
                 .on_click(|_, window, cx| { window.toggle_fullscreen(); cx.refresh_windows(); })
                 .child(icon(IconName::Maximize(fullscreen)).size(px(12.0))))
-            .child(command_button("pip_minimize", ActionVariantKind::Neutral, cx)
-                .h(px(24.0)).px_2().tooltip(tooltip("Minimize this PiP window").build())
-                .on_click(|_, window, _| window.minimize_window())
-                .child(icon(IconName::Minimize).size(px(12.0))))
             .into_any_element();
 
         div()
