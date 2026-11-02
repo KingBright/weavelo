@@ -4,14 +4,14 @@
 
 ## 当前安装
 
-四台电脑均为原 GPUI 产品入口、build `20261102.72`；两部手机均为 Android `versionCode=61`。队列更新这一轮实际安装的产品源码为 `ad6f40a05e3df196a893332a7c1c0dc059c90758`。保留现有设备身份、分组、签名及系统授权；本记录的后续文档提交不表示客户端发生了升级。
+四台电脑均为原 GPUI 产品入口、build `20261102.73`，实际桌面源码为 `051b4fe8aa29d6cdd4f89ddebd14f7e5b730a921`；两部手机均为 Android `versionCode=61`，实际手机源码为 `ad6f40a05e3df196a893332a7c1c0dc059c90758`。保留现有设备身份、分组、签名及系统授权；本记录的后续文档提交不表示客户端发生了升级。
 
 | 设备 | 产品设备名 | 实际运行验据 |
 | --- | --- | --- |
-| Mac Studio | MacStudio.local | 已安装并启动；GUI generation `69799-1793578142783325000` |
-| MacBook | MBPM2MAX.local | 已安装并启动；GUI generation `688-1793578627299801000` |
-| Windows cube | CUBEX | 已安装并启动；GUI generation `3840-1793578421498639200` |
-| Linux HO5 | bazzite | 已安装并启动；GUI generation `1317307-1793578131821179685` |
+| Mac Studio | MacStudio.local | 已安装并启动；GUI generation `4976-1793582790137911000` |
+| MacBook | MBPM2MAX.local | 已安装并启动；GUI generation `61999-1793583297107091000` |
+| Windows cube | CUBEX | 已安装并启动；GUI generation `27936-1793583059076474900` |
+| Linux HO5 | bazzite | 已安装并启动；GUI generation `1403728-1793582771360703926` |
 | Book USB 手机 | nubia NX741J | ADB 安装成功后独立读取 `versionCode=61` |
 | Studio USB 手机 | Redmi 2409BRN2CC | ADB 安装成功后独立读取 `versionCode=61` |
 
@@ -86,3 +86,13 @@ Windows 两个独立动态测试进程也同时投给 Nubia 61；实机截图可
 双窗口接收、手机前摄发送及 Studio → Redmi 转发同时进行时，Studio 有效观察 56 次、118 秒，解码计数 21,630 → 24,992（约 28.5 解码帧／秒）、解码错误始终为 0、会话未自主结束。参考链恢复计数增加 5，队列淘汰计数增加 24；仍不能宣称零卡顿、恒定物理显示 FPS 或延迟达标。`phone61-root72-valid-two-window-load-watch.jsonl` 为有效记录；此前文件名带 `two-window-load` 的 60 秒观察没有真实双窗口负载，不用于此结论。随后按精确请求停止 Windows 投送与 Studio 转发，并从 Studio 主动关闭本次手机摄像头接收。
 
 本轮还修正桌面解码端对新关键帧合法跳序的判断：同一流的新关键帧可直接替换旧 GOP，不再因此额外重建解码器；预测帧缺引用、流身份变化及来源代际变化仍按原有规则恢复。该后续修改的源码检查与新设备安装分别记录，不使用 72／61 的结果代替它。
+
+## 73 解码器接续优化的交付与复查
+
+`051b4fe` 已推送到 main，四台电脑均完成正式兼容升级并核对实际运行进程；Android 61 已经直接接续新关键帧，不需要这次仅涉及桌面解码路径的修改。共同参考链判断测试 5 项、macOS 暂停恢复边界测试 3 项、macOS 生产配置编译检查，以及现有签名发布回归 1,039 项通过／19 项跳过。三平台当前安装包已通过正式脚本发布并校验公开下载字节，记录为 `native73-desktop-nas-verified.json`。
+
+73 复查覆盖各平台接收路径：Linux → Studio 5,944 帧、Book 窗口 → Windows 3,558 帧、Windows 窗口 → Linux 4,258 帧、Studio 桌面 → Book 864 帧；均匹配发送设备、有真实画面提交、采样时无活动视频错误。停止后各机发送状态与接收 lease 自动清空。本轮没有把 72 的全部 12 方向结果重新标成 73 的结果。
+
+Studio → Book 本轮首先选择了 Studio 自身主窗口；该窗口虽被目录列出，WindowServer 没有将其标记为当前屏幕上的窗口，接收端最终在 30 秒无首帧后结束。改选真实桌面 `Display(14)` 后成功。保留 `video73-round1-studio-offscreen-main-failed.json` 及桌面复试；不能由桌面成功推断原窗口采集已修复，也不能仅据此认定唯一根因。
+
+Nubia 61 前摄 → Studio 73 另有 42 次、约 90 秒的观察：2,457 解码帧、0 解码错误、会话保持活跃；参考链恢复 1 次、跳过及丢弃计数各 51。期间同时进行安装包文件传输，不能与上一版观察直接计算性能提升比例。记录为 `phone61-root73-front-camera-watch.jsonl`；之后明确从接收端停止了这组测试。
