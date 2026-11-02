@@ -32,6 +32,8 @@ pub struct SessionState<Texture, Pan: Default> {
     pub stats: Arc<Statistics>,
     pub host_stats: Arc<SharedHostStats>,
     pub sources: Vec<CaptureSourceInfo>,
+    pub source_catalog_revision: u64,
+    pub source_catalog_error: Option<String>,
     pub source: CaptureSource,
     pub video_id: u32,
     source_revision: u32,
@@ -147,6 +149,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             stats: Statistics::new(),
             host_stats: Arc::new(SharedHostStats::default()),
             sources: Vec::new(),
+            source_catalog_revision: 0,
+            source_catalog_error: None,
             source: CaptureSource::MainDisplay,
             video_id: 1,
             source_revision: 0,
@@ -716,6 +720,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     }
                 }
                 SessionCommand::Sources { sources, .. } => {
+                    self.source_catalog_revision=self.source_catalog_revision.wrapping_add(1);
+                    self.source_catalog_error=None;
                     let before=self.sources.iter().find(|info|info.source==self.source).and_then(|info|info.camera.as_ref());
                     let after=sources.iter().find(|info|info.source==self.source).and_then(|info|info.camera.as_ref());
                     let rotated=self.confirmed && before.zip(after).is_some_and(|(a,b)|a.rotation!=b.rotation||a.mirrored!=b.mirrored);
@@ -800,6 +806,10 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.camera_switch=None;self.pending=None;self.error=reason;
                 }
                 SessionCommand::Error { request_id, reason } => {
+                    if request_id==900_001 {
+                        self.source_catalog_revision=self.source_catalog_revision.wrapping_add(1);
+                        self.source_catalog_error=Some(reason.clone());
+                    }
                     // Cleanup uses the same numeric ID as the video request. Once
                     // fail_video has queued Unsubscribe, its late error (for
                     // example, "subscription is unavailable") must not erase the

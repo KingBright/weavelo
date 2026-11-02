@@ -2,6 +2,9 @@
 mod management;
 #[path="restored_streams.rs"]
 mod stream_windows;
+#[cfg(test)]
+#[path="restored_source_browser_tests.rs"]
+mod source_browser_tests;
 use management::{ManagementRoot, WindowPurpose, management_activity_panel, reopen_restored_window, show_management_window};
 #[path="restored_text_input.rs"]
 mod remote_text_input;
@@ -188,26 +191,7 @@ fn open_restored_window(
             }
         });
         if let Some(device) = device {
-            view.update(cx, |this, cx| {
-                this.stream_device=Some(device.clone());
-                this.stream_source=Some(protocol::session::CaptureSource::MainDisplay);
-                let ticket = this.session_commands.begin();
-                let owner = this.owner.clone();
-                cx.spawn(async move |view, cx| {
-                    if !view.update(cx, |this, _| this.session_commands.is_current(ticket)).unwrap_or(false) { return; }
-                    let result = owner
-                        .connect_device(&device, StreamStartOptions::default(), 0)
-                        .await;
-                    let _ = view.update(cx, |this, cx| {
-                        if !this.session_commands.is_current(ticket) { return; }
-                        if let Err(e) = result {
-                            this.status = e.to_string();
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-            });
+            view.update(cx, |this,cx|this.start_source_browser(device,cx));
         }
         let weak = view.downgrade();
         let mut frame_updates = view.read(cx).owner.subscribe_updates();
@@ -246,6 +230,7 @@ fn open_restored_window(
                     }
                     view.sync_media_pause();
                     view.owner.poll();
+                    view.poll_source_browser(cx);
                     // PiP's producer survives its primary presentation. Native
                     // frames still pass through the same latest-frame mailbox.
                     if primary.is_err() {view.drain_latest_frame();}
@@ -1242,6 +1227,7 @@ impl RestoredDashboard {
                 let _ = view.update(cx, |this, cx| {
                     if !this.discovery_commands.is_current(ticket) || !owner.source_binding_is_current(&binding) { return; }
                     this.status = format!("Source discovery failed: {err}");
+                    if let Some(selection)=this.source_selection.as_mut() {selection.fail_remote_query(this.status.clone());}
                     cx.notify();
                 });
             }
@@ -1608,6 +1594,15 @@ impl RestoredDashboard {
         };
         if self.quitting {
             return true;
+        }
+        // The bounded media fixture must exercise the real stream window. Its
+        // management coordinator no longer contains a video presentation.
+        if self.purpose==WindowPurpose::Management && std::env::var_os("WEAVELO_RESTORED_TEST_DEVICE").is_some() {
+            if !self.test_connect_started {
+                self.test_connect_started=open_restored_window(self.runtime.clone(),None,Default::default(),None,
+                    self.background.clone(),self.exit_group.clone(),cx).is_some();
+            }
+            return false;
         }
         // Passive observations only; a fixture must use real product controls.
         // No command file can select a source, connect, unlock or inject input.
@@ -2596,7 +2591,7 @@ impl Render for RestoredDashboard {
                         this.owner.release_input();
                         this.drawer_open = false;
                         this.show_apps_menu = false;
-                        this.cancel_source_selection();
+                        this.cancel_source_selection(cx);
                         cx.stop_propagation();
                         cx.notify();
                         return;

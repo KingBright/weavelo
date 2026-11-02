@@ -4,6 +4,57 @@ use super::*;
 use protocol::session::{CaptureSource, CaptureSourceInfo};
 
 impl RestoredDashboard {
+    pub(super) fn start_source_browser(&mut self, device: String, cx: &mut Context<Self>) {
+        if self.exit_group.stopping.load(Ordering::Acquire) || self.stream_source.is_some() {
+            return;
+        }
+        if self
+            .stream_device
+            .as_ref()
+            .is_some_and(|current| current != &device)
+        {
+            return;
+        }
+        self.stream_device = Some(device.clone());
+        self.status = "Connecting to source directory".into();
+        let ticket = self.session_commands.begin();
+        let owner = self.owner.clone();
+        cx.spawn(async move |view, cx| {
+            if !view
+                .update(cx, |this, _| this.session_commands.is_current(ticket))
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let result = owner.connect_source_browser(&device).await;
+            let _ = view.update(cx, |this, cx| {
+                if !this.session_commands.is_current(ticket) {
+                    return;
+                }
+                this.status = match result {
+                    Ok(()) => "Choose a screen, window or camera".into(),
+                    Err(error) => format!("Source connection failed: {error}"),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn poll_source_browser(&mut self, cx: &mut Context<Self>) {
+        if self.purpose == WindowPurpose::Stream
+            && self.stream_device.is_some()
+            && self.stream_source.is_none()
+            && self.source_selection.is_none()
+            && let Some(binding) = self.owner.source_view_binding()
+            && self.owner.bound_catalog_revision(&binding).is_some()
+        {
+            self.begin_remote_source_selection(Some(binding), cx);
+        }
+        self.poll_remote_source_selection(cx);
+    }
+
     pub(super) fn open_enumerated_source(
         &mut self,
         binding: Option<SourceViewBinding>,
@@ -24,6 +75,15 @@ impl RestoredDashboard {
                 return false;
             }
         };
+        if self
+            .stream_device
+            .as_ref()
+            .is_some_and(|expected| expected != &device)
+        {
+            self.status = "Device context changed; reopen sources".into();
+            cx.notify();
+            return false;
+        }
         self.open_stream_source(device, source.source, cx)
     }
 

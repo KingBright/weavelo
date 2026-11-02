@@ -26,11 +26,14 @@ use std::{
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum ConnectionPurpose { View, Files, Sources }
+
+#[derive(Clone,Copy)]
 struct RetryBinding {
     attempt: u64,
     scope: ShareScope,
-    video: bool,
+    purpose: ConnectionPurpose,
     audio: bool,
     auto_list: bool,
     capture: Option<CaptureSource>,
@@ -115,6 +118,7 @@ impl super::computer_use::InputPort for ComputerUseInput<'_> {
 }
 
 struct ViewSession {
+    purpose: ConnectionPurpose,
     session: OriginalGuiSession,
     frame: FrameSlot,
     source_seen: CaptureSource,
@@ -265,6 +269,8 @@ pub(crate) struct ViewSnapshot {
     pub role: RoleState,
     pub devices: Vec<AppDevice>,
     pub sources: Arc<Vec<CaptureSourceInfo>>,
+    pub source_catalog_revision: u64,
+    pub source_catalog_error: Option<String>,
     pub source_icons: remote_core::application_icons::SourceIconAssets,
     pub source_binding: Option<SourceViewBinding>,
     pub active_source: CaptureSource,
@@ -413,6 +419,8 @@ impl OriginalOwner {
                 )),
                 devices,
                 sources: Arc::new(Vec::new()),
+                source_catalog_revision: 0,
+                source_catalog_error: None,
                 source_icons: Default::default(),
                 source_binding: None,
                 active_source: CaptureSource::MainDisplay,
@@ -446,6 +454,8 @@ impl OriginalOwner {
                 role,
                 devices,
                 sources: e.sources.clone(),
+                source_catalog_revision: s.source_catalog_revision,
+                source_catalog_error: s.source_catalog_error.clone(),
                 source_icons: s.conn.source_icons(),
                 source_binding: Some(SourceViewBinding::new(&s.conn, remote_core::shared_files::current_share_scope())),
                 active_source: s.source,
@@ -470,6 +480,8 @@ impl OriginalOwner {
                 role,
                 devices,
                 sources: Arc::new(Vec::new()),
+                source_catalog_revision: 0,
+                source_catalog_error: None,
                 source_icons: Default::default(),
                 source_binding: None,
                 active_source: CaptureSource::MainDisplay,
@@ -616,7 +628,7 @@ impl OriginalOwner {
         self.pool.lock().unwrap().receive_current(request)
     }
     pub(crate) async fn connect_received_device(&self, key: &str, options: StreamStartOptions, request: &str) -> Result<(), Error> {
-        self.connect_mode(key, options, true, true, None, Some(request), true, None).await
+        self.connect_mode(key, options, ConnectionPurpose::View, true, None, Some(request), true, None).await
     }
 
     pub async fn connect_device(
@@ -625,26 +637,29 @@ impl OriginalOwner {
         options: StreamStartOptions,
         _now: u64,
     ) -> Result<(), Error> {
-        self.connect_mode(key, options, true, true, None, None, true, None).await
+        self.connect_mode(key, options, ConnectionPurpose::View, true, None, None, true, None).await
     }
     pub async fn connect_files(&self, key: &str) -> Result<(), Error> {
-        self.connect_mode(key, StreamStartOptions::default(), false, true, None, None, true, None)
+        self.connect_mode(key, StreamStartOptions::default(), ConnectionPurpose::Files, true, None, None, true, None)
             .await
     }
 
     pub async fn connect_silent_files(&self, key: &str) -> Result<(), Error> {
         // Command callers admit their own correlated List/Fetch after connecting.
-        self.connect_mode(key, StreamStartOptions::default(), false, false, None, None, false, None)
+        self.connect_mode(key, StreamStartOptions::default(), ConnectionPurpose::Files, false, None, None, false, None)
             .await
     }
+    pub(crate) async fn connect_source_browser(&self,key:&str)->Result<(),Error> {
+        self.connect_mode(key,StreamStartOptions::default(),ConnectionPurpose::Sources,false,None,None,false,None).await
+    }
     pub(crate) async fn connect_capture_device(&self, key: &str, source: CaptureSource, options: StreamStartOptions) -> Result<(),Error> {
-        self.connect_mode(key,options,true,true,None,None,true,Some(source)).await
+        self.connect_mode(key,options,ConnectionPurpose::View,true,None,None,true,Some(source)).await
     }
     async fn connect_mode(
         &self,
         key: &str,
         options: StreamStartOptions,
-        video: bool,
+        purpose: ConnectionPurpose,
         audio: bool,
         expected_scope: Option<ShareScope>,
         receive: Option<&str>,
@@ -660,7 +675,8 @@ impl OriginalOwner {
         let configuration=crate::UnifiedRuntimeConfig::from_env()?;
         let allow_files=self.native_file_transfer_enabled(&configuration)
             && remote_core::session_crypto::paired_file_session_key().is_some();
-        if !video && !allow_files {return Err("File transfers require the existing enabled preference and an authenticated group".into());}
+        let video=purpose==ConnectionPurpose::View;
+        if purpose==ConnectionPurpose::Files && !allow_files {return Err("File transfers require the existing enabled preference and an authenticated group".into());}
         let initial_settings = StreamSettingsValues {
             width: options.width, height: options.height,
             fps: options.fps, bitrate_kbps: options.bitrate_kbps,
@@ -700,7 +716,7 @@ impl OriginalOwner {
             let name = device.as_ref().map(|d| d.display_name.as_str()).unwrap_or(key);
             let attempt = p.tabs.reject_open(key, name, count).ok_or("Connection generation exhausted")?;
             if let Some(binding) = p.directed_receive.as_mut() { binding.attempt = Some(attempt); }
-            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list, capture });
+            p.retry_binding = Some(RetryBinding { attempt, scope, purpose, audio, auto_list, capture });
             p.message = message.into();
             return Err(connection_failure(key, attempt, scope, message.into()));
         }
@@ -734,7 +750,9 @@ impl OriginalOwner {
                         c.stop();
                     }
                     if video && p.sessions[index].session.media.is_none() {
+                        p.sessions[index].purpose=ConnectionPurpose::View;
                         let session = &mut p.sessions[index].session;
+                        if let Some(source)=capture {session.source=source;session.request.source=source;}
                         session.request.width = options.width;
                         session.request.height = options.height;
                         session.request.fps = options.fps;
@@ -750,7 +768,7 @@ impl OriginalOwner {
                 OpenDecision::AlreadyPending => {
                     if let Some(connecting) = p.tabs.connecting().cloned() {
                         p.pending_settings.update(key, connecting.attempt, initial_settings);
-                        p.retry_binding = Some(RetryBinding { attempt: connecting.attempt, scope, video, audio, auto_list, capture });
+                        p.retry_binding = Some(RetryBinding { attempt: connecting.attempt, scope, purpose, audio, auto_list, capture });
                     }
                     let previous = p.tabs.selected_index();
                     if let Some(e) = p.sessions.get_mut(previous) {
@@ -765,7 +783,7 @@ impl OriginalOwner {
                 OpenDecision::Start(attempt) => attempt,
             };
             if let Some(binding) = p.directed_receive.as_mut() { binding.attempt = Some(attempt); }
-            p.retry_binding = Some(RetryBinding { attempt, scope, video, audio, auto_list, capture });
+            p.retry_binding = Some(RetryBinding { attempt, scope, purpose, audio, auto_list, capture });
             p.pending_settings.begin(key, attempt, initial_settings);
             let previous = p.tabs.selected_index();
             if let Some(e) = p.sessions.get_mut(previous) {
@@ -879,6 +897,7 @@ impl OriginalOwner {
         if let Some(binding) = p.directed_receive.as_mut() { binding.connection = Some(session.conn.id); }
         let source_seen = session.source;
         p.sessions.push(ViewSession {
+            purpose,
             session,
             frame: Arc::new(Mutex::new(None)),
             source_seen,
@@ -907,18 +926,24 @@ impl OriginalOwner {
         Ok(())
     }
     pub async fn reconnect_active(&self, options: StreamStartOptions) -> Result<(), Error> {
-        let (key, mode, capture) = {
+        let (key, mode, capture, purpose) = {
             let p = self.pool.lock().unwrap();
             let (key,mode)=p.reconnect_target(remote_core::shared_files::current_share_scope()).ok_or("No selected device")?;
-            (key,mode,p.active().filter(|entry|entry.session.media.is_some()).map(|entry|entry.session.source))
+            let purpose=p.active().map(|entry|if entry.session.media.is_some(){ConnectionPurpose::View}else{entry.purpose}).unwrap_or(ConnectionPurpose::View);
+            let capture=p.active().filter(|_|purpose==ConnectionPurpose::View).map(|entry|entry.session.source);
+            (key,mode,capture,purpose)
         };
         if let Some(mode) = mode {
-            return self.connect_mode(&key, options, mode.video, mode.audio, Some(mode.scope), None, mode.auto_list, mode.capture).await;
+            return self.connect_mode(&key, options, mode.purpose, mode.audio, Some(mode.scope), None, mode.auto_list, mode.capture).await;
         }
         self.disconnect_active().await?;
-        match capture {
-            Some(source)=>self.connect_capture_device(&key,source,options).await,
-            None=>self.connect_device(&key, options, 0).await,
+        match purpose {
+            ConnectionPurpose::Sources=>self.connect_source_browser(&key).await,
+            ConnectionPurpose::Files=>self.connect_files(&key).await,
+            ConnectionPurpose::View=>match capture {
+                Some(source)=>self.connect_capture_device(&key,source,options).await,
+                None=>self.connect_device(&key,options,0).await,
+            },
         }
     }
     pub fn clear_failed_connection(&self) {
@@ -940,6 +965,11 @@ impl OriginalOwner {
         let p = self.pool.lock().unwrap();
         p.active().map(|e| SourceViewBinding::new(&e.session.conn, remote_core::shared_files::current_share_scope()))
     }
+    pub(crate) fn source_view_binding_for_device(&self,key:&str)->Option<SourceViewBinding> {
+        let pool=self.pool.lock().unwrap();let entry=pool.active()?;
+        (entry.session.key==key && entry.session.connected)
+            .then(||SourceViewBinding::new(&entry.session.conn,remote_core::shared_files::current_share_scope()))
+    }
     pub(crate) fn validate_source_selection(&self,binding:&SourceViewBinding,sources:&[CaptureSourceInfo])->Result<String,String> {
         protocol::session::validate_delivery_sources(&sources.iter().map(|source|source.source).collect::<Vec<_>>())?;
         let pool=self.pool.lock().unwrap();let entry=pool.active().ok_or("No active connection")?;
@@ -953,6 +983,11 @@ impl OriginalOwner {
     pub fn source_binding_is_current(&self, binding: &SourceViewBinding) -> bool {
         let p = self.pool.lock().unwrap();
         p.active().is_some_and(|e| binding.matches(&e.session.conn, remote_core::shared_files::current_share_scope()))
+    }
+    pub(crate) fn bound_catalog_revision(&self,binding:&SourceViewBinding)->Option<u64> {
+        let pool=self.pool.lock().unwrap();let entry=pool.active()?;
+        (entry.session.connected && binding.matches(&entry.session.conn,remote_core::shared_files::current_share_scope()))
+            .then_some(entry.session.source_catalog_revision)
     }
     pub(crate) fn computer_use_target_binding(&self, device: &str, source: CaptureSource, connection: u32) -> Option<SourceViewBinding> {
         let p=self.pool.lock().ok()?;
@@ -1660,6 +1695,7 @@ impl OriginalOwner {
         let mut p = self.pool.lock().unwrap();
         let key = session.key.clone();
         p.sessions.push(ViewSession {
+            purpose: ConnectionPurpose::View,
             source_seen: session.source,
             session,
             frame: Arc::new(Mutex::new(None)),
@@ -1889,22 +1925,22 @@ mod restoration_regression_tests {
         let mut pool = pending_pool();
         let scope = Some([7; 32]);
         let first = pool.tabs.reject_open("a", "A", 0).unwrap();
-        pool.retry_binding = Some(RetryBinding { attempt: first, scope, video: false, audio: false, auto_list: false, capture:None });
+        pool.retry_binding = Some(RetryBinding { attempt: first, scope, purpose: ConnectionPurpose::Files, audio: false, auto_list: false, capture:None });
         let (failed, mode) = pool.retry(scope).unwrap();
         assert_eq!(failed.device_id, "a");
-        assert!(!mode.video && !mode.audio);
+        assert!(mode.purpose==ConnectionPurpose::Files && !mode.audio);
         assert!(!mode.auto_list);
         let next = pool.tabs.reject_open("a", "A", 0).unwrap();
         assert!(next > first);
         assert!(pool.retry(scope).is_none());
-        pool.retry_binding = Some(RetryBinding { attempt: next, scope, video: true, audio: true, auto_list: true, capture:None });
+        pool.retry_binding = Some(RetryBinding { attempt: next, scope, purpose: ConnectionPurpose::View, audio: true, auto_list: true, capture:None });
         assert!(pool.retry(scope).is_some());
         pool.expire_retry(Some([8; 32]));
         assert!(pool.tabs.failed().is_none());
         assert!(pool.retry_binding.is_none());
         assert_eq!(pool.message, "Ready");
         let pending = begin(&mut pool, "b", values());
-        pool.retry_binding = Some(RetryBinding { attempt: pending, scope, video: false, audio: true, auto_list: true, capture:None });
+        pool.retry_binding = Some(RetryBinding { attempt: pending, scope, purpose: ConnectionPurpose::Files, audio: true, auto_list: true, capture:None });
         let (key, mode) = pool.reconnect_target(scope).unwrap();
         assert_eq!(key, "b");
         assert_eq!(mode.unwrap().attempt, pending);
