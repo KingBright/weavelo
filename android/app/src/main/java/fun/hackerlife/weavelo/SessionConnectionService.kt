@@ -95,4 +95,15 @@ class SessionConnectionService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>?) {
+        val state = WorkspaceClient.state.value
+        // Read-only scalar correlation for native host diagnostics. No endpoint,
+        // ticket, session key, source title, clipboard, text or file payload.
+        writer.println("Weavelo workspace diagnostics")
+        writer.println(org.json.JSONObject().put("connection_id", state.connectionId)
+            .put("generation", state.connectionGeneration).put("connected", state.connected)
+            .put("incoming_ended", state.incomingEnded).put("retaining_connection", WorkspaceClient.retainingConnection)
+            .put("panes", state.panes.size).put("accepted_panes", state.panes.count { it.accepted }))
+    }
 }

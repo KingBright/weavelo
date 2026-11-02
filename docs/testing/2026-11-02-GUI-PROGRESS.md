@@ -17,7 +17,7 @@
 | 发送控制窗口 | Studio 76 实际打开独立发送窗；GUI 多选拆成独立来源请求，关闭 / 重开专项检查通过 | 实际控件点击、后台连续性与其他设备验收 |
 | 紧凑管理与会话边界 | Studio 76 主窗实测外框 640×633（内容高 600）；会话页面移除全局设备设置入口，断开后保留该来源及重连入口 | 设置滚动及会话操作检查 |
 | 关闭和 End stream | Studio 76 已安装；显式关闭和 End 共用当前流清理并退出窗口，39 项 GUI 检查通过 | 实际点击与远端连接结束验收 |
-| 全屏与窗口入口 | 已移除接收主窗 / PiP 操作栏中的最小化；保留全屏 / 退出全屏，macOS 在系统全屏完成 / 退出事件中隐藏 / 恢复三按钮 | 39 项 GUI 检查及签名发布回归通过；等待正式构建、安装和实际全屏验证 |
+| 全屏与窗口入口 | Studio 77 已正式签名安装；接收主窗 / PiP 移除最小化，保留全屏 / 退出；macOS 全屏完成 / 退出后隐藏 / 恢复三按钮 | 39 项 GUI 检查及签名发布回归通过；实际全屏进出仍待验收 |
 | 原生 tray / menubar | 待完成；目前仅 Open / Quit | 设备、流、传输、设置的明确目标快捷操作 |
 | Android 管理 / 单流页面 | 待完成 | 保留原生视频、手势、IME、旋转与服务 |
 | Android 输入失败反馈 | Android 62 已由原签名正式构建、发布并安装到红米与努比亚；被拒绝的触摸 / 键盘原因按画面显示，保留来源与时效校验 | 单次点击与键盘绑定已有实机结果；持续输入及全部方向仍待验证 |
@@ -74,6 +74,12 @@ Android 62 后续交付：`c8315ac` 已在 MacBook 的原 `main` checkout 正式
 用户已补充目标为努比亚 → Mac Studio，并要求自行复现。62 在同一条链路上拉取 Studio 76 的 Weavelo 与系统设置「储存空间」均有真实画面（`nubia62-studio-window.jpg`、`nubia62-studio-systemsettings.jpg`）。继续选择 ChatGPT 时稳定提示 `Waiting for video from this device.`；对应 Studio 来源为 `Window(16937)`、进程 50594、1138×2069，宿主 outgoing_streams 为 1（`nubia62-studio-chatgpt-host-state.json`）。没有视频包不能归因为手机解码；窗口可见性、采集与编码的具体断点仍待核对，未关闭此 bug。
 
 用户进一步要求取消拉流操作栏的最小化，仅保留全屏切换。已移除主接收窗与 PiP 的自定义最小化按钮，全屏提示区分进入 / 退出；macOS 在 AppKit `windowDidEnterFullScreen:` / `windowDidExitFullScreen:` 后隐藏 / 恢复系统三按钮，不增加逐帧原生调用。`fullscreen-window-tests.log` 的 39 项 GUI 检查通过、1 项默认跳过；`fullscreen-window-release-regression.log` 为 1,041 项通过、19 项跳过。源码已验证，尚未安装或声明实机全屏通过。
+
+`7267eae` 已推送核对并通过正式包装 / 安装流程升级 Studio 77（20261103.77）。GUI 进程 9836、后台 9830，可执行 SHA 为 `4ba2130cc5b1daf5ef102138067aa62ba555b48de7532532fa18e42f4312bac9`，渲染器仍为 `restored-original-gpui`；签名、成员、配置和启动策略保留，未新增回退副本。证据 `studio77-package.log`、`studio77-desktop-apply.log`、`studio77-installed-status.json`。升级前仅停止了本轮自有失败测试连接，实际全屏视觉与输入验收仍独立保留。
+
+Android 63 接续小步修复：已结束的定向接收清除画面，所有者在该连接文件任务完成、近期文件命令安静后释放并退出结束页，后台休眠时也会核对结束状态；文件仍忙时保留当前文件上下文，旧页面 / 服务的迟到清理不能关闭新设备或新请求。普通拉取和仍活跃的投送保持原生命周期。被拒绝的普通拉取现按具体画面显示原因，提供同源重试并分配新订阅编号，避免旧错误污染新尝试；拒绝页面不再空转解码器。尚未用此改动声称 ChatGPT 无视频包已修复。
+
+努比亚只读检查发现 `log.tag=S`，普通日志被系统静音，未修改任何日志、权限或安全设置。63 在 Android 已有 Service `dump` 接口提供连接编号、代次、连接 / 结束状态和画面计数，用于关联 Studio 既有 `InspectConnection` 标量诊断；不输出票据、会话密钥、窗口标题、地址、文本或文件。首轮增量 Kotlin 编译不能解析未修改文件的顶层声明，保留证据后仅对本次检查使用 `-Pkotlin.incremental=false`，完整 Kotlin 编译和 76 项 JVM 检查通过，未清理缓存或改永久构建设置。新增两项所有权生命周期回归覆盖文件未完成保留、完成后新投送、迟到旧清理与普通拉取隔离；最终 `android63-kotlin-check-final.log` 与 `android63-release-regression-final.log` 均通过，后者 1,041 项通过、19 项跳过。63 尚未安装。
 
 Studio 74 的 after 为 `studio74-via-redmi.png` 与 `studio74-via-nubia-before.png`；后者完整截图 SHA 为 `cee4cf7fdbb2c9ece293594f9da1ba8b7cad83f4c46b47895d88b50f7fac9ba7`。努比亚的实际触摸切换 Activity 后，接收端出现 `INPUT_UNAVAILABLE: input expired after target validation`（`studio74-nubia-activity-preview.jpg`，全分辨率原件保留在 Book 同名任务证据目录）；当前仅定位到原生目标校验后的截止时间，不推断为权限缺失。两次 Studio → 红米、一次 Studio → 努比亚测试投送已按各自请求 ID 停止。红米的原始 ADB 触摸注入被系统拒绝，未修改系统安全设置。
 

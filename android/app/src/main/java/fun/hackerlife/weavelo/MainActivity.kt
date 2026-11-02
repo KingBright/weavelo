@@ -72,11 +72,12 @@ class MainActivity : ComponentActivity() {
             val networkName by WeaveloClient.networkName.collectAsState()
             var joiningNetwork by remember { mutableStateOf(false) }
             var sendFileOnConnect by remember { mutableStateOf(false) }
-            var workspaceDeviceId by remember { mutableStateOf(WorkspaceClient.requestedSession()?.deviceId ?: "") }
+            val restoredWorkspace = remember { WorkspaceClient.visibleSession() }
+            var workspaceDeviceId by remember { mutableStateOf(restoredWorkspace?.deviceId ?: "") }
             var scanningQr by remember { mutableStateOf(false) }
             var manualInvitationRequested by remember { mutableStateOf(false) }
-            var workspaceEndpoint by remember { mutableStateOf(WorkspaceClient.requestedSession()?.endpoint) }
-            var incomingSession by remember { mutableStateOf(WorkspaceClient.requestedSession()?.takeIf { it.incomingId != null }) }
+            var workspaceEndpoint by remember { mutableStateOf(restoredWorkspace?.endpoint) }
+            var incomingSession by remember { mutableStateOf(restoredWorkspace?.takeIf { it.incomingId != null }) }
             var receivedFiles by remember { mutableStateOf(false) }
             var receivedFileTargetPath by rememberSaveable { mutableStateOf<String?>(null) }
             var workspaceFilePath by rememberSaveable { mutableStateOf<String?>(null) }
@@ -186,9 +187,15 @@ class MainActivity : ComponentActivity() {
 
             when {
                 workspaceEndpoint != null -> {
-                    `fun`.hackerlife.weavelo.ui.WorkspaceScreen(workspaceEndpoint!!, sendFileOnConnect, workspaceDeviceId, incomingSession,
+                    val shownEndpoint = workspaceEndpoint!!
+                    val shownDevice = workspaceDeviceId
+                    val shownIncoming = incomingSession
+                    `fun`.hackerlife.weavelo.ui.WorkspaceScreen(shownEndpoint, sendFileOnConnect, shownDevice, shownIncoming,
                         fileToSend = workspaceFilePath?.let(::File), onFileQueued = { workspaceFilePath = null }) {
-                        workspaceEndpoint = null; incomingSession = null; workspaceFilePath = null
+                        if (workspaceEndpoint == shownEndpoint && workspaceDeviceId == shownDevice &&
+                            incomingSession?.sessionKey == shownIncoming?.sessionKey) {
+                            workspaceEndpoint = null; incomingSession = null; workspaceFilePath = null
+                        }
                     }
                 }
                 scanningQr -> {

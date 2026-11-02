@@ -55,6 +55,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         SessionConnectionService.closeWorkspace(context, sessionKey)
         onClose()
     }
+    LaunchedEffect(state.sessionKey, state.incomingEnded, state.connected) {
+        // Keep the current file context accessible until its jobs have drained.
+        // Retiring the idle incoming connection then leaves this ended page.
+        if (state.sessionKey == sessionKey && state.incomingEnded && !state.connected) onClose()
+    }
     BackHandler(enabled = foreground, onBack = disconnect)
     var localError by remember { mutableStateOf<String?>(null) }
     var receivedFiles by remember { mutableStateOf(false) }
@@ -327,6 +332,16 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
 
 @Composable
 private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long, onError: (String) -> Unit) {
+    pane.videoError?.let { reason ->
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(reason, color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                TextButton(onClick = { WorkspaceClient.retry(pane.id, sessionKey, generation) }) { Text("Retry this source") }
+            }
+        }
+        return
+    }
     if (pane.source.isCamera && !pane.accepted) {
         Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { Text("Updating camera…",color=ColorTextSecondary) }
         return

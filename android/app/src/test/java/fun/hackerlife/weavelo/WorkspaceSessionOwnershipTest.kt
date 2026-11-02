@@ -90,4 +90,34 @@ class WorkspaceSessionOwnershipTest {
         assertFalse(state.disconnect(request.sessionKey))
         assertEquals(replacement, state.request())
     }
+
+    @Test fun endedIncomingViewRetainsItsFileOwnerThenAcceptsANewOfferWithoutAStaleStop() {
+        val state = WorkspaceSessionOwnership(); val old = Any(); val nextOwner = Any()
+        val incoming = request.copy(incomingId = "offer-a")
+        state.attach(old, incoming, false)
+        assertTrue(state.endIncoming(incoming.sessionKey))
+        assertNull(state.visibleRequest()) // recreation cannot reopen an ended view
+        assertFalse(state.retireEndedIncoming(filesBusy = true))
+        assertEquals(incoming, state.request()) // active files keep their actual connection
+        assertTrue(state.retireEndedIncoming(filesBusy = false))
+        assertNull(state.request())
+        val next = request.copy(deviceId = "device-b", sessionKey = "session-b", incomingId = "offer-b")
+        assertFalse(state.attach(nextOwner, next, false))
+        assertFalse(state.release(old, preserveForForeground = false))
+        assertFalse(state.endIncoming(incoming.sessionKey))
+        assertFalse(state.retireEndedIncoming(filesBusy = false))
+        assertEquals(next, state.visibleRequest())
+    }
+
+    @Test fun ordinaryPullAndLiveIncomingConnectionsCannotBeRetiredByTheEndedOfferPath() {
+        val state = WorkspaceSessionOwnership(); val service = Any()
+        state.attach(service, request, false)
+        assertFalse(state.endIncoming(request.sessionKey))
+        assertFalse(state.retireEndedIncoming(filesBusy = false))
+        assertEquals(request, state.visibleRequest())
+        val incoming = request.copy(incomingId = "offer-a")
+        state.attach(service, incoming, false)
+        assertFalse(state.retireEndedIncoming(filesBusy = false))
+        assertEquals(incoming, state.visibleRequest())
+    }
 }

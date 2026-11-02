@@ -8,13 +8,16 @@ data class WorkspaceSessionRequest(val endpoint: String, val deviceId: String, v
 class WorkspaceSessionOwnership {
     private var owner: Any? = null
     private var desired: WorkspaceSessionRequest? = null
+    private var endedIncoming: String? = null
 
     @Synchronized fun request(): WorkspaceSessionRequest? = desired
+    @Synchronized fun visibleRequest(): WorkspaceSessionRequest? = desired?.takeUnless { it.sessionKey == endedIncoming }
 
     @Synchronized fun attach(token: Any, request: WorkspaceSessionRequest, backendActive: Boolean): Boolean {
         val reuse = backendActive && desired?.endpoint == request.endpoint &&
             desired?.deviceId == request.deviceId && desired?.sessionKey == request.sessionKey &&
             desired?.incomingId == request.incomingId
+        if (desired != request) endedIncoming = null
         owner = token
         desired = request
         return reuse
@@ -23,14 +26,27 @@ class WorkspaceSessionOwnership {
     @Synchronized fun release(token: Any, preserveForForeground: Boolean): Boolean {
         if (owner !== token) return false
         owner = null
-        if (!preserveForForeground) desired = null
+        if (!preserveForForeground) { desired = null; endedIncoming = null }
         return true
+    }
+
+    @Synchronized fun endIncoming(sessionKey: String): Boolean {
+        if (desired?.sessionKey != sessionKey || desired?.incomingId == null) return false
+        endedIncoming = sessionKey
+        return true
+    }
+
+    /** A completed view may retire only after this connection's files finish. */
+    @Synchronized fun retireEndedIncoming(filesBusy: Boolean): Boolean {
+        val key = endedIncoming ?: return false
+        return !filesBusy && disconnect(key)
     }
 
     @Synchronized fun disconnect(sessionKey: String): Boolean {
         if (desired?.sessionKey != sessionKey) return false
         owner = null
         desired = null
+        endedIncoming = null
         return true
     }
 }
