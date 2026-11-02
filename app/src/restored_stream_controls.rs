@@ -606,11 +606,6 @@ impl RestoredDashboard {
                     },
                 ),
             )
-            .child(
-                command_button("open-management", ActionVariantKind::Neutral, cx)
-                    .child("Devices & settings")
-                    .on_click(|_, _, cx| show_management_window(cx)),
-            )
             .child(div().text_size(px(11.)).child(self.status.clone()))
             .child(
                 command_button("island_disconnect", ActionVariantKind::Danger, cx)

@@ -398,28 +398,6 @@ impl RestoredDashboard {
                                     )
                                     .child(
                                         command_button(
-                                            "sending-management",
-                                            ActionVariantKind::Neutral,
-                                            cx,
-                                        )
-                                        .child("Activity")
-                                        .on_click(
-                                            |_, _, cx| {
-                                                show_management_window(cx);
-                                                if let Some(root) = cx
-                                                    .try_global::<ManagementRoot>()
-                                                    .map(|root| root.0.clone())
-                                                {
-                                                    root.update(cx, |this, cx| {
-                                                        this.active_tab = DrawerTab::Activity;
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        command_button(
                                             "sending-stop",
                                             ActionVariantKind::Danger,
                                             cx,

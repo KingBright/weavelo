@@ -4,6 +4,31 @@ use super::*;
 use protocol::session::{CaptureSource, CaptureSourceInfo};
 
 impl RestoredDashboard {
+    pub(super) fn idle_stream_stage(&self, cx: &mut Context<Self>) -> AnyElement {
+        let source_selected=self.stream_source.is_some();
+        let title=if source_selected {"Disconnected"} else {"Choose a source"};
+        let detail=if self.status=="Ready" {"This stream is not connected".into()} else {self.status.clone()};
+        let target=self.stream_device.clone();
+        let can_reconnect=target.is_some();
+        div().size_full().flex().items_center().justify_center().p_4()
+            .child(div().w(px(420.)).max_w(relative(0.95)).flex().flex_col().gap_3().p_4()
+                .rounded_xl().bg(color_glass_card()).border_1().border_color(color_border_fine())
+                .child(icon(IconName::Receiving).size(px(24.)))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(div().text_size(px(12.)).child(self.native_window_title.clone()))
+                .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary).child(detail))
+                .child(command_button("reconnect-fixed-stream",ActionVariantKind::Primary,cx)
+                    .disabled(!can_reconnect).child(if source_selected {"Reconnect this stream"} else {"Choose a source"})
+                    .on_click(cx.listener(move|this,_,_,cx| {
+                        if let Some(device)=target.clone() {
+                            if let Some(source)=this.stream_source {
+                                this.start_stream_connection_capture(device,None,Some(source),cx);
+                            } else {this.start_source_browser(device,cx);}
+                        }
+                    }))))
+            .into_any_element()
+    }
+
     pub(super) fn start_source_browser(&mut self, device: String, cx: &mut Context<Self>) {
         if self.exit_group.stopping.load(Ordering::Acquire) || self.stream_source.is_some() {
             return;

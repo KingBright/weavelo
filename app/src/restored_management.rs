@@ -35,7 +35,7 @@ pub(super) fn reopen_restored_window(view: Entity<RestoredDashboard>, cx: &mut A
     if view.read(cx).exit_group.stopping.load(Ordering::Acquire) {
         return;
     }
-    let options = restored_window_options(cx);
+    let options = restored_window_options(cx, view.read(cx).purpose);
     let retained = view.clone();
     let result = cx.open_window(options, move |window, cx| {
         view.update(cx, |this, cx| {

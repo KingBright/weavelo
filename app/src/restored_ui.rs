@@ -31,7 +31,7 @@ use crate::desktop::device_list::{
     DeviceListAction, DeviceListEffect, DeviceListState,
 };
 use crate::desktop::original_owner::{FrameSlot, OriginalOwner, SourceViewBinding};
-use crate::original_design::{full_idle_canvas_stage, stream_status_capsule_card};
+use crate::original_design::stream_status_capsule_card;
 use crate::telemetry_display::UiHostStats;
 use crate::{
     AppDevice, HostStats, MacDecodedVideoFrame, MeshPairingControl, MeshPairingMessageKind,
@@ -169,7 +169,7 @@ fn open_restored_window(
 ) -> Option<WindowHandle<RestoredDashboard>> {
     if exit_group.stopping.load(Ordering::Acquire) {return None;}
     let primary = instance.is_some();
-    let options = restored_window_options(cx);
+    let options = restored_window_options(cx, if primary {WindowPurpose::Management} else {WindowPurpose::Stream});
     cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| RestoredDashboard::new(runtime, instance, activation, background, exit_group, window, cx));
         if primary { cx.set_global(ManagementRoot(view.clone())); }
@@ -265,19 +265,24 @@ fn open_restored_window(
     .ok()
 }
 
-fn restored_window_options(cx: &App) -> WindowOptions {
+fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
+    let (preferred, minimum) = if purpose == WindowPurpose::Management {
+        (size(px(640.), px(600.)), size(px(480.), px(420.)))
+    } else {
+        (size(px(1280.), px(800.)), size(px(800.), px(560.)))
+    };
     let window_bounds = cx.primary_display().map(|display| {
         let work = display.visible_bounds();
         let window_size = size(
-            px(1280.).min((work.size.width-px(32.)).max(px(1.))),
-            px(800.).min((work.size.height-px(48.)).max(px(1.))),
+            preferred.width.min((work.size.width-px(32.)).max(px(1.))),
+            preferred.height.min((work.size.height-px(48.)).max(px(1.))),
         );
         Bounds::centered_at(work.center(), window_size)
-    }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), size(px(1280.), px(800.))));
+    }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), preferred));
     WindowOptions {
             app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
         window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-        window_min_size: Some(size(px(800.).min(window_bounds.size.width), px(560.).min(window_bounds.size.height))),
+        window_min_size: Some(size(minimum.width.min(window_bounds.size.width), minimum.height.min(window_bounds.size.height))),
         titlebar: Some(TitlebarOptions {
             title: Some(
                 if std::env::var_os("WEAVELO_RESTORED_TEST_OUTPUT").is_some() {
@@ -2443,6 +2448,7 @@ impl Render for RestoredDashboard {
                     self.video_surface_bounds.clone(),
                     self.scale_mode,
                     self.remote_text.clone(),
+                    matches!(role, RoleState::Idle).then(||self.idle_stream_stage(cx)),
                     cx,
                 ),
             ))
@@ -2517,6 +2523,7 @@ fn full_canvas_stream_viewport(
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     scale_mode: ViewportScaleMode,
     text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
+    idle_stage: Option<AnyElement>,
     cx: &mut Context<RestoredDashboard>,
 ) -> AnyElement {
     match role {
@@ -2536,7 +2543,7 @@ fn full_canvas_stream_viewport(
         RoleState::Serving(session) => {
             full_serving_stage(&session.peer.display_name, cx).into_any_element()
         }
-        RoleState::Idle => full_idle_canvas_stage(cx).into_any_element(),
+        RoleState::Idle => idle_stage.unwrap_or_else(||div().into_any_element()),
     }
 }
 
