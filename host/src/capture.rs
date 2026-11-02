@@ -31,6 +31,9 @@ impl VideoFrame for MacVideoFrame {
 
 struct StreamOutput {
     slot: Arc<remote_core::LatestFrameSlot<MacVideoFrame>>,
+    source: protocol::session::CaptureSource,
+    resources: Option<Arc<crate::lifecycle::Resources>>,
+    last_format: std::sync::atomic::AtomicU64,
 }
 
 impl SCStreamOutputTrait for StreamOutput {
@@ -48,6 +51,18 @@ impl SCStreamOutputTrait for StreamOutput {
         let Some(buffer) = sample.image_buffer() else {
             return;
         };
+        if let Some(resources) = &self.resources {
+            use std::sync::atomic::Ordering::Relaxed;
+            let format = ((buffer.width() as u64) << 32) | buffer.height() as u64;
+            if self.last_format.load(Relaxed) != format {
+                let rect = sample.content_rect().map(|r| [r.origin().x, r.origin().y, r.size().width, r.size().height]);
+                *resources.native_capture_geometry.lock().unwrap() = Some(crate::lifecycle::NativeCaptureGeometry {
+                    source: self.source, buffer: [buffer.width() as u32, buffer.height() as u32],
+                    content_rect: rect, content_scale: sample.content_scale(), scale_factor: sample.scale_factor(),
+                });
+                self.last_format.store(format, Relaxed);
+            }
+        }
         let frame = MacVideoFrame {
             width: buffer.width() as u32,
             height: buffer.height() as u32,
@@ -225,6 +240,9 @@ impl VideoCapturer for MacVideoCapturer {
         let config = self.configuration(size);
         let output = StreamOutput {
             slot: self.slot.clone(),
+            source: self.source,
+            resources: self.resources.clone(),
+            last_format: std::sync::atomic::AtomicU64::new(0),
         };
 
         let mut stream = SCStream::new(&filter, &config);

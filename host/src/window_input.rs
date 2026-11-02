@@ -181,8 +181,25 @@ fn frame_accessory(child: &WindowDescription, parent: &WindowDescription) -> boo
 }
 fn catalog_frame_caption_ids(list: &[WindowDescription]) -> std::collections::HashSet<u32> {
     list.iter().filter(|child| child.generic_frame_caption &&
-        list.iter().any(|parent| frame_accessory_shape(child, parent)))
+        list.iter().any(|parent| frame_accessory_shape(child, parent)
+            || hidden_fullscreen_caption(child, parent, list)))
         .map(|child| child.id).collect()
+}
+fn hidden_fullscreen_caption(child: &WindowDescription, titlebar: &WindowDescription, list: &[WindowDescription]) -> bool {
+    // AppKit parks its hidden 32-point titlebar immediately above fullscreen
+    // content. The 66x20 traffic lights remain a separate SCK "Window" source.
+    // Require both native surfaces and their content owner; a small real window
+    // above another window must not disappear from the catalog.
+    child.id != titlebar.id && child.pid == titlebar.pid
+        && child.layer == 0 && titlebar.layer == 0 && titlebar.unnamed
+        && titlebar.alpha == 0. && (titlebar.bounds.size.height - 32.).abs() <= 1.
+        && observed_native_caption_geometry(child, titlebar)
+        && list.iter().any(|content| content.id != titlebar.id && content.id != child.id
+            && content.pid == titlebar.pid && content.layer == 0
+            && content.bounds.size.width >= 160. && content.bounds.size.height >= 80.
+            && (content.bounds.origin.x - titlebar.bounds.origin.x).abs() <= 1.
+            && (content.bounds.size.width - titlebar.bounds.size.width).abs() <= 1.
+            && (content.bounds.origin.y - titlebar.bounds.origin.y - titlebar.bounds.size.height).abs() <= 1.)
 }
 /// These native traffic-light surfaces have no independent application content.
 /// Read one WindowServer snapshot, including parents in other desktop spaces.
@@ -501,6 +518,31 @@ mod tests {
         other_process.pid = 20;
         assert!(catalog_frame_caption_ids(&[caption, other_process]).is_empty());
         assert!(catalog_frame_caption_ids(&[small_content, dialog, parent]).is_empty());
+    }
+    #[test]
+    fn catalog_omits_parked_fullscreen_caption_only_with_its_hidden_titlebar_and_content() {
+        let mut content = w(1, 10, 0.);
+        content.bounds = CGRect::new(&CGPoint::new(0., 0.), &CGSize::new(1920., 1080.));
+        let mut titlebar = w(2, 10, 0.);
+        titlebar.unnamed = true;
+        titlebar.alpha = 0.;
+        titlebar.bounds = CGRect::new(&CGPoint::new(0., -32.), &CGSize::new(1920., 32.));
+        let mut caption = w(3, 10, 6.);
+        caption.generic_frame_caption = true;
+        caption.bounds = CGRect::new(&CGPoint::new(6., -26.), &CGSize::new(66., 20.));
+        assert_eq!(catalog_frame_caption_ids(&[caption, titlebar, content]), [3].into_iter().collect());
+        assert!(!frame_accessory(&caption, &content)); // input guards stay strict
+        assert!(catalog_frame_caption_ids(&[caption, titlebar]).is_empty());
+        for variation in 0..4 {
+            let (mut bar, mut owner) = (titlebar, content);
+            match variation {
+                0 => bar.alpha = 1.,
+                1 => bar.unnamed = false,
+                2 => owner.pid = 20,
+                _ => owner.bounds.origin.y = 20.,
+            }
+            assert!(catalog_frame_caption_ids(&[caption, bar, owner]).is_empty());
+        }
     }
     #[test]
     fn generic_caption_is_not_a_blanket_focus_bypass() {

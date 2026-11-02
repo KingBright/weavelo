@@ -28,6 +28,7 @@ pub(crate) struct Resources {
     pub raw_capture_samples: AtomicU64,
     pub capture_pacing_skips: AtomicU64,
     pub capture_target_fps: AtomicU64,
+    pub native_capture_geometry: Mutex<Option<NativeCaptureGeometry>>,
     pub scheduled_data: Mutex<Option<ScheduledDataObservation>>,
 }
 
@@ -53,6 +54,18 @@ pub struct VideoTimingSnapshot {
     #[serde(default)] pub raw_capture_samples:u64,
     #[serde(default)] pub capture_pacing_skips:u64,
     #[serde(default)] pub capture_target_fps:u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_capture_geometry: Option<NativeCaptureGeometry>,
+}
+
+/// Last native format transition, with no pixels, titles or input payload.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NativeCaptureGeometry {
+    pub source: protocol::session::CaptureSource,
+    pub buffer: [u32; 2],
+    pub content_rect: Option<[f64; 4]>,
+    pub content_scale: Option<f64>,
+    pub scale_factor: Option<f64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -235,7 +248,8 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 video_timing:VideoTimingSnapshot {capture_wait:x.capture_wait.snapshot(),submit:x.video_submit.snapshot(),
                     send:x.media_send.snapshot(),encoder_backpressure_ticks:x.encoder_backpressure_ticks.load(SeqCst),
                     native_camera_frames:x.native_camera_frames.load(SeqCst),raw_capture_samples:x.raw_capture_samples.load(SeqCst),
-                    capture_pacing_skips:x.capture_pacing_skips.load(SeqCst),capture_target_fps:x.capture_target_fps.load(SeqCst)},
+                    capture_pacing_skips:x.capture_pacing_skips.load(SeqCst),capture_target_fps:x.capture_target_fps.load(SeqCst),
+                    native_capture_geometry:x.native_capture_geometry.lock().unwrap().clone()},
                 scheduled_data: x.scheduled_data.lock().unwrap().clone(),
             }
         })
