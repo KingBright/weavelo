@@ -140,3 +140,7 @@ Studio 78 已按原身份签名安装（源码 `53f195b`，构建 `20261103.78`�
 Studio 79 已签名安装（`24ebeb3` / `20261103.79`）。努比亚 63 拉取接收窗 `Window(17427)` 并真实点击进入全屏，来源 1920×1080；全屏目录仅保留两个真实 Weavelo 内容窗，隐藏按钮小窗已消失。连接 `854573969` 的原生帧数据为输出 986×554、有效内容宽 956.55、缩放 0.4982；它对应包含额外 32 点高度的缩放，而输入仍使用真实 1920×1080。普通窗口为 1140×740、有效内容约 1137.09×740，没有同样的边距。`nubia63-studio79-window-counters.json` 和 `nubia63-studio79-fullscreen-counters.json` 保留原始标量。
 
 Apple SDK 和当前运行时均确认 `includeChildWindows` 默认为 true。现对固定单窗口来源显式关闭关联子窗采集，以避免隐藏标题栏改变画面范围；整屏采集设置保持原状。补充原生帧的 bounding / screen 矩形，便于新版对照。当前仅通过本机原生采集检查与 1,041 项发布回归（19 项跳过），真实全屏退出仍待下次签名安装验证，不能以配置修改代替实机结论。
+
+Studio 80（`73e7179` / `20261103.80`）按原签名正式安装后，努比亚 63 和红米 63 均实际拉取固定接收窗 `Window(17456)`、进入全屏、点击画面上可见的退出按钮，并恢复到 1280×833。两部手机同时观看时，任一端切换均未结束另一端或 Book→Studio 的原始流；最后状态为共享 2、接收 1。努比亚全屏采集恢复为 buffer 986×554、有效内容约 984.89×554、screen rect 1920×1080，额外 32 点标题栏不再改变缩放。编码取偶数尺寸仍有少量边缘像素舍入，未声称亚像素精度或物理显示延迟已经验收。
+
+实际画面为 Book 证据目录中的 `nubia63-studio80-fullscreen.png` / `nubia63-studio80-restored.png`，以及 Studio 证据目录中的 `redmi63-studio80-fullscreen.png` / `redmi63-studio80-restored.png`。两次本机状态分别保留在 `studio80-after-visible-fullscreen-exit.json` 与 `studio80-redmi-after-visible-fullscreen-exit.json`；原生采集标量见 `nubia63-studio80-after-enter-counters.json`、`redmi63-studio80-after-enter-counters.json`。全屏系统按钮未出现、恢复后标题栏出现，操作栏仅保留全屏按钮，没有自定义最小化。本结论覆盖上述自有应用窗口和两部手机，不关闭此前特定应用 0 首帧、Linux / Windows 完整交互、U5 托盘与 U6 移动页面等剩余事项。
