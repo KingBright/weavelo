@@ -2099,7 +2099,7 @@ mod tests {
         assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
         remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-claimed-capabilities-fixture");
         let client=RemoteBridgeClient::new();
-        let (_sender,_receiver,address)=test_host_with_files(&client,true);
+        let (_sender,mut receiver,address)=test_host_with_files(&client,true);
         let directory=std::env::temp_dir().join(format!("weavelo-claimed-capabilities-{}-{}",std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         client.runtime().block_on(async {
@@ -2107,7 +2107,16 @@ mod tests {
                 ticket:[9;32],sources:vec![CaptureSource::MainDisplay]};
             let workspace=tokio::time::timeout(std::time::Duration::from_secs(3),
                 workspace_bridge::MobileWorkspace::connect_with_claim(address,directory.clone(),Some(claim))).await.unwrap().unwrap();
-            assert_eq!(workspace.capabilities(),serde_json::json!({"max_subscriptions":8,"files":true,"clipboard":false}));
+            let capabilities=workspace.capabilities();
+            let connection_id=tokio::time::timeout(std::time::Duration::from_secs(2),async {
+                loop {
+                    let (message,_)=receiver.recv().await.expect("fixture host ended before Open");
+                    if let ControlMessage::Session(command)=message
+                        && let SessionCommand::Open{connection_id,..}=*command {break connection_id;}
+                }
+            }).await.unwrap();
+            assert_ne!(connection_id,0);
+            assert_eq!(capabilities,serde_json::json!({"connection_id":connection_id,"max_subscriptions":8,"files":true,"clipboard":false}));
             drop(workspace);
         });
         if directory.exists(){std::fs::remove_dir_all(directory).unwrap();}

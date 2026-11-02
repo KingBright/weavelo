@@ -1,6 +1,6 @@
 //! Explicit foreground-window control, with live WindowServer identity and hit guards.
-//! Accessibility is used only for permission and app activation; unreliable AXWindows
-//! data is not allowed to redirect a selected window to an application root object.
+//! Accessibility confirms activation and the focused editor behind non-key floating
+//! UI. It never redirects a selected window to an application root object.
 use core_foundation::{
     array::CFArray,
     base::{CFType, CFTypeRef, TCFType},
@@ -29,6 +29,8 @@ unsafe extern "C" {
     ) -> i32;
     fn AXUIElementSetAttributeValue(element: CFTypeRef, name: CFTypeRef, value: CFTypeRef) -> i32;
     fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
+    fn AXValueGetType(value: CFTypeRef) -> u32;
+    fn AXValueGetValue(value: CFTypeRef, kind: u32, output: *mut std::ffi::c_void) -> bool;
     fn CGWindowListCopyWindowInfo(options: u32, window: u32) -> CFTypeRef;
 }
 pub fn permission_available() -> bool {
@@ -218,6 +220,23 @@ fn front_of_app(windows: &[WindowDescription], pid: i32) -> Option<u32> {
         })
         .map(|w| w.id)
 }
+fn focused_window_id(windows: &[WindowDescription], pid: i32, bounds: CGRect) -> Option<u32> {
+    if !valid_bounds(bounds) { return None; }
+    let mut matches=windows.iter().filter(|w| w.pid==pid && w.layer==0 && w.visible && w.alpha>0.
+        && (w.bounds.origin.x-bounds.origin.x).abs()<=0.5
+        && (w.bounds.origin.y-bounds.origin.y).abs()<=0.5
+        && (w.bounds.size.width-bounds.size.width).abs()<=0.5
+        && (w.bounds.size.height-bounds.size.height).abs()<=0.5);
+    let id=matches.next()?.id;
+    matches.next().is_none().then_some(id)
+}
+fn keyboard_focus(windows: &[WindowDescription], id:u32, pid:i32, focused_editor:impl FnOnce()->Option<u32>)->bool {
+    let Some(front)=front_of_app(windows,pid) else {return false;};
+    if front==id {return true;}
+    // NSFloatingWindowLevel UI is not necessarily a key window. Other layers,
+    // menus and ordinary same-process dialogs retain their existing guard.
+    windows.iter().any(|w|w.id==front && w.layer==3) && focused_editor()==Some(id)
+}
 // The callbacks are the existing WindowServer/AX operations. Keep the deadline
 // check adjacent to the focus write, after every potentially blocking read.
 fn focus_for_click_with(
@@ -304,8 +323,27 @@ impl WindowTarget {
             .is_some_and(|v| v.into())
     }
     pub fn focused(&self) -> bool {
-        self.app_frontmost()
-            && windows(1 | 16, 0).is_ok_and(|list| front_of_app(&list, self.pid) == Some(self.id))
+        self.app_frontmost() && windows(1 | 16, 0).is_ok_and(|list|
+            keyboard_focus(&list,self.id,self.pid,||self.focused_editor_window(&list)))
+    }
+    fn focused_editor_window(&self, list:&[WindowDescription])->Option<u32> {
+        let window=attr(&self.application,"AXFocusedWindow")?;
+        let editor=attr(&self.application,"AXFocusedUIElement")?;
+        if attr(&editor,"AXWindow")? != window {return None;}
+        let mut pid=0;
+        if unsafe {AXUIElementGetPid(window.as_CFTypeRef(),&mut pid)}!=0 || pid!=self.pid {return None;}
+        let position=attr(&window,"AXPosition")?;
+        let size=attr(&window,"AXSize")?;
+        let mut origin=CGPoint::new(0.,0.);
+        let mut dimensions=CGSize::new(0.,0.);
+        unsafe {
+            if AXValueGetType(position.as_CFTypeRef())!=1 || AXValueGetType(size.as_CFTypeRef())!=2
+                || !AXValueGetValue(position.as_CFTypeRef(),1,(&mut origin as *mut CGPoint).cast())
+                || !AXValueGetValue(size.as_CFTypeRef(),2,(&mut dimensions as *mut CGSize).cast()) {return None;}
+        }
+        // Public AX geometry must identify exactly one live WindowServer window.
+        // Missing/ambiguous accessibility data never weakens the old rejection.
+        focused_window_id(list,pid,CGRect::new(&origin,&dimensions))
     }
     pub fn focus_for_click(&self, deadline: Option<std::time::Instant>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let name = CFString::new("AXFrontmost");
@@ -600,6 +638,29 @@ mod tests {
         let mut modal = w(2, 10, 0.);
         modal.layer = 8;
         assert_eq!(front_of_app(&[modal, w(1, 10, 0.)], 10), Some(2));
+    }
+    #[test]
+    fn non_key_floating_ui_requires_an_exact_focused_editor_window() {
+        let parent=w(1,10,0.);
+        let mut floating=w(2,10,20.);floating.layer=3;
+        let list=[floating,parent];
+        assert!(keyboard_focus(&list,1,10,||focused_window_id(&list,10,parent.bounds)));
+        assert!(!keyboard_focus(&list,1,10,||None));
+        assert!(!keyboard_focus(&list,1,10,||Some(2)));
+        // The pointer path still sees the actual overlapping floating window.
+        assert_eq!(top_at(&list,CGPoint::new(50.,60.)),Some(2));
+        let mut duplicate=parent;duplicate.id=3;
+        assert_eq!(focused_window_id(&[floating,parent,duplicate],10,parent.bounds),None);
+        assert_eq!(focused_window_id(&list,20,parent.bounds),None);
+    }
+    #[test]
+    fn keyboard_focus_keeps_dialog_menu_and_fast_path_guards() {
+        let parent=w(1,10,0.);
+        assert!(keyboard_focus(&[parent],1,10,||panic!("normal input must not add AX queries")));
+        for layer in [0,8,101] {
+            let mut dialog=w(2,10,0.);dialog.layer=layer;
+            assert!(!keyboard_focus(&[dialog,parent],1,10,||panic!("not a non-key floating surface")));
+        }
     }
     #[test]
     fn same_process_filter_still_requires_separate_cross_process_hit_test() {

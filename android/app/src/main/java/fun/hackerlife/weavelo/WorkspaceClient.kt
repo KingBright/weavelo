@@ -174,7 +174,7 @@ object WorkspaceClient {
         pendingShareList = 0L
         mutable.value = mutable.value.copy(connected = true, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
-            connectionGeneration = ++connectionGeneration, connectionId = 0, panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
+            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
     }
     private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
@@ -393,7 +393,12 @@ object WorkspaceClient {
         if (!currentView(id,sessionKey,generation,true) || SystemClock.uptimeMillis()-eventTime !in 0L..250L) return@guarded
         val event=JSONObject().put("id",id).put("token",token).put("binding",JSONObject(binding)).put("age_ms",SystemClock.uptimeMillis()-eventTime)
         if (text!=null) event.put("text",text) else event.put("key",key).put("pressed",pressed)
-        action(14,event.toString())
+        runCatching { action(14,event.toString()) }.onFailure {
+            // A rejected commit can invalidate its editor before queued IME
+            // callbacks arrive. Keep the original, actionable host reason.
+            if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
+                inputIssue(id, it.message ?: "Keyboard is unavailable")
+        }
     }
     fun surface(id: Int, sessionKey: String, generation: Long, token: Long, phase: String, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
         if (!currentView(id, sessionKey, generation, phase == "begin" || phase == "ready" || phase == "alive")) return@guarded
@@ -469,7 +474,8 @@ object WorkspaceClient {
             control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, status = it.getString("reason")) }
             control?.optJSONObject("TextRejected")?.let {
                 val id = it.getJSONObject("binding").getInt("subscription_id")
-                if (mutable.value.panes.any { pane -> pane.id == id }) mutable.value = mutable.value.copy(status = it.getString("reason"))
+                if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
+                    inputIssue(id, it.getString("reason"))
             }
             control?.optJSONObject("ClipboardState")?.let { mutable.value = mutable.value.copy(clipboard = it.getBoolean("enabled")) }
             event.optJSONObject("clipboard")?.let { applyClipboard(it) }
@@ -548,7 +554,9 @@ object WorkspaceClient {
                 android.util.Log.w("WeaveloWorkspace", "Request $id failed: ${it.getString("reason")}")
                 // A late settings/unsubscribe reply for a closed pane must not
                 // replace the status of the current screen or its keyboard.
-                if (id in 0..1 || mutable.value.panes.any { pane -> pane.id == id && pane.accepted })
+                if (it.getString("reason").startsWith("INPUT_UNAVAILABLE:") && mutable.value.panes.any { pane -> pane.id == id && pane.accepted })
+                    inputIssue(id, it.getString("reason"))
+                else if (id in 0..1 || mutable.value.panes.any { pane -> pane.id == id && pane.accepted })
                     mutable.value = mutable.value.copy(status = it.getString("reason"))
             }
             if (event.has("file")) mutable.value = mutable.value.copy(status = event.getString("file").take(220))
