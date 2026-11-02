@@ -542,9 +542,8 @@ impl ClientMediaRuntime {
                         rebuild_decoder = false;
                         recovery = observed.epoch;
                     }
-                    if previous_packet.is_some_and(|(ssrc, seq): (u32, u16)| {
-                        ssrc != current.0 || seq.wrapping_add(1) != current.1
-                    }) {
+                    let keyframe = remote_core::media_plane::is_hevc_keyframe(&ordered_pkt.payload);
+                    if remote_core::video_recovery::reference_gap(previous_packet, current, keyframe) {
                         waiting_for_keyframe = true;
                         rebuild_decoder = true;
                         stats_decode
@@ -557,9 +556,7 @@ impl ClientMediaRuntime {
                         recovery = next;
                     }
                     previous_packet = Some(current);
-                    if waiting_for_keyframe
-                        && !remote_core::media_plane::is_hevc_keyframe(&ordered_pkt.payload)
-                    {
+                    if waiting_for_keyframe && !keyframe {
                         stats_decode
                             .video_decoder_reference_skipped
                             .fetch_add(1, Relaxed);

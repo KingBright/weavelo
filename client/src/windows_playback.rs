@@ -218,9 +218,8 @@ impl DecoderState {
             return Ok(());
         }
         let id = (packet.header.ssrc, packet.header.sequence_number);
-        let gap = self
-            .previous
-            .is_some_and(|p| p.0 != id.0 || p.1.wrapping_add(1) != id.1);
+        let key = remote_core::media_plane::is_hevc_keyframe(&packet.payload);
+        let gap = remote_core::video_recovery::reference_gap(self.previous, id, key);
         if generation != self.generation || gap {
             if gap {
                 shared
@@ -231,7 +230,6 @@ impl DecoderState {
             self.reset(shared, generation);
         }
         self.previous = Some(id);
-        let key = remote_core::media_plane::is_hevc_keyframe(&packet.payload);
         if self.waiting && !key {
             shared
                 .stats

@@ -7,6 +7,14 @@ use std::sync::{
 };
 use std::time::Instant;
 
+/// A fresh keyframe can replace an older GOP without its prediction history.
+/// A different stream still needs a decoder boundary, even at a keyframe.
+pub fn reference_gap(previous: Option<(u32, u16)>, current: (u32, u16), keyframe: bool) -> bool {
+    previous.is_some_and(|last| {
+        last.0 != current.0 || (!keyframe && last.1.wrapping_add(1) != current.1)
+    })
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VideoEpoch {
     pub source: u64,
@@ -128,6 +136,21 @@ impl VideoRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_keyframe_does_not_require_the_retired_gop() {
+        assert!(!reference_gap(Some((7, 10)), (7, 30), true));
+        assert!(reference_gap(Some((7, 10)), (7, 30), false));
+        assert!(!reference_gap(Some((7, 10)), (7, 11), false));
+        assert!(!reference_gap(Some((7, u16::MAX)), (7, 0), false));
+    }
+
+    #[test]
+    fn a_keyframe_cannot_hide_a_different_stream_identity() {
+        assert!(reference_gap(Some((7, 10)), (8, 11), true));
+        assert!(reference_gap(Some((7, 10)), (8, 11), false));
+        assert!(!reference_gap(None, (8, 11), true));
+    }
 
     #[test]
     fn delayed_observation_retains_the_real_recovery_boundary() {

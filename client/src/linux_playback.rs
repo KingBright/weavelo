@@ -146,17 +146,14 @@ impl DecoderState {
             self.reset(s, epoch);
         }
         let now = (packet.header.ssrc, packet.header.sequence_number);
-        if self
-            .previous
-            .is_some_and(|(ssrc, seq)| ssrc != now.0 || seq.wrapping_add(1) != now.1)
-        {
+        let key = remote_core::media_plane::is_hevc_keyframe(&packet.payload);
+        if remote_core::video_recovery::reference_gap(self.previous, now, key) {
             s.stats
                 .video_decoder_reference_gaps
                 .fetch_add(1, Ordering::Relaxed);
             self.reset(s, epoch);
         }
         self.previous = Some(now);
-        let key = remote_core::media_plane::is_hevc_keyframe(&packet.payload);
         if self.waiting && !key {
             s.stats
                 .video_decoder_reference_skipped

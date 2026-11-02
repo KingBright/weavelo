@@ -341,7 +341,8 @@ pub fn spawn_decoder_with_signal(
                 continue;
             }
             let id = (packet.header.ssrc, packet.header.sequence_number);
-            let gap = previous.is_some_and(|p| p.0 != id.0 || p.1.wrapping_add(1) != id.1);
+            let keyframe = remote_core::media_plane::is_hevc_keyframe(&packet.payload);
+            let gap = remote_core::video_recovery::reference_gap(previous, id, keyframe);
             let changed = current.epoch != recovery || gap;
             if changed {
                 if gap {
@@ -361,7 +362,6 @@ pub fn spawn_decoder_with_signal(
                 waiting = true;
             }
             previous = Some(id);
-            let keyframe = remote_core::media_plane::is_hevc_keyframe(&packet.payload);
             if waiting && !keyframe {
                 stats
                     .video_decoder_reference_skipped
