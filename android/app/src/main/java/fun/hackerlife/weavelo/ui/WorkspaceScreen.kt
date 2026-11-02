@@ -387,7 +387,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
         },
         overlay = {
-            videoStatus?.let { message ->
+            (videoStatus ?: pane.inputError)?.let { message ->
                 Text(message, color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
                         .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))

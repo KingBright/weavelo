@@ -19,6 +19,7 @@
 | 关闭和 End stream | Studio 76 已安装；显式关闭和 End 共用当前流清理并退出窗口，39 项 GUI 检查通过 | 实际点击与远端连接结束验收 |
 | 原生 tray / menubar | 待完成；目前仅 Open / Quit | 设备、流、传输、设置的明确目标快捷操作 |
 | Android 管理 / 单流页面 | 待完成 | 保留原生视频、手势、IME、旋转与服务 |
+| Android 输入失败反馈 | 已将被拒绝的触摸 / 键盘原因按具体画面呈现；严格保留来源、时效、视频及输入绑定校验，源码检查通过 | 正式 Android 62 安装后定位实际静默输入断点，不能把反馈改进记为输入修复完成 |
 | 实机视觉与交互 | Studio 76 紧凑管理页已通过原生视频显示到红米；努比亚主动拉 MacBook 的 Weavelo 应用窗口也有真实画面。触摸仍有未生效现象；桌面自动观察仍超时 | 操作栏、设置、可靠输入和流关闭继续单机检查；手机接收画面不等同 Studio 物理屏幕验收，不据此跨机部署 |
 
 首步检查：原生生产配置构建通过，实际编译的默认入口仍为 `restored-original-gpui`；真实 GPUI 窗口关闭 / 重新打开 / PiP 引用测试 1 项通过；相关输入回归 37 项通过、1 项跳过。五处旧测试夹具已改用当前视频通道 API，未改动媒体内核。检查完整日志位于上述本轮 checkpoint 同目录。此处不宣称媒体连续性、物理呈现、安装或发布通过。
@@ -60,6 +61,10 @@ Studio 75 已通过正式打包与既有 Desktop 升级入口安装，实际运�
 `193002c` 已推送核对，并正式构建、兼容安装 Studio 76（`20261102.76`）。实际 GUI 进程 28811、渲染器 `restored-original-gpui`，可执行文件 SHA 为 `75e5fe4bfb66c079224534749842dde86342d07a9c93f8e53dcae84988f8b24d`；签名身份、配置、成员及启动策略保留，未新增回退副本。证据 `studio76-package.log`、`studio76-desktop-apply.log`、`studio76-installed-status.json`。主窗实际外框为 640×633；`studio76-manager-via-redmi.png` 核对了紧凑设备行和四个操作图标，发送的是明确的自有应用 `Window(17273)`。真实发送窗标题带来源、Redmi 目标及 Sending，后台显示该请求 Sending。没有据此宣称设置页、输入或全平台视觉验收通过。
 
 Android 应用窗口新证据：努比亚 61 在应用内主动选择 MacBook 73 的 Weavelo `Window(8995)`，宿主目录为 2560×1664、后台有 1 路真实采集。最初手机提示 `Waiting for video from this device.`（该提示表示没有收到压缩视频包）；激活宿主窗口后，`nubia61-book-window-current.jpg` 已显示该应用真实像素。红米 61 接收 Studio 76 的上述单窗口也已出画。两者证明特定已验证窗口可拉 / 可推，不能据此关闭用户未指定目标的应用窗口失败；初始等待和恢复仍须独立定位。红米上的旧 Sharing ended 会话仍需应用内 Disconnect 才能接新投送，未改系统权限或背景偏好。
+
+输入中间边界排查沿用现有会话：Android currentView / 事件时效 → 原生触摸视图、首帧与能力 → 当前输入绑定 → 发送 → 宿主校验 / 注入 → 实际界面。现有代码会吞掉键盘绑定错误，并在原生触摸前提不成立时静默丢弃新按下；这一反馈缺口已修正为当前画面的短提示，成功新操作或新视频表面会清除旧提示。提示使用已有视频覆盖层，不挤压画面、不改变指针变换；迟到事件仍取消、错误来源仍拒绝，清理先于返回错误。`android-input-readiness-tests-3.log` 的 9 项原生触摸 / 实际回环绑定检查通过，Android Kotlin 编译与 74 项 JVM 检查通过（`android-input-readiness-kotlin-check-2.log`）。版本代码准备为 62，尚未签名打包或安装；它用于暴露实际失效前提，尚未证明触摸生效。
+
+输入反馈小步的签名发布回归 `android-input-readiness-release-regression.log` 为 1,041 项通过、19 项跳过。没有新增输入权限、降低保护时效或改变媒体协议。系统与应用授权、主机端过期输入误报及真实点击的验证仍分别保留。
 
 Studio 74 的 after 为 `studio74-via-redmi.png` 与 `studio74-via-nubia-before.png`；后者完整截图 SHA 为 `cee4cf7fdbb2c9ece293594f9da1ba8b7cad83f4c46b47895d88b50f7fac9ba7`。努比亚的实际触摸切换 Activity 后，接收端出现 `INPUT_UNAVAILABLE: input expired after target validation`（`studio74-nubia-activity-preview.jpg`，全分辨率原件保留在 Book 同名任务证据目录）；当前仅定位到原生目标校验后的截止时间，不推断为权限缺失。两次 Studio → 红米、一次 Studio → 努比亚测试投送已按各自请求 ID 停止。红米的原始 ADB 触摸注入被系统拒绝，未修改系统安全设置。
 

@@ -2156,7 +2156,8 @@ mod tests {
             let gesture = |action, x| serde_json::json!({"id":256,"token":1,"event":{"Touch":{
                 "action":action,"pointer_id":7,"normalized_x":x,"normalized_y":0.5,"pressure":1.0}}}).to_string();
             workspace.surface(&surface("begin")).unwrap();
-            workspace.touch(&gesture("Down", 0.1)).unwrap(); // No frame: cannot accumulate a press.
+            // No frame: report the blocked input without accumulating a press.
+            assert!(workspace.touch(&gesture("Down", 0.1)).unwrap_err().contains("first video frame"));
             workspace.surface(&surface("ready")).unwrap();
             workspace.touch(&gesture("Move", 0.8)).unwrap();
             workspace.touch(&gesture("Down", 0.1)).unwrap();

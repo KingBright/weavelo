@@ -416,7 +416,9 @@ impl MobileWorkspace {
         let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
         let touches=self.touches.lock().unwrap();
         let touch=touches.get(&request.id).ok_or("video surface is unavailable")?;
-        let binding=touch.keyboard_binding(request.token,self.connection.input_binding(request.id,touch.revision)).ok_or("remote keyboard is unavailable")?;
+        let current=self.connection.input_binding(request.id,touch.revision);
+        if let Some(reason)=touch.unavailable_reason(request.token,current) {return Err(reason.into());}
+        let binding=touch.keyboard_binding(request.token,current).ok_or("remote keyboard is unavailable")?;
         let owner=self.connection.text_input_owner(request.id,binding.source_revision).ok_or("remote keyboard is unavailable")?;
         serde_json::to_string(&owner).map_err(|e|e.to_string())
     }
@@ -455,11 +457,14 @@ impl MobileWorkspace {
             return Ok(());
         };
         let current = self.connection.input_binding(event.id, touch.revision);
+        let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..});
+        let unavailable=touch.unavailable_reason(event.token,current);
         let (release, events) =
             touch.touch(event.token, event.event, current, std::time::Instant::now());
         if let Some(binding) = release {
             self.connection.try_bound_input(binding, None);
         }
+        if starting && let Some(reason)=unavailable {return Err(reason.into());}
         if let Some(binding) = touch.binding() {
             for event in events {
                 if !self.connection.try_bound_input(binding, Some(event)) {

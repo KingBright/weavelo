@@ -108,8 +108,16 @@ impl WorkspaceTouch {
         }
     }
     pub fn keyboard_binding(&self,token:u64,current:Option<InputBinding>)->Option<InputBinding> {
-        (token!=0 && token==self.surface && self.attached && self.frame_ready && self.visible && self.supported)
-            .then_some(current).flatten()
+        self.unavailable_reason(token,current).is_none().then_some(current).flatten()
+    }
+    pub fn unavailable_reason(&self,token:u64,current:Option<InputBinding>)->Option<&'static str> {
+        if token==0 || token!=self.surface {Some("This video view has changed.")}
+        else if !self.visible {Some("Control is paused while this stream is hidden.")}
+        else if !self.attached {Some("Control is waiting for the video view.")}
+        else if !self.frame_ready {Some("Control is waiting for the first video frame.")}
+        else if !self.supported {Some("This source supports viewing only.")}
+        else if current.is_none() {Some("Control is waiting for this device connection.")}
+        else {None}
     }
     pub fn key_events(&mut self,binding:InputBinding,name:&str,pressed:bool)->Vec<InputEvent> {
         self.keyboard.event_for_grant(binding,name,pressed)
@@ -190,6 +198,29 @@ mod tests {
         touch.surface(1, "begin");
         touch.surface(1, "ready");
         touch
+    }
+    #[test]
+    fn unavailable_reasons_follow_the_same_surface_and_grant_fences_as_input() {
+        let grant=Some(binding(1));
+        let mut touch=WorkspaceTouch::new();
+        assert!(touch.unavailable_reason(1,grant).unwrap().contains("changed"));
+        touch.support(true);touch.surface(1,"begin");
+        assert!(touch.unavailable_reason(1,grant).unwrap().contains("first video frame"));
+        touch.surface(1,"ready");
+        assert!(touch.unavailable_reason(1,None).unwrap().contains("device connection"));
+        assert_eq!(touch.unavailable_reason(1,grant),None);
+        assert_eq!(touch.keyboard_binding(1,grant),grant);
+        touch.activity(false);
+        assert!(touch.unavailable_reason(1,grant).unwrap().contains("hidden"));
+        touch.activity(true);
+        assert!(touch.unavailable_reason(1,grant).unwrap().contains("video view"));
+        assert_eq!(touch.keyboard_binding(1,grant),None);
+        touch.surface(2,"begin");touch.surface(2,"ready");
+        assert_eq!(touch.keyboard_binding(1,grant),None);
+        assert_eq!(touch.keyboard_binding(2,grant),grant);
+        touch.support(false);
+        assert!(touch.unavailable_reason(2,grant).unwrap().contains("viewing only"));
+        assert_eq!(touch.keyboard_binding(2,grant),None);
     }
     #[test]
     fn current_frame_support_and_grant_are_all_required() {

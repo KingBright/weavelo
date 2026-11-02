@@ -20,7 +20,7 @@ data class WorkspaceSource(val source: Any, val title: String, val width: Int, v
 }
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
-    val accepted: Boolean = false)
+    val accepted: Boolean = false, val inputError: String? = null)
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
@@ -344,9 +344,34 @@ object WorkspaceClient {
         return active && s.connected && s.sessionKey == sessionKey && s.connectionGeneration == generation &&
             s.panes.any { it.id == id } && (!visible || (!background && (s.grid || s.selected == id)))
     }
+    private fun inputIssue(id: Int, message: String?) {
+        val current = mutable.value
+        if (current.panes.any { it.id == id && it.inputError != message }) {
+            mutable.value = current.copy(panes = current.panes.map { if (it.id == id) it.copy(inputError = message) else it })
+        }
+    }
+    private fun inputViewIssue(id: Int, sessionKey: String, generation: Long) {
+        val current = mutable.value
+        if (current.sessionKey != sessionKey || current.connectionGeneration != generation || current.panes.none { it.id == id }) return
+        inputIssue(id, when {
+            !active || !current.connected -> "Input couldn't reach this device connection."
+            background -> "Input was ignored while the app was in the background."
+            !current.grid && current.selected != id -> "Input was ignored while this stream was hidden."
+            else -> "Control is not ready yet."
+        })
+    }
     fun keyboardBinding(id: Int, sessionKey: String, generation: Long, token: Long): String? = synchronized(this) {
-        if (!currentView(id,sessionKey,generation,true)) return@synchronized null
-        runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("generation") } }.getOrNull()
+        if (!currentView(id,sessionKey,generation,true)) {
+            guarded { inputViewIssue(id,sessionKey,generation) }
+            return@synchronized null
+        }
+        val result = runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("generation") } }
+        guarded {
+            if (currentView(id,sessionKey,generation,false)) inputIssue(id,
+                if (result.isFailure) result.exceptionOrNull()?.message ?: "Keyboard is unavailable"
+                else if (result.getOrNull() == null) "Control is not ready yet." else null)
+        }
+        result.getOrNull()
     }
     fun keyboard(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
         text: String? = null, key: String? = null, pressed: Boolean = false, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
@@ -359,18 +384,25 @@ object WorkspaceClient {
         if (!currentView(id, sessionKey, generation, phase == "begin" || phase == "ready" || phase == "alive")) return@guarded
         val currentPhase = if (phase == "alive" && SystemClock.uptimeMillis() - eventTime !in 0L..250L) "cancel" else phase
         action(11, JSONObject().put("id", id).put("token", token).put("phase", currentPhase).toString())
+        if (currentPhase == "begin" || currentPhase == "ready") inputIssue(id, null)
         if (currentPhase == "ready") ownership.request()?.incomingId?.let {
             DirectedDelivery.rendered(it, generation, id, mutable.value.panes)
         }
     }
     fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long, event: JSONObject) = guarded {
-        if (!currentView(id, sessionKey, generation, true)) return@guarded
+        if (!currentView(id, sessionKey, generation, true)) {
+            inputViewIssue(id,sessionKey,generation)
+            return@guarded
+        }
         // Include time waiting on this serial executor; do not replay an old Android event as fresh input.
         if (SystemClock.uptimeMillis() - eventTime !in 0L..250L) {
             action(11, JSONObject().put("id", id).put("token", token).put("phase", "cancel").toString())
+            if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.")
             return@guarded
         }
-        action(12, JSONObject().put("id", id).put("token", token).put("event", JSONObject().put("Touch", event)).toString())
+        runCatching { action(12, JSONObject().put("id", id).put("token", token).put("event", JSONObject().put("Touch", event)).toString()) }
+            .onFailure { inputIssue(id, it.message ?: "Control is unavailable") }
+            .onSuccess { if (event.optString("action") == "Down") inputIssue(id, null) }
     }
     private fun endIncoming(reason: String, rejected: Boolean = false) {
         incomingEnded = true
