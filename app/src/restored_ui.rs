@@ -2,6 +2,9 @@
 mod management;
 #[path="restored_streams.rs"]
 mod stream_windows;
+#[path="restored_stream_controls.rs"]
+mod stream_controls;
+use stream_controls::{DeviceFiles, StreamPanel};
 #[cfg(test)]
 #[path="restored_source_browser_tests.rs"]
 mod source_browser_tests;
@@ -221,15 +224,13 @@ fn open_restored_window(
                     owned_gui_stage(1);
                     let primary=view.window_handle.update(cx, |_,window,_|window.is_window_visible());
                     view.window_visible=primary.as_ref().ok().copied().flatten();
-                    if primary.is_err() {
-                        let mut pip_visible=false;
-                        view.pip_windows.retain(|handle| match handle.update(cx,|_,window,_|window.is_window_visible()) {
-                            Ok(visible)=>{pip_visible|=visible.unwrap_or(true);true},Err(_)=>false,
-                        });
-                        view.window_visible=Some(pip_visible);
-                    }
+                    view.pip_visible=false;
+                    view.pip_windows.retain(|handle| match handle.update(cx,|_,window,_|window.is_window_visible()) {
+                        Ok(visible)=>{view.pip_visible|=visible.unwrap_or(true);true},Err(_)=>false,
+                    });
                     view.sync_media_pause();
                     view.owner.poll();
+                    if view.purpose == WindowPurpose::Management { view.poll_device_files(); }
                     view.poll_source_browser(cx);
                     // PiP's producer survives its primary presentation. Native
                     // frames still pass through the same latest-frame mailbox.
@@ -373,6 +374,7 @@ struct FrontendExitGroup {
     gui_generation: Mutex<Option<String>>,
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
+    file_contexts: Mutex<std::collections::BTreeMap<String, Arc<DeviceFiles>>>,
 }
 impl FrontendExitGroup {
     fn can_change_network(&self) -> bool {
@@ -435,6 +437,8 @@ impl ApplicationArtwork {
 struct RestoredDashboard {
     purpose: WindowPurpose,
     device_query: String,
+    files_device: Option<String>,
+    stream_panel: StreamPanel,
     stream_device: Option<String>,
     stream_source: Option<protocol::session::CaptureSource>,
     source_selection: Option<source_selection::Selection>,
@@ -457,6 +461,7 @@ struct RestoredDashboard {
     background: Option<crate::background_service::Client>,
     window_handle: AnyWindowHandle,
     pip_windows: Vec<AnyWindowHandle>,
+    pip_visible: bool,
     started: Instant,
     render_calls: u64,
     test_connect_started: bool,
@@ -584,6 +589,8 @@ impl RestoredDashboard {
         Self {
             purpose,
             device_query: String::new(),
+            files_device: None,
+            stream_panel: StreamPanel::default(),
             stream_device: None,
             stream_source: None,
             native_window_title: "Weavelo".into(),
@@ -603,6 +610,7 @@ impl RestoredDashboard {
             full_exit_pending: false, exit_group, background,
             window_handle: window.window_handle(),
             pip_windows: Vec::new(),
+            pip_visible: false,
             started: Instant::now(),
             render_calls: 0,
             test_connect_started: false,
@@ -688,7 +696,7 @@ impl RestoredDashboard {
         if self.toolbar_revealed
             && should_auto_hide_toolbar(
                 self.toolbar_hovered,
-                self.show_apps_menu,
+                self.show_apps_menu || self.drawer_open || self.source_selection.is_some(),
                 self.last_toolbar_activity,
                 Instant::now(),
                 TOOLBAR_AUTO_HIDE_DELAY,
@@ -701,6 +709,7 @@ impl RestoredDashboard {
     }
 
     fn persist_preferences(&self) {
+        if self.purpose != WindowPurpose::Management { return; }
         if let Err(err) = crate::preferences::UserPreferences::update(|prefs| {
             prefs.stream.width = self.stream_settings.values().resolution().0;
             prefs.stream.height = self.stream_settings.values().resolution().1;
@@ -1453,7 +1462,7 @@ impl RestoredDashboard {
 
     fn sync_media_pause(&mut self) {
         let paused = self.manual_media_paused;
-        let visible = !self.pause_when_inactive || self.window_visible.unwrap_or(true);
+        let visible = !self.pause_when_inactive || self.window_visible.unwrap_or(true) || self.pip_visible;
         self.owner.set_view_demand(visible, self.window_active);
         if paused || self.drawer_open {
             for event in self.pointer_input.release_events() {
@@ -1466,7 +1475,6 @@ impl RestoredDashboard {
     fn media_controls(&self, cx: &mut Context<Self>) -> Div {
         let form = self.stream_settings.project();
         let (paused, pending) = self.owner.media_state();
-        let (volume, muted) = self.owner.audio();
         let mut controls = div()
             .flex()
             .flex_col()
@@ -1504,7 +1512,7 @@ impl RestoredDashboard {
                         this.dispatch_stream_settings_action(StreamSettingsAction::ApplyCustom, cx);
                     })),
             )
-            .child(
+            .when(self.purpose == WindowPurpose::Stream, |controls| controls.child(
                 command_button("toggle_media_pause", ActionVariantKind::Neutral, cx)
                     .child(if self.manual_media_paused {
                         "Resume media"
@@ -1516,7 +1524,7 @@ impl RestoredDashboard {
                         this.sync_media_pause();
                         cx.notify();
                     })),
-            )
+            ))
             .child(
                 command_button("pause_in_background", ActionVariantKind::Neutral, cx)
                     .child(if self.pause_when_inactive {
@@ -1531,50 +1539,13 @@ impl RestoredDashboard {
                         cx.notify();
                     })),
             )
-            .child(div().text_size(px(11.0)).child(if pending {
+            .when(self.purpose == WindowPurpose::Stream, |controls| controls.child(div().text_size(px(11.0)).child(if pending {
                 "Waiting for host confirmation…"
             } else if paused {
                 "Media paused · connection retained"
             } else {
                 "Media enabled"
-            }));
-        let quieter = self.owner.clone();
-        let louder = self.owner.clone();
-        let mute = self.owner.clone();
-        controls = controls.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    command_button("volume_down", ActionVariantKind::Neutral, cx)
-                        .child("−")
-                        .on_click(move |_, _, _| {
-                            quieter.set_audio(volume.saturating_sub(5), muted)
-                        }),
-                )
-                .child(div().text_size(px(11.)).child(format!("Volume {volume}%")))
-                .child(
-                    command_button("volume_up", ActionVariantKind::Neutral, cx)
-                        .child("+")
-                        .on_click(move |_, _, _| {
-                            louder.set_audio(volume.saturating_add(5).min(100), muted)
-                        }),
-                )
-                .child(
-                    command_button(
-                        "remote_audio_mute",
-                        if muted {
-                            ActionVariantKind::Primary
-                        } else {
-                            ActionVariantKind::Neutral
-                        },
-                        cx,
-                    )
-                    .child(if muted { "Unmute" } else { "Mute" })
-                    .on_click(move |_, _, _| mute.set_audio(volume, !muted)),
-                ),
-        );
+            })));
         if let Some(error) = form.error {
             controls = controls.child(div().text_size(px(11.0)).child(error.to_owned()));
         }
@@ -2149,6 +2120,9 @@ impl Render for PopoutStreamView {
         let theme = cx.theme().clone();
         let view = cx.weak_entity();
         let snapshot = self.owner.snapshot();
+        if let Some((_, frame)) = self.owner.frame_binding() { self.presentation_frame = frame; }
+        else { self.presentation_frame.lock().unwrap().take(); }
+        self.host_stats = self.owner.stats();
         let artwork = self.artwork_cache.update(snapshot.source_icons);
         let source_icons = &artwork;
         let source = confirmed_source(&snapshot.sources, snapshot.active_source);
@@ -2199,14 +2173,6 @@ impl Render for PopoutStreamView {
                             ViewportScaleMode::AspectFit => ViewportScaleMode::Fill,
                             ViewportScaleMode::Fill => ViewportScaleMode::AspectFit,
                         };
-                        if let Err(err) = crate::preferences::UserPreferences::update(|prefs| {
-                            prefs.ui.scale_mode = match this.scale_mode {
-                                ViewportScaleMode::AspectFit => "aspect_fit".to_string(),
-                                ViewportScaleMode::Fill => "fill".to_string(),
-                            };
-                        }) {
-                            eprintln!("Failed to save scale preference: {err}");
-                        }
                         cx.notify();
                     });
                 }
@@ -2277,13 +2243,6 @@ impl Render for PopoutStreamView {
                                 move |_event, _window, cx| {
                                     let _ = view.update(cx, |this, cx| {
                                         this.telemetry_hud_collapsed = false;
-                                        if let Err(err) =
-                                            crate::preferences::UserPreferences::update(|prefs| {
-                                                prefs.ui.telemetry_hud_collapsed = false;
-                                            })
-                                        {
-                                            eprintln!("Failed to save telemetry preference: {err}");
-                                        }
                                         cx.notify();
                                     });
                                 }
@@ -2335,17 +2294,6 @@ impl Render for PopoutStreamView {
                                     move |_event, _window, cx| {
                                         let _ = view.update(cx, |this, cx| {
                                             this.telemetry_hud_collapsed = true;
-                                            if let Err(err) =
-                                                crate::preferences::UserPreferences::update(
-                                                    |prefs| {
-                                                        prefs.ui.telemetry_hud_collapsed = true;
-                                                    },
-                                                )
-                                            {
-                                                eprintln!(
-                                                    "Failed to save telemetry preference: {err}"
-                                                );
-                                            }
                                             cx.notify();
                                         });
                                     }
@@ -2394,7 +2342,6 @@ impl Render for RestoredDashboard {
         self.window_visible = window.is_window_visible();
         self.sync_media_pause();
         owned_gui_stage(7);
-        let media_controls = self.media_controls(cx);
         owned_gui_stage(8);
         self.sync_input_session(&role, cx);
         let active_session = role.session().cloned();
@@ -2433,21 +2380,6 @@ impl Render for RestoredDashboard {
         let is_fullscreen = window.is_fullscreen();
         let compact = f32::from(window.viewport_size().width) < 1200.0;
         let host_stats = self.host_stats_snapshot(&role);
-        let side_services = SideServiceUiState {
-            talkback: FeatureToggleState {
-                available: self.owner.supports_talkback(),
-                enabled: self.owner.talkback_enabled(),
-            },
-            clipboard_sync: FeatureToggleState {
-                available: self.owner.supports_clipboard_sync(),
-                enabled: self.owner.clipboard_sync_enabled(),
-            },
-            file_transfer: FeatureToggleState {
-                available: self.owner.supports_file_transfer(),
-                enabled: self.owner.file_transfer_enabled(),
-            },
-        };
-
         div()
             .relative()
             .w_full()
@@ -2459,7 +2391,7 @@ impl Render for RestoredDashboard {
             .font_family(crate::design_system::product_ui_font())
             .overflow_hidden()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let Some(keystroke) = fresh_key_down(event) else { return; };
+        let Some(keystroke) = fresh_key_down(event) else { return; };
                 if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
                     if this.text_mode && !keystroke.modifiers.control && !keystroke.modifiers.platform
                         && (keystroke.key_char.is_some() || this.remote_text.as_ref().is_some_and(|input|input.read(cx).composing())) {
@@ -2498,68 +2430,12 @@ impl Render for RestoredDashboard {
                     || self.toolbar_revealed
                     || self.toolbar_hovered,
                 |this| {
-                    this.child(floating_control_island(
-                        &role,
-                        active_session.as_ref(),
-                        &self.viewer_media_status,
-                        &self.status,
-                        self.input_locked,
-                        self.text_mode,
-                        input_ready,
-                        input_hint.as_deref().unwrap_or(&snapshot.input_status),
-                        snapshot.active_capture_supports_input,
-                        side_services,
-                        self.scale_mode,
-                        is_fullscreen,
-                        compact,
-                        host_stats.as_ref(),
-                        self.owner.clone(),
-                        &snapshot.capture_sources,
-                        &snapshot.source_icons,
-                        snapshot.source_binding.as_ref(),
-                        snapshot.active_capture_source,
-                        snapshot.pending_capture_source,
-                        snapshot.capture_source_error.as_deref(),
-                        self.show_apps_menu,
-                        cx,
-                    ))
+                    this.child(self.stream_toolbar(&snapshot, is_fullscreen, compact, input_hint.as_deref(), cx))
                 },
             )
             .child(self.session_switcher(cx))
             .child(self.paint_acknowledgement())
-            .child(drawer_trigger_capsule(
-                &snapshot.devices,
-                show_drawer,
-                compact,
-                cx,
-            ))
-            .when(show_drawer, |this| {
-                this.child(slide_over_management_drawer(
-                    false, self.window_handle, &self.device_query,
-                    &snapshot.devices,
-                    &role,
-                    self.mesh_pairing_snapshot.clone(),
-                    &self.device_name_editor,
-                    self.pairing_image_import.is_pending(),
-                    self.active_tab,
-                    &self.device_list_state,
-                    #[cfg(any(unix, windows))]
-                    self.stream_activity(),
-                    #[cfg(target_os = "linux")]
-                    &self.local_share_state,
-                    self.local_permissions.clone(),
-                    self.checking_permissions,
-                    self.input_locked,
-                    side_services,
-                    self.stream_settings.values().resolution(),
-                    self.stream_settings.values().fps,
-                    self.stream_settings.values().bitrate_kbps,
-                    media_controls,
-                    host_stats.as_ref(),
-                    self.owner.clone(),
-                    cx,
-                ))
-            })
+            .when(show_drawer, |tree| tree.child(self.stream_controls_panel(&snapshot, host_stats.as_ref(), cx)))
             .when(
                 matches!(role, RoleState::Connecting(_) | RoleState::Viewing(_)),
                 |this| {
@@ -2829,338 +2705,6 @@ fn control_island_visibility(role: RoleKind) -> ControlIslandVisibility {
             show_disconnect: true,
         },
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn floating_control_island(
-    role: &RoleState,
-    session: Option<&crate::RoleSession>,
-    _viewer_media_status: &UnifiedViewerMediaStatus,
-    status: &str,
-    input_locked: bool,
-    text_mode: bool,
-    input_ready: bool,
-    input_status: &str,
-    capture_supports_input: bool,
-    side_services: SideServiceUiState,
-    scale_mode: ViewportScaleMode,
-    is_fullscreen: bool,
-    compact: bool,
-    _host_stats: Option<&UiHostStats>,
-    owner: Arc<OriginalOwner>,
-    capture_sources: &[protocol::session::CaptureSourceInfo],
-    source_icons: &SourceArtwork,
-    source_binding: Option<&SourceViewBinding>,
-    active_capture_source: protocol::session::CaptureSource,
-    pending_capture_source: Option<protocol::session::CaptureSource>,
-    capture_source_error: Option<&str>,
-    show_apps_menu: bool,
-    cx: &mut Context<RestoredDashboard>,
-) -> Stateful<Div> {
-    let theme = cx.theme().clone();
-    let view = cx.weak_entity();
-    let visibility = control_island_visibility(role.kind());
-    let is_connected = visibility.show_disconnect;
-    let talkback_enabled = side_services.talkback.enabled;
-    let clipboard_sync_enabled = side_services.clipboard_sync.enabled;
-    let talkback_available = side_services.talkback.available;
-    let clipboard_sync_available = side_services.clipboard_sync.available;
-    let source = confirmed_source(capture_sources, active_capture_source);
-    let title = session
-        .map(|s| s.peer.display_name.clone())
-        .unwrap_or_else(|| {
-            if status == "Ready" {
-                "Weavelo".to_string()
-            } else {
-                status.to_string()
-            }
-        });
-    let title = source.map(|source| format!("{} · {title}", capture_source_label(source))).unwrap_or(title);
-
-    div()
-        .id("floating_auto_hide_toolbar_container")
-        .absolute()
-        .top(px(12.0))
-        .left_0()
-        .right_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .id("floating_toolbar_pill")
-                .occlude()
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_4()
-                .py_2()
-                .bg(color_glass_card())
-                .border_1()
-                .border_color(color_border_fine())
-                .rounded_full()
-                .shadow_lg()
-                .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
-                    this.toolbar_hovered = *hovered;
-                    this.last_toolbar_activity = Instant::now();
-                    cx.notify();
-                }))
-                .on_mouse_move(cx.listener(|this, _event: &MouseMoveEvent, _window, _cx| {
-                    this.last_toolbar_activity = Instant::now();
-                }))
-                .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
-                    cx.stop_propagation();
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_1()
-                        .when_some(source, |this, source| this.child(capture_source_badge(source, source_icons, &theme)))
-                        .child(
-                            div()
-                                .size(px(8.0))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(if is_connected {
-                                    Hsla::from(color_accent_emerald())
-                                } else {
-                                    theme.content.disabled
-                                }),
-                        )
-                        .child(
-                            div()
-                                .id("remote_window_title")
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.content.primary)
-                                .whitespace_nowrap()
-                                .max_w(if compact { px(120.0) } else { px(220.0) })
-                                .tooltip(tooltip(title.clone()).build())
-                                .truncate()
-                                .child(title),
-                        ),
-                )
-                .when(visibility.show_viewer_controls, |this| {
-                    this.child(
-                        div()
-                            .w(px(1.0))
-                            .h(px(16.0))
-                            .bg(theme.border.divider),
-                    )
-                    .child(display_switcher_control(
-                        capture_sources,
-                        source_binding,
-                        active_capture_source,
-                        pending_capture_source,
-                        show_apps_menu,
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .w(px(1.0))
-                            .h(px(16.0))
-                            .bg(theme.border.divider),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                        .when(!compact && talkback_available, |this| this.child({
-                            let view = view.clone();
-                            let owner = owner.clone();
-                            command_button(
-                                "island_toggle_talkback",
-                                if talkback_enabled {
-                                    ActionVariantKind::Primary
-                                } else {
-                                    ActionVariantKind::Neutral
-                                },
-                                cx,
-                            )
-                            .disabled(!talkback_available)
-                            .h(px(26.0))
-                            .px_2()
-                            .text_size(px(10.0))
-                            .on_click(move |_event, _window, cx| {
-                                let _ = view.update(cx, |_this, cx| {
-                                    owner.set_talkback_enabled(!talkback_enabled);
-                                    cx.notify();
-                                });
-                            })
-                            .child(if !talkback_available {
-                                "Mic N/A"
-                            } else if talkback_enabled {
-                                "Mic ON"
-                            } else {
-                                "Mic Mute"
-                            })
-                        }))
-                        .when(!compact && clipboard_sync_available, |this| this.child({
-                            let view = view.clone();
-                            let owner = owner.clone();
-                            command_button(
-                                "island_toggle_clipboard",
-                                if clipboard_sync_enabled {
-                                    ActionVariantKind::Primary
-                                } else {
-                                    ActionVariantKind::Neutral
-                                },
-                                cx,
-                            )
-                            .disabled(!clipboard_sync_available)
-                            .h(px(26.0))
-                            .px_2()
-                            .text_size(px(10.0))
-                            .on_click(move |_event, _window, cx| {
-                                let _ = view.update(cx, |_this, cx| {
-                                    owner.set_clipboard_sync_enabled(!clipboard_sync_enabled);
-                                    cx.notify();
-                                });
-                            })
-                            .child(if !clipboard_sync_available {
-                                "Clip N/A"
-                            } else if clipboard_sync_enabled {
-                                "Clip ON"
-                            } else {
-                                "Clip Off"
-                            })
-                        }))
-                        .child({
-                            let view = view.clone();
-                            command_button(
-                                "island_toggle_input_lock",
-                                if !input_locked {
-                                    ActionVariantKind::Primary
-                                } else {
-                                    ActionVariantKind::Neutral
-                                },
-                                cx,
-                            )
-                            .disabled(!capture_supports_input)
-                            .tooltip(tooltip(input_status.to_owned()).build())
-                            .h(px(26.0))
-                            .w(px(if compact { 90.0 } else { 138.0 }))
-                            .px_2()
-                            .gap_1()
-                            .text_size(px(10.0))
-                            .on_click(move |_event, _window, cx| {
-                                if !capture_supports_input {
-                                    return;
-                                }
-                                let _ = view.update(cx, |this, cx| {
-                                    this.set_input_locked(!input_locked);
-                                    cx.notify();
-                                });
-                            })
-                            .child(icon(IconName::User).size(px(12.0)).color(if input_ready {
-                                theme.content.primary
-                            } else { theme.content.secondary }))
-                            .child(input_control_caption(input_locked, capture_supports_input, input_ready, compact))
-                        })
-                        .child({
-                            let view=view.clone();
-                            command_button("island_keyboard_mode",ActionVariantKind::Neutral,cx)
-                                .h(px(26.)).px_2().text_size(px(10.))
-                                .tooltip(tooltip("Text uses your local input method. Keys forwards physical keys for games.".to_string()).build())
-                                .on_click(move |_,window,cx| {let _=view.update(cx,|this,cx| {
-                                    this.owner.release_input();this.remote_text=None;this.text_mode=!text_mode;
-                                    this.input_focus.focus(window);cx.notify();
-                                });})
-                                .child(if text_mode {"Text"} else {"Keys"})
-                        })
-                        .child(scale_mode_control(scale_mode, cx)),
-                    )
-                })
-                .child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(16.0))
-                        .bg(theme.border.divider),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .when(visibility.show_viewer_controls, |this| this.child({
-                            let view = view.clone();
-                            command_button("island_popout_pip", ActionVariantKind::Neutral, cx)
-                                .h(px(26.0))
-                                .px_2()
-                                .text_size(px(10.0))
-                                .on_click(move |_event, _window, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.open_popout_pip_window(cx);
-                                        cx.notify();
-                                    });
-                                })
-                                .child(if compact { "PiP" } else { "Pop-out PiP" })
-                        }))
-                        .child({
-                            let owner = owner.clone();
-                            command_button("island_minimize_window", ActionVariantKind::Neutral, cx)
-                                .h(px(26.0)).px_2()
-                                .tooltip(tooltip("Minimize this viewer window").build())
-                                .on_click(move |_, window, _| {
-                                    owner.release_input();
-                                    window.minimize_window();
-                                })
-                                .child(icon(IconName::Minimize).size(px(12.0)))
-                        })
-                        .child({
-                            let owner = owner.clone();
-                            command_button("island_toggle_fullscreen", ActionVariantKind::Neutral, cx)
-                                .h(px(26.0))
-                                .px_2()
-                                .text_size(px(10.0))
-                                .tooltip(tooltip("Toggle fullscreen · F11").build())
-                                .on_click(move |_event, window, cx| {
-                                    owner.release_input();
-                                    window.toggle_fullscreen();
-                                    cx.refresh_windows();
-                                })
-                                .child(icon(IconName::Maximize(is_fullscreen)).size(px(12.0)))
-                                .child(if compact {
-                                    if is_fullscreen { "Exit Full" } else { "Full" }
-                                } else if is_fullscreen {
-                                    "Windowed"
-                                } else {
-                                    "Fullscreen"
-                                })
-                        })
-                        .when(visibility.show_disconnect, |this| {
-                            let view = view.clone();
-                            this.child(
-                                command_button("island_disconnect", ActionVariantKind::Danger, cx)
-                                    .h(px(26.0))
-                                    .px(if compact { px(8.0) } else { px(12.0) })
-                                    .text_size(px(10.0))
-                                    .on_click(move |_event, _window, cx| {
-                                        let _ = view.update(cx, |this, cx| {
-                                            this.dispatch_session_action(SessionTabsAction::Disconnect, cx);
-                                        });
-                                    })
-                                    .child(if compact { "End" } else { "Disconnect" }),
-                            )
-                        }),
-                ),
-        )
-        .when(show_apps_menu, |this: Stateful<Div>| {
-            this.child(capture_source_menu(
-                capture_sources,
-                source_icons,
-                source_binding,
-                active_capture_source,
-                pending_capture_source,
-                capture_source_error,
-                session,
-                cx,
-            ))
-        })
 }
 
 fn display_capture_sources(
@@ -3697,6 +3241,7 @@ fn slide_over_management_drawer(
     selected_fps: u32,
     selected_bitrate_kbps: u32,
     media_controls: Div,
+    transfers: Div,
     host_stats: Option<&UiHostStats>,
     owner: Arc<OriginalOwner>,
     cx: &mut Context<RestoredDashboard>,
@@ -3812,7 +3357,7 @@ fn slide_over_management_drawer(
                     DrawerTab::DeviceGroup => {
                         drawer_device_group_tab(mesh_pairing_snapshot, pairing_image_pending, device_name_editor, cx).into_any_element()
                     }
-                    DrawerTab::Files => file_transfer_panel(owner.clone(), cx).into_any_element(),
+                    DrawerTab::Files => transfers.into_any_element(),
                     DrawerTab::Security => {
                         drawer_security_tab(local_permissions.clone(),checking_permissions,input_locked, side_services,
                             #[cfg(target_os = "linux")] local_share_state,
@@ -3826,6 +3371,7 @@ fn slide_over_management_drawer(
                         media_controls,
                         host_stats,
                         owner,
+                        management,
                         cx,
                     )
                     .into_any_element(),
@@ -4038,6 +3584,7 @@ impl RestoredDashboard {
         let effect = self.stream_settings.reduce(action);
         if let Some(effect) = effect {
             self.persist_preferences();
+            if self.purpose == WindowPurpose::Management { cx.notify(); return; }
             let should_update = effect.should_update(false)
                 || matches!(
                     self.snapshot().role,
@@ -4217,39 +3764,7 @@ impl RestoredDashboard {
         let Some(effect) = self.device_list_state.reduce(action) else { cx.notify(); return; };
         match effect {
             DeviceListEffect::ConnectStream(device_id) => self.open_device_window(&device_id, cx),
-            DeviceListEffect::ConnectFiles(device_id) => {
-                if self.purpose == WindowPurpose::Stream {
-                    if let Some(root) = cx.try_global::<ManagementRoot>().map(|root| root.0.clone()) {
-                        cx.defer(move |cx| {
-                            let handle = root.read(cx).window_handle;
-                            if handle.update(cx, |_, window, _| window.activate_window()).is_err() {
-                                reopen_restored_window(root.clone(), cx);
-                            }
-                            root.update(cx, |this, cx| {
-                                this.dispatch_device_action(DeviceListAction::OpenFiles(device_id), cx);
-                            });
-                        });
-                    }
-                    return;
-                }
-                self.invalidate_source_commands();
-                let ticket = self.session_commands.begin();
-                self.owner.release_input(); self.drawer_open=true; self.active_tab=DrawerTab::Files;
-                self.status="Connecting files without starting video".into();
-                let owner=self.owner.clone();
-                cx.spawn(async move |view, cx| {
-                    if !view.update(cx, |this, _| this.session_commands.is_current(ticket)).unwrap_or(false) { return; }
-                    let result=owner.connect_files(&device_id).await;
-                    let _=view.update(cx,|this,cx|{
-                        if !this.session_commands.is_current(ticket) { return; }
-                        if let Err(error)=result {
-                            if !owner.connection_error_is_current(&error) { return; }
-                            this.status=format!("Files unavailable: {error}");
-                            this.active_tab=DrawerTab::Devices;
-                        } cx.notify();
-                    });
-                }).detach();
-            }
+            DeviceListEffect::ConnectFiles(device_id) => self.open_device_files(device_id, cx),
             DeviceListEffect::SendScreen(device_id) => {
                 #[cfg(any(unix, windows))]
                 self.begin_delivery_selection(device_id,cx);
@@ -4583,6 +4098,13 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         );
     }
     panel = panel.child(pager);
+    panel.child(file_transfer_rows(owner, cx))
+}
+
+fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>) -> Div {
+    let theme = cx.theme().clone();
+    let binding = owner.file_view_binding();
+    let mut panel = div().flex().flex_col().gap_2();
     for transfer in owner.file_transfer_snapshot() {
         let mut row = div()
             .flex()
@@ -4808,6 +4330,7 @@ fn drawer_network_telemetry_tab(
     media_controls: Div,
     host_stats: Option<&UiHostStats>,
     _owner: Arc<OriginalOwner>,
+    defaults: bool,
     cx: &mut Context<RestoredDashboard>,
 ) -> Div {
     let theme = cx.theme().clone();
@@ -4819,7 +4342,7 @@ fn drawer_network_telemetry_tab(
             .text_color(theme.content.primary)
             .whitespace_nowrap()
             .truncate()
-            .child("Live Transport & Latency Telemetry"),
+            .child(if defaults { "Default stream settings" } else { "Live Transport & Latency Telemetry" }),
     );
 
     if let Some(stats) = host_stats {
@@ -4911,7 +4434,7 @@ fn drawer_network_telemetry_tab(
                 }
             }
         }
-    } else {
+    } else if !defaults {
         content = content.child(empty_state(
             "Waiting for telemetry",
             "Live measurements appear after the remote host begins streaming.",
@@ -6271,6 +5794,14 @@ mod input_tests {
         assert_eq!(stream_view.read_with(cx, |this, _| this.purpose), WindowPurpose::Stream);
         let source=protocol::session::CaptureSource::Window(77);
         stream_view.update(cx,|this,_| {this.stream_device=Some("fixture-device-a".into());this.stream_source=Some(source);});
+        let files_a = manager_view.read_with(cx, |this, _| this.device_files("fixture-device-a"));
+        let same_files = stream_view.read_with(cx, |this, _| this.device_files("fixture-device-a"));
+        let files_b = manager_view.read_with(cx, |this, _| this.device_files("fixture-device-b"));
+        assert!(std::sync::Arc::ptr_eq(&files_a.owner, &same_files.owner), "all presentations reuse the same device files context");
+        assert!(!std::sync::Arc::ptr_eq(&files_a.owner, &files_b.owner), "files never follow another device's selection");
+        stream_view.update(cx, |this, cx| this.open_device_files("fixture-device-b".into(), cx));
+        assert!(stream_view.read_with(cx, |this, _| this.files_device.is_none()), "a stream cannot open another device's files");
+        manager_view.update(cx, |this, _| this.files_device = Some("fixture-device-b".into()));
         let window_count=cx.update(|cx|cx.windows().len());
         manager_view.update(cx,|this,cx|assert!(this.open_stream_source("fixture-device-a".into(),source,cx)));
         assert_eq!(cx.update(|cx|cx.windows().len()),window_count,"same source focuses its existing presentation");
@@ -6285,6 +5816,8 @@ mod input_tests {
         manager.update(cx, |_, window, _| window.remove_window()).unwrap();
         assert!(manager.update(cx, |_, _, _| ()).is_err());
         assert!(stream.update(cx, |_, _, _| ()).is_ok(), "stream remains independently open");
+        assert!(group.file_contexts.lock().unwrap().values().any(|context| std::sync::Arc::ptr_eq(&context.owner, &files_a.owner)),
+            "file work is retained when the management presentation closes");
         assert!(!group.stopping.load(std::sync::atomic::Ordering::Acquire));
         cx.update(|cx| {
             let retained = cx.global::<ManagementRoot>().0.clone();

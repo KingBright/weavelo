@@ -101,7 +101,8 @@ impl RestoredDashboard {
                 enabled: self.owner.file_transfer_enabled(),
             },
         };
-        let controls = self.media_controls(cx);
+        let controls = self.media_controls(cx).child(scale_mode_control(self.scale_mode, cx));
+        let transfers = if self.active_tab == DrawerTab::Files { self.transfers_panel(cx) } else { div() };
         div()
             .relative()
             .size_full()
@@ -131,6 +132,7 @@ impl RestoredDashboard {
                 self.stream_settings.values().fps,
                 self.stream_settings.values().bitrate_kbps,
                 controls,
+                transfers,
                 None,
                 self.owner.clone(),
                 cx,

@@ -1,7 +1,7 @@
 //! Opt-in full restored GPUI event-routing regression. Uses a local packet recorder,
 //! never a real host, native screen capture, device identity, or OS input injection.
 use super::{
-    DrawerTab, FrontendExitGroup, RestoredDashboard, UnifiedRuntimeConfig, component, weavelo_themes,
+    StreamPanel, FrontendExitGroup, RestoredDashboard, UnifiedRuntimeConfig, component, weavelo_themes,
     start_unified_runtime,
 };
 use crate::desktop::OriginalGuiSession;
@@ -10,6 +10,7 @@ use gpui::{
     point, px, size,
 };
 use protocol::{ControlMessage, InputEvent, session::SessionCommand};
+use remote_core::VideoFrame;
 use remote_core::{
     net::{MultiplexedPacket, UdpMultiplexer},
     workspace_session::WorkspaceConnection,
@@ -94,7 +95,7 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
                 }
             }
         });
-        let (conn, events) = WorkspaceConnection::connect(addr, temp.path().join("receive"))
+        let (conn, events) = WorkspaceConnection::connect_media(addr)
             .await
             .unwrap();
         let mut cfg = UnifiedRuntimeConfig::app_defaults();
@@ -126,20 +127,23 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
             while !session.conn.input_ready(session.video_id,0) {tokio::time::sleep(Duration::from_millis(5)).await;}
         }).await.unwrap();
         let recovery = session.stats.clone();
-        // This fixture supplies a displayed-frame precondition rather than real
-        // compressed video. Wait for the decoder task to publish its startup
-        // state before simulating a successful decode; otherwise it races the
-        // fake displayed frame and correctly prevents all input.
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !recovery.video_recovery.is_waiting() {
-                tokio::task::yield_now().await;
+        // Decode the first access unit of the existing synthetic HEVC fixture so pointer mapping uses a
+        // real native frame and its dimensions. This is neither screen capture
+        // nor physical presentation; attach_recorder_session supplies the test
+        // paint precondition for the protocol-routing fixture.
+        let media = session.media.as_ref().unwrap();
+        #[cfg(target_os = "macos")]
+        media.set_video_payload_active(true);
+        media.decode_tx.try_send((protocol::RtpPacket {
+            header: protocol::RtpHeader { version: 2, payload_type: 96,
+                sequence_number: 1, timestamp: 100, ssrc: 7 },
+            payload: include_bytes!("../tests/fixtures/input-first-frame.h265").to_vec(),
+        }, Default::default(), recovery.video_recovery.snapshot().epoch.source)).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while media.shared_frame().lock().unwrap().is_none() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        })
-        .await
-        .expect("local decoder task did not initialize");
-        recovery
-            .video_recovery
-            .publish(recovery.video_recovery.snapshot().epoch, || ());
+        }).await.expect("synthetic native frame did not decode");
         (runtime, session, recorder, recovery)
     });
     cx.update(|cx| {
@@ -154,14 +158,27 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
         view.drawer_open = false;
         view.toolbar_revealed = false;
         view.input_locked = false;
+        view.text_mode = false;
         view
     });
     cx.simulate_resize(size(px(1000.), px(700.)));
+    view.update(cx, |v, cx| { v.window_handle.update(cx, |_, window, _| window.activate_window()).unwrap(); });
     cx.run_until_parked();
     // Initial setup can issue source discovery; clear that before the event trace.
     std::thread::sleep(Duration::from_millis(60));
     output.lock().unwrap().clear();
     let pos = point(px(500.), px(350.));
+    let readiness = view.read_with(cx, |v, _| {
+        let state = v.owner.snapshot();
+        let surface = *v.video_surface_bounds.lock().unwrap();
+        let pointer = v.pointer_event_at(pos);
+        format!("locked={} supports={} panel={} active={} visible={:?} frame={:?} surface={:?} input={} eligible={} pointer={:?}",
+            v.input_locked, v.capture_supports_input, v.drawer_open, v.window_active, v.window_visible,
+            v.current_frame.as_ref().map(|frame| (frame.width(), frame.height())),
+            surface, state.input_status, state.input_eligible, pointer)
+    });
+    println!("RESTORED_GPUI_READINESS {readiness}");
+
     cx.simulate_mouse_down(pos, MouseButton::Left, Modifiers::none());
     view.update(cx, |_, cx| cx.notify());
     cx.run_until_parked();
@@ -227,12 +244,9 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
             .any(|c| matches!(c, SessionCommand::ReleaseInput { .. })),
         "Render cycle released held input before the up event"
     );
-    // Local device drawer must intercept its own click and all keyboard input.
+    // The current stream's local panel owns clicks and keyboard input.
     view.update(cx, |v, cx| {
-        v.drawer_open = true;
-        v.active_tab = DrawerTab::Devices;
-        v.owner.release_input();
-        cx.notify();
+        v.open_stream_panel(StreamPanel::Control, cx);
     });
     cx.run_until_parked();
     std::thread::sleep(Duration::from_millis(60));
