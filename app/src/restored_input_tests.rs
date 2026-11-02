@@ -189,8 +189,10 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
         Some(MouseButton::Left),
         Modifiers::none(),
     );
+    let release_pos = point(px(565.), px(375.));
+    let final_move = view.read_with(cx, |v, _| v.pointer_event_at(release_pos)).unwrap();
     cx.simulate_mouse_up(
-        point(px(550.), px(360.)),
+        release_pos,
         MouseButton::Left,
         Modifiers::none(),
     );
@@ -222,6 +224,9 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
         filtered.contains(&InputEvent::MouseUp(0)),
         "GPUI swallowed the release"
     );
+    let release = filtered.iter().position(|event| *event == InputEvent::MouseUp(0)).unwrap();
+    assert!(release > 0 && filtered[release - 1] == final_move,
+        "Release must land at its own coordinates, even without a final mouse-move event");
     assert!(
         filtered.contains(&InputEvent::Key {
             key_code: 0,

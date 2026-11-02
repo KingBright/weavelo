@@ -275,7 +275,10 @@ impl TouchStateTracker {
                     TouchAction::Up => {
                         if self.session_max_pointers == 1 {
                             if self.is_left_down {
-                                // 拖拽释放
+                                // Up may carry a newer position than the last
+                                // Move (coalescing/lifting a finger). Land there
+                                // while the button is still held, then release.
+                                events.push(InputEvent::MouseMoveAbsolute { x: abs_x, y: abs_y });
                                 events.push(InputEvent::MouseUp(0));
                                 self.is_left_down = false;
                             } else if self.long_press_triggered {
@@ -917,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_touch_drag_emits_mouse_down_and_move_and_up() {
+    fn direct_touch_drag_releases_at_up_position_instead_of_last_move() {
         let mut tracker = TouchStateTracker::new(
             TouchMode::DirectTouch,
             RemoteScreenBounds {
@@ -958,17 +961,19 @@ mod tests {
             InputEvent::MouseMoveAbsolute { .. }
         ));
 
-        // Touch Up - releases drag
+        // Up carries the last sample even when no Move was delivered there.
         let events_up = tracker.process_touch(
             TouchAction::Up,
             0,
-            0.12,
-            0.1,
+            0.2,
+            0.15,
             0.0,
             now + Duration::from_millis(100),
         );
-        assert_eq!(events_up.len(), 1);
-        assert_eq!(events_up[0], InputEvent::MouseUp(0));
+        assert_eq!(events_up, vec![
+            InputEvent::MouseMoveAbsolute { x: 13107, y: 9830 },
+            InputEvent::MouseUp(0),
+        ]);
     }
 
     #[test]

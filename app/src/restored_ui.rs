@@ -2625,6 +2625,11 @@ fn full_video_surface(
             cx.stop_propagation();
         }))
         .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
+            if protocol_mouse_button(event.button)
+                .is_some_and(|button| this.pointer_input.pressed_buttons.contains(&button))
+            {
+                this.queue_pointer_move(event.position, false);
+            }
             this.queue_pointer_button(event.button, false);
         }))
         .on_mouse_up_out(
