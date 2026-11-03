@@ -42,6 +42,7 @@ pub struct TouchStateTracker {
     two_finger_right_clicked: bool,
     long_press_triggered: bool,
     last_two_finger_centroid: Option<(f32, f32)>,
+    relative_remainder: (f32, f32),
 }
 
 impl Default for TouchStateTracker {
@@ -68,6 +69,7 @@ impl TouchStateTracker {
             two_finger_right_clicked: false,
             long_press_triggered: false,
             last_two_finger_centroid: None,
+            relative_remainder: (0., 0.),
         }
     }
 
@@ -91,6 +93,7 @@ impl TouchStateTracker {
             Vec::new()
         };
         self.active_pointers.clear();
+        self.relative_remainder = (0., 0.);
         self.pointer_positions.clear();
         self.reset_session();
         releases
@@ -354,6 +357,7 @@ impl TouchStateTracker {
                             self.session_max_pointers.max(self.active_pointers.len());
 
                         if self.active_pointers.len() == 1 {
+                            self.relative_remainder = (0., 0.);
                             self.touch_down_pos = Some((clamped_x, clamped_y));
                             self.last_touch_pos = Some((clamped_x, clamped_y));
                             self.touch_down_time = Some(now);
@@ -394,10 +398,14 @@ impl TouchStateTracker {
                                     self.has_dragged = true;
                                 }
 
-                                // 触控板相对位移
+                                // Keep fine motion instead of rounding every
+                                // subpixel sample away on a high-DPI phone.
+                                let dx = raw_dx + self.relative_remainder.0;
+                                let dy = raw_dy + self.relative_remainder.1;
+                                self.relative_remainder = (dx-dx.round(),dy-dy.round());
                                 events.push(InputEvent::MouseMove {
-                                    dx: raw_dx.round() as i32,
-                                    dy: raw_dy.round() as i32,
+                                    dx: dx.round() as i32,
+                                    dy: dy.round() as i32,
                                 });
                             }
                         } else if self.active_pointers.len() == 2 {
@@ -788,6 +796,19 @@ pub fn create_virtual_key_event(key_name: &str, pressed: bool) -> Option<InputEv
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn virtual_trackpad_preserves_subpixel_motion_and_drops_cancelled_remainders() {
+        let mut tracker=TouchStateTracker::new(TouchMode::VirtualTrackpad,
+            RemoteScreenBounds {width:640,height:420});
+        let now=Instant::now();tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
+        let dx:i32=[0.1004,0.1008,0.1012].into_iter().flat_map(|x|
+            tracker.process_touch(TouchAction::Move,0,x,0.5,1.,now)).map(|event|
+                if let InputEvent::MouseMove {dx,..}=event {dx}else{0}).sum();
+        assert_eq!(dx,1);
+        tracker.cancel_all();tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
+        assert!(tracker.process_touch(TouchAction::Move,0,0.1004,0.5,1.,now).iter()
+            .all(|event|!matches!(event,InputEvent::MouseMove {dx,..} if *dx!=0)));
+    }
 
     #[test]
     fn absolute_coordinates_follow_wire_contract_at_every_resolution() {

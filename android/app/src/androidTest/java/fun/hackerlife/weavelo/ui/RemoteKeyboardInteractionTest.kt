@@ -6,6 +6,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteKeyboardInteractionTest {
+    @Test fun nativeMultipleCharacterKeyEventCommitsOnceAndCannotEscapeADiscardedEditor() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val text=mutableListOf<String>()
+            val view=RemoteImeView(instrumentation.targetContext,{text.add(it)},{_,_->})
+            view.onCreateInputConnection(EditorInfo())
+            val event=android.view.KeyEvent(android.os.SystemClock.uptimeMillis(),"你好🙂",
+                android.view.KeyCharacterMap.VIRTUAL_KEYBOARD,0)
+            assertTrue(view.onKeyMultiple(android.view.KeyEvent.KEYCODE_UNKNOWN,1,event))
+            assertEquals(listOf("你好🙂"),text)
+            view.discardInput()
+            assertFalse(view.onKeyMultiple(android.view.KeyEvent.KEYCODE_UNKNOWN,1,event))
+            assertEquals(listOf("你好🙂"),text)
+        }
+    }
     @Test fun hidingTheKeyboardDiscardsCompositionAndLateCallbacks() {
         val instrumentation=InstrumentationRegistry.getInstrumentation()
         instrumentation.runOnMainSync {

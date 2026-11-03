@@ -455,6 +455,9 @@ impl MobileWorkspace {
         struct Touch {
             id: u32,
             token: u64,
+            mode: u8,
+            width: u16,
+            height: u16,
             event: protocol::InputEvent,
         }
         let event: Touch = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -468,6 +471,17 @@ impl MobileWorkspace {
         let current = self.connection.input_binding(event.id, touch.revision);
         let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..});
         let unavailable=touch.unavailable_reason(event.token,current);
+        let mode=match event.mode {
+            0=>crate::touch_mapper::TouchMode::DirectTouch,
+            1=>crate::touch_mapper::TouchMode::VirtualTrackpad,
+            _=>return Err("unsupported touch mode".into()),
+        };
+        let Some(releases)=touch.select_mode(event.token,mode,
+            crate::touch_mapper::RemoteScreenBounds {width:event.width,height:event.height},starting)
+        else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(())}; };
+        if let Some(binding)=touch.binding() {
+            for release in releases {self.connection.try_bound_input(binding,Some(release));}
+        }
         let (release, events) =
             touch.touch(event.token, event.event, current, std::time::Instant::now());
         if let Some(binding) = release {

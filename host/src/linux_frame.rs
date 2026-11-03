@@ -7,6 +7,8 @@
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
+pub(crate) mod dmabuf;
+
 pub const MAX_DIMENSION: u32 = 8192;
 pub const MAX_PIXELS: u64 = 33_554_432;
 pub const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
@@ -149,6 +151,7 @@ pub struct OwnedFrame {
     pub width: u32,
     pub height: u32,
     pub planes: std::sync::Arc<Vec<Vec<u8>>>,
+    pub(crate) dmabuf: Option<std::sync::Arc<dmabuf::DmaBufFrame>>,
     _memory: Option<std::sync::Arc<FrameMemory>>,
     pub mapping_offsets: Vec<u32>,
     pub stamp: FrameStamp,
@@ -270,6 +273,16 @@ impl FrameFormat {
 }
 
 impl OwnedFrame {
+    pub(crate) fn from_dmabuf(format: FrameFormat, gpu: dmabuf::DmaBufFrame,
+        stamp: FrameStamp) -> Result<Self, FrameError> {
+        let crop = format.crop_rect()?;
+        let frame = Self { source_format:format,width:crop.width,height:crop.height,
+            planes:std::sync::Arc::new(Vec::new()),dmabuf:Some(std::sync::Arc::new(gpu)),
+            _memory:None,mapping_offsets:Vec::new(),stamp,
+            received_at:std::time::Instant::now(),initial_snapshot:false };
+        frame.validate_owned()?;
+        Ok(frame)
+    }
     pub(crate) fn is_expired(&self, max_age: std::time::Duration) -> bool {
         self.received_at.elapsed() > max_age
     }
@@ -281,6 +294,14 @@ impl OwnedFrame {
         let crop = self.source_format.crop_rect()?;
         if (self.width, self.height) != (crop.width, crop.height) {
             return Err(FrameError::Dimensions);
+        }
+        if let Some(gpu) = self.dmabuf.as_ref() {
+            if !self.planes.is_empty() || !self.mapping_offsets.is_empty()
+                || gpu.key.generation != self.stamp.generation
+                || gpu.key.revision != self.stamp.format_revision {
+                return Err(FrameError::Generation);
+            }
+            return gpu.validate(self.source_format);
         }
         let layouts = self.source_format.plane_layouts(crop);
         if self.planes.len() != layouts.len() || self.mapping_offsets.len() != layouts.len() {
@@ -376,6 +397,7 @@ impl OwnedFrame {
             width: crop.width,
             height: crop.height,
             planes: std::sync::Arc::new(owned),
+            dmabuf: None,
             _memory: memory.map(std::sync::Arc::new),
             mapping_offsets: planes.iter().map(|plane| plane.mapping_offset).collect(),
             stamp,

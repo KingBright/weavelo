@@ -335,6 +335,9 @@ fn raw_command(frame: &OwnedFrame, settings: RawSettings) -> Result<Command> {
 }
 fn raw_command_with_encoder(frame:&OwnedFrame,settings:RawSettings,hardware:Option<&vaapi::HardwareEncoder>)->Result<Command> {
     validate_native_input(frame)?;
+    if frame.dmabuf.is_some() {
+        return Err("DMA-BUF capture requires direct native GPU encoding".into());
+    }
     settings.validate_for(frame.width, frame.height)?;
     let pixel =
         match frame.source_format.pixel_format {

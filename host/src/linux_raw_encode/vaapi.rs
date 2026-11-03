@@ -16,6 +16,10 @@ fn is_character_device(kind:std::fs::FileType)->bool {
 #[derive(Clone)]
 pub(crate) struct HardwareEncoder {device:PathBuf}
 impl HardwareEncoder {
+    #[cfg(all(target_os="linux",feature="native-linux-video"))]
+    pub(crate) fn capture_modifier()->Result<u64> {
+        native::capture_modifier(&Self::probe()?)
+    }
     pub(crate) fn probe()->Result<Self> {
         static DEVICE:OnceLock<Mutex<Option<HardwareEncoder>>>=OnceLock::new();
         let mut cached=DEVICE.get_or_init(Default::default).lock().unwrap_or_else(|e|e.into_inner());

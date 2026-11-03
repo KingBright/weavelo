@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
@@ -48,6 +49,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val serviceState by WorkspaceClient.state.collectAsState()
     val state = serviceState.takeIf { it.sessionKey == sessionKey }
         ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
+    StreamOrientation(active = state.panes.isNotEmpty())
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
@@ -352,12 +354,19 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val transform = remember(pane.id, sessionKey, generation) { mutableStateOf(ViewportTransform()) }
     var measured by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var surfaceToken by remember { mutableLongStateOf(0L) }
+    val token = surfaceToken
+    var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
+    var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     var videoStatus by remember(pane.id, sessionKey, generation) { mutableStateOf<String?>("Waiting for video…") }
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
+    var touchMode by remember(pane.id, sessionKey, generation) { mutableStateOf(TouchMode.DIRECT) }
     val currentError by rememberUpdatedState(onError)
-    LaunchedEffect(measured, pane.accepted) {
-        if (!pane.accepted) return@LaunchedEffect
+    LaunchedEffect(measured, pane.accepted, keyboardVisible, imeVisible) {
+        // IME insets resize presentation and its inverse touch transform. Keep
+        // the encoder/decoder and composition owner stable while typing.
+        if (!pane.accepted || keyboardVisible || imeVisible) return@LaunchedEffect
         delay(250)
         // Negotiate only visible video pixels. Letterboxing/IME/toolbars are not video.
         val quarterTurn = pane.source.rotation % 180 != 0
@@ -375,9 +384,6 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             delay(100)
         }
     }
-    val token = surfaceToken
-    var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
-    var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
     val keyboardOwner = keyboardBinding
     RemoteKeyboard(identity = listOf(pane.id,sessionKey,generation,token,keyboardOwner), visible = keyboardVisible,
         enabled = pane.input && token != 0L && keyboardOwner != null,
@@ -388,6 +394,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             dimensions = dimensions, transformState = transform,
             rotation = pane.source.rotation,
             enabled = pane.input && token != 0L,
+            touchMode = touchMode,
             contentKey = token to dimensions,
             modifier = Modifier.weight(1f).fillMaxWidth(),
             onViewportSizeChanged = { measured = it },
@@ -399,6 +406,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
                 touching = pointers.isNotEmpty()
                 WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
+                    touchMode, pane.source.width, pane.source.height,
                     JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
                         .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
             },
@@ -423,6 +431,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             videoStatus = "Waiting for video…"
                             clearTouches()
                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "begin")
+                            WorkspaceClient.videoDiagnostic(pane.id,sessionKey,generation,token,"decoder-start",0,0,0)
                             val running = AtomicBoolean(true)
                             active = running
                             worker = Thread({
@@ -469,6 +478,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                             post { if (running.get() && surfaceToken == token) videoStatus = null }
                                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "ready")
                                             android.util.Log.i("WeaveloWorkspace", "First decoded frame for subscription ${pane.id}")
+                                            WorkspaceClient.videoDiagnostic(pane.id,sessionKey,generation,token,"first-decoder-output",
+                                                receivedPackets,submittedPackets,codec.outputFrames)
                                             reportedFirstFrame = true
                                         }
                                         if (!startupReported && codec.outputFrames == 0L && System.nanoTime() - started > 10_000_000_000L) {
@@ -479,6 +490,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                                 else -> "Video arrived, but the decoder has not produced a frame."
                                             }
                                             android.util.Log.w("WeaveloWorkspace", "Video startup stalled: subscription=${pane.id}, received=$receivedPackets, submitted=$submittedPackets, surface=${holder.surface.isValid}")
+                                            WorkspaceClient.videoDiagnostic(pane.id,sessionKey,generation,token,"startup-stalled",
+                                                receivedPackets,submittedPackets,codec.outputFrames)
                                             post { if (running.get() && surfaceToken == token) videoStatus = message }
                                         }
                                         if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
@@ -511,6 +524,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 verticalAlignment = Alignment.CenterVertically) {
                 if (transform.value.scale > 1.05f) {
                     TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset zoom") }
+                }
+                if (pane.input) TextButton(onClick = {
+                    touchMode = if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT
+                }) {
+                    Icon(if (touchMode == TouchMode.DIRECT) MobileSymbol.Touch.image else MobileSymbol.Trackpad.image,
+                        contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (touchMode == TouchMode.DIRECT) "Direct touch" else "Touchpad")
                 }
                 if (pane.input) MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
                     enabled = token != 0L, modifier = Modifier.size(40.dp)) {

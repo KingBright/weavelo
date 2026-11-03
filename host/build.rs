@@ -8,7 +8,7 @@ fn main() {
         cc::Build::new().file("native/linux_encode.c").include(headers).std("c11")
             .define("_POSIX_C_SOURCE", "200809L").opt_level(2).warnings(true)
             .extra_warnings(true).warnings_into_errors(true).pic(true).compile("weavelo_linux_encode");
-        for library in ["libavcodec.so.62", "libavutil.so.60", "libavfilter.so.11"] {
+        for library in ["libavcodec.so.62", "libavutil.so.60", "libavfilter.so.11", "libva.so.2"] {
             println!("cargo:rustc-link-lib=dylib:+verbatim={library}");
         }
         println!("cargo:rerun-if-changed=native/linux_encode.c");

@@ -2162,7 +2162,7 @@ mod tests {
                 while !workspace.events().contains("Subscribed") { tokio::time::sleep(Duration::from_millis(1)).await; }
             }).await.unwrap();
             let surface = |phase| serde_json::json!({"id":256,"token":1,"phase":phase}).to_string();
-            let gesture = |action, x| serde_json::json!({"id":256,"token":1,"event":{"Touch":{
+            let gesture = |action, x| serde_json::json!({"id":256,"token":1,"mode":0,"width":1920,"height":1080,"event":{"Touch":{
                 "action":action,"pointer_id":7,"normalized_x":x,"normalized_y":0.5,"pressure":1.0}}}).to_string();
             workspace.surface(&surface("begin")).unwrap();
             // No frame: report the blocked input without accumulating a press.

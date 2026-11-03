@@ -30,6 +30,8 @@ enum class MobileSymbol(path: String) {
     Back("M14 5l-7 7 7 7"),
     More("M5 12h.01 M12 12h.01 M19 12h.01"),
     Control("M5 3l14 9-6 1-3 6z M13 14l4 6"),
+    Touch("M9 13V5a2 2 0 0 1 4 0v6 M13 9l6 3v6l-3 3h-5l-6-7 2-2 2 1"),
+    Trackpad("M3 5h18v14H3z M3 14h18 M12 14v5 M8 9h8"),
     Audio("M11 5L6 9H3v6h3l5 4z M15 8a6 6 0 0 1 0 8 M18 5a10 10 0 0 1 0 14"),
     Notifications("M6 9a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4"),
     Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10");

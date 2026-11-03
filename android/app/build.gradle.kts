@@ -23,7 +23,7 @@ android {
         applicationId = "fun.hackerlife.weavelo"
         minSdk = 26
         targetSdk = 35
-        versionCode = 68
+        versionCode = 69
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionName = "2.0.0-alpha.9"
 
@@ -73,6 +73,7 @@ android {
     buildFeatures {
         compose = true
     }
+    testBuildType = "release"
     // The same synthetic Rust-generated QR bitmap is decoded by Android tests.
     sourceSets.getByName("test").resources.srcDir("../../remote_core/tests/fixtures")
 }

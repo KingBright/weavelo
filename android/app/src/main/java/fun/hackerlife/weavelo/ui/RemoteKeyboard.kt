@@ -64,6 +64,8 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
     init { isFocusable = true; isFocusableInTouchMode = true }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = currentInput?.sendKeyEvent(event) == true || super.onKeyDown(keyCode,event)
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = currentInput?.sendKeyEvent(event) == true || super.onKeyUp(keyCode,event)
+    override fun onKeyMultiple(keyCode: Int, repeatCount: Int, event: KeyEvent): Boolean =
+        currentInput?.sendKeyEvent(event) == true || super.onKeyMultiple(keyCode,repeatCount,event)
     override fun onCheckIsTextEditor() = true
     override fun onCreateInputConnection(out: EditorInfo): InputConnection {
         out.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
@@ -111,6 +113,13 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
             }
             override fun sendKeyEvent(event: KeyEvent): Boolean {
                 if (!acceptingInput) return false
+                if (event.action == KeyEvent.ACTION_MULTIPLE) {
+                    val text = event.characters
+                    if (text.isNullOrEmpty() || text.length > 65536) return false
+                    commit(text)
+                    return true
+                }
+                if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return false
                 val name = when (event.keyCode) {
                     KeyEvent.KEYCODE_DEL -> "backspace"; KeyEvent.KEYCODE_FORWARD_DEL -> "delete"
                     KeyEvent.KEYCODE_ENTER -> "enter"; KeyEvent.KEYCODE_TAB -> "tab"

@@ -1,5 +1,5 @@
 //! UI gestures stay local; only translated events with the current grant enter shared input.
-use crate::touch_mapper::TouchStateTracker;
+use crate::touch_mapper::{RemoteScreenBounds, TouchMode, TouchStateTracker};
 use protocol::{InputEvent, TouchAction, realtime_input::InputBinding};
 use std::time::Instant;
 
@@ -14,6 +14,7 @@ pub(crate) struct WorkspaceTouch {
     last_intent: Option<Instant>,
     tracker: TouchStateTracker,
     keyboard: crate::touch_mapper::VirtualKeyboard,
+    cursor: (f64, f64),
 }
 
 impl WorkspaceTouch {
@@ -29,6 +30,7 @@ impl WorkspaceTouch {
             last_intent: None,
             tracker: TouchStateTracker::default(),
             keyboard: Default::default(),
+            cursor: (0.5, 0.5),
         }
     }
     pub fn cancel(&mut self) -> Option<InputBinding> {
@@ -79,7 +81,55 @@ impl WorkspaceTouch {
     }
     pub fn support(&mut self, supported: bool) -> Option<InputBinding> {
         self.supported = supported;
+        if !supported { self.cursor = (0.5, 0.5); }
         if supported { None } else { self.cancel() }
+    }
+    /// Only a new gesture may change its mode/geometry. Late continuations
+    /// cannot cancel or reinterpret the replacement gesture.
+    pub fn select_mode(&mut self, token:u64, mode:TouchMode, bounds:RemoteScreenBounds,
+        starting:bool) -> Option<Vec<InputEvent>> {
+        if token != self.surface || !self.attached || bounds.width == 0 || bounds.height == 0 {
+            return None;
+        }
+        let changed = self.tracker.mode != mode
+            || self.tracker.bounds.width != bounds.width || self.tracker.bounds.height != bounds.height;
+        if changed && !starting { return None; }
+        let releases = if changed {
+            self.last_intent = None;
+            let releases = if self.tracker.mode != mode {self.tracker.set_mode(mode)}
+                else {self.tracker.cancel_all()};
+            self.tracker.bounds = bounds;
+            releases
+        } else { Vec::new() };
+        Some(releases)
+    }
+    fn normalized_trackpad(&mut self, events:Vec<InputEvent>) -> Vec<InputEvent> {
+        let trackpad = self.tracker.mode == TouchMode::VirtualTrackpad;
+        let mut output = Vec::with_capacity(events.len()+1);
+        let position = |point:(f64,f64)|InputEvent::MouseMoveAbsolute {
+            x:(point.0*f64::from(u16::MAX)).round() as u16,
+            y:(point.1*f64::from(u16::MAX)).round() as u16,
+        };
+        for event in events {
+            match event {
+                InputEvent::MouseMove {dx,dy} if trackpad => {
+                    self.cursor.0 = (self.cursor.0+f64::from(dx)/f64::from(self.tracker.bounds.width)).clamp(0.,1.);
+                    self.cursor.1 = (self.cursor.1+f64::from(dy)/f64::from(self.tracker.bounds.height)).clamp(0.,1.);
+                    output.push(position(self.cursor));
+                }
+                InputEvent::MouseMoveAbsolute {x,y} => {
+                    self.cursor = (f64::from(x)/f64::from(u16::MAX),f64::from(y)/f64::from(u16::MAX));
+                    output.push(InputEvent::MouseMoveAbsolute {x,y});
+                }
+                event @ (InputEvent::MouseDown(_) | InputEvent::MouseScroll {..}) if trackpad => {
+                    // Window input requires source-normalized coordinates. A tap
+                    // uses the cursor, never the finger's position on the glass.
+                    output.push(position(self.cursor)); output.push(event);
+                }
+                event => output.push(event),
+            }
+        }
+        output
     }
     pub fn activity(&mut self, visible: bool) -> Option<InputBinding> {
         self.visible = visible;
@@ -171,7 +221,7 @@ impl WorkspaceTouch {
             now,
         );
         self.last_intent = self.tracker.has_active_pointers().then_some(now);
-        (release, events)
+        (release, self.normalized_trackpad(events))
     }
     pub fn binding(&self) -> Option<InputBinding> {
         self.binding
@@ -181,6 +231,32 @@ impl WorkspaceTouch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trackpad_moves_a_source_bound_cursor_and_taps_without_relative_wire_input() {
+        let mut touch=ready(); let grant=Some(binding(1));let now=Instant::now();
+        assert!(touch.select_mode(1,TouchMode::VirtualTrackpad,
+            RemoteScreenBounds {width:640,height:420},true).unwrap().is_empty());
+        assert!(touch.touch(1,event(TouchAction::Down,0,0.1),grant,now).1.is_empty());
+        let moved=touch.touch(1,event(TouchAction::Move,0,0.2),grant,now).1;
+        assert!(matches!(moved.as_slice(),[InputEvent::MouseMoveAbsolute {x,y}]
+            if (i32::from(*x)-42598).abs()<3 && (i32::from(*y)-32768).abs()<2));
+        touch.touch(1,event(TouchAction::Up,0,0.2),grant,now);
+        touch.touch(1,event(TouchAction::Down,0,0.9),grant,now);
+        let clicked=touch.touch(1,event(TouchAction::Up,0,0.9),grant,now).1;
+        assert!(matches!(clicked.as_slice(),[InputEvent::MouseMoveAbsolute {x,..},
+            InputEvent::MouseDown(0),InputEvent::MouseUp(0)] if (i32::from(*x)-42598).abs()<3));
+    }
+    #[test]
+    fn mode_switch_releases_drag_and_ignores_old_mode_geometry_or_surface() {
+        let mut touch=ready();let now=Instant::now();let grant=Some(binding(1));
+        touch.touch(1,event(TouchAction::Down,0,0.2),grant,now);
+        touch.touch(1,event(TouchAction::Move,0,0.5),grant,now);
+        let bounds=RemoteScreenBounds {width:640,height:420};
+        assert_eq!(touch.select_mode(1,TouchMode::VirtualTrackpad,bounds.clone(),true),Some(vec![InputEvent::MouseUp(0)]));
+        assert!(touch.select_mode(1,TouchMode::DirectTouch,bounds.clone(),false).is_none());
+        assert!(touch.select_mode(2,TouchMode::DirectTouch,bounds,true).is_none());
+        assert!(touch.select_mode(1,TouchMode::VirtualTrackpad,RemoteScreenBounds {width:0,height:420},true).is_none());
+    }
     fn binding(epoch: u8) -> InputBinding {
         InputBinding {
             connection_id: 4,

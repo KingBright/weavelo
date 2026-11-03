@@ -44,6 +44,7 @@ import androidx.compose.ui.draw.alpha
 fun MobileViewportScreen(
     onDisconnect: () -> Unit
 ) {
+    StreamOrientation(active = true)
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
     var isModifierBarVisible by remember { mutableStateOf(false) }
     var controlsExpanded by remember { mutableStateOf(false) }

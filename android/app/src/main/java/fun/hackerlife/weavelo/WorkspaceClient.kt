@@ -76,6 +76,27 @@ object WorkspaceClient {
     private fun guarded(block: () -> Unit) = scope.launch {
         runCatching(block).onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection failed") }
     }
+    // One bounded local record remains available independently of logcat.
+    // Never include tickets, addresses, file names, clipboard or typed text.
+    fun videoDiagnostic(id: Int, sessionKey: String, generation: Long, token: Long,
+        stage: String, received: Long, submitted: Long, decoded: Long) = guarded {
+        if (!currentView(id, sessionKey, generation, false)) return@guarded
+        val pane = mutable.value.panes.firstOrNull { it.id == id } ?: return@guarded
+        val folder = context?.externalCacheDir ?: return@guarded
+        val record = JSONObject().put("schema", 1).put("pid", android.os.Process.myPid())
+            .put("connection_id", mutable.value.connectionId).put("generation", generation)
+            .put("subscription_id", id).put("surface_token", token).put("source", pane.source.source)
+            .put("stage", stage).put("received", received).put("submitted", submitted).put("decoded", decoded)
+        val file = android.util.AtomicFile(File(folder, "workspace-video.json"))
+        var output: java.io.FileOutputStream? = null
+        runCatching {
+            val stream = file.startWrite(); output = stream
+            stream.write(record.toString().toByteArray(Charsets.UTF_8)); file.finishWrite(stream); output = null
+        }.onFailure { error ->
+            output?.let(file::failWrite)
+            android.util.Log.w("WeaveloWorkspace", "Local video diagnostic unavailable", error)
+        }
+    }
 
     fun requestedSession(): WorkspaceSessionRequest? = ownership.request()
     fun visibleSession(): WorkspaceSessionRequest? = ownership.visibleRequest()
@@ -175,6 +196,7 @@ object WorkspaceClient {
         mutable.value = mutable.value.copy(connected = true, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
             connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
+        android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
     private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
@@ -409,7 +431,8 @@ object WorkspaceClient {
             DirectedDelivery.rendered(it, generation, id, mutable.value.panes)
         }
     }
-    fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long, event: JSONObject) = guarded {
+    fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
+        mode: TouchMode, width: Int, height: Int, event: JSONObject) = guarded {
         if (!currentView(id, sessionKey, generation, true)) {
             inputViewIssue(id,sessionKey,generation)
             return@guarded
@@ -420,7 +443,9 @@ object WorkspaceClient {
             if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.")
             return@guarded
         }
-        runCatching { action(12, JSONObject().put("id", id).put("token", token).put("event", JSONObject().put("Touch", event)).toString()) }
+        runCatching { action(12, JSONObject().put("id", id).put("token", token)
+            .put("mode", mode.code).put("width", width).put("height", height)
+            .put("event", JSONObject().put("Touch", event)).toString()) }
             .onFailure { inputIssue(id, it.message ?: "Control is unavailable") }
             .onSuccess { if (event.optString("action") == "Down") inputIssue(id, null) }
     }
