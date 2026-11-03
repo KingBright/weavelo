@@ -6,7 +6,7 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
@@ -689,94 +689,125 @@ impl BoundWebSocketRelayTunnel {
 
     async fn run_connected<S>(
         &self,
-        mut stream: WebSocketStream<S>,
+        stream: WebSocketStream<S>,
         cancel_rx: &mut broadcast::Receiver<()>,
     ) -> io::Result<()>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-        let mut buf = vec![0u8; MAX_PACKET_LEN];
-        let mut local_target_addr = self.config.local_target_addr;
-        let register_packet = RelayPacket::Register {
-            group_id: self.config.group_id.clone(),
-            peer_id: self.config.peer_id.clone(),
-        }
-        .encode();
-        send_websocket_binary(&mut stream, register_packet.clone()).await?;
-        self.diagnostics.registration_sent();
-        let mut register_interval = tokio::time::interval(self.config.register_interval);
-        let mut heartbeat_interval = tokio::time::interval(self.config.heartbeat_interval);
-        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_server_message = Instant::now();
-        let mut heartbeat_sequence = 0u64;
-        let mut pending_ping = None;
-
-        loop {
-            tokio::select! {
-                _ = cancel_rx.recv() => return Ok(()),
-                _ = register_interval.tick() => {
-                    send_websocket_binary(&mut stream, register_packet.clone()).await?;
-                    self.diagnostics.registration_sent();
-                }
-                _ = heartbeat_interval.tick() => {
-                    if last_server_message.elapsed() > self.config.heartbeat_timeout {
+        let (mut writer, mut reader) = stream.split();
+        let local_target_addr = SyncMutex::new(self.config.local_target_addr);
+        let last_server_message = SyncMutex::new(Instant::now());
+        let pending_ping = SyncMutex::new(None::<Bytes>);
+        let flush = tokio::sync::Notify::new();
+        // Keep both halves progressing in this connection's existing task. A
+        // blocked write must not stop reads and deadlock a full-duplex peer.
+        // No unbounded queue, extra worker or packet reordering is introduced.
+        let receive = async {
+            loop {
+                let message = reader.next().await;
+                let Some(message) = message else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "WebSocket relay closed",
+                    ));
+                };
+                let message = message.map_err(websocket_io_error)?;
+                *last_server_message
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Instant::now();
+                match message {
+                    Message::Binary(frame) => {
+                        if let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&frame)
+                        {
+                            self.diagnostics.data_received();
+                            let target =
+                                *local_target_addr.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(target) = target {
+                                let _ = self.socket.send_to(&payload, target).await;
+                            }
+                            // Ready fragment buffers must still give the other
+                            // half and capture/input tasks a scheduling turn.
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    Message::Close(_) => {
                         return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "WebSocket relay heartbeat timed out",
+                            io::ErrorKind::ConnectionReset,
+                            "WebSocket relay closed",
                         ));
                     }
-                    heartbeat_sequence = heartbeat_sequence.wrapping_add(1);
-                    let payload = Bytes::copy_from_slice(&heartbeat_sequence.to_be_bytes());
-                    stream
-                        .send(Message::Ping(payload.clone()))
-                        .await
-                        .map_err(websocket_io_error)?;
-                    pending_ping = Some(payload);
-                    self.diagnostics.ping_sent();
-                }
-                message = stream.next() => {
-                    let Some(message) = message else {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "WebSocket relay closed"));
-                    };
-                    let message = message.map_err(websocket_io_error)?;
-                    last_server_message = Instant::now();
-                    match message {
-                        Message::Binary(frame) => {
-                            if let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&frame) {
-                                self.diagnostics.data_received();
-                                if let Some(target) = local_target_addr {
-                                    let _ = self.socket.send_to(&payload, target).await;
-                                }
-                            }
+                    Message::Pong(payload) => {
+                        // Only an echo of this connection's outstanding ping is
+                        // a heartbeat observation. It is not a registration ACK
+                        // or evidence that another device received a data frame.
+                        let mut pending = pending_ping.lock().unwrap_or_else(|e| e.into_inner());
+                        if pending.as_ref() == Some(&payload) {
+                            *pending = None;
+                            self.diagnostics.pong_received();
                         }
-                        Message::Close(_) => {
-                            return Err(io::Error::new(io::ErrorKind::ConnectionReset, "WebSocket relay closed"));
-                        }
-                        Message::Pong(payload) => {
-                            // Only an echo of this connection's outstanding ping is
-                            // a heartbeat observation. It is not a registration ACK
-                            // or evidence that another device received a data frame.
-                            if pending_ping.as_ref() == Some(&payload) {
-                                pending_ping = None;
-                                self.diagnostics.pong_received();
-                            }
-                        }
-                        Message::Text(_) | Message::Ping(_) | Message::Frame(_) => {}
                     }
-                }
-                received = self.socket.recv_from(&mut buf) => {
-                    let (len, addr) = received?;
-                    local_target_addr = Some(addr);
-                    let encoded = RelayPacket::Data {
-                        group_id: self.config.group_id.clone(),
-                        peer_id: self.config.peer_id.clone(),
-                        payload: buf[..len].to_vec(),
-                    }
-                    .encode();
-                    send_websocket_binary(&mut stream, encoded).await?;
-                    self.diagnostics.data_sent();
+                    // Tungstenite queues the protocol Pong while reading.
+                    // Wake the writer even when there is no local payload.
+                    Message::Ping(_) => flush.notify_one(),
+                    Message::Text(_) | Message::Frame(_) => {}
                 }
             }
+        };
+        let send = async {
+            let mut buf = vec![0u8; MAX_PACKET_LEN];
+            let register_packet = RelayPacket::Register {
+                group_id: self.config.group_id.clone(),
+                peer_id: self.config.peer_id.clone(),
+            }
+            .encode();
+            send_websocket_binary(&mut writer, register_packet.clone()).await?;
+            self.diagnostics.registration_sent();
+            let mut register_interval = tokio::time::interval(self.config.register_interval);
+            let mut heartbeat_interval = tokio::time::interval(self.config.heartbeat_interval);
+            heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut heartbeat_sequence = 0u64;
+            loop {
+                tokio::select! {
+                    _=flush.notified()=>writer.flush().await.map_err(websocket_io_error)?,
+                    _=register_interval.tick()=> {
+                        send_websocket_binary(&mut writer,register_packet.clone()).await?;
+                        self.diagnostics.registration_sent();
+                    }
+                    _=heartbeat_interval.tick()=> {
+                        let age=last_server_message.lock().unwrap_or_else(|e|e.into_inner()).elapsed();
+                        if age>self.config.heartbeat_timeout {
+                            return Err(io::Error::new(io::ErrorKind::TimedOut,"WebSocket relay heartbeat timed out"));
+                        }
+                        heartbeat_sequence=heartbeat_sequence.wrapping_add(1);
+                        let payload=Bytes::copy_from_slice(&heartbeat_sequence.to_be_bytes());
+                        // Install before the write: the concurrent reader may see
+                        // the echoed Pong before send() finishes flushing.
+                        *pending_ping.lock().unwrap_or_else(|e|e.into_inner())=Some(payload.clone());
+                        writer.send(Message::Ping(payload)).await.map_err(websocket_io_error)?;
+                        self.diagnostics.ping_sent();
+                    }
+                    received = self.socket.recv_from(&mut buf) => {
+                        let (len, addr) = received?;
+                        *local_target_addr.lock().unwrap_or_else(|e|e.into_inner())=Some(addr);
+                        let encoded = RelayPacket::Data {
+                            group_id: self.config.group_id.clone(),
+                            peer_id: self.config.peer_id.clone(),
+                            payload: buf[..len].to_vec(),
+                        }
+                        .encode();
+                        send_websocket_binary(&mut writer, encoded).await?;
+                        self.diagnostics.data_sent();
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+        };
+        tokio::select! {
+            biased;
+            _=cancel_rx.recv()=>Ok(()),
+            result=receive=>result,
+            result=send=>result,
         }
     }
 }
@@ -1238,9 +1269,9 @@ async fn handle_tcp_relay_packet(
     }
 }
 
-async fn send_websocket_binary<S>(stream: &mut WebSocketStream<S>, frame: Vec<u8>) -> io::Result<()>
+async fn send_websocket_binary<S>(stream: &mut S, frame: Vec<u8>) -> io::Result<()>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: futures_util::Sink<Message,Error=tokio_tungstenite::tungstenite::Error> + Unpin,
 {
     stream
         .send(Message::Binary(Bytes::from(frame)))
@@ -2098,6 +2129,89 @@ mod tests {
             .await
             .expect("client tunnel task should join")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_reads_progress_while_a_local_datagram_write_is_backpressured() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (local,remote)=tokio::io::duplex(4096);
+        let client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
+        let mut server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
+        let app=UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tunnel=BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
+            "127.0.0.1:0".parse().unwrap(),"ws://127.0.0.1/relay","duplex-fixture","client")
+            .unwrap().with_local_target_addr(app.local_addr().unwrap())).await.unwrap();
+        let address=tunnel.local_addr().unwrap();
+        let (cancel,mut cancelled)=broadcast::channel(1);
+        let task=tokio::spawn(async move {tunnel.run_connected(client,&mut cancelled).await});
+        assert!(matches!(server.next().await,Some(Ok(Message::Binary(_)))));
+        // Both legal UDP records exceed a constrained link's current writable
+        // space. The peer writes before reading, as a busy full-duplex relay can.
+        let outgoing=vec![41;8*1024];let incoming=vec![73;8*1024];
+        app.send_to(&outgoing,address).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let exchange=async {
+            server.send(Message::Binary(RelayPacket::Data {group_id:"duplex-fixture".into(),
+                peer_id:"server".into(),payload:incoming.clone()}.encode().into())).await.unwrap();
+            loop {
+                let message=server.next().await.unwrap().unwrap();
+                if let Message::Binary(frame)=message
+                    && let Some(RelayPacket::Data {payload,..})=RelayPacket::decode(&frame) {
+                    assert_eq!(payload,outgoing);break;
+                }
+            }
+            let mut bytes=vec![0;MAX_PACKET_LEN];let (n,_)=app.recv_from(&mut bytes).await.unwrap();
+            assert_eq!(&bytes[..n],incoming);
+        };
+        let result=timeout(Duration::from_secs(2),exchange).await;
+        let _=cancel.send(());task.abort();let _=task.await;
+        assert!(result.is_ok(),"relay reads stopped behind an unrelated pending write");
+    }
+
+    #[tokio::test]
+    async fn websocket_split_reader_flushes_server_ping_without_local_udp_traffic() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (local,remote)=tokio::io::duplex(4096);
+        let client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
+        let mut server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
+        let tunnel=BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
+            "127.0.0.1:0".parse().unwrap(),"ws://127.0.0.1/relay","ping-fixture","client").unwrap()).await.unwrap();
+        let (cancel,mut cancelled)=broadcast::channel(1);
+        let task=tokio::spawn(async move {tunnel.run_connected(client,&mut cancelled).await});
+        assert!(matches!(server.next().await,Some(Ok(Message::Binary(_)))));
+        let probe=Bytes::from_static(b"server-ping");
+        server.send(Message::Ping(probe.clone())).await.unwrap();
+        let response=timeout(Duration::from_secs(1),async {
+            loop {
+                match server.next().await.unwrap().unwrap() {
+                    Message::Pong(payload) if payload==probe=>break,
+                    Message::Ping(_)=>server.flush().await.unwrap(),
+                    _=>{},
+                }
+            }
+        }).await;
+        let _=cancel.send(());
+        let stopped=timeout(Duration::from_secs(1),task).await.unwrap().unwrap();
+        assert!(response.is_ok(),"an idle UDP tunnel must flush the WebSocket Pong");
+        assert!(stopped.is_ok());
+    }
+
+    #[tokio::test]
+    async fn websocket_cancel_interrupts_a_backpressured_local_write() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (local,remote)=tokio::io::duplex(4096);
+        let client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
+        let mut server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
+        let app=UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tunnel=BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
+            "127.0.0.1:0".parse().unwrap(),"ws://127.0.0.1/relay","cancel-fixture","client").unwrap()).await.unwrap();
+        let address=tunnel.local_addr().unwrap();let (cancel,mut cancelled)=broadcast::channel(1);
+        let task=tokio::spawn(async move {tunnel.run_connected(client,&mut cancelled).await});
+        assert!(matches!(server.next().await,Some(Ok(Message::Binary(_)))));
+        app.send_to(&vec![41;8*1024],address).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let _=cancel.send(());
+        assert!(timeout(Duration::from_secs(1),task).await.expect("cancel waited for the blocked writer").unwrap().is_ok());
     }
 
     #[tokio::test]
