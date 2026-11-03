@@ -215,7 +215,7 @@ class Native:
             for line in lines[1:]:
                 key,value=line.split('=',1)
                 require((key=='TimeoutStopFailureMode' and value=='abort') or
-                        (key=='CPUWeight' and (value=='idle' or value.isascii() and value.isdecimal() and 1<=int(value)<=10000)),
+                        (key=='CPUWeight' and (value in ('','idle') or value.isascii() and value.isdecimal() and 1<=int(value)<=10000)),
                         'Unreviewed service drop-in value')
             require(len(lines)==2,'Repeated service drop-in setting')
             dropins[str(p)]={'sha256':gate.hash_file(p),'device':m.st_dev,'inode':m.st_ino,'uid':m.st_uid,'mode':stat.S_IMODE(m.st_mode)}

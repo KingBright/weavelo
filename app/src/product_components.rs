@@ -48,6 +48,8 @@ pub mod assets {
                 "weavelo-icons/user.svg" => {
                     Some(include_bytes!("product_components/icons/user.svg"))
                 }
+                "weavelo-icons/network-connecting.svg" => Some(include_bytes!("product_components/icons/network-connecting.svg")),
+                "weavelo-icons/network-disconnected.svg" => Some(include_bytes!("product_components/icons/network-disconnected.svg")),
                 "weavelo-icons/ping-indicator-0.svg" => Some(include_bytes!(
                     "product_components/icons/ping-indicator-0.svg"
                 )),
@@ -85,6 +87,8 @@ pub mod assets {
                 "minimize.svg",
                 "info.svg",
                 "user.svg",
+                "network-connecting.svg",
+                "network-disconnected.svg",
                 "ping-indicator-0.svg",
                 "ping-indicator-1.svg",
                 "ping-indicator-2.svg",
@@ -142,6 +146,8 @@ pub enum IconName {
     Maximize(bool),
     Minimize,
     PingIndicator(u8),
+    NetworkConnecting,
+    NetworkDisconnected,
     User,
     Info,
 }
@@ -168,6 +174,8 @@ pub fn icon(name: IconName) -> ProductIcon {
         IconName::PingIndicator(1) => "ping-indicator-1.svg",
         IconName::PingIndicator(2) => "ping-indicator-2.svg",
         IconName::PingIndicator(_) => "ping-indicator-3.svg",
+        IconName::NetworkConnecting => "network-connecting.svg",
+        IconName::NetworkDisconnected => "network-disconnected.svg",
         IconName::User => "user.svg",
         IconName::Info => "info.svg",
     };

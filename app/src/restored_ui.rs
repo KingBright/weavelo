@@ -37,7 +37,7 @@ use crate::desktop::device_list::{
 };
 use crate::desktop::original_owner::{FrameSlot, OriginalOwner, SourceViewBinding};
 use crate::original_design::stream_status_capsule_card;
-use crate::telemetry_display::UiHostStats;
+use crate::telemetry_display::{NetworkQuality, UiHostStats};
 use crate::{
     AppDevice, HostStats, MacDecodedVideoFrame, MeshPairingControl, MeshPairingMessageKind,
     MeshPairingSnapshot, RoleState, SharedHostStats, StreamStartOptions, UnifiedRuntimeConfig,
@@ -1918,55 +1918,6 @@ impl RestoredDashboard {
         }).absolute().top_0().left_0().w_full().h_full().into_any_element()
     }
 
-    fn session_switcher(&self, cx: &mut Context<Self>) -> Div {
-        let view = cx.weak_entity();
-        let mut row = div()
-            .absolute()
-            .bottom(px(14.))
-            .left(px(16.))
-            .flex()
-            .items_center()
-            .gap_2();
-        let model = self.owner.session_tabs();
-        let can_reconnect = model.can_reconnect && model.failed.is_none();
-        for tab in model.tabs {
-            let id = tab.connection_id;
-            let view = view.clone();
-            row = row.child(
-                command_button(
-                    format!("session_{id}"),
-                    if tab.selected {
-                        ActionVariantKind::Primary
-                    } else {
-                        ActionVariantKind::Neutral
-                    },
-                    cx,
-                )
-                .rounded_full()
-                .h(px(28.))
-                .text_size(px(10.))
-                .child(tab.label)
-                .on_click(move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| this.dispatch_session_action(SessionTabsAction::Select(id), cx));
-                }),
-            );
-        }
-        if can_reconnect {
-            let view = view.clone();
-            row = row.child(
-                command_button("selected_reconnect", ActionVariantKind::Neutral, cx)
-                    .rounded_full()
-                    .h(px(28.))
-                    .text_size(px(10.))
-                    .child("Reconnect")
-                    .on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |this, cx| this.dispatch_session_action(SessionTabsAction::Reconnect, cx));
-                    }),
-            );
-        }
-        row
-    }
-
     #[cfg(any(unix,windows))]
     fn begin_gui_quit(&mut self, command: Option<crate::desktop::directed_receive::Command>,
         idle_only: bool, cx: &mut Context<Self>) {
@@ -2183,6 +2134,7 @@ impl Render for PopoutStreamView {
             .as_ref()
             .map(|stats| UiHostStats::read(stats))
             .filter(|stats| host_stats_available(stats));
+        let network=NetworkQuality::from_session(snapshot.role.kind(),stats.as_deref());
 
         let content = stream_video_canvas_surface(
             current_frame.as_deref(),
@@ -2272,7 +2224,7 @@ impl Render for PopoutStreamView {
                         command_button("expand_pip_hud_btn", ActionVariantKind::Neutral, cx)
                             .size(px(26.0))
                             .rounded_full()
-                            .tooltip(tooltip("Show live telemetry").build())
+                            .tooltip(tooltip(format!("{} · Show telemetry",network.detail(stats.as_deref()))).build())
                             .on_click({
                                 let view = view.clone();
                                 move |_event, _window, cx| {
@@ -2282,7 +2234,7 @@ impl Render for PopoutStreamView {
                                     });
                                 }
                             })
-                            .child(icon(IconName::PingIndicator(3)).size(px(12.0))),
+                            .child(network_quality_icon(network,&theme).size(px(12.0))),
                     )
             } else {
                 div()
@@ -2474,19 +2426,14 @@ impl Render for RestoredDashboard {
                     this.child(self.stream_toolbar(&snapshot, is_fullscreen, compact, input_hint.as_deref(), cx))
                 },
             )
-            .child(self.session_switcher(cx))
             .child(self.paint_acknowledgement())
             .when(show_drawer, |tree| tree.child(self.stream_controls_panel(&snapshot, host_stats.as_ref(), cx)))
-            .when(
-                matches!(role, RoleState::Connecting(_) | RoleState::Viewing(_)),
-                |this| {
-                    this.child(telemetry_waterfall_overlay(
-                        self.telemetry_hud_collapsed,
-                        host_stats.as_ref(),
-                        cx,
-                    ))
-                },
-            )
+            .child(telemetry_waterfall_overlay(
+                self.telemetry_hud_collapsed,
+                role.kind(),
+                host_stats.as_ref(),
+                cx,
+            ))
             .when_some(self.source_selection.as_ref(),|tree,selection|tree.child(source_selection::render(selection,#[cfg(target_os="linux")] self.local_share_state.pending(),cx)))
             // Local window commands must also see the root focus itself. The
             // remote-input surface remains inside the scope and keeps its focus guard.
@@ -4692,13 +4639,27 @@ fn telemetry_metric_row(
         )
 }
 
+fn network_quality_icon(quality:NetworkQuality,theme:&Theme)->crate::product_components::ProductIcon {
+    let (symbol,color)=match quality {
+        NetworkQuality::Connecting=>(IconName::NetworkConnecting,Hsla::from(color_accent_cyan())),
+        NetworkQuality::Disconnected=>(IconName::NetworkDisconnected,Hsla::from(crate::design_system::color_accent_rose())),
+        NetworkQuality::Unknown=>(IconName::PingIndicator(0),theme.content.secondary),
+        NetworkQuality::Good=>(IconName::PingIndicator(3),Hsla::from(color_accent_emerald())),
+        NetworkQuality::Fair=>(IconName::PingIndicator(2),Hsla::from(color_accent_amber())),
+        NetworkQuality::Poor=>(IconName::PingIndicator(1),Hsla::from(crate::design_system::color_accent_rose())),
+    };
+    icon(symbol).color(color)
+}
+
 fn telemetry_waterfall_overlay(
     collapsed: bool,
+    role:remote_core::role::RoleKind,
     host_stats: Option<&UiHostStats>,
     cx: &mut Context<RestoredDashboard>,
 ) -> Div {
     let theme = cx.theme().clone();
     let view = cx.weak_entity();
+    let network=NetworkQuality::from_session(role,host_stats.map(|stats|&**stats));
 
     if collapsed {
         div()
@@ -4712,7 +4673,7 @@ fn telemetry_waterfall_overlay(
                 command_button("expand_hud_btn", ActionVariantKind::Neutral, cx)
                     .size(px(28.0))
                     .rounded_full()
-                    .tooltip(tooltip("Show live telemetry").build())
+                    .tooltip(tooltip(format!("{} · Show telemetry",network.detail(host_stats.map(|stats|&**stats)))).build())
                     .on_click(move |_event, _window, cx| {
                         let _ = view.update(cx, |this, cx| {
                             this.telemetry_hud_collapsed = false;
@@ -4720,7 +4681,7 @@ fn telemetry_waterfall_overlay(
                             cx.notify();
                         });
                     })
-                    .child(icon(IconName::PingIndicator(3)).size(px(13.0))),
+                    .child(network_quality_icon(network,&theme).size(px(13.0))),
             )
     } else {
         div()
@@ -4750,7 +4711,7 @@ fn telemetry_waterfall_overlay(
                             .text_size(px(10.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(color_accent_cyan())
-                            .child("LIVE TELEMETRY"),
+                            .child(network.label()),
                     )
                     .child(
                         command_button("collapse_hud_btn", ActionVariantKind::Neutral, cx)

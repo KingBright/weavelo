@@ -5,6 +5,40 @@ use remote_core::{
 };
 use std::ops::Deref;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NetworkQuality { Connecting, Disconnected, Unknown, Good, Fair, Poor }
+
+impl NetworkQuality {
+    pub(crate) fn from_session(role:remote_core::role::RoleKind,stats:Option<&HostStats>)->Self {
+        use remote_core::role::RoleKind;
+        match role {
+            RoleKind::Connecting=>return Self::Connecting,
+            RoleKind::Viewing=>{},
+            _=>return Self::Disconnected,
+        }
+        let Some(stats)=stats else {return Self::Unknown;};
+        if !stats.updated_at.is_some_and(|at|at.elapsed()<=std::time::Duration::from_secs(5))
+            || stats.link_status.is_empty() || !stats.rtt_ms.is_finite() || stats.rtt_ms<0.
+            || !stats.packet_loss_rate.is_finite() || !(0.0..=100.0).contains(&stats.packet_loss_rate) {
+            return Self::Unknown;
+        }
+        // Host encode/decode time and desktop damage FPS do not measure the network.
+        if stats.rtt_ms>150. || stats.packet_loss_rate>=5. {Self::Poor}
+        else if stats.rtt_ms>80. || stats.packet_loss_rate>=1. {Self::Fair}
+        else {Self::Good}
+    }
+    pub(crate) fn label(self)->&'static str {match self {
+        Self::Connecting=>"Connecting",Self::Disconnected=>"Not connected",Self::Unknown=>"Network unknown",
+        Self::Good=>"Network good",Self::Fair=>"Network fair",Self::Poor=>"Network poor",
+    }}
+    pub(crate) fn detail(self,stats:Option<&HostStats>)->String {
+        match (self,stats) {
+            (Self::Good|Self::Fair|Self::Poor,Some(stats))=>format!("{} · RTT {:.0} ms · loss {:.1}%",self.label(),stats.rtt_ms,stats.packet_loss_rate),
+            _=>self.label().into(),
+        }
+    }
+}
+
 /// Taking a decoded frame into the UI is only a submission estimate. No GPU
 /// completion or VSync callback has occurred here, so presentation stays unknown.
 pub(crate) fn mark_ui_frame_submission(
@@ -112,6 +146,33 @@ impl CaptureReceiveDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_indicator_obeys_connection_and_measurement_freshness() {
+        use remote_core::role::RoleKind;
+        let mut stats=HostStats {updated_at:Some(std::time::Instant::now()),..Default::default()};
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Unknown);
+        stats.link_status="measured";stats.rtt_ms=12.;
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Good);
+        assert_eq!(NetworkQuality::from_session(RoleKind::Connecting,Some(&stats)),NetworkQuality::Connecting);
+        assert_eq!(NetworkQuality::from_session(RoleKind::Idle,Some(&stats)),NetworkQuality::Disconnected);
+        stats.updated_at=Some(std::time::Instant::now()-std::time::Duration::from_secs(6));
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Unknown);
+    }
+
+    #[test]
+    fn network_quality_uses_rtt_and_percentage_loss_instead_of_encode_or_damage_fps() {
+        use remote_core::role::RoleKind;
+        let mut stats=HostStats {updated_at:Some(std::time::Instant::now()),link_status:"measured",rtt_ms:20.,
+            fps:0.,latency:300.,jitter:150.,..Default::default()};
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Good);
+        stats.rtt_ms=90.;
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Fair);
+        stats.rtt_ms=20.;stats.packet_loss_rate=6.;
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Poor);
+        stats.packet_loss_rate=f32::NAN;
+        assert_eq!(NetworkQuality::from_session(RoleKind::Viewing,Some(&stats)),NetworkQuality::Unknown);
+    }
     use remote_core::clock_sync::ClockSynchronizer;
 
     #[test]

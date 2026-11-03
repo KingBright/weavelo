@@ -415,6 +415,19 @@ class UpgradeTests(unittest.TestCase):
         with patch.object(up.subprocess,'run',side_effect=run):
             result=native.configuration()
         for key in up.EXEC_HOOKS:self.assertEqual(result['policy'][key],'')
+    def test_native_cpuweight_reset_dropin_is_preserved_without_changing_policy(self):
+        native,run,fields=self.missing_exec_fixture()
+        dropin=self.home/'runtime-control/50-CPUWeight.conf';dropin.parent.mkdir()
+        raw=b'# Created by systemctl set-property\n[Service]\nCPUWeight=\n'
+        dropin.write_bytes(raw);dropin.chmod(0o644)
+        fields['DropInPaths']=str(dropin);fields['CPUWeight']='[not set]'
+        with patch.object(up.subprocess,'run',side_effect=run):result=native.configuration()
+        self.assertEqual(result['policy']['CPUWeight'],'[not set]')
+        self.assertEqual(result['dropins'][str(dropin)]['sha256'],up.gate.digest(raw))
+        self.assertEqual(dropin.read_bytes(),raw)
+        dropin.write_text('[Service]\nCPUWeight=10001\n')
+        with patch.object(up.subprocess,'run',side_effect=run),self.assertRaisesRegex(ValueError,'drop-in value'):
+            native.configuration()
     def test_nonempty_or_unknown_typed_exec_hook_is_never_normalized_empty(self):
         for document in [{'type':'a(sasbttttuii)','data':[['synthetic-hook']]},{'type':'unknown','data':[]}]:
             native,run,_=self.missing_exec_fixture(document)
