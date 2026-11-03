@@ -460,3 +460,7 @@ Studio 仍复用接收开启前建立的无文件能力连接，导致零字节�
 103 的四台电脑正式包均已完成，来源为已推送且被三台远端独立拉取核对的 `a1823fa`。Linux 在替换程序前正常退出 GUI 时，文件会话已清空，但远端关闭回执未确认，原升级停在 `gui-stop-intent`；核对各窗口无会话、发送和接收租约后已回收该旧 GUI，并正常停止后台，未交换安装目录。现有 CurrentUpgrade 的恢复入口仅抛出错误，本轮补齐原事务的向前继续：核对停止状态和原有候选字节后完成交换、恢复原运行形态并清理自身暂存，不新建回退副本。62 项 Linux 升级检查与 1,045 项签名发布回归通过（19 项跳过），证据 `linux-current-forward-resume-tests.log`、`linux-current-forward-resume-release.log`。原事务的实机继续执行仍待验证。
 
 NAS 最终 relay 的新诊断记录到 76 次写队列满退出，非替换或已关闭队列。新增原生受限链路夹具复现：4 KiB 双工缓冲、接收端暂停读取 80 毫秒，即在约 0.09 秒内触发连接重置；证据 `relay-transient-stall-old-reproduction.log`。下一步保留队列上限及帧顺序，修复瞬时拥塞时过早断开；此问题尚未关闭。
+
+原 Linux 103 升级事务已直接向前完成，未重新停止原进程、未回退安装版本；GUI 为 3992255，后台为 3992186，实际可执行 SHA `16c5c149c3733aae68a2d7fb3c0af82b66a673f3c784891f89b64856135446d9`，来源 `a1823fa`，配置和启动策略保留。新实机夹具中自动发送前后始终保留全屏与键盘焦点，只存在原管理窗，未出现自动详情窗；Studio 对应连接 622297139 已解码 11,192 帧、解码错误为零。证据 `native103-linux-forward-resume-apply.log`、`native103-fullscreen-sender-acceptance.json`、`native103-linux-studio-first-frame-proof.json`；解码计数不代表物理呈现已完整验收。
+
+relay 源码已修正瞬时队列满处理：保留原 16 项上限，在全局路由锁外等待目标容量，每个生产者至多保留当前一帧，整次转发最多等待 2 秒；持续不读取的端仍会被断开。不丢弃压缩参考帧，不更改网络字段或鉴权。80 毫秒停顿夹具已通过，逐帧内容与顺序一致；同时验证队列有界、持续阻塞退出、等待期间路由锁可用、隔离及替换连接保护。37 项 relay / routed-relay、9 项加密检查及 1,045 项签名发布回归通过（19 项跳过），证据 `relay-bounded-backpressure-tests.log`、`relay-bounded-backpressure-release.log`；NAS 安装后的真实链路观察仍待完成。

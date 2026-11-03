@@ -27,6 +27,7 @@ const MAX_TCP_FRAME_LEN: usize = RELAY_MAGIC.len() + 3 + (2 * MAX_ID_LEN) + MAX_
 const DEFAULT_MAX_TCP_CONNECTIONS: usize = 128;
 const DEFAULT_MAX_PEERS_PER_GROUP: usize = 8;
 const DEFAULT_TCP_WRITER_QUEUE_CAPACITY: usize = 16;
+const TCP_WRITER_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
@@ -993,16 +994,17 @@ impl TcpRelayServerState {
         source_connection_id: u64,
         frame: Arc<[u8]>,
         payload: &[u8],
-    ) -> RelayForwardResult {
+    ) -> (RelayForwardResult, Vec<TcpRelayPeerState>) {
         let mut result = RelayForwardResult {
             forwarded: 0,
             disconnected_slow_peers: 0,
         };
-        let source = self.identity(source_connection_id)
+        let mut deferred = Vec::new();
+        let Some(source) = self.identity(source_connection_id)
             .filter(|identity| identity.group_id == group_id)
-            .map(|identity| identity.peer_id.as_str()).unwrap_or_default();
+            .map(|identity| identity.peer_id.as_str()) else { return (result, deferred); };
         let Ok(target) = crate::routed_relay::relay_target(payload, source) else {
-            return result;
+            return (result, deferred);
         };
         let targets = self
             .peers
@@ -1011,32 +1013,24 @@ impl TcpRelayServerState {
                 key.group_id == group_id && peer.connection_id != source_connection_id
                     && target.is_none_or(|target| key.peer_id == target)
             })
-            .map(|(_, peer)| {
-                (
-                    peer.connection_id,
-                    peer.writer_tx.clone(),
-                    peer.disconnect_tx.clone(),
-                )
-            })
+            .map(|(_, peer)| peer.clone())
             .collect::<Vec<_>>();
         let mut failed_connections = Vec::new();
-        for (connection_id, writer_tx, disconnect_tx) in targets {
-            match writer_tx.try_send(frame.clone()) {
+        for peer in targets {
+            match peer.writer_tx.try_send(frame.clone()) {
                 Ok(()) => result.forwarded += 1,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    result.disconnected_slow_peers += 1;
-                    let _ = disconnect_tx.send(Some(RelayRetirement::SlowPeer));
-                    failed_connections.push(connection_id);
+                    deferred.push(peer);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                    failed_connections.push(connection_id);
+                    failed_connections.push(peer.connection_id);
                 }
             }
         }
         for connection_id in failed_connections {
             self.remove_connection(connection_id);
         }
-        result
+        (result, deferred)
     }
 
     fn remove_connection(&mut self, connection_id: u64) {
@@ -1044,6 +1038,35 @@ impl TcpRelayServerState {
         self.peers
             .retain(|_, peer| peer.connection_id != connection_id);
     }
+}
+
+async fn forward_relay_frame(
+    state: &Arc<Mutex<TcpRelayServerState>>,
+    group_id: &str,
+    source_connection_id: u64,
+    frame: Arc<[u8]>,
+    payload: &[u8],
+) -> RelayForwardResult {
+    let (mut result, deferred) = state.lock().await
+        .forward_frame(group_id, source_connection_id, frame.clone(), payload);
+    let deadline = tokio::time::Instant::now() + TCP_WRITER_STALL_TIMEOUT;
+    for peer in deferred {
+        // Keep one current frame and stop reading this producer while the
+        // bounded destination drains. A short socket stall is not a failed peer.
+        match tokio::time::timeout_at(deadline, peer.writer_tx.send(frame.clone())).await {
+            Ok(Ok(())) => { result.forwarded += 1; continue; }
+            Ok(Err(_)) => {}
+            Err(_) => {
+                let retired = peer.disconnect_tx.borrow().is_some();
+                if !retired {
+                    let _ = peer.disconnect_tx.send(Some(RelayRetirement::SlowPeer));
+                    result.disconnected_slow_peers += 1;
+                }
+            }
+        }
+        state.lock().await.remove_connection(peer.connection_id);
+    }
+    result
 }
 
 async fn run_tcp_relay_connection(
@@ -1106,8 +1129,8 @@ async fn run_tcp_relay_connection(
                     peer_id,
                     payload,
                 } => {
-                    let mut state = state.lock().await;
-                    let Some(identity) = state.identity(connection_id) else {
+                    let relay_state = state.lock().await;
+                    let Some(identity) = relay_state.identity(connection_id) else {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
                             "relay data received before registration",
@@ -1120,8 +1143,8 @@ async fn run_tcp_relay_connection(
                         ));
                     }
                     let encoded = Arc::<[u8]>::from(frame.as_slice());
-                    let forward = state.forward_frame(&group_id, connection_id, encoded, &payload);
-                    drop(state);
+                    drop(relay_state);
+                    let forward = forward_relay_frame(&state, &group_id, connection_id, encoded, &payload).await;
                     // Buffered fragments can stay ready without an I/O yield.
                     // Let healthy peer writers drain before admitting the next burst.
                     tokio::task::yield_now().await;
@@ -1260,8 +1283,8 @@ async fn handle_tcp_relay_packet(
             peer_id,
             payload,
         } => {
-            let mut state = state.lock().await;
-            let Some(identity) = state.identity(connection_id) else {
+            let relay_state = state.lock().await;
+            let Some(identity) = relay_state.identity(connection_id) else {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "relay data received before registration",
@@ -1274,8 +1297,8 @@ async fn handle_tcp_relay_packet(
                 ));
             }
             let encoded = Arc::<[u8]>::from(frame);
-            let forward = state.forward_frame(&group_id, connection_id, encoded, &payload);
-            drop(state);
+            drop(relay_state);
+            let forward = forward_relay_frame(state, &group_id, connection_id, encoded, &payload).await;
             // A ready WebSocket burst must not monopolize the executor and
             // make another healthy connection's bounded writer look slow.
             tokio::task::yield_now().await;
@@ -1957,30 +1980,33 @@ mod tests {
         let frame = Arc::<[u8]>::from(RelayPacket::Data {
             group_id: "control-group".into(), peer_id: "source".into(), payload: payload.clone(),
         }.encode());
-        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &payload),
+        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &payload).0,
             RelayForwardResult { forwarded: 1, disconnected_slow_peers: 0 });
         assert_eq!(target.try_recv().unwrap().as_ref(), frame.as_ref());
         let rejected = RelayForwardResult { forwarded: 0, disconnected_slow_peers: 0 };
-        assert_eq!(state.forward_frame("other-group", source, frame.clone(), &payload), rejected);
-        assert_eq!(state.forward_frame("control-group", u64::MAX, frame.clone(), &payload), rejected);
+        assert_eq!(state.forward_frame("other-group", source, frame.clone(), &payload).0, rejected);
+        assert_eq!(state.forward_frame("control-group", u64::MAX, frame.clone(), &payload).0, rejected);
         let mut spoofed = payload.clone();
         spoofed[24] = b'x';
-        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &spoofed), rejected);
+        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &spoofed).0, rejected);
         let mut unknown_target = payload.clone();
         unknown_target[30] = b'x';
-        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &unknown_target), rejected);
-        assert_eq!(state.forward_frame("control-group", source, frame, &payload[..4]), rejected);
+        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &unknown_target).0, rejected);
+        assert_eq!(state.forward_frame("control-group", source, frame, &payload[..4]).0, rejected);
         assert!(target.try_recv().is_err());
         assert!(disconnected.borrow().is_none(), "another device's stream disconnected this peer");
         assert!(other_group.try_recv().is_err());
     }
 
-    #[test]
-    fn tcp_forwarding_queue_is_bounded() {
+    #[tokio::test]
+    async fn tcp_forwarding_queue_is_bounded_and_waits_only_for_a_short_stall() {
         let mut state = TcpRelayServerState::default();
         let source_connection = state.next_connection_id();
         let target_connection = state.next_connection_id();
-        let (writer_tx, _writer_rx) = mpsc::channel(1);
+        let (source_writer, _source_reader) = mpsc::channel(1);
+        state.register("group".into(), "source".into(), source_connection,
+            source_writer, watch::channel(None).0, 2).unwrap();
+        let (writer_tx, mut writer_rx) = mpsc::channel(1);
         let (disconnect_tx, disconnect_rx) = tokio::sync::watch::channel(None);
         state
             .register(
@@ -1993,16 +2019,29 @@ mod tests {
             )
             .unwrap();
 
+        let state = Arc::new(Mutex::new(state));
         let frame = std::sync::Arc::<[u8]>::from([1, 2, 3]);
         assert_eq!(
-            state.forward_frame("group", source_connection, frame.clone(), &[]),
+            forward_relay_frame(&state, "group", source_connection, frame.clone(), &[]).await,
             RelayForwardResult {
                 forwarded: 1,
                 disconnected_slow_peers: 0,
             }
         );
+        let blocked_state = state.clone();
+        let second = frame.clone();
+        let waiting = tokio::spawn(async move {
+            forward_relay_frame(&blocked_state, "group", source_connection, second, &[]).await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiting.is_finished());
+        assert!(disconnect_rx.borrow().is_none());
+        assert!(state.lock().await.identity(source_connection).is_some(), "a slow writer must not hold the routing mutex");
+        assert_eq!(writer_rx.recv().await.unwrap().as_ref(), frame.as_ref());
+        assert_eq!(waiting.await.unwrap(), RelayForwardResult { forwarded: 1, disconnected_slow_peers: 0 });
+        assert_eq!(writer_rx.len(), 1);
         assert_eq!(
-            state.forward_frame("group", source_connection, frame, &[]),
+            forward_relay_frame(&state, "group", source_connection, frame, &[]).await,
             RelayForwardResult {
                 forwarded: 0,
                 disconnected_slow_peers: 1,
@@ -2307,6 +2346,61 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
         let _=cancel.send(());
         assert!(timeout(Duration::from_secs(1),task).await.expect("cancel waited for the blocked writer").unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn websocket_transient_receiver_stall_preserves_bounded_frame_order() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let state = Arc::new(Mutex::new(TcpRelayServerState::default()));
+        let mut clients = Vec::new();
+        let mut servers = Vec::new();
+        for (index, peer) in ["source", "receiver"].into_iter().enumerate() {
+            let (local, remote) = tokio::io::duplex(4096);
+            let mut client = WebSocketStream::from_raw_socket(local, Role::Client, None).await;
+            let server = WebSocketStream::from_raw_socket(remote, Role::Server, None).await;
+            let server_state = state.clone();
+            servers.push(tokio::spawn(async move {
+                run_websocket_relay_connection(server, "127.0.0.1:12345".parse().unwrap(),
+                    server_state, &TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap())).await
+            }));
+            client.send(Message::Binary(RelayPacket::Register {
+                group_id: "transient-stall".into(), peer_id: peer.into(),
+            }.encode().into())).await.unwrap();
+            timeout(Duration::from_secs(1), async {
+                while state.lock().await.peers.len() != index + 1 { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            clients.push(client);
+        }
+        let mut receiver = clients.pop().unwrap();
+        let mut sender = clients.pop().unwrap();
+        let sending = tokio::spawn(async move {
+            for sequence in 0..256u32 {
+                let mut payload = vec![73; 1400];
+                payload[..4].copy_from_slice(&sequence.to_be_bytes());
+                sender.feed(Message::Binary(RelayPacket::Data {
+                    group_id: "transient-stall".into(), peer_id: "source".into(), payload,
+                }.encode().into())).await.map_err(|error| error.to_string())?;
+            }
+            sender.flush().await.map_err(|error| error.to_string())?;
+            Ok::<_, String>(sender)
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let delivered = timeout(Duration::from_secs(3), async {
+            for expected in 0..256u32 {
+                let message = receiver.next().await.ok_or("receiver disconnected")?
+                    .map_err(|error| error.to_string())?;
+                let Message::Binary(bytes) = message else { return Err("unexpected frame".to_owned()); };
+                let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&bytes)
+                    else { return Err("invalid relay frame".to_owned()); };
+                if payload.len() != 1400 || u32::from_be_bytes(payload[..4].try_into().unwrap()) != expected {
+                    return Err("compressed frame order or content changed".to_owned());
+                }
+            }
+            Ok::<_, String>(256)
+        }).await;
+        for server in servers { server.abort(); }
+        sending.abort();
+        assert!(matches!(delivered, Ok(Ok(256))), "short receiver stalls must retain every frame: {delivered:?}");
     }
 
     #[tokio::test]
