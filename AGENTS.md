@@ -154,3 +154,11 @@ transaction directly. Check retained artifacts against their recorded bytes;
 validate new candidates against their own source and authorized signer. An old
 unsigned preparation must not require validation against today's changed source.
 Discover the existing Android Java/SDK tools before packaging preflight.
+
+## Atomic package readers (2026-11-03)
+
+Normal package replacement uses the existing project producer and atomic current-output
+transaction. Do not scan the entire process table or run lsof to require package readers
+to be idle: existing Unix readers retain their original inode across replacement.
+Keep the transaction's exact ownership and byte checks, signing, installed-process
+identity, active transfer ownership and protection of unrelated files.

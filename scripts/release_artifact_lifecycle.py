@@ -139,27 +139,16 @@ def project_authority(arguments):
 
 
 def project_output_idle(cleaner, root, paths, verified_control_pids=()):
-    """Protect the exact output users, without inspecting unrelated services/builds.
+    """The existing producer and atomic transaction serialize package writers.
 
-    The project producer already serializes compilation and package replacement.
-    These are package outputs, not installed service or application paths.
+    These are registered package outputs, never installed apps or shared caches.
+    An open reader keeps its original inode across rename/unlink on these Unix
+    build hosts. Scanning every process with ps/lsof neither serializes writers
+    nor protects readers that open after the scan; it can hang an otherwise
+    verified publication. Keep the authority's ownership, byte and transaction
+    checks, and let existing readers finish without blocking current replacement.
     """
     require(Path(root).samefile(ROOT), 'Current output belongs to another project')
-    output = cleaner.checked_run(['/bin/ps', '-axo', 'pid=,comm=,args='], timeout=10)
-    require(output.strip(), 'Empty output-user inspection')
-    for line in output.splitlines():
-        fields = line.strip().split(None, 2)
-        require(len(fields) >= 2 and fields[0].isdigit(), 'Invalid output-user inspection')
-        pid = int(fields[0])
-        command = fields[2] if len(fields) == 3 else fields[1]
-        if pid not in (*verified_control_pids, os.getpid()) and any(str(path) in command for path in paths):
-            raise Refusal('Process references current output')
-    for path in paths:
-        path = Path(path)
-        if path.exists():
-            command = (['/usr/sbin/lsof', '-nP', '+D', str(path), '-Fn'] if path.is_dir() else
-                       ['/usr/sbin/lsof', '-nP', '-Fn', '--', str(path)])
-            require(not cleaner.checked_run(command, empty_code=True).strip(), 'Current output has open files')
     return []
 
 

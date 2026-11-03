@@ -53,22 +53,25 @@ class ReleaseHookTests(unittest.TestCase):
 
     def test_current_outputs_ignore_unrelated_builds_and_services(self):
         output = self.root / 'current.zip'; output.write_bytes(b'current')
-        cleaner = SimpleNamespace(checked_run=Mock(side_effect=['123 /usr/bin/xcodebuild xcodebuild /other/project\n', '']),
+        cleaner = SimpleNamespace(checked_run=Mock(side_effect=TimeoutError('global process scan blocked')),
             launch_references=Mock(side_effect=AssertionError('unrelated launch service scan')),
             compiler_activity=Mock(side_effect=AssertionError('unrelated compiler scan')))
         self.assertEqual(hook.project_output_idle(cleaner, self.root, [output]), [])
-        self.assertEqual(cleaner.checked_run.call_args_list[-1].args[0][-1], str(output))
+        cleaner.checked_run.assert_not_called()
         cleaner.launch_references.assert_not_called()
         cleaner.compiler_activity.assert_not_called()
 
-    def test_current_output_active_users_still_prevent_replacement(self):
+    def test_atomic_package_replacement_preserves_an_existing_reader(self):
         output = self.root / 'current.zip'; output.write_bytes(b'current')
-        cleaner = SimpleNamespace(checked_run=Mock(return_value=f'123 reader reader {output}\n'))
-        with self.assertRaisesRegex(hook.Refusal, 'Process references current output'):
-            hook.project_output_idle(cleaner, self.root, [output])
-        cleaner.checked_run.side_effect = ['123 reader reader /other/project\n', 'p123\nncurrent.zip\n']
-        with self.assertRaisesRegex(hook.Refusal, 'Current output has open files'):
-            hook.project_output_idle(cleaner, self.root, [output])
+        stage = self.root / '.current.zip.pending'; stage.write_bytes(b'updated')
+        cleaner = SimpleNamespace(checked_run=Mock(side_effect=AssertionError('process scan')))
+        with output.open('rb') as reader:
+            self.assertEqual(hook.project_output_idle(cleaner, self.root, [output, stage]), [])
+            os.replace(stage, output)
+            self.assertEqual(reader.read(), b'current')
+            self.assertEqual(output.read_bytes(), b'updated')
+        with self.assertRaisesRegex(hook.Refusal, 'another project'):
+            hook.project_output_idle(cleaner, self.root.parent, [output])
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='rp-current-hook-')
