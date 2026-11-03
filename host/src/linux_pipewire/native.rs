@@ -86,6 +86,11 @@ async fn prepare_capture(
     mut lease: PortalCaptureLease,
     budget: Option<Arc<crate::linux_frame::FrameBudget>>,
 ) -> Result<PreparedPortalCapture, PortalCallError> {
+    let budget=Some(match budget {
+        Some(budget)=>budget,
+        None=>crate::linux_frame::FrameBudget::new(MAX_FRAME_BYTES,2*MAX_FRAME_BYTES)
+            .map_err(|_|PortalCallError::InvalidSource)?,
+    });
     let generation = lease.selected_source().generation;
     let serial = lease.selected_source().pipewire_serial;
     let mut revoked_rx = lease.revocation();

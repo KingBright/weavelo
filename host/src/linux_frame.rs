@@ -76,11 +76,17 @@ pub struct BorrowedPlane<'a> {
     pub stride: i32,
 }
 
-#[derive(Debug)]
 pub struct FrameBudget {
     per_frame: usize,
     total: usize,
     used: std::sync::atomic::AtomicUsize,
+    recycled: Mutex<Option<Vec<Vec<u8>>>>,
+}
+impl std::fmt::Debug for FrameBudget {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.debug_struct("FrameBudget").field("per_frame",&self.per_frame).field("total",&self.total)
+            .field("used",&self.used.load(std::sync::atomic::Ordering::Acquire)).finish_non_exhaustive()
+    }
 }
 impl FrameBudget {
     pub fn new(per_frame: usize, total: usize) -> Result<std::sync::Arc<Self>, FrameError> {
@@ -95,6 +101,7 @@ impl FrameBudget {
             per_frame,
             total,
             used: std::sync::atomic::AtomicUsize::new(0),
+            recycled: Mutex::new(None),
         }))
     }
     fn reserve(self: &std::sync::Arc<Self>, bytes: usize) -> Result<FrameMemory, FrameError> {
@@ -111,6 +118,16 @@ impl FrameBudget {
             budget: self.clone(),
             bytes,
         })
+    }
+    fn acquire(self:&std::sync::Arc<Self>,bytes:usize,layouts:&[PlaneLayout])
+        ->Result<(FrameMemory,Vec<Vec<u8>>),FrameError> {
+        // A free allocation must be removed before reserving more live bytes.
+        // Holding this lock through admission keeps live + cached <= total.
+        let mut cache=self.recycled.lock().unwrap_or_else(|error|error.into_inner());
+        let recycled=cache.take().filter(|planes| planes.len()==layouts.len()
+            && planes.iter().zip(layouts).all(|(plane,layout)|plane.capacity()==layout.copied_row_bytes*layout.copied_rows));
+        let memory=self.reserve(bytes)?;
+        Ok((memory,recycled.unwrap_or_default()))
     }
 }
 #[derive(Debug)]
@@ -137,6 +154,23 @@ pub struct OwnedFrame {
     pub stamp: FrameStamp,
     pub(crate) received_at: std::time::Instant,
     pub(crate) initial_snapshot: bool,
+}
+
+impl Drop for OwnedFrame {
+    fn drop(&mut self) {
+        let Some(memory)=self._memory.as_ref() else {return;};
+        // Cloned snapshots and consumers keep immutable pixels. Only the very
+        // last frame/plane owner may return an allocation for later writes.
+        if std::sync::Arc::strong_count(memory)!=1 || std::sync::Arc::strong_count(&self.planes)!=1 {return;}
+        static EMPTY:std::sync::OnceLock<std::sync::Arc<Vec<Vec<u8>>>>=std::sync::OnceLock::new();
+        let planes=std::mem::replace(&mut self.planes,EMPTY.get_or_init(||std::sync::Arc::new(Vec::new())).clone());
+        if let Ok(planes)=std::sync::Arc::try_unwrap(planes) {
+            let capacity=planes.iter().map(Vec::capacity).sum::<usize>();
+            if capacity<=memory.bytes {
+                *memory.budget.recycled.lock().unwrap_or_else(|error|error.into_inner())=Some(planes);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,18 +353,23 @@ impl OwnedFrame {
         }
         // Reserve checked output size before allocating a plane. The reservation
         // follows the owned frame through first-frame, mailbox and consumer lifetimes.
-        let memory = budget.map(|b| b.reserve(total)).transpose()?;
-        let mut owned = Vec::with_capacity(planes.len());
-        for (plane, layout) in planes.iter().zip(&layouts) {
+        let (memory,mut owned)=match budget {
+            Some(budget)=> {let (memory,planes)=budget.acquire(total,&layouts)?;(Some(memory),planes)},
+            None=>(None,Vec::new()),
+        };
+        for (index,(plane, layout)) in planes.iter().zip(&layouts).enumerate() {
             let stride = plane.stride as usize;
-            let mut copy = Vec::with_capacity(layout.copied_row_bytes * layout.copied_rows);
-            for row in 0..layout.copied_rows {
+            if index==owned.len() {owned.push(Vec::with_capacity(layout.copied_row_bytes*layout.copied_rows));}
+            let copy=&mut owned[index];copy.clear();
+            if stride==layout.copied_row_bytes {
+                let begin=plane.chunk_offset as usize+layout.crop_y*stride+layout.crop_x_bytes;
+                copy.extend_from_slice(&plane.data[begin..begin+layout.copied_row_bytes*layout.copied_rows]);
+            } else {for row in 0..layout.copied_rows {
                 let begin = plane.chunk_offset as usize
                     + (layout.crop_y + row) * stride
                     + layout.crop_x_bytes;
                 copy.extend_from_slice(&plane.data[begin..begin + layout.copied_row_bytes]);
-            }
-            owned.push(copy);
+            }}
         }
         Ok(Self {
             source_format: format,
@@ -562,6 +601,42 @@ impl FrameMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_pool_reuses_only_the_last_owner_and_keeps_live_plus_cached_bounded() {
+        let budget=FrameBudget::new(32,64).unwrap();
+        let make=|value:u8| {
+            let bytes=[value;32];
+            OwnedFrame::copy_from_budget(format(PixelFormat::Rgba),&[BorrowedPlane {data:&bytes,
+                mapping_offset:0,chunk_offset:0,chunk_size:32,stride:16}],stamp(value as u64),Some(&budget)).unwrap()
+        };
+        let a=make(1);let retained=a.clone();drop(a);
+        assert!(budget.recycled.lock().unwrap().is_none());
+        let b=make(2);let pointer=b.planes[0].as_ptr();drop(b);
+        assert!(budget.recycled.lock().unwrap().is_some());
+        let c=make(3);
+        assert_eq!(c.planes[0].as_ptr(),pointer);
+        assert_eq!(retained.planes[0],[1;32]);assert_eq!(c.planes[0],[3;32]);
+        assert!(budget.recycled.lock().unwrap().is_none());
+        assert_eq!(budget.used.load(std::sync::atomic::Ordering::Acquire),64);
+        drop(retained);drop(c);
+        assert_eq!(budget.used.load(std::sync::atomic::Ordering::Acquire),0);
+        assert_eq!(budget.recycled.lock().unwrap().as_ref().unwrap().iter().map(Vec::capacity).sum::<usize>(),32);
+    }
+
+    #[test]
+    fn malformed_input_cannot_consume_the_pool_and_changed_layout_is_fully_rewritten() {
+        let budget=FrameBudget::new(64,128).unwrap();
+        let bytes=[7;32];let planes=[BorrowedPlane {data:&bytes,mapping_offset:0,chunk_offset:0,chunk_size:32,stride:16}];
+        let frame=OwnedFrame::copy_from_budget(format(PixelFormat::Rgba),&planes,stamp(1),Some(&budget)).unwrap();drop(frame);
+        assert!(OwnedFrame::copy_from_budget(format(PixelFormat::Rgba),&[],stamp(2),Some(&budget)).is_err());
+        assert!(budget.recycled.lock().unwrap().is_some());
+        let mut changed=format(PixelFormat::Rgba);changed.width=8;
+        let bytes=[9;64];let planes=[BorrowedPlane {data:&bytes,mapping_offset:0,chunk_offset:0,chunk_size:64,stride:32}];
+        let frame=OwnedFrame::copy_from_budget(changed,&planes,stamp(3),Some(&budget)).unwrap();
+        assert_eq!(frame.planes[0],[9;64]);assert_eq!((frame.width,frame.height),(8,2));
+        assert!(budget.recycled.lock().unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn shared_viewers_reuse_pixels_and_keep_pause_close_and_epochs_independent() {
