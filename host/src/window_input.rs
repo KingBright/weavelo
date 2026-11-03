@@ -289,9 +289,25 @@ impl WindowTarget {
     /// Manager can leave its thumbnail visible while SCK produces no frames.
     pub fn restore_for_capture(&self, title: &str) -> Result<(), String> {
         current(self.id, self.pid)?;
-        let windows = attr(&self.application, "AXWindows")
-            .and_then(|v| v.downcast::<CFArray>())
-            .ok_or("The selected app's windows are unavailable")?;
+        let Some(windows) = attr(&self.application, "AXWindows")
+            .and_then(|v| v.downcast::<CFArray>()) else {
+            // Parked native windows may expose no AX window tree. Activate
+            // their verified owner; SCK still captures the exact window ID.
+            // Pointer and keyboard input retain their live focus/hit guards.
+            let name = CFString::new("AXFrontmost");
+            let yes = CFBoolean::true_value();
+            focus_for_click_with(
+                None,
+                || current(self.id, self.pid).map(|_| ()),
+                || self.app_frontmost(),
+                || unsafe {
+                    AXUIElementSetAttributeValue(self.application.as_CFTypeRef(),
+                        name.as_CFTypeRef(), yes.as_CFTypeRef())
+                },
+            ).map_err(|error| format!("The selected application could not be restored for capture: {error}"))?;
+            current(self.id, self.pid)?;
+            return Ok(());
+        };
         let mut selected = None;
         for raw in windows.iter() {
             let window = unsafe { CFType::wrap_under_get_rule(*raw) };

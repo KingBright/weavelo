@@ -500,3 +500,9 @@ Studio、Book、Windows 分别主动投送自有测试窗口至其余三台电�
 Book 同一次投送中，额外选择的 Weavelo 接收窗口在台前调度缩略图恢复路径报“selected app's windows are unavailable”，未产生视频；已单独记录，未将另一窗口成功算作它通过。对这条失败窗口执行 End 后，对应窗口直接关闭，Book 的另一窗口继续接收，证据 `native103-failed-child-end-closes-only-its-window.json`。下一步隔离该恢复路径并修复，结束测试连接时仅按已保存请求 ID 操作。
 
 当前源码已提交推送；完整六设备视频、控制指令与通知、音频、摄像头及其权限继续验收，尚未宣称总目标完成。红米完整中文输入、Android 独立多会话以及部分窗口图标 / Linux 窗口来源仍保留为接续项。
+
+## 2026-11-04 台前调度窗口恢复修复
+
+隔离其它测试投送后，在 Book 正常展开原接收窗口并重新投送该窗口，Studio 对同一窗口 ID 已解码 2,311 帧且错误为零，确认采集能力存在，失败集中在缩略图恢复。原恢复逻辑在 AXWindows 暂不可用时立即报错；现在复用已有的有界应用激活逻辑，激活前后重新核对选定窗口 ID / PID，ScreenCaptureKit 的单窗口过滤不变。已有 AX 窗口树的精确标题匹配、还原和提升逻辑继续使用原路径；输入的实时焦点、遮挡及命中检查没有放宽。
+
+25 项 Mac 窗口输入 / 变换定向检查和 1,045 项签名发布回归通过（19 项跳过），证据 `mac-parked-native-window-focused-checks.log`、`mac-parked-native-window-release-regression.log`。该代码修复的正式签名成品、安装与缩略图状态下的实机复测待继续完成；不能用正常展开后的旧版成功替代修复版验收。
