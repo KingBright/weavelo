@@ -2681,6 +2681,15 @@ extern "C" fn add_titlebar_accessory_view_controller(this: &Object, _: Sel, view
 
         // Hide the native tab bar and set its height to 0, since we render our own.
         let accessory_view: id = msg_send![view_controller, view];
+        // Our per-window role icon is a real titlebar accessory, not a tab bar.
+        let identifier: id = msg_send![accessory_view, identifier];
+        if !identifier.is_null() {
+            let is_window_icon: BOOL = msg_send![identifier,
+                isEqualToString: ns_string("gpui.native-window-icon")];
+            if is_window_icon == YES {
+                return;
+            }
+        }
         let _: () = msg_send![accessory_view, setHidden: YES];
         let mut frame: NSRect = msg_send![accessory_view, frame];
         frame.size.height = 0.0;
