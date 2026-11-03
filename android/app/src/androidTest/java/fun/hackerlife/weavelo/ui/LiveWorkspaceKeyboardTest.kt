@@ -7,14 +7,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
-import androidx.activity.compose.setContent
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import `fun`.hackerlife.weavelo.MainActivity
 import `fun`.hackerlife.weavelo.SessionConnectionService
 import `fun`.hackerlife.weavelo.WeaveloClient
 import `fun`.hackerlife.weavelo.WorkspaceClient
-import `fun`.hackerlife.weavelo.WorkspaceSessionRequest
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -28,7 +26,10 @@ class LiveWorkspaceKeyboardTest {
     private fun await(message: String, condition: () -> Boolean) {
         val deadline = SystemClock.uptimeMillis() + 30_000
         while (!condition()) {
-            check(SystemClock.uptimeMillis() < deadline) { message }
+            check(SystemClock.uptimeMillis() < deadline) {
+                val state = WorkspaceClient.state.value
+                "$message: connected=${state.connected}, active=${WorkspaceClient.active}, status=${state.status.take(160)}"
+            }
             SystemClock.sleep(50)
         }
     }
@@ -64,13 +65,14 @@ class LiveWorkspaceKeyboardTest {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             await("Owned Studio discovery unavailable") { WeaveloClient.devices.value.any { it.id == deviceId && it.canViewScreen } }
             val device = WeaveloClient.devices.value.single { it.id == deviceId }
-            val sessionKey = WorkspaceClient.sessionKeyFor(device.endpoint, device.id)
             try {
-                scenario.onActivity { activity -> activity.setContent {
-                    WorkspaceScreen(device.endpoint, deviceId = device.id,
-                        incoming = WorkspaceSessionRequest(device.endpoint, device.id, sessionKey), onClose = {})
-                } }
-                await("Workspace connection unavailable") { WorkspaceClient.state.value.let { it.sessionKey == sessionKey && it.connected } }
+                // Enter through the real device page, retaining its routing,
+                // lifecycle and Service ownership instead of replacing its root.
+                await("Owned device action unavailable") { click(device.name) }
+                await("Workspace connection unavailable") {
+                    WorkspaceClient.state.value.connected && WorkspaceClient.requestedSession()?.deviceId == device.id
+                }
+                val sessionKey = WorkspaceClient.state.value.sessionKey
                 WorkspaceClient.refreshSources(sessionKey, WorkspaceClient.state.value.connectionGeneration)
                 await("Exact owned fixture source unavailable") { WorkspaceClient.state.value.sources.any {
                     it.title == "Weavelo input check" && it.application == "WeaveloInputFixture" &&
@@ -111,7 +113,9 @@ class LiveWorkspaceKeyboardTest {
                     .put("subscription_id", pane.id).put("window_id", windowId)
                     .put("input_connection_commit_accepted", true).toString())
             } finally {
-                SessionConnectionService.closeWorkspace(context, sessionKey)
+                WorkspaceClient.requestedSession()?.takeIf { it.deviceId == device.id }?.let {
+                    SessionConnectionService.closeWorkspace(context, it.sessionKey)
+                }
             }
         }
     }
