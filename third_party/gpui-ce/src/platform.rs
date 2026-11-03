@@ -553,6 +553,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         Decorations::Server
     }
     fn set_app_id(&mut self, _app_id: &str) {}
+    fn set_icon(&mut self, _icon: &WindowIcon) -> anyhow::Result<bool> { Ok(false) }
     fn map_window(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1159,6 +1160,26 @@ pub trait InputHandler: 'static {
     /// Returns whether this handler is accepting text input to be inserted.
     fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         true
+    }
+}
+
+/// A small immutable native window icon in premultiplied RGBA order.
+#[derive(Clone)]
+pub struct WindowIcon {
+    pub(crate) size: u32,
+    pub(crate) rgba: std::sync::Arc<[u8]>,
+}
+impl WindowIcon {
+    /// Validates an immutable square icon; pixels must use premultiplied RGBA.
+    pub fn new(size:u32,rgba:Vec<u8>)->anyhow::Result<Self> {
+        anyhow::ensure!((1..=256).contains(&size) && rgba.len()==size as usize*size as usize*4,
+            "Native window icon must be a bounded square RGBA image");
+        anyhow::ensure!(rgba.chunks_exact(4).all(|p|p[..3].iter().all(|v|*v<=p[3])),
+            "Native window icon must use premultiplied alpha");
+        Ok(Self {size,rgba:rgba.into()})
+    }
+    pub(crate) fn bgra(&self)->Vec<u8> {
+        self.rgba.chunks_exact(4).flat_map(|p|[p[2],p[1],p[0],p[3]]).collect()
     }
 }
 

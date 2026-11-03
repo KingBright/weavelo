@@ -61,6 +61,7 @@ use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use super::icon::protocol::{xdg_toplevel_icon_manager_v1,xdg_toplevel_icon_v1};
 use wayland_protocols_plasma::blur::client::{org_kde_kwin_blur, org_kde_kwin_blur_manager};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use xkbcommon::xkb::ffi::XKB_KEYMAP_FORMAT_TEXT_V1;
@@ -105,6 +106,7 @@ const UNKNOWN_KEYBOARD_LAYOUT_NAME: SharedString = SharedString::new_static("unk
 
 #[derive(Clone)]
 pub struct Globals {
+    pub icon_manager:Option<xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1>,
     pub qh: QueueHandle<WaylandClientStatePtr>,
     pub activation: Option<xdg_activation_v1::XdgActivationV1>,
     pub compositor: wl_compositor::WlCompositor,
@@ -133,6 +135,7 @@ impl Globals {
         seat: wl_seat::WlSeat,
     ) -> Self {
         Globals {
+            icon_manager:globals.bind(&qh,1..=1,()).ok(),
             activation: globals.bind(&qh, 1..=1, ()).ok(),
             compositor: globals
                 .bind(
@@ -986,6 +989,8 @@ delegate_noop!(WaylandClientStatePtr: ignore zwp_primary_selection_device_manage
 delegate_noop!(WaylandClientStatePtr: ignore wl_shm::WlShm);
 delegate_noop!(WaylandClientStatePtr: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(WaylandClientStatePtr: ignore wl_buffer::WlBuffer);
+delegate_noop!(WaylandClientStatePtr: ignore xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1);
+delegate_noop!(WaylandClientStatePtr: ignore xdg_toplevel_icon_v1::XdgToplevelIconV1);
 delegate_noop!(WaylandClientStatePtr: ignore wl_region::WlRegion);
 delegate_noop!(WaylandClientStatePtr: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 delegate_noop!(WaylandClientStatePtr: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);

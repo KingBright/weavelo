@@ -1862,6 +1862,12 @@ impl Window {
         self.platform_window.set_title(title);
     }
 
+    /// Sets this window's icon without changing application identity. Returns
+    /// false when the window system does not support a per-window override.
+    pub fn set_window_icon(&mut self, icon:&crate::WindowIcon)->anyhow::Result<bool> {
+        self.platform_window.set_icon(icon)
+    }
+
     /// Sets the application identifier.
     pub fn set_app_id(&mut self, app_id: &str) {
         self.platform_window.set_app_id(app_id);

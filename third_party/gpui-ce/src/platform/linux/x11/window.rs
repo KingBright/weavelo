@@ -1350,6 +1350,20 @@ impl PlatformWindow for X11Window {
         xcb_flush(&self.0.xcb);
     }
 
+    fn set_icon(&mut self,icon:&crate::WindowIcon)->anyhow::Result<bool> {
+        let atom=self.0.xcb.intern_atom(false,b"_NET_WM_ICON")?.reply()?.atom;
+        let mut pixels=Vec::with_capacity(2+icon.rgba.len()/4);
+        pixels.extend([icon.size,icon.size]);
+        pixels.extend(icon.rgba.chunks_exact(4).map(|p| {
+            let component=|v:u8|if p[3]==0 {0}else{(u32::from(v)*255/u32::from(p[3])).min(255)};
+            (u32::from(p[3])<<24)|(component(p[0])<<16)|(component(p[1])<<8)|component(p[2])
+        }));
+        self.0.xcb.change_property32(xproto::PropMode::REPLACE,self.0.x_window,atom,
+            xproto::AtomEnum::CARDINAL,&pixels)?.check()?;
+        self.0.xcb.flush()?;
+        Ok(true)
+    }
+
     fn set_app_id(&mut self, app_id: &str) {
         let mut data = Vec::with_capacity(app_id.len() * 2 + 1);
         data.extend(app_id.bytes()); // instance https://unix.stackexchange.com/a/494170

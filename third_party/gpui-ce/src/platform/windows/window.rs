@@ -30,6 +30,14 @@ use crate::*;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
 
+struct NativeWindowIcon(HICON);
+impl Drop for NativeWindowIcon {
+    fn drop(&mut self) {unsafe {DestroyIcon(self.0)}.log_err();}
+}
+impl Drop for WindowsWindowState {
+    fn drop(&mut self) {self.native_icon.take();}
+}
+
 impl std::ops::Deref for WindowsWindow {
     type Target = WindowsWindowInner;
 
@@ -39,6 +47,7 @@ impl std::ops::Deref for WindowsWindow {
 }
 
 pub struct WindowsWindowState {
+    native_icon: Cell<Option<NativeWindowIcon>>,
     pub origin: Cell<Point<Pixels>>,
     pub logical_size: Cell<Size<Pixels>>,
     pub min_size: Option<Size<Pixels>>,
@@ -129,6 +138,7 @@ impl WindowsWindowState {
         let initial_placement = None;
 
         Ok(Self {
+            native_icon: Cell::new(None),
             origin: Cell::new(origin),
             logical_size: Cell::new(logical_size),
             fullscreen_restore_bounds: Cell::new(fullscreen_restore_bounds),
@@ -773,6 +783,36 @@ impl PlatformWindow for WindowsWindow {
         unsafe { SetWindowTextW(self.0.hwnd, &HSTRING::from(title)) }
             .inspect_err(|e| log::error!("Set title failed: {e}"))
             .ok();
+    }
+
+    fn set_icon(&mut self, icon:&crate::WindowIcon)->anyhow::Result<bool> {
+        unsafe {
+            let mut bitmap=BITMAPINFO::default();
+            bitmap.bmiHeader=BITMAPINFOHEADER {biSize:std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth:icon.size as i32,biHeight:-(icon.size as i32),biPlanes:1,biBitCount:32,
+                biCompression:BI_RGB.0,..Default::default()};
+            let mut pixels=std::ptr::null_mut();
+            let color=CreateDIBSection(None,&bitmap,DIB_RGB_COLORS,&mut pixels,None,0)?;
+            if pixels.is_null() {
+                if !DeleteObject(color.into()).as_bool() {log::warn!("Native icon color bitmap cleanup failed");}
+                anyhow::bail!("Native icon bitmap has no storage");
+            }
+            let bgra=icon.bgra();std::ptr::copy_nonoverlapping(bgra.as_ptr(),pixels.cast(),bgra.len());
+            let mask_bytes=vec![0u8;((icon.size as usize+15)/16)*2*icon.size as usize];
+            let mask=CreateBitmap(icon.size as i32,icon.size as i32,1,1,Some(mask_bytes.as_ptr().cast()));
+            if mask.0.is_null() {
+                if !DeleteObject(color.into()).as_bool() {log::warn!("Native icon color bitmap cleanup failed");}
+                anyhow::bail!("Native icon mask allocation failed");
+            }
+            let result=CreateIconIndirect(&ICONINFO {fIcon:true.into(),hbmMask:mask,hbmColor:color,..Default::default()});
+            if !DeleteObject(mask.into()).as_bool() {log::warn!("Native icon mask cleanup failed");}
+            if !DeleteObject(color.into()).as_bool() {log::warn!("Native icon color bitmap cleanup failed");}
+            let image=NativeWindowIcon(result?);
+            SendMessageW(self.0.hwnd,WM_SETICON,Some(WPARAM(ICON_SMALL as usize)),Some(LPARAM(image.0.0 as isize)));
+            SendMessageW(self.0.hwnd,WM_SETICON,Some(WPARAM(ICON_BIG as usize)),Some(LPARAM(image.0.0 as isize)));
+            self.state.native_icon.replace(Some(image));
+        }
+        Ok(true)
     }
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {

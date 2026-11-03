@@ -7,7 +7,7 @@
   "patch_files": {
     "Cargo.toml": {
       "upstream": "7ecc8c5796c2df53ec901c2f0e4a9a46db56393babae63e371168c504e63afea",
-      "current": "43d33af73f448ae1a945f5b2a74cb113304c8602b6601f2a5b30f8ada87d7f10"
+      "current": "544a86a98b023649f84c8d9b3df9c3f348caf19cfcc743b600a77b4ec6d425e6"
     },
     "src/elements/surface.rs": {
       "upstream": "5e91b7af155ef147687aa51c95aba538b9499958567030ff834561d841fa4f31",
@@ -27,7 +27,7 @@
     },
     "src/platform.rs": {
       "upstream": "6a23fa258d2af852a40e28f570a5bfd76ccd7ec0688888bfccd240fc3e99c561",
-      "current": "7a15f1244fe9af44d5b16d8efdaf0547e6ce9571590ffbdcaa2b6eee8d25702c"
+      "current": "fba9318817289f589c9fe654258b58f004e4836a7be57ac8cd1184af7960f7bb"
     },
     "src/scene.rs": {
       "upstream": "aecaa953ed9b2fa291e926647aa34321016ed78967d38af89a371443f3d26530",
@@ -35,7 +35,7 @@
     },
     "src/window.rs": {
       "upstream": "7a7971c8533b04c2ab77e2285a2af28cd600a6b1ddf2aaf61be4e3be13d0dc2b",
-      "current": "1f32c544470b5a262f499d1d8b210e302d291b6b67d8367f2dae3f3bc7febc38"
+      "current": "35ed6443374025cb43d1e096326ef6015479299432836a55d190c070ff2a151e"
     },
     "src/native_video.rs": {
       "upstream": null,

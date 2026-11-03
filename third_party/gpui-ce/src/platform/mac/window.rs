@@ -1290,6 +1290,54 @@ impl PlatformWindow for MacWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
+    fn set_icon(&mut self, icon:&crate::WindowIcon)->anyhow::Result<bool> {
+        unsafe {
+            let window=self.0.lock().native_window;
+            let color_space=ns_string("NSCalibratedRGBColorSpace");
+            let bitmap:id=msg_send![class!(NSBitmapImageRep),alloc];
+            let bitmap:id=msg_send![bitmap,initWithBitmapDataPlanes:ptr::null_mut::<*mut u8>()
+                pixelsWide:icon.size as isize pixelsHigh:icon.size as isize bitsPerSample:8isize
+                samplesPerPixel:4isize hasAlpha:YES isPlanar:NO colorSpaceName:color_space
+                bytesPerRow:(icon.size*4) as isize bitsPerPixel:32isize];
+            anyhow::ensure!(!bitmap.is_null(),"Native window icon bitmap allocation failed");
+            let pixels:*mut u8=msg_send![bitmap,bitmapData];
+            if pixels.is_null() {
+                let _:()=msg_send![bitmap,release];
+                anyhow::bail!("Native window icon bitmap has no storage");
+            }
+            ptr::copy_nonoverlapping(icon.rgba.as_ptr(),pixels,icon.rgba.len());
+            let image:id=msg_send![class!(NSImage),alloc];
+            let image:id=msg_send![image,initWithSize:NSSize{width:32.,height:32.}];
+            let _:()=msg_send![image,addRepresentation:bitmap];
+            let _:()=msg_send![bitmap,release];
+            let identifier=ns_string("gpui.native-window-icon");
+            let controllers:id=msg_send![window,titlebarAccessoryViewControllers];
+            let count:usize=msg_send![controllers,count];
+            for index in (0..count).rev() {
+                let controller:id=msg_send![controllers,objectAtIndex:index];
+                let view:id=msg_send![controller,view];
+                let existing:id=msg_send![view,identifier];
+                let matches:BOOL=if existing.is_null() {NO}else{msg_send![existing,isEqualToString:identifier]};
+                if matches==YES {let _:()=msg_send![window,removeTitlebarAccessoryViewControllerAtIndex:index];}
+            }
+            let view:id=msg_send![class!(NSImageView),alloc];
+            let view:id=msg_send![view,initWithFrame:NSRect{origin:NSPoint{x:0.,y:0.},size:NSSize{width:24.,height:18.}}];
+            let _:()=msg_send![view,setIdentifier:identifier];
+            let _:()=msg_send![view,setImage:image];
+            let _:()=msg_send![view,setImageScaling:3usize];
+            let accessory:id=msg_send![class!(NSTitlebarAccessoryViewController),new];
+            let _:()=msg_send![accessory,setView:view];
+            let _:()=msg_send![accessory,setLayoutAttribute:1isize];
+            let _:()=msg_send![accessory,setFullScreenMinHeight:0.0f64];
+            let _:()=msg_send![window,addTitlebarAccessoryViewController:accessory];
+            let _:()=msg_send![window,setMiniwindowImage:image];
+            let _:()=msg_send![view,release];
+            let _:()=msg_send![accessory,release];
+            let _:()=msg_send![image,release];
+        }
+        Ok(true)
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();
 

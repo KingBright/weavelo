@@ -28,7 +28,11 @@ pub struct ConfirmationTimeout {
 }
 impl std::fmt::Display for ConfirmationTimeout {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Target did not confirm delivery in time")
+        formatter.write_str(if self.peer_responsive {
+            "Device response timed out"
+        } else {
+            "Connection lost"
+        })
     }
 }
 impl std::error::Error for ConfirmationTimeout {}
@@ -725,7 +729,9 @@ mod tests {
         assert_eq!(evidence.control_queue_depth, 0, "the socket actor drained the admitted offers");
         assert!(evidence.peer_response_age_ms <= 6_000);
         assert!(evidence.peer_responsive, "a missing receipt must not be reported as a dead heartbeat");
-        assert_eq!(error.to_string(), "Target did not confirm delivery in time");
+        assert_eq!(error.to_string(), "Device response timed out");
+        let disconnected = ConfirmationTimeout { peer_responsive: false, ..evidence.clone() };
+        assert_eq!(disconnected.to_string(), "Connection lost");
         connection.close().await;
         peer.abort();
     }

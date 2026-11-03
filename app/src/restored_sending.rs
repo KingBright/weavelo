@@ -400,12 +400,12 @@ impl RestoredDashboard {
                                     }))
                                     .child(div().text_size(px(12.)).child(context.progress.status)),
                             )
-                            .child(
+                            .when(!finished, |card| card.child(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(theme.content.secondary)
                                     .child("Closing this window keeps sending in the background."),
-                            )
+                            ))
                             .child(
                                 div()
                                     .flex()

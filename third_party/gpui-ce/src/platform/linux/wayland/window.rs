@@ -1126,6 +1126,14 @@ impl PlatformWindow for WaylandWindow {
         }
     }
 
+    fn set_icon(&mut self,icon:&crate::WindowIcon)->anyhow::Result<bool> {
+        let state=self.borrow();
+        let Some(toplevel)=state.surface_state.toplevel() else {return Ok(false);};
+        let set=super::icon::set(&state.globals,&toplevel,icon)?;
+        if set {state.surface.commit();}
+        Ok(set)
+    }
+
     fn set_app_id(&mut self, app_id: &str) {
         let mut state = self.borrow_mut();
         if let Some(toplevel) = state.surface_state.toplevel() {

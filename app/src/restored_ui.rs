@@ -10,6 +10,8 @@ mod sending;
 use sending::{SendActivity, SendingContext};
 #[path="restored_menu.rs"]
 mod native_menu;
+#[path="restored_window_icon.rs"]
+mod window_icon;
 #[cfg(test)]
 #[path="restored_source_browser_tests.rs"]
 mod source_browser_tests;
@@ -578,6 +580,7 @@ impl RestoredDashboard {
     ) -> Self {
         Self::observe_window(window, cx);
         let purpose = if instance.is_some() { WindowPurpose::Management } else { WindowPurpose::Stream };
+        if purpose!=WindowPurpose::Management {window_icon::apply(window,cx);}
         let owner = OriginalOwner::new(runtime.owner.clone());
         exit_group.owners.lock().unwrap().push(Arc::downgrade(&owner));
         let mesh_pairing = runtime.mesh_pairing.clone();
@@ -1203,7 +1206,8 @@ impl RestoredDashboard {
         let scale_mode = self.scale_mode;
         let owner = self.owner.clone();
         let primary = cx.entity();
-        let result = cx.open_window(window_options, move |_window, cx| {
+        let result = cx.open_window(window_options, move |window, cx| {
+            window_icon::apply(window,cx);
             let view = cx.new(|_cx| PopoutStreamView {
                 artwork_cache: Default::default(),
                 owner,
