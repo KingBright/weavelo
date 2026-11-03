@@ -21,6 +21,35 @@ fn setup(generation: u64) -> (CopyContract, Arc<FrameMailbox>) {
     let mailbox = Arc::new(FrameMailbox::new(generation).unwrap());
     (CopyContract::new(generation, mailbox.clone()), mailbox)
 }
+#[test]
+fn gpu_import_preserves_metadata_and_returns_rejected_or_retired_epochs_once() {
+    use crate::linux_frame::dmabuf::{BufferKey,DmaBufFrame,Object,Plane,DRM_ARGB8888};
+    use std::sync::Mutex;
+    let returned=Arc::new(Mutex::new(Vec::new()));
+    let make=|revision| {
+        let returned=returned.clone();
+        DmaBufFrame::new(DRM_ARGB8888,
+            vec![Object {fd:std::fs::File::open(std::env::current_exe().unwrap()).unwrap(),size:32,modifier:0}],
+            vec![Plane {object:0,offset:0,stride:16}],BufferKey {generation:9,revision,id:11},
+            move|key|returned.lock().unwrap().push(key))
+    };
+    let (mut contract,mailbox)=setup(9);
+    let mut raw=format(PixelFormat::Bgra);
+    raw.color=SourceColor {range:1,matrix:1,transfer:7,primaries:1};
+    contract.renegotiate(Some(raw)).unwrap();
+    let crop=Some(Crop {x:1,y:0,width:2,height:2});
+    let frame=contract.import_dmabuf(make(1),crop,Transform::Identity,Some(13),Some(-17),99).unwrap();
+    assert_eq!(frame.source_format,FrameFormat {crop,..raw});
+    assert_eq!(frame.stamp.sequence,Some(13));assert_eq!(frame.stamp.pipewire_pts_ns,Some(-17));
+    assert!(frame.planes.is_empty());assert!(returned.lock().unwrap().is_empty());
+    contract.discontinuity().unwrap();
+    assert!(matches!(contract.import_dmabuf(make(1),None,Transform::Identity,None,None,100),Err(WorkerError::Revision)));
+    assert_eq!(returned.lock().unwrap().len(),1);
+    drop(frame);assert_eq!(returned.lock().unwrap().len(),2);
+    mailbox.close();
+    assert!(matches!(contract.import_dmabuf(make(2),None,Transform::Identity,None,None,101),Err(WorkerError::Closed)));
+    assert_eq!(returned.lock().unwrap().len(),3);
+}
 fn chunk(bytes: &[u8], stride: i32) -> MappedChunk<'_> {
     MappedChunk {
         bytes,

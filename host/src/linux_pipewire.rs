@@ -97,6 +97,29 @@ impl CopyContract {
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
+    pub(crate) fn import_dmabuf(
+        &self,
+        gpu: crate::linux_frame::dmabuf::DmaBufFrame,
+        crop: Option<crate::linux_frame::Crop>,
+        transform: Transform,
+        sequence: Option<u64>,
+        pts: Option<i64>,
+        arrival: u64,
+    ) -> Result<OwnedFrame, WorkerError> {
+        if self.mailbox.is_closed() { return Err(WorkerError::Closed); }
+        if gpu.key.generation != self.generation || gpu.key.revision != self.revision {
+            return Err(WorkerError::Revision);
+        }
+        let mut format = self.format.ok_or(WorkerError::Format)?;
+        format.crop = crop;
+        format.transform = transform;
+        let frame = OwnedFrame::from_dmabuf(format, gpu, FrameStamp {
+            generation: self.generation, format_revision: self.revision,
+            sequence, pipewire_pts_ns: pts, arrival_ts_us: arrival,
+        }).map_err(|_| WorkerError::Buffer)?;
+        crate::linux_raw_encode::validate_native_input(&frame).map_err(|_| WorkerError::Format)?;
+        Ok(frame)
+    }
     pub(crate) fn copy(
         &self,
         revision: u64,

@@ -5,6 +5,7 @@ use crate::linux_frame::{
     Crop, FrameFormat, FrameMailbox, MAX_FRAME_BYTES, OwnedFrame, PixelFormat, SourceColor,
     Transform,
 };
+use crate::linux_frame::dmabuf::{self, BufferKey};
 use crate::linux_portal::runtime::{PortalCallError, PortalCaptureLease, PreparedPortalCapture};
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -13,8 +14,13 @@ use spa::buffer::{
     meta::{MetaHeader, MetaHeaderFlags, MetaVideoCrop, MetaVideoTransform},
 };
 use std::{
-    io::Cursor,
-    os::fd::OwnedFd,
+    cell::RefCell,
+    collections::BTreeMap,
+    fs::File,
+    io::{Cursor, Seek, SeekFrom},
+    os::fd::{BorrowedFd, OwnedFd},
+    ptr::NonNull,
+    rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -25,6 +31,51 @@ use tokio::sync::{oneshot, watch};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 const RAW_FRAME_MAX_AGE: Duration = Duration::from_millis(250);
+
+/// Raw pointers never leave the originating loop. A removed buffer keeps only
+/// its outstanding key, so a late GPU return cannot queue a recycled address.
+#[derive(Default)]
+struct BorrowPool {
+    next: u64,
+    slots: BTreeMap<u64, BorrowSlot>,
+}
+struct BorrowSlot {
+    pointer: Option<NonNull<pw::sys::pw_buffer>>,
+    held: Option<BufferKey>,
+}
+impl BorrowPool {
+    fn add(&mut self, pointer: NonNull<pw::sys::pw_buffer>) -> Result<(), WorkerError> {
+        if self.slots.len() >= 64 || self.slots.values().any(|slot|slot.pointer == Some(pointer)) {
+            return Err(WorkerError::Buffer);
+        }
+        self.next = self.next.checked_add(1).ok_or(WorkerError::Revision)?;
+        self.slots.insert(self.next, BorrowSlot {pointer:Some(pointer), held:None});
+        Ok(())
+    }
+    fn remove(&mut self, pointer: NonNull<pw::sys::pw_buffer>) {
+        let Some((&id, slot)) = self.slots.iter_mut().find(|(_,slot)|slot.pointer == Some(pointer)) else {return;};
+        slot.pointer = None;
+        if slot.held.is_none() {self.slots.remove(&id);}
+    }
+    fn held(&self) -> usize {self.slots.values().filter(|slot|slot.held.is_some()).count()}
+    fn borrow(&mut self, pointer: NonNull<pw::sys::pw_buffer>, generation:u64, revision:u64) -> Result<BufferKey,WorkerError> {
+        if self.held() >= dmabuf::MAX_BORROWED {return Err(WorkerError::Budget);}
+        let (&id,slot) = self.slots.iter_mut().find(|(_,slot)|slot.pointer == Some(pointer))
+            .ok_or(WorkerError::Buffer)?;
+        if slot.held.is_some() {return Err(WorkerError::Buffer);}
+        let key=BufferKey {generation,revision,id};
+        slot.held=Some(key);
+        Ok(key)
+    }
+    fn returned(&mut self, key:BufferKey) -> Option<NonNull<pw::sys::pw_buffer>> {
+        let slot=self.slots.get_mut(&key.id)?;
+        if slot.held != Some(key) {return None;}
+        slot.held=None;
+        let pointer=slot.pointer;
+        if pointer.is_none() {self.slots.remove(&key.id);}
+        pointer
+    }
+}
 
 pub(crate) fn initialize() {
     static INIT:std::sync::Once=std::sync::Once::new();
@@ -181,6 +232,9 @@ struct Data {
     loop_: pw::main_loop::MainLoopRc,
     mailbox: Arc<FrameMailbox>,
     connected: bool,
+    modifier: Option<u64>,
+    pool: Rc<RefCell<BorrowPool>>,
+    returned: pw::channel::Sender<BufferKey>,
 }
 impl Data {
     fn fail(&mut self) {
@@ -188,6 +242,95 @@ impl Data {
         self.first.take();
         self.loop_.quit();
     }
+    fn deliver(&mut self,result:Result<OwnedFrame,WorkerError>) {
+        match result {
+            Ok(frame)=> {
+                if let Some(first)=self.first.take() {
+                    if first.send(frame).is_err() {self.fail();}
+                } else {self.mailbox.publish(frame);}
+            }
+            Err(WorkerError::Budget)=>{},
+            Err(error)=> {
+                eprintln!("WEAVELO_PIPEWIRE_ERROR stage=frame error={error:?}");
+                self.fail();
+            }
+        }
+    }
+}
+
+// Like pipewire::Buffer::find_meta, but only used while our originating worker
+// owns the raw dequeued buffer. No metadata or native pointer escapes this call.
+unsafe fn raw_meta<T:spa::buffer::meta::Metadata>(buffer:&spa::sys::spa_buffer)->Option<&T> {
+    let pointer=unsafe {spa::sys::spa_buffer_find_meta_data(buffer,T::META_TYPE,std::mem::size_of::<T>())};
+    unsafe {(pointer as *const T).as_ref()}
+}
+
+fn process_dmabuf(stream:&pw::stream::Stream,data:&mut Data) {
+    let Some(pointer)=NonNull::new(unsafe {stream.dequeue_raw_buffer()}) else {return;};
+    if data.mailbox.is_closed() || data.mailbox.is_paused() || !data.contract.is_negotiated() {
+        unsafe {stream.queue_raw_buffer(pointer.as_ptr());} return;
+    }
+    let Some(buffer)=(unsafe {pointer.as_ref().buffer.as_ref()}) else {
+        unsafe {stream.queue_raw_buffer(pointer.as_ptr());} data.fail();return;
+    };
+    let header=unsafe {raw_meta::<MetaHeader>(buffer)};
+    if header.is_some_and(|header|header.flags().intersects(MetaHeaderFlags::CORRUPTED|MetaHeaderFlags::GAP)) {
+        unsafe {stream.queue_raw_buffer(pointer.as_ptr());} return;
+    }
+    if header.is_some_and(|header|header.flags().contains(MetaHeaderFlags::DISCONT))
+        && data.contract.discontinuity().is_err() {
+        unsafe {stream.queue_raw_buffer(pointer.as_ptr());} data.fail();return;
+    }
+    let lease=data.pool.borrow_mut().borrow(pointer,data.contract.generation,data.contract.revision());
+    let key=match lease {
+        Ok(key)=>key,
+        Err(error)=> {
+            unsafe {stream.queue_raw_buffer(pointer.as_ptr());}
+            if error != WorkerError::Budget {data.fail();}
+            return;
+        }
+    };
+    let returned=data.returned.clone();
+    // Install the exactly-once return before any fallible FD/layout work.
+    let mut gpu=dmabuf::DmaBufFrame::new(dmabuf::DRM_ARGB8888,Vec::new(),Vec::new(),key,
+        move|key|{let _=returned.send(key);});
+    let result=(|| {
+        if buffer.n_datas == 0 || buffer.n_datas as usize > dmabuf::MAX_PLANES || buffer.datas.is_null() {
+            return Err(WorkerError::Buffer);
+        }
+        let planes=unsafe {std::slice::from_raw_parts(buffer.datas,buffer.n_datas as usize)};
+        let mut objects=BTreeMap::new();
+        for plane in planes {
+            if plane.type_ != DataType::DmaBuf.as_raw() || plane.flags & DataFlags::READABLE.bits() == 0
+                || plane.chunk.is_null() {return Err(WorkerError::Buffer);}
+            let chunk=unsafe {&*plane.chunk};
+            validate_chunk_flags(chunk.flags)?;
+            if chunk.size == 0 || chunk.stride <= 0 {return Err(WorkerError::Buffer);}
+            let fd=i32::try_from(plane.fd).ok().filter(|fd|*fd>=0).ok_or(WorkerError::Buffer)?;
+            let object=if let Some(index)=objects.get(&fd) {*index} else {
+                // A dup retains storage; the worker lease, not the dup, prevents
+                // KWin from overwriting it while VAAPI reads the frame.
+                let owned=unsafe {BorrowedFd::borrow_raw(fd)}.try_clone_to_owned().map_err(|_|WorkerError::Buffer)?;
+                let mut file=File::from(owned);
+                let size=file.seek(SeekFrom::End(0)).map_err(|_|WorkerError::Buffer)?;
+                let index=gpu.objects.len() as u32;
+                gpu.objects.push(dmabuf::Object {fd:file,size,modifier:data.modifier.ok_or(WorkerError::Format)?});
+                objects.insert(fd,index);index
+            };
+            gpu.planes.push(dmabuf::Plane {object,
+                offset:plane.mapoffset.checked_add(chunk.offset).ok_or(WorkerError::Buffer)?,
+                stride:chunk.stride as u32});
+        }
+        let crop=unsafe {raw_meta::<MetaVideoCrop>(buffer)}.filter(|crop|crop.meta_region().is_valid())
+            .map(|crop| {let region=crop.meta_region();Crop {x:region.position().x as u32,
+                y:region.position().y as u32,width:region.size().width,height:region.size().height}});
+        let transform=unsafe {raw_meta::<MetaVideoTransform>(buffer)}.map_or(Transform::Identity,|meta| {
+            match meta.transform().as_raw() {0=>Transform::Identity,value=>Transform::Unsupported(value)}
+        });
+        data.contract.import_dmabuf(gpu,crop,transform,header.map(|header|header.seq()),
+            header.and_then(|header|(header.pts()!=i64::MIN).then_some(header.pts())),remote_core::quanta_now_us())
+    })();
+    data.deliver(result);
 }
 
 fn format(raw: spa::param::video::VideoInfoRaw) -> Result<FrameFormat, WorkerError> {
@@ -200,10 +343,7 @@ fn format(raw: spa::param::video::VideoInfoRaw) -> Result<FrameFormat, WorkerErr
         spa::param::video::VideoFormat::RGBx => PixelFormat::Rgbx,
         _ => return Err(WorkerError::Format),
     };
-    if raw
-        .flags()
-        .contains(spa::param::video::VideoFlags::MODIFIER)
-        || raw.interlace_mode() != spa::param::video::VideoInterlaceMode::Progressive
+    if raw.interlace_mode() != spa::param::video::VideoInterlaceMode::Progressive
         || raw.views() > 1
         || (matches!(pixel_format,PixelFormat::Nv12|PixelFormat::I420) && raw.as_raw().chroma_site != 0)
     {
@@ -263,7 +403,27 @@ fn run(
     if let Some(serial) = serial {
         properties.insert("target.object", serial.to_string());
     }
-    let stream = pw::stream::StreamBox::new(&core, "Weavelo local share", properties)?;
+    let stream = pw::stream::StreamRc::new(core.clone(), "Weavelo local share", properties)?;
+    let pool=Rc::new(RefCell::new(BorrowPool::default()));
+    let (returned, receiver)=pw::channel::channel::<BufferKey>();
+    let return_pool=pool.clone();let return_stream=stream.clone();
+    let _returns=receiver.attach(mainloop.loop_(),move|key| {
+        let pointer=return_pool.borrow_mut().returned(key);
+        if let Some(pointer)=pointer {
+            // Only this loop can return this registration, after the final
+            // encoder reference and GPU completion have released its lease.
+            unsafe {return_stream.queue_raw_buffer(pointer.as_ptr());}
+        }
+    });
+    #[cfg(feature="native-linux-video")]
+    let capture_modifier=if camera_mode.is_none() {
+        match crate::linux_raw_encode::vaapi::HardwareEncoder::capture_modifier() {
+            Ok(modifier)=>Some(modifier),
+            Err(error)=>{eprintln!("WEAVELO_PIPEWIRE_STORAGE dma_buf=unavailable reason={error}");None}
+        }
+    } else {None};
+    #[cfg(not(feature="native-linux-video"))]
+    let capture_modifier:Option<u64>=None;
     let _listener = stream
         .add_local_listener_with_user_data(Data {
             contract: CopyContract::new(generation, mailbox.clone()).with_budget(budget),
@@ -271,6 +431,17 @@ fn run(
             loop_: mainloop.clone(),
             mailbox: mailbox.clone(),
             connected: false,
+            modifier: None,
+            pool: pool.clone(),
+            returned,
+        })
+        .add_buffer(|_,data,pointer| {
+            let result=NonNull::new(pointer).ok_or(WorkerError::Buffer)
+                .and_then(|pointer|data.pool.borrow_mut().add(pointer));
+            if result.is_err() {data.fail();}
+        })
+        .remove_buffer(|_,data,pointer| {
+            if let Some(pointer)=NonNull::new(pointer) {data.pool.borrow_mut().remove(pointer);}
         })
         .state_changed(|_, data, _, new| {
             if matches!(new, pw::stream::StreamState::Error(_))
@@ -287,12 +458,13 @@ fn run(
                 data.connected = true;
             }
         })
-        .param_changed(|stream, data, id, param| {
+        .param_changed(move |stream, data, id, param| {
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
             }
             let result = (|| {
                 let Some(param) = param else {
+                    data.modifier=None;
                     return data.contract.renegotiate(None).map(|_| ());
                 };
                 let (media, subtype) = spa::param::format_utils::parse_format(param)
@@ -304,13 +476,19 @@ fn run(
                 }
                 let mut raw = spa::param::video::VideoInfoRaw::default();
                 raw.parse(param).map_err(|_| WorkerError::Format)?;
+                data.modifier=raw.flags().contains(spa::param::video::VideoFlags::MODIFIER).then_some(raw.modifier());
+                if data.modifier.is_some() && (data.modifier != capture_modifier
+                    || raw.format() != spa::param::video::VideoFormat::BGRA) {
+                    return Err(WorkerError::Format);
+                }
                 let metadata = raw.as_raw();
                 eprintln!("WEAVELO_PIPEWIRE_FORMAT width={} height={} format={} range={} matrix={} transfer={} primaries={} chroma={} flags={}",
                     metadata.size.width, metadata.size.height, metadata.format, metadata.color_range,
                     metadata.color_matrix, metadata.transfer_function, metadata.color_primaries,
                     metadata.chroma_site, metadata.flags);
                 data.contract.renegotiate(Some(format(raw)?))?;
-                request_cpu_buffers(stream).map_err(|_| WorkerError::Buffer)
+                eprintln!("WEAVELO_PIPEWIRE_STORAGE dma_buf={} modifier={:?}",data.modifier.is_some(),data.modifier);
+                request_buffers(stream,data.modifier.is_some()).map_err(|_| WorkerError::Buffer)
             })();
             if let Err(error) = result {
                 eprintln!("WEAVELO_PIPEWIRE_ERROR stage=negotiate error={error:?}");
@@ -318,6 +496,10 @@ fn run(
             }
         })
         .process(|stream, data| {
+            if data.modifier.is_some() {
+                process_dmabuf(stream,data);
+                return;
+            }
             // Buffer::drop queues exactly once on every return/error path. Never hold
             // a PipeWire buffer during mailbox wait, FFmpeg write or GUI rendering.
             let Some(mut buffer) = stream.dequeue_buffer() else {
@@ -413,22 +595,7 @@ fn run(
             })();
             // Return buffer before handing owned bytes across the thread boundary.
             drop(buffer);
-            match result {
-                Ok(frame) => {
-                    if let Some(first) = data.first.take() {
-                        if first.send(frame).is_err() {
-                            data.fail();
-                        }
-                    } else {
-                        data.mailbox.publish(frame);
-                    }
-                }
-                Err(WorkerError::Budget) => {} // Skip a frame while two owned reservations are busy.
-                Err(error) => {
-                    eprintln!("WEAVELO_PIPEWIRE_ERROR stage=frame error={error:?}");
-                    data.fail();
-                }
-            }
+            data.deliver(result);
         })
         .register()?;
     let mut object = spa::pod::object!(
@@ -481,7 +648,17 @@ fn run(
                 spa::utils::Fraction{num:1,denom:1},spa::utils::Fraction{num:fps,denom:1}));
         }
     }
-    let formats=[object,rgb].into_iter().map(|format| {
+    let mut objects=Vec::new();
+    if let Some(modifier)=capture_modifier {
+        let mut dma=rgb.clone();
+        dma.properties.retain(|property|property.key != spa::param::format::FormatProperties::VideoFormat.as_raw());
+        dma.properties.push(spa::pod::property!(spa::param::format::FormatProperties::VideoFormat,Id,spa::param::video::VideoFormat::BGRA));
+        let mut property=spa::pod::property!(spa::param::format::FormatProperties::VideoModifier,spa::pod::Value::Long(modifier as i64));
+        property.flags=spa::pod::PropertyFlags::MANDATORY;
+        dma.properties.push(property);objects.push(dma);
+    }
+    objects.extend([object,rgb]);
+    let formats=objects.into_iter().map(|format| {
         spa::pod::serialize::PodSerializer::serialize(Cursor::new(Vec::new()),&spa::pod::Value::Object(format))
             .map(|result|result.0.into_inner())
     }).collect::<Result<Vec<_>,_>>()?;
@@ -494,8 +671,9 @@ fn run(
         &mut pods,
     )?;
     let timer_loop = mainloop.clone();
+    let timer_mailbox=mailbox.clone();
     let timer = mainloop.loop_().add_timer(move |_| {
-        if stop.load(Ordering::Acquire) || mailbox.is_closed() {
+        if stop.load(Ordering::Acquire) || timer_mailbox.is_closed() {
             timer_loop.quit();
         }
     });
@@ -506,14 +684,22 @@ fn run(
         )
         .into_result()?;
     mainloop.run();
+    mailbox.close();
+    let _=stream.set_active(false);
+    // Keep the stream, registrations and return source alive until every GPU
+    // consumer has finished. Duplicating an FD alone does not prevent reuse.
+    while pool.borrow().held() != 0 {
+        mainloop.loop_().iterate(pw::loop_::Timeout::Finite(Duration::from_millis(20)));
+    }
     let _ = stream.disconnect();
     Ok(())
 }
 
-fn request_cpu_buffers(stream: &pw::stream::Stream) -> Result<(), Box<dyn std::error::Error>> {
+fn request_buffers(stream: &pw::stream::Stream, dmabuf:bool) -> Result<(), Box<dyn std::error::Error>> {
     use spa::pod::{ChoiceValue, Object, Property, Value};
     use spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Id};
-    let mask = ((1u32 << DataType::MemPtr.as_raw()) | (1u32 << DataType::MemFd.as_raw())) as i32;
+    let mask = if dmabuf {1u32 << DataType::DmaBuf.as_raw()}
+        else {(1u32 << DataType::MemPtr.as_raw()) | (1u32 << DataType::MemFd.as_raw())} as i32;
     let mut objects = vec![Object {
         type_: spa::sys::SPA_TYPE_OBJECT_ParamBuffers,
         id: spa::sys::SPA_PARAM_Buffers,
@@ -528,6 +714,11 @@ fn request_cpu_buffers(stream: &pw::stream::Stream) -> Result<(), Box<dyn std::e
             ))),
         )],
     }];
+    if dmabuf {
+        objects[0].properties.push(Property::new(spa::sys::SPA_PARAM_BUFFERS_buffers,
+            Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(),
+                ChoiceEnum::Range {default:8,min:4,max:8})))));
+    }
     for (kind, size) in [
         (
             spa::sys::SPA_META_Header,
@@ -567,4 +758,38 @@ fn request_cpu_buffers(stream: &pw::stream::Stream) -> Result<(), Box<dyn std::e
         .collect::<Result<Vec<_>, _>>()?;
     stream.update_params(&mut pods)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn pointer(id:usize)->NonNull<pw::sys::pw_buffer> {
+        NonNull::new((id*4096) as *mut pw::sys::pw_buffer).unwrap()
+    }
+    #[test]
+    fn removed_buffer_return_cannot_queue_a_reused_native_address() {
+        let mut pool=BorrowPool::default();let address=pointer(1);
+        pool.add(address).unwrap();let old=pool.borrow(address,7,1).unwrap();
+        pool.remove(address);pool.add(address).unwrap();
+        let new=pool.borrow(address,7,2).unwrap();
+        assert_ne!(old.id,new.id);assert_eq!(pool.held(),2);
+        assert!(pool.returned(old).is_none());assert_eq!(pool.held(),1);
+        assert!(pool.returned(old).is_none());
+        assert!(pool.returned(BufferKey {generation:8,..new}).is_none());
+        assert!(pool.returned(BufferKey {revision:1,..new}).is_none());
+        assert_eq!(pool.held(),1);assert_eq!(pool.returned(new),Some(address));
+        assert_eq!(pool.held(),0);assert!(pool.returned(new).is_none());
+    }
+    #[test]
+    fn gpu_leases_are_bounded_and_only_final_returns_reopen_capacity() {
+        let mut pool=BorrowPool::default();
+        for id in 1..=5 {pool.add(pointer(id)).unwrap();}
+        let leases=(1..=4).map(|id|pool.borrow(pointer(id),2,3).unwrap()).collect::<Vec<_>>();
+        assert_eq!(pool.borrow(pointer(5),2,3),Err(WorkerError::Budget));
+        assert_eq!(pool.returned(leases[0]),Some(pointer(1)));
+        let final_lease=pool.borrow(pointer(5),2,3).unwrap();
+        for key in leases.into_iter().skip(1).chain([final_lease]) {assert!(pool.returned(key).is_some());}
+        assert_eq!(pool.held(),0);
+        assert!(pool.borrow(pointer(99),2,3).is_err());
+    }
 }
