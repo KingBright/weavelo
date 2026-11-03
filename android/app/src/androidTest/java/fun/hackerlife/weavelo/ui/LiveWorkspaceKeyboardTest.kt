@@ -5,6 +5,9 @@ import android.os.Process
 import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
+import android.view.SurfaceView
+import android.view.MotionEvent
+import android.view.InputDevice
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.EditorInfo
 import androidx.test.core.app.ActivityScenario
@@ -37,6 +40,12 @@ class LiveWorkspaceKeyboardTest {
     private fun editor(view: View): RemoteImeView? = when (view) {
         is RemoteImeView -> view.takeIf { it.isFocused && it.acceptingInput }
         is ViewGroup -> (0 until view.childCount).firstNotNullOfOrNull { editor(view.getChildAt(it)) }
+        else -> null
+    }
+
+    private fun screen(view: View): SurfaceView? = when (view) {
+        is SurfaceView -> view.takeIf { it.contentDescription == "Remote screen" && it.isShown }
+        is ViewGroup -> (0 until view.childCount).firstNotNullOfOrNull { screen(view.getChildAt(it)) }
         else -> null
     }
 
@@ -90,6 +99,29 @@ class LiveWorkspaceKeyboardTest {
                             it.optJSONObject("source")?.optLong("Window") == windowId
                     } }.getOrDefault(false)
                 }
+                // Use the owner's normal remote click to focus the fixture's
+                // editor. A selected window need not be the host's foreground
+                // window, and keyboard safety must not depend on test setup.
+                assertEquals(640, source.width)
+                assertEquals(452, source.height)
+                var point = 0f to 0f
+                scenario.onActivity { activity ->
+                    val view = checkNotNull(screen(activity.window.decorView))
+                    check(view.hasWindowFocus() && view.width > 0 && view.height > 0)
+                    val location = IntArray(2); view.getLocationOnScreen(location)
+                    point = location[0] + view.width * .48f to location[1] + view.height * .68f
+                }
+                val down = SystemClock.uptimeMillis()
+                for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                    val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, point.first, point.second, 0)
+                    event.source = InputDevice.SOURCE_TOUCHSCREEN
+                    try {
+                        assertTrue(instrumentation.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+                            .injectInputEvent(event, true))
+                    } finally { event.recycle() }
+                    SystemClock.sleep(30)
+                }
+                SystemClock.sleep(200)
                 if (!click("Show keyboard")) {
                     assertTrue(click("Show stream controls"))
                     await("Keyboard control not visible") { click("Show keyboard") }
