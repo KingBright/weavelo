@@ -1,6 +1,7 @@
 package `fun`.hackerlife.weavelo.ui
 
 import android.content.Intent
+import android.os.FileObserver
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -46,13 +47,23 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
             context.startActivity(Intent.createChooser(intent, if (share) "Share received file" else "Open received file"))
         }.onFailure { error = it.message ?: "No application can open this file" }
     }
+    DisposableEffect(directory) {
+        val observer = object : FileObserver(directory.path,
+            FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.MOVED_FROM or
+                FileObserver.CREATE or FileObserver.DELETE) {
+            override fun onEvent(event: Int, path: String?) {
+                if (path == null || !path.startsWith(".weavelo-")) scope.launch { refresh++ }
+            }
+        }
+        observer.startWatching()
+        onDispose { observer.stopWatching() }
+    }
     LaunchedEffect(directory, refresh) {
         files = withContext(Dispatchers.IO) { directory.listFiles()?.filter { !it.name.startsWith(".weavelo-") && it.canonicalPath.startsWith(root.path + File.separator) }?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name }) ?: emptyList() }
     }
     AlertDialog(onDismissRequest = onClose, title = { Text("Received files") }, text = {
         Column {
             if (directory != root) TextButton(onClick = { directory = directory.parentFile ?: root }) { Text("Back to parent folder") }
-            TextButton(onClick = { refresh++ }) { Text("Refresh") }
             error?.let { Text(it) }
             LazyColumn(Modifier.heightIn(max = 420.dp)) {
                 items(files, key = { it.absolutePath }) { file ->

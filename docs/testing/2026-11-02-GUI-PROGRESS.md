@@ -477,4 +477,14 @@ Studio 原先零字节失败的两个手机发送请求，在 103 上以原请�
 
 Linux 103 的 20,452,807 字节安装包和 Windows 103 的 51,687,808 字节安装包，均经真实文件通道发送到 Studio，并独立核对接收文件的 SHA。三平台 103 成品随后经正式入口发布，正式入口及顺序独立下载校验均通过；没有在额外并发读取超时后重复发布。公网清单 SHA 为 `8a308f6b54c4046e4799ec0b40474f73c56a661372917a7f41d3d406c69eca14`，证据 `native103-received-package-hash-proof.json`、`native103-nas-publication.log`、`native103-nas-verified.json`。此前四桌面的 12 个发送方向和 12 个反向拉取记录仍有效，不将它们描述为全部在 103 上重测。
 
+## 2026-11-04 六设备文件矩阵与 Android 接收列表
+
+六台设备的 30 个有向文件发送链路均已有真实接收与接收端独立 SHA-256 校验。四桌面之间沿用此前 12 项逐端校验；新增手机相关 18 个方向使用 Android 75，其中六项手机→Book / Linux / Windows、八项电脑→手机均使用桌面 103。手机→Studio 使用此前真实回传并在 Studio 独立读取校验的两项记录。两部手机互发时，分别导出新收到的编号副本，避免把已有同名文件误作本次接收。
+
+手机接收校验均通过正常 Received files → Save a copy 导出到公共 Downloads，再由接收手机自身执行 `sha256sum`；未读取应用私有目录、使用 root 或更改系统权限。Book、Linux、Windows 的源文件 SHA 分别以 `a0e4dc93…`、`d194335c…`、`9b2500c7…` 开头，手机间文件为 Studio 测试文件 `934070a6…`；所有测试文件均为 262,161 字节。聚合证据为 `six-device-file-matrix-receiver-sha.json`，包含每个方向的版本范围及原始证据所在设备；完整原始记录副本为 `six-device-file-proof-bundle.json`。四桌面的 12 项反向 Fetch 单独保留，不将文件结果等同于视频、控制、通知、音频或摄像头验收。
+
+实测还发现 Android 75 的 Received files 对话框在收到文件后保持旧列表，必须手动 Refresh 才能看到新文件。Android 76 改用随当前目录生命周期启停的系统 FileObserver，文件完成、移入、移出或删除时更新列表，并移除 Refresh 按钮；不增加轮询、依赖或协议字段。设备和设置页仍为竖屏，串流横屏与 HUD 逻辑保持现有实现。
+
+这次源码修复通过现有 Android debug 单元检查及 1,045 项签名发布回归（19 项跳过）。首次 Kotlin 增量编译报告既有顶层函数无法解析；逐文件核对与已提交源码一致后，以同一份未改动源码执行非增量编译及单元检查通过，没有清空共享缓存或增加永久构建开关。证据为 `android76-file-list-kotlin-nonincremental-proof.json`、`android76-file-list-kotlin-nonincremental.log`、`android76-file-list-release-regression.log`。76 的正式成品、安装和自动刷新实机验收仍待本轮继续完成。
+
 当前源码已提交推送；完整六设备视频、控制指令与通知、音频、摄像头及其权限继续验收，尚未宣称总目标完成。红米完整中文输入、Android 独立多会话以及部分窗口图标 / Linux 窗口来源仍保留为接续项。
