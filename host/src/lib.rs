@@ -1255,6 +1255,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 let chunk = chunk_res?;
                 #[cfg(target_os="linux")]
                 if let Some(timing)=chunk.native_timing {
+                    resources.native_encode_total.record(std::time::Duration::from_micros(chunk.timing.encode_done_ts_us.into()));
                     resources.encode_queue.record(std::time::Duration::from_micros(timing.queue_us));
                     resources.upload_vpp.record(std::time::Duration::from_micros(timing.upload_vpp_us));
                     resources.hardware_encode.record(std::time::Duration::from_micros(timing.encode_us));

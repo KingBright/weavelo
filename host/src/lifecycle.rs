@@ -26,6 +26,7 @@ pub(crate) struct Resources {
     pub encode_queue: StageTimer,
     pub upload_vpp: StageTimer,
     pub hardware_encode: StageTimer,
+    pub native_encode_total: StageTimer,
     pub encoder_backpressure_ticks: AtomicU64,
     pub native_camera_frames: AtomicU64,
     pub raw_capture_samples: AtomicU64,
@@ -36,25 +37,33 @@ pub(crate) struct Resources {
 }
 
 #[derive(Default)]
-pub(crate) struct StageTimer {calls:AtomicU64,total_us:AtomicU64,max_us:AtomicU64}
+pub(crate) struct StageTimer {calls:AtomicU64,total_us:AtomicU64,max_us:AtomicU64,over_10ms:AtomicU64,over_20ms:AtomicU64}
 impl StageTimer {
     pub(crate) fn record(&self,duration:std::time::Duration) {
         let us=duration.as_micros().min(u64::MAX as u128) as u64;
         self.calls.fetch_add(1,SeqCst);self.total_us.fetch_add(us,SeqCst);self.max_us.fetch_max(us,SeqCst);
+        if us>10_000 {self.over_10ms.fetch_add(1,SeqCst);}
+        if us>20_000 {self.over_20ms.fetch_add(1,SeqCst);}
     }
     fn snapshot(&self)->StageTimingSnapshot {StageTimingSnapshot {
         calls:self.calls.load(SeqCst),total_us:self.total_us.load(SeqCst),max_us:self.max_us.load(SeqCst),
+        over_10ms:self.over_10ms.load(SeqCst),over_20ms:self.over_20ms.load(SeqCst),
     }}
 }
 /// Wall-clock time in a stage, including waits; this does not measure CPU use.
 #[derive(Clone,Default,Serialize,Deserialize)]
-pub struct StageTimingSnapshot {pub calls:u64,pub total_us:u64,pub max_us:u64}
+pub struct StageTimingSnapshot {
+    pub calls:u64,pub total_us:u64,pub max_us:u64,
+    #[serde(default)] pub over_10ms:u64,
+    #[serde(default)] pub over_20ms:u64,
+}
 #[derive(Clone,Default,Serialize,Deserialize)]
 pub struct VideoTimingSnapshot {
     pub capture_wait:StageTimingSnapshot,pub submit:StageTimingSnapshot,pub send:StageTimingSnapshot,
     #[serde(default)] pub encode_queue:StageTimingSnapshot,
     #[serde(default)] pub upload_vpp:StageTimingSnapshot,
     #[serde(default)] pub hardware_encode:StageTimingSnapshot,
+    #[serde(default)] pub native_encode_total:StageTimingSnapshot,
     pub encoder_backpressure_ticks:u64,
     #[serde(default)] pub native_camera_frames:u64,
     #[serde(default)] pub raw_capture_samples:u64,
@@ -257,6 +266,7 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 encoded_frames: x.encoded_frames.load(SeqCst),
                 video_timing:VideoTimingSnapshot {capture_wait:x.capture_wait.snapshot(),submit:x.video_submit.snapshot(),
                     encode_queue:x.encode_queue.snapshot(),upload_vpp:x.upload_vpp.snapshot(),hardware_encode:x.hardware_encode.snapshot(),
+                    native_encode_total:x.native_encode_total.snapshot(),
                     send:x.media_send.snapshot(),encoder_backpressure_ticks:x.encoder_backpressure_ticks.load(SeqCst),
                     native_camera_frames:x.native_camera_frames.load(SeqCst),raw_capture_samples:x.raw_capture_samples.load(SeqCst),
                     capture_pacing_skips:x.capture_pacing_skips.load(SeqCst),capture_target_fps:x.capture_target_fps.load(SeqCst),
