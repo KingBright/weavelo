@@ -23,6 +23,9 @@ pub(crate) struct Resources {
     pub capture_wait: StageTimer,
     pub video_submit: StageTimer,
     pub media_send: StageTimer,
+    pub encode_queue: StageTimer,
+    pub upload_vpp: StageTimer,
+    pub hardware_encode: StageTimer,
     pub encoder_backpressure_ticks: AtomicU64,
     pub native_camera_frames: AtomicU64,
     pub raw_capture_samples: AtomicU64,
@@ -49,6 +52,9 @@ pub struct StageTimingSnapshot {pub calls:u64,pub total_us:u64,pub max_us:u64}
 #[derive(Clone,Default,Serialize,Deserialize)]
 pub struct VideoTimingSnapshot {
     pub capture_wait:StageTimingSnapshot,pub submit:StageTimingSnapshot,pub send:StageTimingSnapshot,
+    #[serde(default)] pub encode_queue:StageTimingSnapshot,
+    #[serde(default)] pub upload_vpp:StageTimingSnapshot,
+    #[serde(default)] pub hardware_encode:StageTimingSnapshot,
     pub encoder_backpressure_ticks:u64,
     #[serde(default)] pub native_camera_frames:u64,
     #[serde(default)] pub raw_capture_samples:u64,
@@ -250,6 +256,7 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 captured_frames: x.captured_frames.load(SeqCst),
                 encoded_frames: x.encoded_frames.load(SeqCst),
                 video_timing:VideoTimingSnapshot {capture_wait:x.capture_wait.snapshot(),submit:x.video_submit.snapshot(),
+                    encode_queue:x.encode_queue.snapshot(),upload_vpp:x.upload_vpp.snapshot(),hardware_encode:x.hardware_encode.snapshot(),
                     send:x.media_send.snapshot(),encoder_backpressure_ticks:x.encoder_backpressure_ticks.load(SeqCst),
                     native_camera_frames:x.native_camera_frames.load(SeqCst),raw_capture_samples:x.raw_capture_samples.load(SeqCst),
                     capture_pacing_skips:x.capture_pacing_skips.load(SeqCst),capture_target_fps:x.capture_target_fps.load(SeqCst),

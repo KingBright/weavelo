@@ -105,7 +105,13 @@ async fn actual_vaapi_camera_preserves_pixels_color_and_frame_association() {
             }
             chunks
         });
-        let bytes=encoded(&chunks);
+        assert_hardware_pixels(&chunks,pixel,expected);
+    }
+}
+
+#[cfg(target_os="linux")]
+fn assert_hardware_pixels(chunks:&[RawChunk],pixel:PixelFormat,expected:remote_core::hevc_sequence::VideoSignal) {
+        let bytes=encoded(chunks);
         let sequence=remote_core::hevc_sequence::sequence_info(&bytes).unwrap().unwrap();
         assert_eq!(sequence.signal,Some(expected),"{pixel:?}");
         assert_eq!([sequence.visible[2],sequence.visible[3]],[320,180]);
@@ -121,6 +127,37 @@ async fn actual_vaapi_camera_preserves_pixels_color_and_frame_association() {
                 assert!(actual.abs_diff(expected)<=6,"{pixel:?}: {actual} != {expected}");
             }
         }
+}
+
+#[cfg(all(target_os="linux",feature="native-linux-video"))]
+#[tokio::test]
+#[ignore="requires an accessible VAAPI hardware HEVC encoder"]
+async fn actual_inprocess_vaapi_delivers_each_idle_frame_and_preserves_pixels() {
+    let encoder=vaapi::HardwareEncoder::probe().unwrap();
+    let settings=RawSettings{width:320,height:180,fps:30,bitrate_kbps:2000};
+    let mut full=known_color();full.range=1;
+    let rgb=SourceColor{range:1,matrix:1,transfer:7,primaries:1};
+    for (pixel,color) in [(PixelFormat::Nv12,known_color()),(PixelFormat::Nv12,full),
+        (PixelFormat::I420,known_color()),(PixelFormat::I420,full),
+        (PixelFormat::Bgra,rgb),(PixelFormat::Bgrx,rgb),(PixelFormat::Rgba,rgb),(PixelFormat::Rgbx,rgb)] {
+        let first=frame_sized(pixel,color,0,640,360);
+        let expected=vaapi::HardwareEncoder::signal(&first).unwrap();
+        let source=vaapi::NativeSource::start(&first,settings,&encoder).unwrap();
+        let mut chunks=Vec::new();
+        // Each output must arrive with no subsequent input or EOF. This catches
+        // both async codec delay and Annex-B's previous one-frame lookahead.
+        for sequence in 0..12 {
+            source.submit(frame_sized(pixel,color,sequence,640,360)).unwrap();
+            let chunk=tokio::time::timeout(Duration::from_secs(2),source.pull()).await.unwrap().unwrap();
+            assert_eq!(chunk.stamp.sequence,Some(sequence));
+            assert_eq!(chunk.stamp.pipewire_pts_ns,Some(900_000_000+sequence as i64));
+            assert!(chunk.native_timing.is_some());
+            if sequence==0 {assert!(chunk.is_keyframe);}
+            chunks.push(chunk);
+        }
+        let mut stale=frame_sized(pixel,color,12,640,360);stale.stamp.generation+=1;
+        assert!(source.submit(stale).is_err());
+        assert_hardware_pixels(&chunks,pixel,expected);
     }
 }
 pub(crate) fn known_color() -> SourceColor {

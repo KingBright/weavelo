@@ -1102,7 +1102,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut video_encoder = MacVideoEncoder::new(width, height, fps, bitrate_kbps)?;
 
     #[cfg(target_os="linux")]
-    let camera_encoder=if matches!(source,protocol::session::CaptureSource::Camera(_)) {
+    let native_encoder=if native_capture.is_some() || matches!(source,protocol::session::CaptureSource::Camera(_)) {
         Some(tokio::task::spawn_blocking(crate::linux_raw_encode::vaapi::HardwareEncoder::probe).await??)
     } else {None};
     #[cfg(target_os="linux")]
@@ -1121,15 +1121,16 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     }};
     #[cfg(target_os = "linux")]
     let mut video_encoder = if let Some(camera)=&camera_capture {
-        LinuxVideoEncoder::from_camera_frames(camera.native.generation,width,height,fps,bitrate_kbps,
-            camera_encoder.ok_or("Camera hardware encoder is unavailable")?)?
+        LinuxVideoEncoder::from_hardware_frames(camera.native.generation,width,height,fps,bitrate_kbps,
+            native_encoder.ok_or("Camera hardware encoder is unavailable")?)?
     } else {match &native_capture {
-        Some(capture) => LinuxVideoEncoder::from_owned_frames(
+        Some(capture) => LinuxVideoEncoder::from_hardware_frames(
             capture.generation(),
             width,
             height,
             fps,
             bitrate_kbps,
+            native_encoder.ok_or("Desktop hardware encoder is unavailable")?,
         )?,
         None => LinuxVideoEncoder::new(width, height, fps, bitrate_kbps)?,
     }};
@@ -1252,6 +1253,12 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             }
             chunk_res = video_encoder.pull_encoded_chunk() => {
                 let chunk = chunk_res?;
+                #[cfg(target_os="linux")]
+                if let Some(timing)=chunk.native_timing {
+                    resources.encode_queue.record(std::time::Duration::from_micros(timing.queue_us));
+                    resources.upload_vpp.record(std::time::Duration::from_micros(timing.upload_vpp_us));
+                    resources.hardware_encode.record(std::time::Duration::from_micros(timing.encode_us));
+                }
                 #[cfg(target_os = "linux")]
                 if native_capture.as_ref().is_some_and(|capture| capture.is_revoked()) { break; }
                 if paused || chunk.nalu.is_empty() {

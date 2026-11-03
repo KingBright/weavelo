@@ -40,6 +40,14 @@ pub struct RawChunk {
     pub is_keyframe: bool,
     pub stamp: FrameStamp,
     pub encode_done_ts_us: u64,
+    pub native_timing: Option<NativeEncodeTiming>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NativeEncodeTiming {
+    pub queue_us: u64,
+    pub upload_vpp_us: u64,
+    pub encode_us: u64,
 }
 
 #[derive(Default)]
@@ -441,6 +449,7 @@ fn drain_reader(
                     is_keyframe,
                     stamp,
                     encode_done_ts_us: remote_core::timing::quanta_now_us(),
+                    native_timing: None,
                 };
                 if output.blocking_send(Ok(chunk)).is_err() {
                     return;

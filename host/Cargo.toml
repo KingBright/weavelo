@@ -3,6 +3,9 @@ name = "host"
 version = "2.0.0-alpha.6"
 edition = "2024"
 
+[features]
+native-linux-video = []
+
 [build-dependencies]
 cc = "1"
 

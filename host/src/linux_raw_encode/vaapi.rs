@@ -3,6 +3,10 @@
 use super::{RawSettings,Result,encoded_color};
 use crate::linux_frame::OwnedFrame;
 use std::{path::PathBuf,process::{Command,Stdio},sync::{Mutex,OnceLock},time::{Duration,Instant}};
+#[cfg(all(target_os="linux",feature="native-linux-video"))]
+mod native;
+#[cfg(all(target_os="linux",feature="native-linux-video"))]
+pub(crate) use native::NativeSource;
 fn is_character_device(kind:std::fs::FileType)->bool {
     #[cfg(unix)] {use std::os::unix::fs::FileTypeExt;kind.is_char_device()}
     // This module's shared frame/encoding models also compile in Windows tests.
@@ -43,7 +47,7 @@ impl HardwareEncoder {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-        Err("Camera sharing requires an available native VAAPI HEVC encoder; no software fallback was started".into())
+        Err("Sharing requires an available native VAAPI HEVC encoder; no software fallback was started".into())
     }
     pub(super) fn configure_device(&self,command:&mut Command) {
         command.args(["-init_hw_device",&format!("vaapi=weavelo:{}",self.device.display()),"-filter_hw_device","weavelo"]);

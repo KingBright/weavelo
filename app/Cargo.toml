@@ -47,7 +47,7 @@ ely-gpui-component = { path = "../third_party/ely-gpui-component" }
 
 [features]
 default = ["gpui-restoration"]
-native-linux-video = ["gpui-native-video", "client/native-linux-video"]
+native-linux-video = ["gpui-native-video", "client/native-linux-video", "host/native-linux-video"]
 gpui-restoration = []
 gpui-native-video = ["gpui-restoration", "gpui-ce/native-video"]
 native-windows-video = ["gpui-native-video", "client/native-windows-video"]

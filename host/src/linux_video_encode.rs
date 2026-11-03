@@ -14,6 +14,38 @@ pub struct EncodedChunk {
     pub timing: protocol::FrameTimingCheckpoints,
     /// Local sidecar only; no public wire timing/identity changes.
     pub native_stamp: Option<crate::linux_frame::FrameStamp>,
+    pub native_timing: Option<crate::linux_raw_encode::NativeEncodeTiming>,
+}
+
+enum OwnedEncoder {
+    Process(RawHevcSource),
+    #[cfg(all(target_os="linux",feature="native-linux-video"))]
+    Native(crate::linux_raw_encode::vaapi::NativeSource),
+}
+impl OwnedEncoder {
+    #[cfg(test)]
+    fn process(&self)->&RawHevcSource {match self {
+        Self::Process(source)=>source,
+        #[cfg(all(target_os="linux",feature="native-linux-video"))]
+        Self::Native(_)=>panic!("This fixture explicitly exercises the software process"),
+    }}
+    #[cfg(test)]
+    fn finish_input(&self) {self.process().finish_input();}
+    fn matches(&self,frame:&crate::linux_frame::OwnedFrame)->bool {match self {
+        Self::Process(source)=>source.matches(frame),
+        #[cfg(all(target_os="linux",feature="native-linux-video"))]
+        Self::Native(source)=>source.matches(frame),
+    }}
+    fn submit(&self,frame:crate::linux_frame::OwnedFrame)->Result<(),Box<dyn Error+Send+Sync>> {match self {
+        Self::Process(source)=>source.submit(frame),
+        #[cfg(all(target_os="linux",feature="native-linux-video"))]
+        Self::Native(source)=>source.submit(frame),
+    }}
+    async fn pull(&self)->Result<crate::linux_raw_encode::RawChunk,Box<dyn Error+Send+Sync>> {match self {
+        Self::Process(source)=>source.pull().await,
+        #[cfg(all(target_os="linux",feature="native-linux-video"))]
+        Self::Native(source)=>source.pull().await,
+    }}
 }
 
 pub struct LinuxVideoEncoder {
@@ -24,7 +56,7 @@ pub struct LinuxVideoEncoder {
     source: Option<FfmpegHevcSource>,
     force_keyframe: bool,
     native_generation: Option<u64>,
-    native: Option<RawHevcSource>,
+    native: Option<OwnedEncoder>,
     native_hardware:Option<crate::linux_raw_encode::vaapi::HardwareEncoder>,
     paused: bool,
 }
@@ -83,7 +115,7 @@ impl LinuxVideoEncoder {
         }
     }
 
-    pub(crate) fn from_camera_frames(generation:u64,width:u32,height:u32,fps:u32,bitrate_kbps:u32,
+    pub(crate) fn from_hardware_frames(generation:u64,width:u32,height:u32,fps:u32,bitrate_kbps:u32,
         encoder:crate::linux_raw_encode::vaapi::HardwareEncoder)->Result<Self,Box<dyn Error+Send+Sync>> {
         let mut result=Self::from_owned_frames(generation,width,height,fps,bitrate_kbps)?;
         result.native_hardware=Some(encoder);Ok(result)
@@ -168,6 +200,7 @@ impl LinuxVideoEncoder {
                     encode_cost_ms: elapsed as f32 / 1000.0,
                     timing,
                     native_stamp: Some(chunk.stamp),
+                    native_timing: chunk.native_timing,
                 });
             }
             return std::future::pending().await;
@@ -192,6 +225,7 @@ impl LinuxVideoEncoder {
                     encode_cost_ms: started.elapsed().as_secs_f32() * 1000.0,
                     timing,
                     native_stamp: None,
+                    native_timing: None,
                 });
             }
         }
@@ -233,8 +267,11 @@ impl VideoEncoder for LinuxVideoEncoder {
                         bitrate_kbps: self.bitrate_kbps,
                     };
                 self.native=Some(match &self.native_hardware {
-                    Some(encoder)=>RawHevcSource::start_hardware(&frame,settings,encoder)?,
-                    None=>RawHevcSource::start(&frame,settings)?,
+                    #[cfg(all(target_os="linux",feature="native-linux-video"))]
+                    Some(encoder)=>OwnedEncoder::Native(crate::linux_raw_encode::vaapi::NativeSource::start(&frame,settings,encoder)?),
+                    #[cfg(not(all(target_os="linux",feature="native-linux-video")))]
+                    Some(encoder)=>OwnedEncoder::Process(RawHevcSource::start_hardware(&frame,settings,encoder)?),
+                    None=>OwnedEncoder::Process(RawHevcSource::start(&frame,settings)?),
                 });
                 self.force_keyframe = true;
             }
@@ -281,7 +318,7 @@ mod lifecycle_tests {
                 let arrival = captured.timing.capture_ts_us;
                 assert!(arrival != 0);
                 encoder.submit_frame(captured).await.unwrap();
-                wait_for_writer(encoder.native.as_ref().unwrap()).await;
+                wait_for_writer(encoder.native.as_ref().unwrap().process()).await;
             }
             encoder.native.as_ref().unwrap().finish_input();
             for sequence in 0..6 {
@@ -331,7 +368,7 @@ mod lifecycle_tests {
                     .submit_frame(crate::linux_capture::LinuxVideoFrame::from_owned(input))
                     .await
                     .unwrap();
-                wait_for_writer(encoder.native.as_ref().unwrap()).await;
+                wait_for_writer(encoder.native.as_ref().unwrap().process()).await;
             }
             encoder.native.as_ref().unwrap().finish_input();
             for sequence in 0..3 {
@@ -356,7 +393,7 @@ mod lifecycle_tests {
             let owned = frame(PixelFormat::Nv12, known_color(), sequence);
             let captured = LinuxVideoFrame::from_owned(owned);
             encoder.submit_frame(captured).await.unwrap();
-            wait_for_writer(encoder.native.as_ref().unwrap()).await;
+            wait_for_writer(encoder.native.as_ref().unwrap().process()).await;
         }
         encoder.native.as_ref().unwrap().finish_input();
         for sequence in 0..6 {
