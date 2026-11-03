@@ -28,6 +28,7 @@ unsafe extern "C" {
         value: *mut CFTypeRef,
     ) -> i32;
     fn AXUIElementSetAttributeValue(element: CFTypeRef, name: CFTypeRef, value: CFTypeRef) -> i32;
+    fn AXUIElementPerformAction(element: CFTypeRef, action: CFTypeRef) -> i32;
     fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
     fn AXValueGetType(value: CFTypeRef) -> u32;
     fn AXValueGetValue(value: CFTypeRef, kind: u32, output: *mut std::ffi::c_void) -> bool;
@@ -284,6 +285,43 @@ pub struct WindowTarget {
     application: CFType,
 }
 impl WindowTarget {
+    /// Restore only the selected, uniquely identified app window. Stage
+    /// Manager can leave its thumbnail visible while SCK produces no frames.
+    pub fn restore_for_capture(&self, title: &str) -> Result<(), String> {
+        current(self.id, self.pid)?;
+        let windows = attr(&self.application, "AXWindows")
+            .and_then(|v| v.downcast::<CFArray>())
+            .ok_or("The selected app's windows are unavailable")?;
+        let mut selected = None;
+        for raw in windows.iter() {
+            let window = unsafe { CFType::wrap_under_get_rule(*raw) };
+            if !attr(&window, "AXTitle").and_then(|v|v.downcast::<CFString>()).is_some_and(|v|v == title) { continue; }
+            if selected.is_some() { return Err("Open the selected window on the source Mac; its title is ambiguous".into()); }
+            selected = Some(window);
+        }
+        let window = selected.ok_or("The selected application window is no longer available")?;
+        let mut pid = 0;
+        if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 || pid != self.pid {
+            return Err("The selected window changed process".into());
+        }
+        let set = |element: &CFType, attribute: &str, value: CFBoolean| {
+            let name = CFString::new(attribute);
+            unsafe { AXUIElementSetAttributeValue(element.as_CFTypeRef(), name.as_CFTypeRef(), value.as_CFTypeRef()) }
+        };
+        if attr(&window, "AXMinimized").and_then(|v|v.downcast::<CFBoolean>()).is_some_and(|v|v.into())
+            && set(&window, "AXMinimized", CFBoolean::false_value()) != 0 {
+            return Err("The selected window could not be restored for capture".into());
+        }
+        if set(&self.application, "AXFrontmost", CFBoolean::true_value()) != 0 {
+            return Err("The selected application could not be activated for capture".into());
+        }
+        let action = CFString::new("AXRaise");
+        if unsafe { AXUIElementPerformAction(window.as_CFTypeRef(), action.as_CFTypeRef()) } != 0 {
+            return Err("The selected window could not be raised for capture".into());
+        }
+        current(self.id, self.pid)?;
+        Ok(())
+    }
     pub fn new(id: u32, pid: i32) -> Result<Self, String> {
         if id == 0 || pid <= 0 {
             return Err("Invalid selected window identity".into());

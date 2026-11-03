@@ -1,6 +1,12 @@
 use protocol::session::{CaptureSource, CaptureSourceInfo};
 use std::error::Error;
 
+#[cfg(any(target_os = "macos", test))]
+fn window_is_transformed(frame: (f64, f64), original: (f64, f64)) -> bool {
+    frame.0 >= 2.0 && frame.1 >= 2.0
+        && (frame.0 * 2.0 < original.0 || frame.1 * 2.0 < original.1)
+}
+
 #[cfg(target_os = "macos")]
 fn window_pixel_size(
     window: &screencapturekit::shareable_content::SCWindow,
@@ -214,6 +220,15 @@ pub(crate) fn filter(
                 .ok_or("selected window is no longer available")?;
             let filter = SCContentFilter::create().with_window(&window).build();
             let size = window_pixel_size(&window, &filter);
+            let scale = f64::from(filter.point_pixel_scale()).clamp(1.0, 4.0);
+            let frame = window.frame().size();
+            // Compare point sizes, never Retina pixels with logical bounds.
+            // A plain off-screen or covered window needs no activation.
+            if window_is_transformed((frame.width, frame.height), (f64::from(size.0) / scale, f64::from(size.1) / scale)) {
+                let app = window.owning_application().ok_or("The selected window's application is unavailable")?;
+                let title = window.title().ok_or("The selected window has no stable title")?;
+                crate::window_input::WindowTarget::new(id, app.process_id())?.restore_for_capture(&title)?;
+            }
             Ok((filter, size))
         }
         CaptureSource::MainDisplay | CaptureSource::Display(_) => {
@@ -231,6 +246,18 @@ pub(crate) fn filter(
                 (display.width(), display.height()),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod transformed_window_tests {
+    use super::window_is_transformed;
+    #[test]
+    fn stage_manager_thumbnail_differs_from_normal_and_retina_window_points() {
+        assert!(window_is_transformed((69.0, 110.0), (640.0, 632.0)));
+        assert!(!window_is_transformed((640.0, 632.0), (1280.0 / 2.0, 1264.0 / 2.0)));
+        assert!(!window_is_transformed((69.0, 110.0), (69.0, 110.0)));
+        assert!(!window_is_transformed((0.0, 0.0), (640.0, 632.0)));
     }
 }
 /// The same serialized native query serves local selection and remote catalogs.
