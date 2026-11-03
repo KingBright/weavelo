@@ -1516,6 +1516,20 @@ mod tests {
         assert_eq!(diagnostics.snapshot().last_error, Some(RelayFailure::Timeout));
         diagnostics.connected();
         assert_eq!(diagnostics.snapshot().last_error, None);
+        let recovered = diagnostics.snapshot().last_disconnect.unwrap();
+        assert_eq!(recovered.failure, RelayFailure::Timeout);
+        assert_eq!(recovered.stage, RelayStage::Idle);
+        diagnostics.attempt();
+        assert_eq!(diagnostics.snapshot().last_disconnect.unwrap().failure, RelayFailure::Timeout);
+    }
+
+    #[test]
+    fn active_websocket_failures_keep_the_structured_cause() {
+        use tokio_tungstenite::tungstenite::{Error, error::ProtocolError};
+        let wrapped = websocket_io_error(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake));
+        assert_eq!(io_failure(&wrapped), RelayFailure::ProtocolReset);
+        let wrapped = websocket_io_error(Error::WriteBufferFull(Box::new(Message::Binary(Bytes::from_static(b"synthetic")))));
+        assert_eq!(io_failure(&wrapped), RelayFailure::Backpressure);
     }
 
     #[tokio::test]

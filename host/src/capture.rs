@@ -186,6 +186,12 @@ impl MacVideoCapturer {
             // input bounds. A fixed-window source owns this window only.
             config.set_includes_child_windows(false);
             config.set_scales_to_fit(true);
+            // A selected window owns its full content even when Stage Manager
+            // places its thumbnail partly outside the desktop's visible clip.
+            config.set_ignore_global_clip_single_window(true);
+            config.set_capture_resolution_type(
+                screencapturekit::stream::configuration::SCCaptureResolutionType::Best,
+            );
         }
         config
     }

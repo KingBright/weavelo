@@ -35,6 +35,9 @@ pub enum RelayFailure {
     Tls,
     TlsCertificate,
     Protocol,
+    ProtocolReset,
+    Capacity,
+    Backpressure,
     Closed,
     Other,
 }
@@ -62,12 +65,25 @@ pub struct RelayTunnelSnapshot {
     pub data_frames_received: u64,
     pub last_pong_age_ms: Option<u64>,
     pub last_error: Option<RelayFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_disconnect: Option<RelayDisconnect>,
+}
+
+/// Fixed categories only; error text may contain addresses or credentials.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayDisconnect {
+    pub failure: RelayFailure,
+    pub stage: RelayStage,
+    pub os_error: Option<i32>,
+    pub attempt: u64,
+    pub age_ms: u64,
 }
 
 #[derive(Debug, Default)]
 struct Stored {
     value: RelayTunnelSnapshot,
     last_pong: Option<Instant>,
+    last_disconnect_at: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -84,6 +100,9 @@ impl RelayTunnelDiagnostics {
         result.last_pong_age_ms = stored
             .last_pong
             .map(|t| t.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        if let (Some(value), Some(at)) = (&mut result.last_disconnect, stored.last_disconnect_at) {
+            value.age_ms = at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        }
         result
     }
     pub(crate) fn attempt(&self) {
@@ -169,6 +188,11 @@ impl RelayTunnelDiagnostics {
     }
     pub(crate) fn retry(&self, failure: RelayFailure) {
         self.update(|s| {
+            s.value.last_disconnect = Some(RelayDisconnect {
+                failure, stage: s.value.stage, os_error: s.value.last_os_error,
+                attempt: s.value.attempts, age_ms: 0,
+            });
+            s.last_disconnect_at = Some(Instant::now());
             s.value.state = RelayConnectionState::RetryWait;
             s.value.last_error = Some(failure);
             s.value.last_failure_stage = Some(s.value.stage);
@@ -184,6 +208,9 @@ impl RelayTunnelDiagnostics {
 }
 
 pub(crate) fn io_failure(error: &std::io::Error) -> RelayFailure {
+    if let Some(error) = error.get_ref().and_then(|e|e.downcast_ref::<tokio_tungstenite::tungstenite::Error>()) {
+        return websocket_failure(error);
+    }
     use std::io::ErrorKind;
     match error.kind() {
         ErrorKind::TimedOut => RelayFailure::Timeout,
@@ -203,7 +230,10 @@ pub(crate) fn websocket_failure(error: &tokio_tungstenite::tungstenite::Error) -
     match error {
         Error::Tls(_) => RelayFailure::Tls,
         Error::Io(error) => io_failure(error),
+        Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake) => RelayFailure::ProtocolReset,
         Error::Protocol(_) | Error::Http(_) | Error::HttpFormat(_) => RelayFailure::Protocol,
+        Error::Capacity(_) => RelayFailure::Capacity,
+        Error::WriteBufferFull(_) => RelayFailure::Backpressure,
         Error::ConnectionClosed | Error::AlreadyClosed => RelayFailure::Closed,
         _ => RelayFailure::Other,
     }

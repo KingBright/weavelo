@@ -27,6 +27,7 @@ pub(crate) struct Resources {
     pub upload_vpp: StageTimer,
     pub hardware_encode: StageTimer,
     pub native_encode_total: StageTimer,
+    pub last_slow_encode: Mutex<Option<SlowEncodeFrame>>,
     pub encoder_backpressure_ticks: AtomicU64,
     pub native_camera_frames: AtomicU64,
     pub raw_capture_samples: AtomicU64,
@@ -64,6 +65,8 @@ pub struct VideoTimingSnapshot {
     #[serde(default)] pub upload_vpp:StageTimingSnapshot,
     #[serde(default)] pub hardware_encode:StageTimingSnapshot,
     #[serde(default)] pub native_encode_total:StageTimingSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_slow_encode: Option<SlowEncodeFrame>,
     pub encoder_backpressure_ticks:u64,
     #[serde(default)] pub native_camera_frames:u64,
     #[serde(default)] pub raw_capture_samples:u64,
@@ -71,6 +74,19 @@ pub struct VideoTimingSnapshot {
     #[serde(default)] pub capture_target_fps:u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_capture_geometry: Option<NativeCaptureGeometry>,
+}
+
+/// Correlated parts of the most recent >20ms frame, without any media bytes.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SlowEncodeFrame {
+    pub observed_at_ms: u64,
+    pub total_us: u64,
+    pub queue_us: u64,
+    pub upload_vpp_us: u64,
+    pub hardware_encode_us: u64,
+    pub overhead_us: u64,
+    pub keyframe: bool,
+    pub encoded_bytes: usize,
 }
 
 /// Last native format transition, with no pixels, titles or input payload.
@@ -267,6 +283,7 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                 video_timing:VideoTimingSnapshot {capture_wait:x.capture_wait.snapshot(),submit:x.video_submit.snapshot(),
                     encode_queue:x.encode_queue.snapshot(),upload_vpp:x.upload_vpp.snapshot(),hardware_encode:x.hardware_encode.snapshot(),
                     native_encode_total:x.native_encode_total.snapshot(),
+                    last_slow_encode:x.last_slow_encode.lock().unwrap().clone(),
                     send:x.media_send.snapshot(),encoder_backpressure_ticks:x.encoder_backpressure_ticks.load(SeqCst),
                     native_camera_frames:x.native_camera_frames.load(SeqCst),raw_capture_samples:x.raw_capture_samples.load(SeqCst),
                     capture_pacing_skips:x.capture_pacing_skips.load(SeqCst),capture_target_fps:x.capture_target_fps.load(SeqCst),

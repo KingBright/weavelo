@@ -1259,6 +1259,16 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     resources.encode_queue.record(std::time::Duration::from_micros(timing.queue_us));
                     resources.upload_vpp.record(std::time::Duration::from_micros(timing.upload_vpp_us));
                     resources.hardware_encode.record(std::time::Duration::from_micros(timing.encode_us));
+                    let total_us = u64::from(chunk.timing.encode_done_ts_us);
+                    if total_us > 20_000 {
+                        *resources.last_slow_encode.lock().unwrap() = Some(lifecycle::SlowEncodeFrame {
+                            observed_at_ms: remote_core::session_crypto::now_unix_ms(), total_us,
+                            queue_us: timing.queue_us, upload_vpp_us: timing.upload_vpp_us,
+                            hardware_encode_us: timing.encode_us,
+                            overhead_us: total_us.saturating_sub(timing.queue_us.saturating_add(timing.upload_vpp_us).saturating_add(timing.encode_us)),
+                            keyframe: chunk.is_keyframe, encoded_bytes: chunk.nalu.len(),
+                        });
+                    }
                 }
                 #[cfg(target_os = "linux")]
                 if native_capture.as_ref().is_some_and(|capture| capture.is_revoked()) { break; }
