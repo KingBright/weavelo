@@ -635,7 +635,33 @@ class CurrentUpgrade(Upgrade):
         return result
 
     def recover(self,transaction_id):
-        raise ValueError('Current updates retain their observed state for forward repair; no automatic rollback')
+        with self.lock():
+            record,current,pending=self.observed_record();plan=record['plan']
+            require(record['transaction_id']==transaction_id and gate.digest(gate.canonical(plan))==record['plan_sha256'],
+                    'Original current update required')
+            require(pending is None and record['phase'] in ('gui-stop-intent','background-stop-intent','owners-stopped'),
+                    'Observe the original current update; this phase cannot resume before exchange')
+            require(not self.control.owners(plan['old_sha256']),'Owners still live; observe their original exit first')
+            configuration=self.control.configuration()
+            require(configuration['active']=='inactive' and configuration['pid']==0,'Supervisor stop is not confirmed')
+            with stopped_locks(self.paths['profile']):
+                self.same(plan)
+                require(image(self.paths['app'])==plan['old_image'] and image(self.slot)==record['candidate_image'],
+                        'Current update image tuple changed; retained')
+                fsync_tree(self.paths['app']);fsync_tree(self.slot)
+                record['phase']='exchange-intent';current=self.save(record,current)
+                exchange(self.slot,self.paths['app'])
+                require(image(self.slot)==plan['old_image'] and image(self.paths['app'])==record['candidate_image'],
+                        'Forward exchange tuple unconfirmed')
+                self.same(plan);record['phase']='exchanged';current=self.save(record,current)
+            record['phase']='activation-intent';current=self.save(record,current)
+            record['running']=self.control.start(plan['runtime'],plan['new_sha256'])
+            self.same(plan)
+            require(image(self.paths['app'])==record['candidate_image'] and image(self.slot)==plan['old_image'],
+                    'Forward activation image tuple changed')
+            result=self.finish(record,current)
+            result['resumed_forward']=True
+            return result
 
 
 def main():

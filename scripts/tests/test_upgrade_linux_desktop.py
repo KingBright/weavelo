@@ -482,6 +482,35 @@ class UpgradeTests(unittest.TestCase):
         self.apply_current(current)
         self.assertFalse(current.slot.exists());self.assertFalse(self.up.transaction.exists());self.unchanged()
 
+    def interrupted_current(self):
+        current=up.CurrentUpgrade(self.home,self.control)
+        self.fail='gui-stop'
+        with self.assertRaises(TimeoutError):self.apply_current(current)
+        status=current.status();self.fail=None
+        self.assertEqual(status['phase'],'gui-stop-intent')
+        return current,status['transaction_id']
+
+    def test_current_stopped_update_resumes_forward_without_replaying_stop_or_new_backup(self):
+        current,transaction=self.interrupted_current()
+        result=current.recover(transaction)
+        self.assertTrue(result['resumed_forward']);self.assertEqual(result['phase'],'completed')
+        self.assertEqual(self.calls,['gui-stop','start'])
+        self.assertEqual((self.paths['app']/'weavelo').read_bytes(),b'new exe')
+        self.assertFalse(current.slot.exists());self.assertFalse(self.up.transaction.exists());self.unchanged()
+
+    def test_current_forward_resume_preserves_live_owner_and_original_images(self):
+        current,transaction=self.interrupted_current();self.control.running={102}
+        with self.assertRaisesRegex(ValueError,'Owners still live'):current.recover(transaction)
+        self.assertEqual(self.calls,['gui-stop']);self.assertEqual(up.image(self.paths['app']),self.old)
+        self.assertTrue(current.slot.exists());self.unchanged()
+
+    def test_current_forward_resume_preserves_changed_candidate_without_exchange(self):
+        current,transaction=self.interrupted_current()
+        (current.slot/'weavelo').write_bytes(b'changed unknown candidate')
+        with self.assertRaisesRegex(ValueError,'image tuple changed'):current.recover(transaction)
+        self.assertEqual(self.calls,['gui-stop']);self.assertEqual(up.image(self.paths['app']),self.old)
+        self.assertEqual((current.slot/'weavelo').read_bytes(),b'changed unknown candidate');self.unchanged()
+
     def test_completed_update_does_not_pin_profile_inodes_forever(self):
         plan,digest=self.plan();self.up.apply(plan,digest)
         for name in ('mesh.conf','mesh.secret'):

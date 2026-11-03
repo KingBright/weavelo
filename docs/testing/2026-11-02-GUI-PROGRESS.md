@@ -456,3 +456,7 @@ Linux 102 的真实 Wayland 全屏夹具证明：自动发送窗已缩到 560×3
 Studio 仍复用接收开启前建立的无文件能力连接，导致零字节失败。本轮让空闲的无文件能力连接重新协商；已具备文件能力的连接及其传输保留，已有视频不会因文件操作被中断。若当前视频是在文件接收开启前连接的，仍需重连该视频才能取得新的文件能力；此限制保留为明确提示。原生回环检查覆盖旧连接释放、现有视频保留及其他文件连接身份保留，发送窗生命周期检查继续通过；证据 `manual-sender-file-capability-tests.log`。
 
 本轮两项原生定向检查通过；正式回归 1,042 项通过、19 项跳过，包含现有签名机的原生 signed / ad-hoc / tamper 夹具，证据 `manual-sender-file-capability-release-signed.log`。Weavelo 域名的公共 TLS 1.3 与 WSS 101 再次核对通过，证据 `nas-relay1b30e54-public-tls-wss-proof.json`。源码修复尚待本轮新成品的安装与实机验收。
+
+103 的四台电脑正式包均已完成，来源为已推送且被三台远端独立拉取核对的 `a1823fa`。Linux 在替换程序前正常退出 GUI 时，文件会话已清空，但远端关闭回执未确认，原升级停在 `gui-stop-intent`；核对各窗口无会话、发送和接收租约后已回收该旧 GUI，并正常停止后台，未交换安装目录。现有 CurrentUpgrade 的恢复入口仅抛出错误，本轮补齐原事务的向前继续：核对停止状态和原有候选字节后完成交换、恢复原运行形态并清理自身暂存，不新建回退副本。62 项 Linux 升级检查与 1,045 项签名发布回归通过（19 项跳过），证据 `linux-current-forward-resume-tests.log`、`linux-current-forward-resume-release.log`。原事务的实机继续执行仍待验证。
+
+NAS 最终 relay 的新诊断记录到 76 次写队列满退出，非替换或已关闭队列。新增原生受限链路夹具复现：4 KiB 双工缓冲、接收端暂停读取 80 毫秒，即在约 0.09 秒内触发连接重置；证据 `relay-transient-stall-old-reproduction.log`。下一步保留队列上限及帧顺序，修复瞬时拥塞时过早断开；此问题尚未关闭。
