@@ -1,5 +1,6 @@
 package `fun`.hackerlife.weavelo.ui
 
+import android.app.UiAutomation
 import android.os.Process
 import android.os.SystemClock
 import android.view.View
@@ -44,7 +45,8 @@ class LiveWorkspaceKeyboardTest {
             for (index in 0 until node.childCount) node.getChild(index)?.let { child -> find(child)?.let { return it } }
             return null
         }
-        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return false
+        val root = instrumentation.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+            .rootInActiveWindow ?: return false
         check(root.packageName?.toString() == "fun.hackerlife.weavelo") { "Owned app is not foreground" }
         var node = find(root) ?: return false
         while (!node.isClickable) node = node.parent ?: return false
