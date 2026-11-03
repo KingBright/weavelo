@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -51,6 +52,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
     StreamOrientation(active = state.panes.isNotEmpty())
     val typing = state.panes.isNotEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var hudVisible by remember(sessionKey) { mutableStateOf(true) }
+    var hudInteraction by remember(sessionKey) { mutableLongStateOf(0L) }
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
@@ -76,6 +79,12 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     var keepService by remember { mutableStateOf(WeaveloClient.backgroundServiceEnabled()) }
     val scope = rememberCoroutineScope()
     var selectedSettings by remember { mutableStateOf<WorkspacePane?>(null) }
+    LaunchedEffect(hudVisible, hudInteraction, actionsOpen, sourcePicker, selectedSettings, typing, state.panes.isEmpty()) {
+        if (hudVisible && state.panes.isNotEmpty() && !actionsOpen && !sourcePicker && selectedSettings == null && !typing) {
+            delay(3500)
+            hudVisible = false
+        }
+    }
     val volumes = remember { mutableStateMapOf<Int, Float>() }
     if (sourcePicker) {
         if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
@@ -153,7 +162,67 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         }
     }
     WeaveloTheme {
-        Column(Modifier.fillMaxSize().background(Color(0xff101318)).safeDrawingPadding().padding(8.dp)) {
+        Box(Modifier.fillMaxSize().background(Color(0xff101318))) {
+            Column(Modifier.fillMaxSize().imePadding()) {
+            val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
+            if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                val columns = workspaceGridColumns(maxWidth.value, maxHeight.value,
+                    visible.map { it.source.width.toFloat() / it.source.height.coerceAtLeast(1) })
+                val rows = visible.chunked(columns)
+                Column(Modifier.fillMaxSize()) {
+                    rows.forEach { row ->
+                        Row(Modifier.weight(1f).fillMaxWidth()) {
+                            row.forEach { pane ->
+                                key(pane.id, state.connectionGeneration) {
+                                    Box(Modifier.weight(1f).fillMaxHeight().padding(if (visible.size > 1) 2.dp else 0.dp)) {
+                                        if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration,
+                                            hudVisible = hudVisible, onHudInteraction = { hudInteraction++ }, onError = { localError = it })
+                                        if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
+                                            .safeDrawingPadding().padding(top = 56.dp)
+                                            .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
+                                            TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                            if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
+                                                MobileAction(MobileSymbol.Refresh, "Switch camera", state.connected) {
+                                                    WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
+                                                }
+                                            }
+                                            MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (state.panes.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
+                    Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
+                    Text(if (state.incomingEnded) "Sharing ended" else "Choose a screen", color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
+                    Text(if (state.incomingEnded) "You can still exchange files."
+                        else if (state.sources.isEmpty()) "This device has not shared a screen yet. You can still exchange files."
+                        else "Open a display or application window. File transfers stay independent.",
+                        color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    if (!state.incomingEnded) Button(onClick = {
+                        WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                        pickerGeneration = state.connectionGeneration; sourcePicker = true
+                    }, enabled = state.connected) {
+                        Text("Browse screens and windows")
+                    }
+                }
+            }
+            if (foreground && state.connected) visible.mapNotNull { it.audioOwner }.distinct().forEach { owner ->
+                key(owner) { WorkspaceAudio(owner, volumes[owner] ?: 1f, onError = { localError = it }) }
+            }
+            }
+            if ((hudVisible || state.panes.isEmpty()) && !typing) Column(
+                Modifier.align(Alignment.TopCenter).fillMaxWidth().safeDrawingPadding().padding(6.dp)
+                    .background(ColorSurfaceCard.copy(alpha = .9f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                    .pointerInput(sessionKey) {
+                        awaitPointerEventScope { while (true) if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) hudInteraction++ }
+                    }) {
             if (!typing) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                 MobileAction(MobileSymbol.Back, "Disconnect", onClick = disconnect)
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
@@ -227,56 +296,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             if (!typing && !state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
             }
-            val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
-            if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                val columns = workspaceGridColumns(maxWidth.value, maxHeight.value,
-                    visible.map { it.source.width.toFloat() / it.source.height.coerceAtLeast(1) })
-                val rows = visible.chunked(columns)
-                Column(Modifier.fillMaxSize()) {
-                    rows.forEach { row ->
-                        Row(Modifier.weight(1f).fillMaxWidth()) {
-                            row.forEach { pane ->
-                                key(pane.id, state.connectionGeneration) {
-                                    Column(Modifier.weight(1f).fillMaxHeight().padding(3.dp)) {
-                                        if (!typing) Row(Modifier.fillMaxWidth()) {
-                                            TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
-                                            if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
-                                                MobileAction(MobileSymbol.Refresh, "Switch camera", state.connected) {
-                                                    WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
-                                                }
-                                            }
-                                            MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
-                                        }
-                                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                            if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration, onError = { localError = it })
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
-            if (state.panes.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
-                    Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
-                    Text(if (state.incomingEnded) "Sharing ended" else "Choose a screen", color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
-                    Text(if (state.incomingEnded) "You can still exchange files."
-                        else if (state.sources.isEmpty()) "This device has not shared a screen yet. You can still exchange files."
-                        else "Open a display or application window. File transfers stay independent.",
-                        color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    if (!state.incomingEnded) Button(onClick = {
-                        WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
-                        pickerGeneration = state.connectionGeneration; sourcePicker = true
-                    }, enabled = state.connected) {
-                        Text("Browse screens and windows")
-                    }
-                }
-            }
-            if (foreground && state.connected) visible.mapNotNull { it.audioOwner }.distinct().forEach { owner ->
-                key(owner) { WorkspaceAudio(owner, volumes[owner] ?: 1f, onError = { localError = it }) }
+            if (!hudVisible && state.panes.isNotEmpty() && !typing) MobileAction(MobileSymbol.More, "Show stream controls",
+                modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp).size(36.dp)
+                    .background(ColorSurfaceCard.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))) {
+                hudVisible = true; hudInteraction++
             }
         }
         selectedSettings?.let { pane ->
@@ -334,7 +358,7 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
 }
 
 @Composable
-private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long, onError: (String) -> Unit) {
+private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long, hudVisible: Boolean, onHudInteraction: () -> Unit, onError: (String) -> Unit) {
     pane.videoError?.let { reason ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -390,14 +414,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         enabled = pane.input && token != 0L && keyboardOwner != null,
         onText = { text -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,text=text) } },
         onKey = { key,pressed -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,key=key,pressed=pressed) } })
-    Column(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize()) {
         RemoteViewport(
             dimensions = dimensions, transformState = transform,
             rotation = pane.source.rotation,
             enabled = pane.input && token != 0L,
             touchMode = touchMode,
             contentKey = token to dimensions,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            modifier = Modifier.fillMaxSize(),
             onViewportSizeChanged = { measured = it },
             sendTouch = { action, id, x, y, pressure, eventTime ->
                 when (action) {
@@ -525,8 +549,12 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
             }
         )
-        if (!imeVisible && (pane.input || transform.value.scale > 1.05f)) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), horizontalArrangement = Arrangement.End,
+        if (hudVisible && !imeVisible && (pane.input || transform.value.scale > 1.05f)) {
+            Row(Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(6.dp).heightIn(min = 40.dp)
+                .background(ColorSurfaceCard.copy(alpha = .9f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                .pointerInput(sessionKey) {
+                    awaitPointerEventScope { while (true) if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) onHudInteraction() }
+                }, horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically) {
                 if (transform.value.scale > 1.05f) {
                     TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset zoom") }

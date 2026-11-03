@@ -3,6 +3,10 @@ package `fun`.hackerlife.weavelo.ui
 import android.app.Activity
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalContext
@@ -15,9 +19,24 @@ internal fun StreamOrientation(active: Boolean) {
         val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
             .filterIsInstance<Activity>().firstOrNull()
         val previous = activity?.requestedOrientation
-        if (active) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        val controller = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        val insets = activity?.window?.decorView?.let(ViewCompat::getRootWindowInsets)
+        val bars = WindowInsetsCompat.Type.systemBars()
+        val visibleBars = listOf(WindowInsetsCompat.Type.statusBars(), WindowInsetsCompat.Type.navigationBars())
+            .filter { insets?.isVisible(it) != false }.fold(0) { mask, type -> mask or type }
+        val previousBehavior = controller?.systemBarsBehavior
+        if (active) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller?.hide(bars)
+        }
         onDispose {
-            if (active && previous != null) activity?.requestedOrientation = previous
+            if (active) {
+                if (previous != null) activity?.requestedOrientation = previous
+                if (previousBehavior != null) controller?.systemBarsBehavior = previousBehavior
+                controller?.hide(bars)
+                if (visibleBars != 0) controller?.show(visibleBars)
+            }
         }
     }
 }
