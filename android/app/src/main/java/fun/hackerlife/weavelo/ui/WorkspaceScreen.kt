@@ -383,142 +383,145 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         enabled = pane.input && token != 0L && keyboardOwner != null,
         onText = { text -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,text=text) } },
         onKey = { key,pressed -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,key=key,pressed=pressed) } })
-    RemoteViewport(
-        dimensions = dimensions, transformState = transform,
-        rotation = pane.source.rotation,
-        enabled = pane.input && token != 0L,
-        contentKey = token to dimensions,
-        modifier = Modifier.fillMaxSize(),
-        onViewportSizeChanged = { measured = it },
-        sendTouch = { action, id, x, y, pressure, eventTime ->
-            when (action) {
-                0 -> pointers.add(id)
-                2 -> pointers.remove(id)
-                3 -> pointers.clear()
-            }
-            touching = pointers.isNotEmpty()
-            WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
-                JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
-                    .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
-        },
-        overlay = {
-            (videoStatus ?: pane.inputError)?.let { message ->
-                Text(message, color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
-                        .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                        .padding(horizontal = 12.dp, vertical = 8.dp))
-            }
-            MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
-                enabled = pane.input && token != 0L,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
-                    .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(16.dp))) {
-                if (keyboardVisible) keyboardVisible = false else {
-                    keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
-                    keyboardVisible = keyboardBinding != null
+    Column(Modifier.fillMaxSize()) {
+        RemoteViewport(
+            dimensions = dimensions, transformState = transform,
+            rotation = pane.source.rotation,
+            enabled = pane.input && token != 0L,
+            contentKey = token to dimensions,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            onViewportSizeChanged = { measured = it },
+            sendTouch = { action, id, x, y, pressure, eventTime ->
+                when (action) {
+                    0 -> pointers.add(id)
+                    2 -> pointers.remove(id)
+                    3 -> pointers.clear()
                 }
-            }
-            if (transform.value.scale > 1.05f) {
-                TextButton(onClick = { transform.value = transform.value.reset() }, modifier = Modifier.align(Alignment.TopEnd)) {
-                    Text("Reset zoom")
+                touching = pointers.isNotEmpty()
+                WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
+                    JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
+                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
+            },
+            overlay = {
+                (videoStatus ?: pane.inputError)?.let { message ->
+                    Text(message, color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
+                            .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp))
                 }
-            }
-        },
-        factory = { context ->
-            SurfaceView(context).apply {
-                contentDescription = "Remote screen"
-                fun clearTouches() { pointers.clear(); touching = false }
-                holder.addCallback(object : SurfaceHolder.Callback {
-                    private var active = AtomicBoolean(false)
-                    private var worker: Thread? = null
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        val token = WorkspaceClient.nextSurfaceToken()
-                        surfaceToken = token
-                        videoStatus = "Waiting for video…"
-                        clearTouches()
-                        WorkspaceClient.surface(pane.id, sessionKey, generation, token, "begin")
-                        val running = AtomicBoolean(true)
-                        active = running
-                        worker = Thread({
-                            val codec = MediaCodecPlayer(holder.surface) { decoded -> post {
-                                if (running.get() && surfaceToken == token) dimensions = decoded
-                            } }
-                            try {
-                                codec.start(pane.width, pane.height)
-                                WorkspaceClient.keyframe(pane.id)
-                                var waiting = true
-                                var pending: ByteArray? = null
-                                var pendingSince = 0L
-                                var lastRequest = System.nanoTime()
-                                var reportedFirstFrame = false
-                                var framesBeforeReset = 0L
-                                val started = System.nanoTime()
-                                var startupReported = false
-                                var receivedPackets = 0L
-                                var submittedPackets = 0L
-                                while (running.get()) {
-                                    if (pending == null) {
-                                        pending = WorkspaceClient.nativeMedia(pane.id, false)
-                                        if (pending != null) receivedPackets++
-                                        pendingSince = System.nanoTime()
-                                    }
-                                    val bytes = pending
-                                    if (bytes != null && bytes.size > 9) {
-                                        val keyframe = bytes[0].toInt() != 0
-                                        val pts = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
-                                        if (waiting && !keyframe) pending = null
-                                        else if (codec.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false; submittedPackets++ }
-                                    }
-                                    if (pending != null && System.nanoTime() - pendingSince > 250_000_000) {
-                                        pending = null; waiting = true
-                                        WorkspaceClient.surface(pane.id, sessionKey, generation, token, "reset")
-                                        codec.flush()
-                                        framesBeforeReset = codec.outputFrames
-                                        reportedFirstFrame = false
-                                        WorkspaceClient.keyframe(pane.id)
-                                        lastRequest = System.nanoTime()
-                                    }
-                                    codec.drain()
-                                    if (!reportedFirstFrame && codec.outputFrames > framesBeforeReset) {
-                                        post { if (running.get() && surfaceToken == token) videoStatus = null }
-                                        WorkspaceClient.surface(pane.id, sessionKey, generation, token, "ready")
-                                        android.util.Log.i("WeaveloWorkspace", "First decoded frame for subscription ${pane.id}")
-                                        reportedFirstFrame = true
-                                    }
-                                    if (!startupReported && codec.outputFrames == 0L && System.nanoTime() - started > 10_000_000_000L) {
-                                        startupReported = true
-                                        val message = when {
-                                            receivedPackets == 0L -> "Waiting for video from this device."
-                                            submittedPackets == 0L -> "Video arrived, but the decoder is not accepting it."
-                                            else -> "Video arrived, but the decoder has not produced a frame."
+            },
+            factory = { context ->
+                SurfaceView(context).apply {
+                    contentDescription = "Remote screen"
+                    fun clearTouches() { pointers.clear(); touching = false }
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        private var active = AtomicBoolean(false)
+                        private var worker: Thread? = null
+                        override fun surfaceCreated(holder: SurfaceHolder) {
+                            val token = WorkspaceClient.nextSurfaceToken()
+                            surfaceToken = token
+                            videoStatus = "Waiting for video…"
+                            clearTouches()
+                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "begin")
+                            val running = AtomicBoolean(true)
+                            active = running
+                            worker = Thread({
+                                val codec = MediaCodecPlayer(holder.surface) { decoded -> post {
+                                    if (running.get() && surfaceToken == token) dimensions = decoded
+                                } }
+                                try {
+                                    codec.start(pane.width, pane.height)
+                                    WorkspaceClient.keyframe(pane.id)
+                                    var waiting = true
+                                    var pending: ByteArray? = null
+                                    var pendingSince = 0L
+                                    var lastRequest = System.nanoTime()
+                                    var reportedFirstFrame = false
+                                    var framesBeforeReset = 0L
+                                    val started = System.nanoTime()
+                                    var startupReported = false
+                                    var receivedPackets = 0L
+                                    var submittedPackets = 0L
+                                    while (running.get()) {
+                                        if (pending == null) {
+                                            pending = WorkspaceClient.nativeMedia(pane.id, false)
+                                            if (pending != null) receivedPackets++
+                                            pendingSince = System.nanoTime()
                                         }
-                                        android.util.Log.w("WeaveloWorkspace", "Video startup stalled: subscription=${pane.id}, received=$receivedPackets, submitted=$submittedPackets, surface=${holder.surface.isValid}")
-                                        post { if (running.get() && surfaceToken == token) videoStatus = message }
+                                        val bytes = pending
+                                        if (bytes != null && bytes.size > 9) {
+                                            val keyframe = bytes[0].toInt() != 0
+                                            val pts = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                                            if (waiting && !keyframe) pending = null
+                                            else if (codec.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false; submittedPackets++ }
+                                        }
+                                        if (pending != null && System.nanoTime() - pendingSince > 250_000_000) {
+                                            pending = null; waiting = true
+                                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "reset")
+                                            codec.flush()
+                                            framesBeforeReset = codec.outputFrames
+                                            reportedFirstFrame = false
+                                            WorkspaceClient.keyframe(pane.id)
+                                            lastRequest = System.nanoTime()
+                                        }
+                                        codec.drain()
+                                        if (!reportedFirstFrame && codec.outputFrames > framesBeforeReset) {
+                                            post { if (running.get() && surfaceToken == token) videoStatus = null }
+                                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "ready")
+                                            android.util.Log.i("WeaveloWorkspace", "First decoded frame for subscription ${pane.id}")
+                                            reportedFirstFrame = true
+                                        }
+                                        if (!startupReported && codec.outputFrames == 0L && System.nanoTime() - started > 10_000_000_000L) {
+                                            startupReported = true
+                                            val message = when {
+                                                receivedPackets == 0L -> "Waiting for video from this device."
+                                                submittedPackets == 0L -> "Video arrived, but the decoder is not accepting it."
+                                                else -> "Video arrived, but the decoder has not produced a frame."
+                                            }
+                                            android.util.Log.w("WeaveloWorkspace", "Video startup stalled: subscription=${pane.id}, received=$receivedPackets, submitted=$submittedPackets, surface=${holder.surface.isValid}")
+                                            post { if (running.get() && surfaceToken == token) videoStatus = message }
+                                        }
+                                        if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
+                                        Thread.sleep(4)
                                     }
-                                    if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
-                                    Thread.sleep(4)
+                                } catch (e: Exception) { if (running.get()) post { currentError(e.message ?: "Video decoder failed") } }
+                                finally {
+                                    WorkspaceClient.surface(pane.id, sessionKey, generation, token, "end")
+                                    codec.stop()
                                 }
-                            } catch (e: Exception) { if (running.get()) post { currentError(e.message ?: "Video decoder failed") } }
-                            finally {
-                                WorkspaceClient.surface(pane.id, sessionKey, generation, token, "end")
-                                codec.stop()
-                            }
-                        }, "workspace-video-${pane.id}").apply { start() }
+                            }, "workspace-video-${pane.id}").apply { start() }
+                        }
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                            clearTouches()
+                            WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "cancel")
+                        }
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            val token = surfaceToken
+                            surfaceToken = 0L
+                            clearTouches()
+                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "end")
+                            active.set(false); worker?.interrupt(); worker?.join(500); worker = null
+                        }
+                    })
+                }
+            }
+        )
+        if (pane.input || transform.value.scale > 1.05f) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically) {
+                if (transform.value.scale > 1.05f) {
+                    TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset zoom") }
+                }
+                if (pane.input) MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
+                    enabled = token != 0L, modifier = Modifier.size(40.dp)) {
+                    if (keyboardVisible) keyboardVisible = false else {
+                        keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                        keyboardVisible = keyboardBinding != null
                     }
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                        clearTouches()
-                        WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "cancel")
-                    }
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        val token = surfaceToken
-                        surfaceToken = 0L
-                        clearTouches()
-                        WorkspaceClient.surface(pane.id, sessionKey, generation, token, "end")
-                        active.set(false); worker?.interrupt(); worker?.join(500); worker = null
-                    }
-                })
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
