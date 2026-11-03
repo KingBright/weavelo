@@ -8,12 +8,12 @@
 
 | 项目 | 当前验证事实 | 待完成 |
 | --- | --- | --- |
-| 四台桌面 | 四机均已原身份兼容安装 103 / `a1823fa`；三平台当前安装包已发布，公网逐包 SHA 通过；NAS relay 为 `c533754` | 继续全部设备方向的真实视频、输入、通知、音频及摄像头验收 |
+| 四台桌面 | 四机均已原身份兼容安装 105 / `308569e`；三平台当前安装包已发布，正式入口公网逐包 SHA 通过；NAS relay 为 `c533754` | 继续全部设备方向的真实视频、输入、通知、音频及摄像头验收 |
 | 管理与会话窗口 | 默认管理内容 640×600；独立来源窗口，End / 显式关闭清理当前流并退出；发送窗口关闭保留发送 | 覆盖全部 DPI、错误与长时场景 |
 | 全屏 | 移除自定义最小化；全屏 / 恢复保留；Studio 实际操作确认全屏隐藏、恢复显示原生按钮 | 其他平台实际全屏检查 |
 | 原生托盘 | 设备、流、传输、设置有明确目标；HO5 在 GUI 已关闭时，经真实 tray → Devices → Studio → Files 成功启动正确上下文 | Mac / Windows 实际菜单操作 |
 | 双向与并行视频 | 既有 HO5 → Book / 努比亚链路已验证；103 的 Linux → Studio / 红米保持同一会话跨过 NAS 升级，红米真实动态画面已核对，自动发送不抢焦点 | 全设备全部方向与控制、音频仍未全验收 |
-| Android | 两机均已原签名安装 75；设备页竖屏、串流横屏、退出恢复；全屏视频和浮动 HUD；努比亚真实中文 / emoji 已核对；两机收到 Studio 文件后，均已在手机上独立计算 SHA 并匹配 | 红米完整中文输入及独立多设备页面 / 会话池仍未全验收 |
+| Android | 两机均已原签名安装 76；既有实机已核对设备页竖屏、串流横屏、退出恢复；全屏视频和浮动 HUD；努比亚真实中文 / emoji 已核对；两机收到 Studio 文件后，均已在手机上独立计算 SHA 并匹配 | 红米完整中文输入及独立多设备页面 / 会话池仍未全验收 |
 | 最新窗口反馈 | 图标差异、左下角精简、网络分级已实现；Mac 原生标题栏图标已修正 | 跨平台全部窗口状态的视觉验收仍未齐全 |
 | Linux 编码 | 101 五分钟双路动态采样均值 6.955 / 6.249 ms，超过 20 ms 均为零；文件描述符 103–105 | 该次测试已达到上限目标；103、更多来源和分辨率仍需分别测量 |
 
@@ -516,3 +516,18 @@ Linux 103 在自有全屏动态夹具内投送到 Studio / Book / Windows，分�
 两部 Android 76 均通过正常 Devices → Send to Studio → Camera 入口显示前 / 后摄选择，使用已有相机权限，未点击系统授权弹窗。后摄投送分别在 Studio 解码 2,484 / 4,716 帧、零错误，均实际提交画面且 input_eligible 为 false；两张原生窗口截图已保留。当前后摄图像很暗，继续以前摄对照，不将计数代替画质判断。Camera 源是运行期随机 u64，验收保存 source_id_json 字符串并在 Python 内处理，避免经过 JavaScript 数值丢失精度。
 
 并行串流时，菜单 CLI 两次在固定 500 ms 内未获回复；同一私有界面的查询与菜单操作耗时约 302–607 ms，主线程采样显示事件等待。原有命令只入队，GUI 依赖媒体通知或定时轮询处理。本轮在入队后发出单次通知，直接唤醒持有适配器的 GUI；命令仍走原有有界队列、鉴权和输入验证，不增加空闲轮询或延长菜单超时。15 项原生 IPC 检查通过，包含真实端点的空闲菜单唤醒及“入队先于等待”不丢唤醒；1,045 项签名发布回归通过（19 项跳过）。证据 `gui-command-wake-focused-checks.log`、`gui-command-wake-release-regression.log`；新成品部署后的延迟对照待继续完成。
+
+
+## 2026-11-04 桌面 105 交付与双摄拉取
+
+四台电脑均已从 `308569e` 正式构建并兼容安装 105，实际 GUI / 后台可执行哈希及编译来源分别核对：Studio GUI 12735，Book 44705，HO5 27112，cube 36108；原 GPUI 默认入口不变。两台 Mac 分别保持各自授权叶证书，未交叉安装。Windows 正式升级退出 0；Linux 原 103 的 GUI 3992255 因已保留的失败清理记录拒绝正常退出，实际发送、会话、租约均为空后，对已核对精确 PID / 原可执行字节的旧界面发送 SIGTERM，确认退出，再由原安装器停止后台、从原事务向前完成 105，未修改配对、系统权限或历史文件。证据 `native105-actual-installed-owner-proof.json`（各机）、`native105-linux-close-exact-reply.json`、`native105-linux-resumed-forward-proof.json`。
+
+命令唤醒实机：Studio 在空闲、同时拉取两部手机后摄时，各连续调用原生菜单 16 次，均无失败；空闲中位数 13.7 ms / 最大 26.2 ms，双摄最大 26.0 ms。原 104 在串流时同一接口曾超过 500 ms 并失败，本次不再用成功编译代替实际响应。证据 `native105-studio-menu-wake-idle-acceptance.json`、`native105-studio-menu-wake-two-cameras-acceptance.json`。
+
+三平台 105 已通过正式发布入口，三个公网包完整 SHA 均由该入口校验；清单 SHA `f542f60809eb0ae8115ed19ec17e181a914f2f4553e588ca58b7f6981291df5f`，Android 76 保持。Linux / Windows 成品先经真实 Weavelo 文件发送到 Studio，再由 Studio 独立读取文件核对 SHA。证据 `native105-studio-received-package-proof.json`、`native105-nas-publication.log`、`native105-nas-verified.json`。
+
+两部 Android 76 通过正常界面分别向 Studio 投送前、后摄；随后普通被动拉取前、后摄均真实连上并解码，未通过 USB 代替媒体链路。前摄拉取快照红米 / 努比亚分别 3,372 / 1,196 帧，后摄分别 473 / 940 帧，scene_submitted 均为 true、video_error 均为空。普通拉取采用 120 秒有界租约，现已结束；所有本轮手机向 Studio 的前后摄投送也已正常停止。证据 `android76-phone-{front,back}-camera-push-receiver-proof.json`、`android76-front-camera-ordinary-pull-receiver-proof.json`、`android76-back-camera-ordinary-pull-native105-raw-proof.json`。
+
+物理画面另行审阅：努比亚前摄有清晰真实场景；努比亚后摄和红米前后摄当前图像很暗，不能据此判定画质通过，也未将原因归于遮挡、照明或权限。红米 CAMERA AppOp 为 allow 且有真实 CameraService 客户端；继续用手机之间的接收及切换作对照。当前未完成完整多设备音频、全部方向物理呈现 / 输入、红米中文输入与触摸板几何；这些仍是待验收项。
+
+已知接续问题：旧 GUI 的失败清理记录会让后续 CloseGui 直接拒绝，错误为 `Previous frontend cleanup is unconfirmed; observe it before closing`；当前 105 仍保留同一行为，需修复退出重观察及离线结束语义，不能把本次精确旧进程停止记成源码已修复。移动端主动收到的摄像头流目前不显示远端切换按钮；先完成普通拉取切换实机，再补对等交互，不能把已有前后摄目录当成已完成切换。
