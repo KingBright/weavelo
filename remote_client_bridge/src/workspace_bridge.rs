@@ -450,7 +450,7 @@ impl MobileWorkspace {
             Ok(())
         } else {Err("missing remote keyboard event".into())}
     }
-    pub fn touch(&self, json: &str) -> Result<(), String> {
+    pub fn touch(&self, json: &str) -> Result<Option<(f64,f64)>, String> {
         #[derive(serde::Deserialize)]
         struct Touch {
             id: u32,
@@ -466,7 +466,7 @@ impl MobileWorkspace {
         }
         let mut touches = self.touches.lock().unwrap();
         let Some(touch) = touches.get_mut(&event.id) else {
-            return Ok(());
+            return Ok(None);
         };
         let current = self.connection.input_binding(event.id, touch.revision);
         let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..});
@@ -478,7 +478,7 @@ impl MobileWorkspace {
         };
         let Some(releases)=touch.select_mode(event.token,mode,
             crate::touch_mapper::RemoteScreenBounds {width:event.width,height:event.height},starting)
-        else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(())}; };
+        else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(None)}; };
         if let Some(binding)=touch.binding() {
             for release in releases {self.connection.try_bound_input(binding,Some(release));}
         }
@@ -497,7 +497,7 @@ impl MobileWorkspace {
                 }
             }
         }
-        Ok(())
+        Ok(touch.cursor(event.token,current))
     }
     pub async fn send_file(&self, path: PathBuf) -> Result<(), String> {
         if !self.connection.files_available {

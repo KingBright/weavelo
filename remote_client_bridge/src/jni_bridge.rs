@@ -388,7 +388,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
                     .block_on(workspace.shared_request(&payload))?,
                 10 => remote_core::shared_files::shared_file_catalog().clear(),
                 11 => workspace.surface(&payload)?,
-                12 => workspace.touch(&payload)?,
+                12 => return serde_json::to_string(&workspace.touch(&payload)?).map_err(|e|e.to_string()),
                 13 => return workspace.keyboard_context(&payload),
                 14 => workspace.keyboard(&payload)?,
                 _ => return Err("unknown workspace operation".into()),

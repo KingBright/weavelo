@@ -432,7 +432,8 @@ object WorkspaceClient {
         }
     }
     fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
-        mode: TouchMode, width: Int, height: Int, event: JSONObject) = guarded {
+        mode: TouchMode, width: Int, height: Int, event: JSONObject,
+        onCursor: (Float, Float) -> Unit = { _, _ -> }) = guarded {
         if (!currentView(id, sessionKey, generation, true)) {
             inputViewIssue(id,sessionKey,generation)
             return@guarded
@@ -447,7 +448,16 @@ object WorkspaceClient {
             .put("mode", mode.code).put("width", width).put("height", height)
             .put("event", JSONObject().put("Touch", event)).toString()) }
             .onFailure { inputIssue(id, it.message ?: "Control is unavailable") }
-            .onSuccess { if (event.optString("action") == "Down") inputIssue(id, null) }
+            .onSuccess { result ->
+                if (event.optString("action") == "Down") inputIssue(id, null)
+                if (result != "null") {
+                    val cursor = JSONArray(result)
+                    // Compose snapshot state accepts this serialized update;
+                    // no extra UI queue may accumulate old pointer positions.
+                    if (currentView(id, sessionKey, generation, true))
+                        onCursor(cursor.getDouble(0).toFloat(), cursor.getDouble(1).toFloat())
+                }
+            }
     }
     private fun endIncoming(reason: String, rejected: Boolean = false) {
         ownership.endIncoming(mutable.value.sessionKey)

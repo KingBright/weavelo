@@ -9,6 +9,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -387,6 +392,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
     var touchMode by remember(pane.id, sessionKey, generation) { mutableStateOf(TouchMode.DIRECT) }
+    var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
     LaunchedEffect(measured, pane.accepted, keyboardVisible, imeVisible) {
         // IME insets resize presentation and its inverse touch transform. Keep
@@ -433,9 +439,29 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
                     touchMode, pane.source.width, pane.source.height,
                     JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
-                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
+                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure)) { cx, cy ->
+                    if (surfaceToken == token) cursor = Offset(cx, cy)
+                }
             },
             overlay = {
+                if (pane.input && pane.accepted && touchMode == TouchMode.TRACKPAD) {
+                    // This layer shares the video's forward transform and never
+                    // consumes gestures or reserves space around the picture.
+                    Canvas(Modifier.fillMaxSize()) {
+                        val (x, y) = transform.value.normalizedToScreen(cursor.x, cursor.y, size.width, size.height)
+                        val unit = 1.dp.toPx()
+                        val arrow = Path().apply {
+                            moveTo(0f, 0f); lineTo(0f, 20f * unit)
+                            lineTo(5f * unit, 15f * unit); lineTo(9f * unit, 23f * unit)
+                            lineTo(12f * unit, 21f * unit); lineTo(8f * unit, 13f * unit)
+                            lineTo(15f * unit, 13f * unit); close()
+                        }
+                        translate(x, y) {
+                            drawPath(arrow, Color.Black, style = Stroke(3f * unit))
+                            drawPath(arrow, Color.White)
+                        }
+                    }
+                }
                 if (imeVisible && pane.input) MobileAction(MobileSymbol.Keyboard, "Hide keyboard",
                     modifier = Modifier.align(Alignment.TopEnd).size(36.dp)
                         .background(ColorSurfaceCard.copy(alpha = .85f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {

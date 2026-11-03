@@ -166,6 +166,14 @@ impl WorkspaceTouch {
     pub fn keyboard_binding(&self,token:u64,current:Option<InputBinding>)->Option<InputBinding> {
         self.unavailable_reason(token,current).is_none().then_some(current).flatten()
     }
+    /// The HUD uses the same source position sent to the host, including its
+    /// wire quantization. It must not maintain a second gesture accumulator.
+    pub fn cursor(&self,token:u64,current:Option<InputBinding>)->Option<(f64,f64)> {
+        self.unavailable_reason(token,current).is_none().then(|| {
+            let quantize=|value:f64|(value*f64::from(u16::MAX)).round()/f64::from(u16::MAX);
+            (quantize(self.cursor.0),quantize(self.cursor.1))
+        })
+    }
     pub fn unavailable_reason(&self,token:u64,current:Option<InputBinding>)->Option<&'static str> {
         if token==0 || token!=self.surface {Some("This video view has changed.")}
         else if !self.visible {Some("Control is paused while this stream is hidden.")}
@@ -240,6 +248,11 @@ mod tests {
         let moved=touch.touch(1,event(TouchAction::Move,0,0.2),grant,now).1;
         assert!(matches!(moved.as_slice(),[InputEvent::MouseMoveAbsolute {x,y}]
             if (i32::from(*x)-42598).abs()<3 && (i32::from(*y)-32768).abs()<2));
+        let cursor=touch.cursor(1,grant).unwrap();
+        let InputEvent::MouseMoveAbsolute {x,y}=&moved[0] else {panic!("absolute cursor expected")};
+        assert_eq!(cursor,(f64::from(*x)/65535.,f64::from(*y)/65535.));
+        assert!(touch.cursor(2,grant).is_none());
+        assert!(touch.cursor(1,None).is_none());
         touch.touch(1,event(TouchAction::Up,0,0.2),grant,now);
         touch.touch(1,event(TouchAction::Down,0,0.9),grant,now);
         let clicked=touch.touch(1,event(TouchAction::Up,0,0.9),grant,now).1;
