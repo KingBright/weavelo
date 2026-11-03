@@ -50,6 +50,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val state = serviceState.takeIf { it.sessionKey == sessionKey }
         ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
     StreamOrientation(active = state.panes.isNotEmpty())
+    val typing = state.panes.isNotEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
@@ -153,7 +154,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     }
     WeaveloTheme {
         Column(Modifier.fillMaxSize().background(Color(0xff101318)).safeDrawingPadding().padding(8.dp)) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (!typing) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                 MobileAction(MobileSymbol.Back, "Disconnect", onClick = disconnect)
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(remoteDevice?.name ?: "Remote device",
@@ -223,7 +224,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             (localError ?: state.status.takeUnless { it == "Connected" })?.takeIf { it.isNotBlank() }?.let {
                 Text(it, color = Color.LightGray, maxLines = 2)
             }
-            if (!state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
+            if (!typing && !state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
             }
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
@@ -237,7 +238,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             row.forEach { pane ->
                                 key(pane.id, state.connectionGeneration) {
                                     Column(Modifier.weight(1f).fillMaxHeight().padding(3.dp)) {
-                                        Row(Modifier.fillMaxWidth()) {
+                                        if (!typing) Row(Modifier.fillMaxWidth()) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
                                                 MobileAction(MobileSymbol.Refresh, "Switch camera", state.connected) {
@@ -411,6 +412,11 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                         .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure))
             },
             overlay = {
+                if (imeVisible && pane.input) MobileAction(MobileSymbol.Keyboard, "Hide keyboard",
+                    modifier = Modifier.align(Alignment.TopEnd).size(36.dp)
+                        .background(ColorSurfaceCard.copy(alpha = .85f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
+                    keyboardVisible = false
+                }
                 (videoStatus ?: pane.inputError)?.let { message ->
                     Text(message, color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
@@ -519,7 +525,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
             }
         )
-        if (pane.input || transform.value.scale > 1.05f) {
+        if (!imeVisible && (pane.input || transform.value.scale > 1.05f)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically) {
                 if (transform.value.scale > 1.05f) {
