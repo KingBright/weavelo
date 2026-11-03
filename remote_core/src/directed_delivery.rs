@@ -246,6 +246,7 @@ struct State {
 pub struct Broker {
     state: Mutex<State>,
     tx: mpsc::Sender<Arc<Incoming>>,
+    receiver_capacity: usize,
 }
 pub struct Incoming {
     pub peer: Peer,
@@ -305,6 +306,14 @@ fn receipt(request_id: u64, revision: u64, state: DeliveryState, reason: &str) -
 }
 impl Broker {
     pub fn new() -> (Arc<Self>, mpsc::Receiver<Arc<Incoming>>) {
+        Self::with_receiver_capacity(1)
+    }
+    /// Desktop frontends give each incoming intent its own native windows.
+    /// The mobile frontend still owns a single workspace.
+    pub fn new_parallel() -> (Arc<Self>, mpsc::Receiver<Arc<Incoming>>) {
+        Self::with_receiver_capacity(LIMIT)
+    }
+    fn with_receiver_capacity(receiver_capacity: usize) -> (Arc<Self>, mpsc::Receiver<Arc<Incoming>>) {
         let (tx, rx) = mpsc::channel(8);
         let broker = Arc::new(Self {
             state: Mutex::new(State {
@@ -315,6 +324,7 @@ impl Broker {
                 registration_high_water: 0,
             }),
             tx,
+            receiver_capacity,
         });
         let weak = Arc::downgrade(&broker);
         tokio::spawn(async move {
@@ -454,7 +464,7 @@ impl Broker {
             || request == 0
             || revision != 1
             || s.incoming.len() >= LIMIT
-            || s.incoming.values().any(|o| o.alive())
+            || s.incoming.values().filter(|o| o.alive()).count() >= self.receiver_capacity
         {
             return receipt(
                 request,
@@ -997,6 +1007,45 @@ mod tests {
         other.connection += 1;
         b.cancel(other, 1);
         assert!(first.alive());
+    }
+    #[tokio::test]
+    async fn parallel_receivers_keep_their_own_lease_and_cancellation() {
+        let (b, mut rx) = Broker::new_parallel();
+        b.set_identity("receiver".into());
+        let first_peer = peer();
+        let mut second_peer = first_peer;
+        second_peer.connection += 1;
+        second_peer.nonce = [9; 16];
+        for (owner, request, ticket) in [(first_peer, 1, [8; 32]), (second_peer, 2, [9; 32])] {
+            assert!(matches!(b.offer(owner, request, "source".into(), "receiver".into(), ticket, 1,
+                vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {state: DeliveryState::Pending, ..}));
+        }
+        let first = rx.recv().await.unwrap();
+        let second = rx.recv().await.unwrap();
+        first.finish(DeliveryState::Receiving, "");
+        second.finish(DeliveryState::Receiving, "");
+        b.cancel(first_peer, 2);
+        assert!(first.alive() && second.alive());
+        b.cancel(second_peer, 2);
+        assert!(first.alive());
+        assert!(!second.alive());
+        assert!(matches!(b.offer(first_peer, 1, "source".into(), "receiver".into(), [8; 32], 2,
+            vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {revision: 2, state: DeliveryState::Receiving, ..}));
+        assert_eq!(first.snapshot().0, 2);
+        assert_eq!(second.snapshot().0, 1);
+    }
+    #[tokio::test]
+    async fn parallel_receivers_remain_bounded() {
+        let (b, mut rx) = Broker::new_parallel();
+        b.set_identity("receiver".into());
+        for request in 1..=LIMIT as u64 {
+            assert!(matches!(b.offer(peer(), request, "source".into(), "receiver".into(), [8; 32], 1,
+                vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {state: DeliveryState::Pending, ..}));
+            assert_eq!(rx.recv().await.unwrap().request, request);
+        }
+        assert!(matches!(b.offer(peer(), LIMIT as u64 + 1, "source".into(), "receiver".into(), [8; 32], 1,
+            vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {state: DeliveryState::Rejected, ..}));
+        assert!(rx.try_recv().is_err());
     }
     #[tokio::test]
     async fn registration_history_is_bounded_without_a_lifetime_delivery_limit() {

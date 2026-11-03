@@ -68,16 +68,28 @@ pub(crate) async fn receive_worker(
     owner_mode: crate::background_service::OwnerMode,
     mut rx: tokio::sync::mpsc::Receiver<Arc<Incoming>>,
 ) {
-    while let Some(offer) = rx.recv().await {
-        offer.mark_receiver_stage("worker_received");
-        let _end = EndOffer(offer.clone());
-        if !offer.alive() {
-            continue;
-        }
-        if let Err(error) = receive(&profile, &hash, owner_mode, &offer).await {
-            offer.finish(DeliveryState::Rejected, &error.to_string());
+    let mut workers = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            offer = rx.recv() => {
+                let Some(offer) = offer else { break };
+                let profile = profile.clone();
+                let hash = hash.clone();
+                // Each authenticated intent owns its own windows and deadline.
+                // Keep tasks owned so stopping this service cancels all of them.
+                workers.spawn(async move {
+                    offer.mark_receiver_stage("worker_received");
+                    let _end = EndOffer(offer.clone());
+                    if !offer.alive() { return; }
+                    if let Err(error) = receive(&profile, &hash, owner_mode, &offer).await {
+                        offer.finish(DeliveryState::Rejected, &error.to_string());
+                    }
+                });
+            }
+            Some(_) = workers.join_next(), if !workers.is_empty() => {}
         }
     }
+    while workers.join_next().await.is_some() {}
 }
 async fn receive(
     profile: &std::path::Path,

@@ -1589,7 +1589,7 @@ impl UnifiedServiceOwner {
             None => (None, None),
         };
 
-        let (delivery, delivery_incoming)=host::directed_delivery::Broker::new();
+        let (delivery, delivery_incoming)=host::directed_delivery::Broker::new_parallel();
         #[cfg(target_os = "linux")]
         let mut local_portal_shares = None;
         let mut host_shutdown = None;
