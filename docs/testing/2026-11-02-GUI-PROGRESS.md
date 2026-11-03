@@ -487,4 +487,16 @@ Linux 103 的 20,452,807 字节安装包和 Windows 103 的 51,687,808 字节安
 
 这次源码修复通过现有 Android debug 单元检查及 1,045 项签名发布回归（19 项跳过）。首次 Kotlin 增量编译报告既有顶层函数无法解析；逐文件核对与已提交源码一致后，以同一份未改动源码执行非增量编译及单元检查通过，没有清空共享缓存或增加永久构建开关。证据为 `android76-file-list-kotlin-nonincremental-proof.json`、`android76-file-list-kotlin-nonincremental.log`、`android76-file-list-release-regression.log`。76 的正式成品、安装和自动刷新实机验收仍待本轮继续完成。
 
+## 2026-11-04 Android 76 已安装发布；桌面窗口继续验收
+
+`04bcee5` 已推送并由 Book 独立同步。76 正式构建、Release lint / 单元检查完成；此前 debug 单元检查为 76 项，失败和跳过均为零。APK 为 18,835,228 字节，SHA-256 `eeef6a320ca643c394227296980457372f66a979850d045c56f3eaeda99d7662`，原签名 `215aedab…` 保留。两部手机均通过普通兼容覆盖安装，分别在手机上重新读取安装后的 base.apk，字节 SHA 与正式包一致；设备 ID 和型号名称随后通过 Studio 的在线设备列表重新核对，未丢失配对。
+
+两机均保持 Received files 对话框打开，先确认新测试文件不存在，再实际接收 262,161 字节文件；只滚动列表、不刷新或重开对话框，均找到新条目且 Refresh 按钮不存在。LazyColumn 保留原首条目的滚动位置，新插入且排序靠前的文件可能位于当前视口上方，因此最初只检查可见行的脚本结果不代表刷新失败。两机实际竖屏画面已审阅，证据 `android76-{nubia,redmi}-autolist-before.json` / `autolist-after.json` 及对应 PNG。
+
+正式发布入口已将同一 APK 发布到 Weavelo 域名；Studio 独立 HTTP 读取清单和版本文件，确认 versionCode 76、大小与完整 SHA 均匹配，未额外保留 APK 快照。证据 `android76-formal-build-package-proof.json`、`android76-{nubia,redmi}-compatible-install-proof.json`、`android76-nas-formal-publication.log`、`android76-independent-public-download-proof.json`。
+
+Studio、Book、Windows 分别主动投送自有测试窗口至其余三台电脑，九个方向均有首帧解码、持续增长及零解码错误记录；Linux 作为来源的三个方向尚未补测。Book 自有 AppKit 窗口在 Studio 的实际渲染截图已通过；另有 Studio → Windows 原生窗口 → Studio 的两层真实链路图像，证明该次 Windows 原生窗口采集包含了已显示的视频内容，证据 `native103-book-to-studio-own-fixture-actual.png`、`native103-studio-windows-studio-nested-actual.png`。这些不替代所有方向的物理呈现、输入或音频验收。
+
+Book 同一次投送中，额外选择的 Weavelo 接收窗口在台前调度缩略图恢复路径报“selected app's windows are unavailable”，未产生视频；已单独记录，未将另一窗口成功算作它通过。对这条失败窗口执行 End 后，对应窗口直接关闭，Book 的另一窗口继续接收，证据 `native103-failed-child-end-closes-only-its-window.json`。下一步隔离该恢复路径并修复，结束测试连接时仅按已保存请求 ID 操作。
+
 当前源码已提交推送；完整六设备视频、控制指令与通知、音频、摄像头及其权限继续验收，尚未宣称总目标完成。红米完整中文输入、Android 独立多会话以及部分窗口图标 / Linux 窗口来源仍保留为接续项。
