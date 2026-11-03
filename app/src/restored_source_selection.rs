@@ -189,7 +189,7 @@ impl RestoredDashboard {
                 Target::Send(device)=>{
                     for source in sources {
                         let request=self.send_screen(device.clone(),vec![source.source])?;
-                        self.open_sending_window(&request,vec![source],selection.artwork.clone(),false,cx);
+                        self.exit_group.send_labels.lock().unwrap().insert(request,capture_source_label(&source));
                     }
                     Ok(())
                 },

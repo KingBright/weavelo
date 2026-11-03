@@ -247,7 +247,7 @@ pub(super) fn management_activity_panel(
                 .child(div().truncate().text_size(px(12.)).child(format!("{} → {}",send.source,send.target_name)))
                 .child(div().truncate().text_size(px(10.)).text_color(cx.theme().content.secondary).child(send.status)))
             .child(command_button(format!("sending-open-{request}"),ActionVariantKind::Neutral,cx).child("Open")
-                .on_click(cx.listener(move|this,_,_,cx| {this.open_sending_window(&open_request,Vec::new(),Arc::new(Default::default()),true,cx);})))
+                .on_click(cx.listener(move|this,_,_,cx| {this.open_sending_window(&open_request,Vec::new(),Arc::new(Default::default()),cx);})))
             .child(command_button(format!("sending-stop-{request}"),ActionVariantKind::Neutral,cx).disabled(send.finished).child("Stop this send")
                 .on_click(cx.listener(move|this,_,_,cx| {this.stop_sending_requests(&[request.clone()],cx);}))));
     }

@@ -156,6 +156,18 @@ struct Pool {
     directed_receive: Option<DirectedReceiveBinding>,
 }
 impl Pool {
+    fn retire_fileless_connection(&mut self, key: &str) -> Result<(), Error> {
+        let Some(index) = self.sessions.iter().position(|entry|
+            entry.session.key == key && !entry.session.conn.files_available) else { return Ok(()); };
+        if self.sessions[index].session.media.is_some() {
+            return Err("File reception changed after this stream connected; reconnect the stream to enable files".into());
+        }
+        let count = self.sessions.len();
+        self.tabs.close_index(index, count);
+        self.sessions.remove(index);
+        Ok(())
+    }
+
     fn receive_matches(&self, source: &str, request: Option<&str>) -> bool {
         match (&self.directed_receive, request) {
             (None, None) => true,
@@ -724,6 +736,7 @@ impl OriginalOwner {
         let (attempt, receive_dir, mut receive_cancel, receive_claim) = {
             let mut p = self.pool.lock().unwrap();
             if !p.receive_matches(key, receive) { return Err("Receive lease expired or was superseded".into()); }
+            if purpose == ConnectionPurpose::Files { p.retire_fileless_connection(key)?; }
             self.revoke_computer_use();
             let existing = p.sessions.iter().position(|e| e.session.key == key).map(|index| {
                 let s = &p.sessions[index].session;
@@ -803,6 +816,9 @@ impl OriginalOwner {
                     let receive_dir=remote_core::desktop_storage::receive_directory_at(&profile,Some(&receive_dir))?;
                     WorkspaceConnection::connect(endpoint,receive_dir).await?
                 } else {WorkspaceConnection::connect_media(endpoint).await?};
+                if purpose == ConnectionPurpose::Files && !conn.files_available {
+                    return Err("Enable Receive files on the target device, then try again".into());
+                }
                 if let Some(proof)=&receive_claim {
                     crate::desktop::directed_send::claim(&conn,&mut events,proof).await?;
                 }
@@ -1750,6 +1766,57 @@ impl Drop for OriginalOwner {
 #[cfg(test)]
 mod restoration_regression_tests {
     use super::*;
+    #[tokio::test]
+    async fn file_capability_refresh_retires_only_the_idle_fileless_connection() {
+        use remote_core::net::{UdpMultiplexer, MultiplexedPacket};
+        use protocol::ControlMessage;
+        remote_core::init_crypto_provider();
+        assert!(remote_core::session_crypto::load_session_psk().is_none());
+        let multiplexer = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let address = multiplexer.local_addr().unwrap();
+        let (sender, receiver) = multiplexer.split();
+        let server = tokio::spawn(async move {
+            while let Ok(packet) = receiver.recv().await {
+                if let MultiplexedPacket::Control(ControlMessage::Session(command), from) = packet
+                    && let SessionCommand::Open { connection_id, .. } = *command {
+                    sender.send_control(&ControlMessage::Session(Box::new(SessionCommand::Opened {
+                        connection_id, version: protocol::session::SESSION_VERSION, max_subscriptions: 1,
+                        files: false, clipboard: false, window_capture: false,
+                    })), from).await.unwrap();
+                }
+            }
+        });
+        let mut pool = pending_pool();
+        let (connection, events) = WorkspaceConnection::connect_media(address).await.unwrap();
+        let stale = OriginalGuiSession::new("newly-enabled-receiver".into(), "Files".into(), "Loopback".into(), connection, events);
+        let stale_connection = Arc::downgrade(&stale.conn);
+        let (connection, events) = WorkspaceConnection::connect_media(address).await.unwrap();
+        let mut ready = OriginalGuiSession::new("already-enabled-receiver".into(), "Files".into(), "Loopback".into(), connection, events);
+        Arc::get_mut(&mut ready.conn).unwrap().files_available = true;
+        let ready_id = ready.conn.id;
+        for session in [stale, ready] {
+            pool.sessions.push(ViewSession {
+                purpose: ConnectionPurpose::Files, source_seen: session.source, session,
+                frame: Arc::new(Mutex::new(None)), frame_observer: None, sources: Arc::new(Vec::new()),
+            });
+        }
+        pool.tabs.select(0, "newly-enabled-receiver", 2);
+        pool.sessions[0].session.start_video();
+        assert!(pool.sessions[0].session.media.is_some());
+        assert!(pool.retire_fileless_connection("newly-enabled-receiver").is_err());
+        assert_eq!(pool.sessions.len(), 2, "a file action must preserve live video");
+        pool.sessions[0].session.media.take();
+        pool.retire_fileless_connection("newly-enabled-receiver").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while stale_connection.upgrade().is_some() { tokio::task::yield_now().await; }
+        }).await.expect("retired connection workers release their old binding");
+        assert_eq!(pool.sessions.len(), 1);
+        assert_eq!(pool.active().unwrap().session.conn.id, ready_id);
+        pool.retire_fileless_connection("already-enabled-receiver").unwrap();
+        assert_eq!(pool.sessions.len(), 1, "a capable connection and its transfers stay bound");
+        server.abort();
+    }
+
     #[tokio::test]
     async fn file_connection_keeps_stream_action_available_and_preserves_connection_binding() {
         use remote_core::net::{UdpMultiplexer,MultiplexedPacket};

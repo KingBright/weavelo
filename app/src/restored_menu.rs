@@ -186,7 +186,7 @@ impl RestoredDashboard {
                 {
                     return Err("This sending request has ended".into());
                 }
-                if !self.open_sending_window(&request, Vec::new(), Arc::new(Default::default()), true, cx)
+                if !self.open_sending_window(&request, Vec::new(), Arc::new(Default::default()), cx)
                 {
                     return Err("Could not open the sending window".into());
                 }

@@ -302,7 +302,6 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
         Bounds::centered_at(work.center(), window_size)
     }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), preferred));
     WindowOptions {
-        focus: purpose!=WindowPurpose::Sending,
             app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
         window_bounds: Some(WindowBounds::Windowed(window_bounds)),
         window_min_size: Some(size(minimum.width.min(window_bounds.size.width), minimum.height.min(window_bounds.size.height))),
@@ -953,7 +952,6 @@ impl RestoredDashboard {
             }
             if let Request::Send {request_id,target_device_id,sources,..}=command.request {
                 let result=self.send_screen_request(target_device_id,sources,request_id.clone());
-                if result.is_ok() { self.open_sending_window(&request_id,Vec::new(),Arc::new(Default::default()),false,cx); }
                 let response=match result {
                     Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().get(&request_id).unwrap().cancellation()),
                     Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
