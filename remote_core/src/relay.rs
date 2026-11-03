@@ -441,9 +441,11 @@ impl BoundTcpRelayServer {
                             &config,
                         )
                         .await
-                            && config.log_events
                         {
-                            eprintln!("WebSocket relay connection ended: {err}");
+                            // Abnormal connection ends need a bounded reason
+                            // without enabling packet logs or exposing routes.
+                            eprintln!("WebSocket relay connection ended kind={:?} slow_peer={}",
+                                err.kind(), err.to_string() == "relay peer is too slow");
                         }
                     });
                 }
@@ -1142,55 +1144,49 @@ where
     let (writer_tx, mut writer_rx) = mpsc::channel::<Arc<[u8]>>(config.writer_queue_capacity);
     let (disconnect_tx, mut disconnect_rx) = watch::channel(false);
     let connection_id = state.lock().await.next_connection_id();
-
-    let result = async {
+    let flush = tokio::sync::Notify::new();
+    // A blocked peer write must not stop registration, input or heartbeat
+    // reads. Poll both halves in this task, retaining the existing bound.
+    let receive = async {
+        loop {
+            let inbound = tokio::time::timeout(config.idle_timeout, reader.next()).await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay connection idle timeout"))?;
+            let Some(message) = inbound else {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "WebSocket relay closed"));
+            };
+            match message.map_err(websocket_io_error)? {
+                Message::Binary(frame) => {
+                    handle_tcp_relay_packet(&frame, addr, connection_id, &writer_tx,
+                        &disconnect_tx, &state, config).await?;
+                }
+                Message::Close(_) => return Ok(()),
+                Message::Text(_) => {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "relay accepts binary WebSocket messages only"));
+                }
+                // Tungstenite queues the matching Pong during the read. Wake
+                // the writer even when no media is queued for this peer.
+                Message::Ping(_) => flush.notify_one(),
+                Message::Pong(_) | Message::Frame(_) => {}
+            }
+        }
+    };
+    let send = async {
         loop {
             tokio::select! {
-                _ = disconnect_rx.changed() => {
-                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "relay peer is too slow"));
-                }
+                _ = flush.notified() => writer.flush().await.map_err(websocket_io_error)?,
                 outbound = writer_rx.recv() => {
-                    let Some(frame) = outbound else {
-                        return Ok(());
-                    };
-                    writer
-                        .send(Message::Binary(Bytes::from_owner(frame)))
-                        .await
+                    let Some(frame) = outbound else { return Ok(()); };
+                    writer.send(Message::Binary(Bytes::from_owner(frame))).await
                         .map_err(websocket_io_error)?;
-                }
-                inbound = tokio::time::timeout(config.idle_timeout, reader.next()) => {
-                    let inbound = inbound
-                        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay connection idle timeout"))?;
-                    let Some(message) = inbound else {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "WebSocket relay closed"));
-                    };
-                    match message.map_err(websocket_io_error)? {
-                        Message::Binary(frame) => {
-                            handle_tcp_relay_packet(
-                                &frame,
-                                addr,
-                                connection_id,
-                                &writer_tx,
-                                &disconnect_tx,
-                                &state,
-                                config,
-                            )
-                            .await?;
-                        }
-                        Message::Close(_) => return Ok(()),
-                        Message::Text(_) => {
-                            return Err(io::Error::new(io::ErrorKind::InvalidData, "relay accepts binary WebSocket messages only"));
-                        }
-                        Message::Ping(payload) => {
-                            writer.send(Message::Pong(payload)).await.map_err(websocket_io_error)?;
-                        }
-                        Message::Pong(_) | Message::Frame(_) => {}
-                    }
                 }
             }
         }
-    }
-    .await;
+    };
+    let result = tokio::select! {
+        _ = disconnect_rx.changed() => Err(io::Error::new(io::ErrorKind::ConnectionAborted, "relay peer is too slow")),
+        result = receive => result,
+        result = send => result,
+    };
 
     state.lock().await.remove_connection(connection_id);
     result
@@ -2180,6 +2176,49 @@ mod tests {
         let result=timeout(Duration::from_secs(2),exchange).await;
         let _=cancel.send(());task.abort();let _=task.await;
         assert!(result.is_ok(),"relay reads stopped behind an unrelated pending write");
+    }
+
+    #[tokio::test]
+    async fn websocket_server_reads_progress_while_its_peer_write_is_backpressured() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        let (local,remote)=tokio::io::duplex(4096);
+        let mut client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
+        let server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
+        let state=Arc::new(Mutex::new(TcpRelayServerState::default()));
+        let server_state=state.clone();
+        let task=tokio::spawn(async move {
+            run_websocket_relay_connection(server,"127.0.0.1:12345".parse().unwrap(),
+                server_state,&TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap())).await
+        });
+        client.send(Message::Binary(RelayPacket::Register {
+            group_id:"server-duplex".into(),peer_id:"client".into(),
+        }.encode().into())).await.unwrap();
+        let writer=timeout(Duration::from_secs(1),async {
+            loop {
+                if let Some(peer)=state.lock().await.peers.values().next() {
+                    break peer.writer_tx.clone();
+                }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let incoming=vec![73;8*1024];let outgoing=vec![41;8*1024];
+        writer.send(Arc::from(RelayPacket::Data {group_id:"server-duplex".into(),
+            peer_id:"other".into(),payload:incoming.clone()}.encode())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let exchange=async {
+            client.send(Message::Binary(RelayPacket::Data {group_id:"server-duplex".into(),
+                peer_id:"client".into(),payload:outgoing}.encode().into())).await.unwrap();
+            let Message::Binary(frame)=client.next().await.unwrap().unwrap() else {panic!("expected forwarded data")};
+            let Some(RelayPacket::Data {payload,..})=RelayPacket::decode(&frame) else {panic!("expected relay data")};
+            assert_eq!(payload,incoming);
+            // An otherwise idle split writer must also flush automatic Pong.
+            let probe=Bytes::from_static(b"server-reader-ping");
+            client.send(Message::Ping(probe.clone())).await.unwrap();
+            assert_eq!(client.next().await.unwrap().unwrap(),Message::Pong(probe));
+        };
+        let result=timeout(Duration::from_secs(2),exchange).await;
+        task.abort();let _=task.await;
+        assert!(result.is_ok(),"server reads stopped behind a pending peer write");
     }
 
     #[tokio::test]
