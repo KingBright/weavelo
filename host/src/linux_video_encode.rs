@@ -109,6 +109,13 @@ impl LinuxVideoEncoder {
     }
 
     pub fn request_keyframe(&mut self) {
+        #[cfg(all(target_os="linux",feature="native-linux-video"))]
+        if let Some(OwnedEncoder::Native(source)) = &self.native {
+            // Keep queued compressed reference frames in order. The next raw
+            // frame becomes an IDR without rebuilding the GPU/VPP context.
+            source.request_keyframe();
+            return;
+        }
         self.force_keyframe = true;
         if self.native_generation.is_some() {
             self.native = None;

@@ -30,6 +30,7 @@ typedef struct {
     AVPacket *packet;
     int width, height, pixel, drm_input;
     int crop_x, crop_y, crop_width, crop_height;
+    int force_keyframe;
 } WeaveloEncoder;
 
 typedef struct {
@@ -140,7 +141,7 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
     e->codec->bit_rate = (int64_t)bitrate * 1000;
     e->codec->rc_max_rate = (int64_t)bitrate * 1000; e->codec->rc_buffer_size = bitrate * 1000;
     e->codec->gop_size = fps; e->codec->max_b_frames = 0; e->codec->thread_count = 1;
-    e->codec->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    e->codec->flags |= AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_CLOSED_GOP;
     e->codec->color_range = range; e->codec->colorspace = matrix;
     e->codec->color_trc = transfer; e->codec->color_primaries = primaries;
     AVDictionary *options = NULL;
@@ -187,6 +188,10 @@ int weavelo_encoder_create_drm(const char *device, const char *pixel, int width,
         range,matrix,transfer,primaries,1,crop_x,crop_y,crop_width,crop_height,out);
 }
 
+void weavelo_encoder_request_keyframe(WeaveloEncoder *e) {
+    if (e) e->force_keyframe = 1;
+}
+
 static int encode_uploaded(WeaveloEncoder *e, uint64_t started, int64_t pts, WeaveloEncoded *out) {
     int result;
     if ((result = av_buffersrc_add_frame_flags(e->source, e->upload,
@@ -200,6 +205,8 @@ static int encode_uploaded(WeaveloEncoder *e, uint64_t started, int64_t pts, Wea
         if (sync != VA_STATUS_SUCCESS) return AVERROR(EIO);
     }
     uint64_t submitted = now_us();
+    e->scaled->pict_type = e->force_keyframe ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    e->force_keyframe = 0;
     if ((result = avcodec_send_frame(e->codec, e->scaled)) < 0 ||
         (result = avcodec_receive_packet(e->codec, e->packet)) < 0 ||
         (result = av_bsf_send_packet(e->metadata, e->packet)) < 0 ||

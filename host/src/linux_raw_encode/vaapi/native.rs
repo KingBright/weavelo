@@ -4,7 +4,7 @@
 use super::HardwareEncoder;
 use super::super::{Input, NativeEncodeTiming, RawChunk, RawSettings, Result, validate_native_input};
 use crate::linux_frame::{FrameFormat, OwnedFrame, PixelFormat};
-use std::{ffi::{CString, c_char, c_int, c_void}, sync::Arc, thread::JoinHandle};
+use std::{ffi::{CString, c_char, c_int, c_void}, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread::JoinHandle};
 use tokio::sync::{Mutex, mpsc};
 use std::os::fd::AsRawFd;
 
@@ -43,6 +43,7 @@ unsafe extern "C" {
         lease:*mut c_void,release:extern "C" fn(*mut c_void),out:*mut Encoded)->c_int;
     fn weavelo_encoder_drm_modifier(device:*const c_char,modifier:*mut u64)->c_int;
     fn weavelo_encoder_destroy(encoder:*mut c_void);
+    fn weavelo_encoder_request_keyframe(encoder:*mut c_void);
 }
 struct Encoder(*mut c_void);
 impl Drop for Encoder { fn drop(&mut self) { unsafe { weavelo_encoder_destroy(self.0); } } }
@@ -59,6 +60,7 @@ pub(super) fn capture_modifier(hardware:&HardwareEncoder)->Result<u64> {
 
 pub(crate) struct NativeSource {
     input: Arc<Input>,
+    force_keyframe: Arc<AtomicBool>,
     output: Mutex<mpsc::Receiver<std::result::Result<RawChunk,String>>>,
     worker: Option<JoinHandle<()>>,
     format: FrameFormat, width: u32, height: u32, generation: u64, revision: u64,
@@ -80,6 +82,8 @@ impl NativeSource {
         let crop=source.crop.unwrap_or(crate::linux_frame::Crop {
             x:0,y:0,width:source.width,height:source.height });
         let input=Arc::new(Input::default());
+        let force_keyframe=Arc::new(AtomicBool::new(false));
+        let keyframe_request=force_keyframe.clone();
         let (sender,receiver)=mpsc::channel(2);
         let pending=input.clone();
         let worker=std::thread::Builder::new().name("weavelo-vaapi-encode".into()).spawn(move || {
@@ -99,6 +103,9 @@ impl NativeSource {
                 let mut sequence=0i64;
                 while let Some(frame)=pending.receive() {
                     let started=remote_core::timing::quanta_now_us();
+                    if keyframe_request.swap(false, Ordering::AcqRel) {
+                        unsafe { weavelo_encoder_request_keyframe(encoder.0); }
+                    }
                     let mut planes=[std::ptr::null();3];
                     for (slot,plane) in planes.iter_mut().zip(frame.planes.iter()) {*slot=plane.as_ptr();}
                     let rgb=matches!(frame.source_format.pixel_format,PixelFormat::Bgra|PixelFormat::Bgrx|PixelFormat::Rgba|PixelFormat::Rgbx);
@@ -145,7 +152,7 @@ impl NativeSource {
             if let Err(error)=result {let _=sender.blocking_send(Err(error.to_string()));}
             pending.close();
         })?;
-        Ok(Self {input,output:Mutex::new(receiver),worker:Some(worker),format:first.source_format,
+        Ok(Self {input,force_keyframe,output:Mutex::new(receiver),worker:Some(worker),format:first.source_format,
             width,height,generation:first.stamp.generation,revision:first.stamp.format_revision,dmabuf})
     }
     pub(crate) fn matches(&self,frame:&OwnedFrame)->bool {
@@ -157,6 +164,9 @@ impl NativeSource {
         frame.validate_owned()?;
         if !self.matches(&frame) {return Err("Native VAAPI input geometry/generation changed".into());}
         self.input.submit(frame)
+    }
+    pub(crate) fn request_keyframe(&self) {
+        self.force_keyframe.store(true, Ordering::Release);
     }
     pub(crate) async fn pull(&self)->Result<RawChunk> {
         self.output.lock().await.recv().await.ok_or("Native VAAPI encoder ended")?.map_err(Into::into)

@@ -160,6 +160,37 @@ async fn actual_inprocess_vaapi_delivers_each_idle_frame_and_preserves_pixels() 
         assert_hardware_pixels(&chunks,pixel,expected);
     }
 }
+#[cfg(all(target_os="linux",feature="native-linux-video"))]
+#[tokio::test]
+#[ignore="requires an accessible VAAPI hardware HEVC encoder"]
+async fn native_keyframe_request_preserves_queued_output_and_decodes_independently() {
+    use remote_core::VideoEncoder;
+    let hardware=vaapi::HardwareEncoder::probe().unwrap();
+    let color=known_color();
+    let first=frame_sized(PixelFormat::Nv12,color,0,640,360);
+    let expected=vaapi::HardwareEncoder::signal(&first).unwrap();
+    let mut encoder=crate::linux_video_encode::LinuxVideoEncoder::from_hardware_frames(9,320,180,30,2000,hardware).unwrap();
+    encoder.submit_frame(crate::linux_capture::LinuxVideoFrame::from_owned(first)).await.unwrap();
+    let initial=tokio::time::timeout(Duration::from_secs(2),encoder.pull_encoded_chunk()).await.unwrap().unwrap();
+    assert!(initial.is_keyframe);
+    encoder.submit_frame(crate::linux_capture::LinuxVideoFrame::from_owned(frame_sized(PixelFormat::Nv12,color,1,640,360))).await.unwrap();
+    encoder.request_keyframe();
+    // No following input may be needed to recover the already submitted frame.
+    let queued=tokio::time::timeout(Duration::from_secs(2),encoder.pull_encoded_chunk()).await.unwrap().unwrap();
+    assert_eq!(queued.native_stamp.unwrap().sequence,Some(1));
+    encoder.request_keyframe();
+    encoder.submit_frame(crate::linux_capture::LinuxVideoFrame::from_owned(frame_sized(PixelFormat::Nv12,color,2,640,360))).await.unwrap();
+    let next=tokio::time::timeout(Duration::from_secs(2),encoder.pull_encoded_chunk()).await.unwrap().unwrap();
+    assert!(next.is_keyframe);
+    assert_eq!(next.native_stamp.unwrap().sequence,Some(2));
+    let stamp=next.native_stamp.unwrap();
+    let standalone=RawChunk {nalu:next.nalu,is_keyframe:true,stamp,
+        encode_done_ts_us:stamp.arrival_ts_us+u64::from(next.timing.encode_done_ts_us),native_timing:next.native_timing};
+    // A recovery keyframe must carry usable parameters and decode without the
+    // old reference chain, preserving the actual SDR signal and pixels.
+    assert_hardware_pixels(&[standalone],PixelFormat::Nv12,expected);
+}
+
 pub(crate) fn known_color() -> SourceColor {
     SourceColor {
         range: 2,
