@@ -46,7 +46,9 @@ pub(super) struct Source {
     refresh: Arc<Notify>,
 }
 fn read_gui(profile: &Path, hash: &str) -> Result<Option<Snapshot>, Error> {
-    let directory = crate::private_ipc::gui_directory(profile)?;
+    let Some(directory) = crate::private_ipc::gui_directory_if_present(profile)? else {
+        return Ok(None);
+    };
     if crate::private_ipc::absent(&directory, "gui-receive.sock")? {
         return Ok(None);
     }
@@ -423,6 +425,42 @@ impl Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn closed_gui_is_absent_and_two_endpoint_owners_still_fail() {
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(read_gui(profile.path(), &"1".repeat(64)).unwrap().is_none());
+        assert!(
+            crate::private_ipc::gui_directory(profile.path()).is_err(),
+            "commands still require an owner"
+        );
+        let attached = profile.path().join("gui-state");
+        std::fs::create_dir(&attached).unwrap();
+        std::fs::set_permissions(&attached, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let standalone = UnixListener::bind(profile.path().join("gui-receive.sock")).unwrap();
+        std::fs::set_permissions(
+            profile.path().join("gui-receive.sock"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::private_ipc::gui_directory_if_present(profile.path()).unwrap(),
+            Some(profile.path().to_owned())
+        );
+        let frontend = UnixListener::bind(attached.join("gui-receive.sock")).unwrap();
+        std::fs::set_permissions(
+            attached.join("gui-receive.sock"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert!(
+            read_gui(profile.path(), &"1".repeat(64)).is_err(),
+            "ambiguous owners never launch a replacement"
+        );
+        drop((standalone, frontend));
+    }
     #[test]
     fn reordered_devices_never_reuse_native_action_ids() {
         let mut model = Model {

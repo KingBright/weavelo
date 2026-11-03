@@ -16,14 +16,28 @@ mod unix {
         time::Duration,
     };
     pub type Client = UnixStream;
-    pub fn peer_pid(socket:&tokio::net::UnixStream)->Option<i32> {
-        #[cfg(target_os="macos")] {
+    pub fn peer_pid(socket: &tokio::net::UnixStream) -> Option<i32> {
+        #[cfg(target_os = "macos")]
+        {
             use std::os::fd::AsRawFd;
-            let mut pid=0i32;let mut len=std::mem::size_of::<i32>() as libc::socklen_t;
-            let ok=unsafe {libc::getsockopt(socket.as_raw_fd(),libc::SOL_LOCAL,libc::LOCAL_PEERPID,(&mut pid as *mut i32).cast(),&mut len)};
-            (ok==0 && len as usize==std::mem::size_of::<i32>() && pid>1).then_some(pid)
+            let mut pid = 0i32;
+            let mut len = std::mem::size_of::<i32>() as libc::socklen_t;
+            let ok = unsafe {
+                libc::getsockopt(
+                    socket.as_raw_fd(),
+                    libc::SOL_LOCAL,
+                    libc::LOCAL_PEERPID,
+                    (&mut pid as *mut i32).cast(),
+                    &mut len,
+                )
+            };
+            (ok == 0 && len as usize == std::mem::size_of::<i32>() && pid > 1).then_some(pid)
         }
-        #[cfg(not(target_os="macos"))] {let _=socket;None}
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = socket;
+            None
+        }
     }
     pub struct Listener {
         inner: tokio::net::UnixListener,
@@ -137,14 +151,22 @@ mod unix {
 pub(crate) use unix::*;
 
 pub(crate) fn gui_directory(profile: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    gui_directory_if_present(profile)?
+        .ok_or_else(|| std::io::Error::other("Expected exactly one running GUI receive adapter"))
+}
+
+pub(crate) fn gui_directory_if_present(
+    profile: &std::path::Path,
+) -> std::io::Result<Option<std::path::PathBuf>> {
     private_directory(profile)?;
     let frontend = profile.join("gui-state");
     let attached = exists(&frontend, "gui-receive.sock")?;
     let standalone = exists(profile, "gui-receive.sock")?;
     match (attached, standalone) {
-        (true, false) => Ok(frontend),
-        (false, true) => Ok(profile.to_owned()),
-        _ => Err(std::io::Error::other(
+        (true, false) => Ok(Some(frontend)),
+        (false, true) => Ok(Some(profile.to_owned())),
+        (false, false) => Ok(None),
+        (true, true) => Err(std::io::Error::other(
             "Expected exactly one running GUI receive adapter",
         )),
     }
