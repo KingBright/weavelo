@@ -134,6 +134,9 @@ impl NativeSource {
                             queue_us:started.saturating_sub(frame.stamp.arrival_ts_us),
                             upload_vpp_us:packet.upload_vpp_us,encode_us:packet.encode_us,
                         })};
+                    // VPP/encoding has completed and the AU owns its bytes.
+                    // Network backpressure must not keep raw PipeWire storage.
+                    drop(frame);
                     if sender.blocking_send(Ok(chunk)).is_err() {break;}
                     sequence=sequence.checked_add(1).ok_or("Native VAAPI sequence exhausted")?;
                 }
