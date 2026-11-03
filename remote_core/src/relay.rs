@@ -444,8 +444,8 @@ impl BoundTcpRelayServer {
                         {
                             // Abnormal connection ends need a bounded reason
                             // without enabling packet logs or exposing routes.
-                            eprintln!("WebSocket relay connection ended kind={:?} slow_peer={}",
-                                err.kind(), err.to_string() == "relay peer is too slow");
+                            eprintln!("WebSocket relay connection ended kind={:?} retirement={:?}",
+                                err.kind(), err.get_ref().and_then(|e|e.downcast_ref::<RelayRetirement>()));
                         }
                     });
                 }
@@ -894,15 +894,31 @@ struct TcpRelayServerState {
     connection_identities: HashMap<u64, RelayPeerKey>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayRetirement { Replaced, SlowPeer }
+impl std::fmt::Display for RelayRetirement {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.write_str(match self { Self::Replaced=>"relay connection replaced", Self::SlowPeer=>"relay peer is too slow" })
+    }
+}
+impl std::error::Error for RelayRetirement {}
+fn relay_retirement_error(reason:Option<RelayRetirement>)->io::Error {
+    match reason {
+        Some(reason)=>io::Error::new(io::ErrorKind::ConnectionAborted,reason),
+        None=>io::Error::new(io::ErrorKind::BrokenPipe,"relay ownership notification ended"),
+    }
+}
+
 #[derive(Clone)]
 struct TcpRelayPeerState {
     connection_id: u64,
     writer_tx: mpsc::Sender<Arc<[u8]>>,
-    disconnect_tx: watch::Sender<bool>,
+    disconnect_tx: watch::Sender<Option<RelayRetirement>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelayRegistrationError {
+    ConnectionRetired,
     ConnectionIdentityChanged,
     GroupPeerLimitReached,
 }
@@ -925,9 +941,12 @@ impl TcpRelayServerState {
         peer_id: String,
         connection_id: u64,
         writer_tx: mpsc::Sender<Arc<[u8]>>,
-        disconnect_tx: watch::Sender<bool>,
+        disconnect_tx: watch::Sender<Option<RelayRetirement>>,
         max_peers_per_group: usize,
     ) -> Result<(), RelayRegistrationError> {
+        if disconnect_tx.borrow().is_some() {
+            return Err(RelayRegistrationError::ConnectionRetired);
+        }
         let key = RelayPeerKey { group_id, peer_id };
         if let Some(existing) = self.connection_identities.get(&connection_id) {
             return if existing == &key {
@@ -948,7 +967,7 @@ impl TcpRelayServerState {
         }
 
         if let Some(existing) = self.peers.remove(&key) {
-            let _ = existing.disconnect_tx.send(true);
+            let _ = existing.disconnect_tx.send(Some(RelayRetirement::Replaced));
             self.connection_identities.remove(&existing.connection_id);
         }
         self.connection_identities
@@ -1006,7 +1025,7 @@ impl TcpRelayServerState {
                 Ok(()) => result.forwarded += 1,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     result.disconnected_slow_peers += 1;
-                    let _ = disconnect_tx.send(true);
+                    let _ = disconnect_tx.send(Some(RelayRetirement::SlowPeer));
                     failed_connections.push(connection_id);
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -1036,7 +1055,7 @@ async fn run_tcp_relay_connection(
     stream.set_nodelay(true)?;
     let (mut reader, writer) = stream.into_split();
     let (writer_tx, writer_rx) = mpsc::channel(config.writer_queue_capacity);
-    let (disconnect_tx, mut disconnect_rx) = watch::channel(false);
+    let (disconnect_tx, mut disconnect_rx) = watch::channel(None);
     let connection_id = {
         let mut state = state.lock().await;
         state.next_connection_id()
@@ -1047,12 +1066,15 @@ async fn run_tcp_relay_connection(
         loop {
             let frame = tokio::select! {
                 _ = disconnect_rx.changed() => {
-                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "relay peer is too slow"));
+                    return Err(relay_retirement_error(*disconnect_rx.borrow()));
                 }
                 frame = tokio::time::timeout(config.idle_timeout, read_tcp_frame(&mut reader)) => {
                     frame.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay connection idle timeout"))??
                 }
             };
+            if let Some(reason)=*disconnect_tx.borrow() {
+                return Err(relay_retirement_error(Some(reason)));
+            }
             let Some(packet) = RelayPacket::decode(&frame) else {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid relay packet"));
             };
@@ -1142,7 +1164,7 @@ where
 {
     let (mut writer, mut reader) = stream.split();
     let (writer_tx, mut writer_rx) = mpsc::channel::<Arc<[u8]>>(config.writer_queue_capacity);
-    let (disconnect_tx, mut disconnect_rx) = watch::channel(false);
+    let (disconnect_tx, mut disconnect_rx) = watch::channel(None);
     let connection_id = state.lock().await.next_connection_id();
     let flush = tokio::sync::Notify::new();
     // A blocked peer write must not stop registration, input or heartbeat
@@ -1183,7 +1205,7 @@ where
         }
     };
     let result = tokio::select! {
-        _ = disconnect_rx.changed() => Err(io::Error::new(io::ErrorKind::ConnectionAborted, "relay peer is too slow")),
+        _ = disconnect_rx.changed() => Err(relay_retirement_error(*disconnect_rx.borrow())),
         result = receive => result,
         result = send => result,
     };
@@ -1197,10 +1219,13 @@ async fn handle_tcp_relay_packet(
     addr: SocketAddr,
     connection_id: u64,
     writer_tx: &mpsc::Sender<Arc<[u8]>>,
-    disconnect_tx: &watch::Sender<bool>,
+    disconnect_tx: &watch::Sender<Option<RelayRetirement>>,
     state: &Arc<Mutex<TcpRelayServerState>>,
     config: &TcpRelayServerConfig,
 ) -> io::Result<()> {
+    if let Some(reason)=*disconnect_tx.borrow() {
+        return Err(relay_retirement_error(Some(reason)));
+    }
     let Some(packet) = RelayPacket::decode(frame) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1814,11 +1839,28 @@ mod tests {
     }
 
     #[test]
+    fn retired_relay_connection_cannot_reclaim_a_replacement_peer() {
+        let mut state=TcpRelayServerState::default();
+        let (old_writer,_old_frames)=mpsc::channel(1);
+        let (old_disconnect,old_retired)=watch::channel(None);
+        let (new_writer,_new_frames)=mpsc::channel(1);
+        let (new_disconnect,new_retired)=watch::channel(None);
+        state.register("group".into(),"peer".into(),1,old_writer.clone(),old_disconnect.clone(),2).unwrap();
+        state.register("group".into(),"peer".into(),2,new_writer,new_disconnect,2).unwrap();
+        assert_eq!(*old_retired.borrow(),Some(RelayRetirement::Replaced));
+        let reclaim=state.register("group".into(),"peer".into(),1,old_writer,old_disconnect,2);
+        assert_eq!(reclaim,Err(RelayRegistrationError::ConnectionRetired),"retired connection reclaimed the replacement peer");
+        assert_eq!(state.identity(2).unwrap().peer_id,"peer");
+        assert!(state.identity(1).is_none());
+        assert!(new_retired.borrow().is_none());
+    }
+
+    #[test]
     fn tcp_connection_cannot_change_identity_after_registration() {
         let mut state = TcpRelayServerState::default();
         let connection_id = state.next_connection_id();
         let (writer_tx, _writer_rx) = mpsc::channel(4);
-        let (disconnect_tx, _disconnect_rx) = tokio::sync::watch::channel(false);
+        let (disconnect_tx, _disconnect_rx) = tokio::sync::watch::channel(None);
 
         state
             .register(
@@ -1858,7 +1900,7 @@ mod tests {
     fn tcp_group_peer_limit_is_enforced() {
         let mut state = TcpRelayServerState::default();
         let (writer_a, _reader_a) = mpsc::channel(4);
-        let (disconnect_a, _disconnect_reader_a) = tokio::sync::watch::channel(false);
+        let (disconnect_a, _disconnect_reader_a) = tokio::sync::watch::channel(None);
         let first_connection = state.next_connection_id();
         state
             .register(
@@ -1872,7 +1914,7 @@ mod tests {
             .unwrap();
 
         let (writer_b, _reader_b) = mpsc::channel(4);
-        let (disconnect_b, _disconnect_reader_b) = tokio::sync::watch::channel(false);
+        let (disconnect_b, _disconnect_reader_b) = tokio::sync::watch::channel(None);
         let second_connection = state.next_connection_id();
         let err = state
             .register(
@@ -1894,7 +1936,7 @@ mod tests {
         let mut register = |group: &str, peer: &str, capacity| {
             let connection = state.next_connection_id();
             let (writer, reader) = mpsc::channel(capacity);
-            let (disconnect, disconnected) = watch::channel(false);
+            let (disconnect, disconnected) = watch::channel(None);
             state.register(group.into(), peer.into(), connection, writer.clone(), disconnect, 8).unwrap();
             (connection, writer, reader, disconnected)
         };
@@ -1929,7 +1971,7 @@ mod tests {
         assert_eq!(state.forward_frame("control-group", source, frame.clone(), &unknown_target), rejected);
         assert_eq!(state.forward_frame("control-group", source, frame, &payload[..4]), rejected);
         assert!(target.try_recv().is_err());
-        assert!(!*disconnected.borrow(), "another device's stream disconnected this peer");
+        assert!(disconnected.borrow().is_none(), "another device's stream disconnected this peer");
         assert!(other_group.try_recv().is_err());
     }
 
@@ -1939,7 +1981,7 @@ mod tests {
         let source_connection = state.next_connection_id();
         let target_connection = state.next_connection_id();
         let (writer_tx, _writer_rx) = mpsc::channel(1);
-        let (disconnect_tx, disconnect_rx) = tokio::sync::watch::channel(false);
+        let (disconnect_tx, disconnect_rx) = tokio::sync::watch::channel(None);
         state
             .register(
                 "group".to_string(),
@@ -1966,7 +2008,7 @@ mod tests {
                 disconnected_slow_peers: 1,
             }
         );
-        assert!(*disconnect_rx.borrow());
+        assert_eq!(*disconnect_rx.borrow(), Some(RelayRetirement::SlowPeer));
     }
 
     #[tokio::test]
