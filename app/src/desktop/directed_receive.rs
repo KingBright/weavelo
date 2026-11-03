@@ -136,6 +136,7 @@ pub(crate) struct Adapter {
     pub generation: String,
     pub executable_sha256: String,
     pub commands: mpsc::Receiver<Command>,
+    pub command_ready: std::sync::Arc<tokio::sync::Notify>,
     pub computer_use: std::sync::Arc<super::computer_use_ipc::Dispatcher>,
     pub leases: std::collections::BTreeMap<String, Lease>,
     seen: HashMap<String,u64>,
@@ -209,6 +210,8 @@ impl Adapter {
         );
         let computer_use=std::sync::Arc::new(super::computer_use_ipc::Dispatcher::new(directory,&generation,&executable_sha256));
         let (tx, commands) = mpsc::channel(8);
+        let command_ready = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notify = command_ready.clone();
         let task = tokio::spawn(async move {
             // Serial, bounded requests. A stalled same-user client holds this
             // adapter for at most two seconds, never the GUI or media runtime.
@@ -235,6 +238,7 @@ impl Adapter {
                     let (reply, response) = oneshot::channel();
                     tx.try_send(Command { request, reply, peer_pid })
                         .map_err(|_| "GUI command queue is busy")?;
+                    notify.notify_one();
                     // A reply owns its exact cancellation receipt even while
                     // queued inside oneshot. Timeout after send but before recv
                     // therefore drops the receipt and revokes the lease.
@@ -257,6 +261,7 @@ impl Adapter {
             executable_sha256,
             generation,
             commands,
+            command_ready,
             computer_use,
             leases: Default::default(),
             seen: HashMap::new(),
@@ -621,6 +626,37 @@ mod tests {
             .send(serde_json::json!({"ok":true,"state":"test-gui"}).into())
             .unwrap_or_else(|_| panic!("test reply receiver closed"));
         assert_eq!(request.await.unwrap().unwrap()["state"], "test-gui");
+    }
+    #[tokio::test]
+    async fn queued_menu_wakes_idle_owner_without_waiting_for_a_poll_tick() {
+        let dir = private_fixture();
+        let mut adapter = Adapter::start(dir.path()).unwrap();
+        let ready = adapter.command_ready.clone();
+        let path = dir.path().to_path_buf();
+        let request = tokio::task::spawn_blocking(move || exchange(&path, &Request::Menu));
+        tokio::time::timeout(Duration::from_millis(400), ready.notified())
+            .await.expect("Menu must wake an idle owner within its existing 500ms budget");
+        let command = adapter.commands.try_recv().expect("The wake must follow queue admission");
+        assert!(matches!(command.request, Request::Menu));
+        command.reply.send(serde_json::json!({"ok":true,"state":"awake"}).into())
+            .unwrap_or_else(|_| panic!("Menu client timed out while owner was idle"));
+        assert_eq!(request.await.unwrap().unwrap()["state"], "awake");
+    }
+    #[tokio::test]
+    async fn command_queued_before_owner_wait_keeps_its_wake() {
+        let dir = private_fixture();
+        let mut adapter = Adapter::start(dir.path()).unwrap();
+        let path = dir.path().to_path_buf();
+        let request = tokio::task::spawn_blocking(move || exchange(&path, &Request::Status));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while adapter.commands.is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(50), adapter.command_ready.notified())
+            .await.expect("A command queued between draining and waiting must retain its wake");
+        let command = adapter.commands.try_recv().unwrap();
+        command.reply.send(serde_json::json!({"ok":true}).into())
+            .unwrap_or_else(|_| panic!("Status client timed out before the queued reply"));
+        assert_eq!(request.await.unwrap().unwrap()["ok"], true);
     }
     #[tokio::test]
     async fn receive_group_renews_remaining_windows_and_releases_only_its_owners() {

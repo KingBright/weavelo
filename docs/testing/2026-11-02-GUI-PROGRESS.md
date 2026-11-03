@@ -506,3 +506,13 @@ Book 同一次投送中，额外选择的 Weavelo 接收窗口在台前调度缩
 隔离其它测试投送后，在 Book 正常展开原接收窗口并重新投送该窗口，Studio 对同一窗口 ID 已解码 2,311 帧且错误为零，确认采集能力存在，失败集中在缩略图恢复。原恢复逻辑在 AXWindows 暂不可用时立即报错；现在复用已有的有界应用激活逻辑，激活前后重新核对选定窗口 ID / PID，ScreenCaptureKit 的单窗口过滤不变。已有 AX 窗口树的精确标题匹配、还原和提升逻辑继续使用原路径；输入的实时焦点、遮挡及命中检查没有放宽。
 
 25 项 Mac 窗口输入 / 变换定向检查和 1,045 项签名发布回归通过（19 项跳过），证据 `mac-parked-native-window-focused-checks.log`、`mac-parked-native-window-release-regression.log`。该代码修复的正式签名成品、安装与缩略图状态下的实机复测待继续完成；不能用正常展开后的旧版成功替代修复版验收。
+
+## 2026-11-04 Mac 104 实机恢复与命令唤醒
+
+两台 Mac 均已正式兼容安装 104，来源 `0019ca1`；Studio 实际 GUI 86030、可执行 SHA `bd6d71de…`，Book 实际 GUI 94412、SHA `3cd66c67…`，各自原叶证书保持不变。Book 自有接收窗口先处于另一自有 AppKit 应用之后，再直接投送该窗口；恢复后选定窗口本身成为活动窗口，Studio 已解码 3,628 帧、错误为零，实际两层画面已审阅。证据 `native104-book-parked-window-source-acceptance.json`、`native104-studio-book-studio-parked-window-restored-actual.png`。Mac 104 已正式发布，公网清单 SHA `b927a22b513734744f2083888296b48d01495aacca1a5088616f8904b94fdc1b`；Windows / Linux 103 条目及 Android 76 元数据保持原值，证据 `native104-nas-macos-only-verified.json`。
+
+Linux 103 在自有全屏动态夹具内投送到 Studio / Book / Windows，分别有 1,148 / 1,000 / 1,064 帧接收记录，解码错误均为零；其后三个精确请求自动结束，额外保留夹具 12 秒后退出。四桌面 12 个视频方向均有首帧记录。Book / Windows 当次快照的 scene_submitted 为 false，物理呈现仍待验证；Studio 截图发生在有界测试已经关闭窗口后，没有取得图片，也不归因于系统权限。证据 `native104-linux-to-desktops-send-and-stop.json` 及各接收端 `native104-linux-source-receiver-*.json`。
+
+两部 Android 76 均通过正常 Devices → Send to Studio → Camera 入口显示前 / 后摄选择，使用已有相机权限，未点击系统授权弹窗。后摄投送分别在 Studio 解码 2,484 / 4,716 帧、零错误，均实际提交画面且 input_eligible 为 false；两张原生窗口截图已保留。当前后摄图像很暗，继续以前摄对照，不将计数代替画质判断。Camera 源是运行期随机 u64，验收保存 source_id_json 字符串并在 Python 内处理，避免经过 JavaScript 数值丢失精度。
+
+并行串流时，菜单 CLI 两次在固定 500 ms 内未获回复；同一私有界面的查询与菜单操作耗时约 302–607 ms，主线程采样显示事件等待。原有命令只入队，GUI 依赖媒体通知或定时轮询处理。本轮在入队后发出单次通知，直接唤醒持有适配器的 GUI；命令仍走原有有界队列、鉴权和输入验证，不增加空闲轮询或延长菜单超时。15 项原生 IPC 检查通过，包含真实端点的空闲菜单唤醒及“入队先于等待”不丢唤醒；1,045 项签名发布回归通过（19 项跳过）。证据 `gui-command-wake-focused-checks.log`、`gui-command-wake-release-regression.log`；新成品部署后的延迟对照待继续完成。

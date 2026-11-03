@@ -223,6 +223,7 @@ fn open_restored_window_for(
         }
         let weak = view.downgrade();
         let mut frame_updates = view.read(cx).owner.subscribe_updates();
+        let command_ready = view.read(cx).directed_receive.as_ref().map(|adapter| adapter.command_ready.clone());
         cx.spawn(async move |cx| {
             loop {
                 let Ok(interval) = weak.update(cx, |view, cx| {
@@ -277,6 +278,12 @@ fn open_restored_window_for(
                 owned_gui_stage(4);
                 tokio::select! {
                     changed=frame_updates.changed()=>{if changed.is_err(){break;}},
+                    _=async {
+                        match &command_ready {
+                            Some(ready)=>ready.notified().await,
+                            None=>std::future::pending::<()>().await,
+                        }
+                    }=>{},
                     _=Timer::after(interval)=>{}
                 }
             }
