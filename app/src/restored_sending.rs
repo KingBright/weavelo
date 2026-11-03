@@ -179,6 +179,7 @@ impl RestoredDashboard {
         request: &str,
         catalog: Vec<CaptureSourceInfo>,
         artwork: SourceArtwork,
+        activate: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.exit_group.stopping.load(Ordering::Acquire) {
@@ -190,9 +191,9 @@ impl RestoredDashboard {
             .is_some_and(|context| context.request == request)
         {
             let handle = self.window_handle;
-            cx.defer(move |cx| {
+            if activate {cx.defer(move |cx| {
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
-            });
+            });}
             return true;
         }
         for window in cx.windows() {
@@ -207,7 +208,7 @@ impl RestoredDashboard {
                     .as_ref()
                     .is_some_and(|context| context.request == request)
             }) {
-                let _ = window.update(cx, |_, window, _| window.activate_window());
+                if activate {let _ = window.update(cx, |_, window, _| window.activate_window());}
                 return true;
             }
         }
@@ -234,7 +235,8 @@ impl RestoredDashboard {
         if !context.catalog.is_empty() {
             self.exit_group.send_labels.lock().unwrap().insert(request.into(),context.label());
         }
-        let Some(window) = open_restored_window(
+        let Some(window) = open_restored_window_for(
+            WindowPurpose::Sending,
             self.runtime.clone(),
             None,
             Default::default(),
@@ -254,7 +256,7 @@ impl RestoredDashboard {
                 this.drawer_open = false;
                 this.owner.release_input();
                 this.refresh_sending_catalog(cx);
-                window.activate_window();
+                if activate {window.activate_window();}
                 cx.notify();
             })
             .is_ok()
@@ -528,6 +530,7 @@ mod tests {
                 vec![CaptureSourceInfo {source:CaptureSource::Window(7),title:"Retained fixture window".into(),application:String::new(),
                     process_id:None,width:640,height:480,supports_input:false,camera:None}],
                 Arc::new(Default::default()),
+                false,
                 cx
             ))
         });
@@ -552,6 +555,8 @@ mod tests {
         });
         let first_view = first_window.root(cx).unwrap();
         cx.run_until_parked();
+        first_window.update(cx,|_,window,_|assert!(!window.is_window_active(),
+            "automatic sending must not take focus from the source application")).unwrap();
         assert_eq!(
             first_view.read_with(cx, |this, _| this.purpose),
             WindowPurpose::Sending
@@ -565,6 +570,7 @@ mod tests {
                 "send-a",
                 Vec::new(),
                 Arc::new(Default::default()),
+                true,
                 cx
             ))
         });
@@ -589,6 +595,7 @@ mod tests {
                 "send-a",
                 Vec::new(),
                 Arc::new(Default::default()),
+                true,
                 cx
             ))
         });
@@ -600,7 +607,7 @@ mod tests {
                 .unwrap()
         });
         view.update(cx, |this, cx| {
-            assert!(this.open_sending_window("send-b", Vec::new(), Arc::new(Default::default()), cx));
+            assert!(this.open_sending_window("send-b", Vec::new(), Arc::new(Default::default()), true, cx));
         });
         cx.run_until_parked();
         assert_eq!(cx.update(|cx| cx.windows().len()), 3);

@@ -174,9 +174,23 @@ fn open_restored_window(
     exit_group: Arc<FrontendExitGroup>,
     cx: &mut App,
 ) -> Option<WindowHandle<RestoredDashboard>> {
+    let purpose=if instance.is_some() {WindowPurpose::Management} else {WindowPurpose::Stream};
+    open_restored_window_for(purpose,runtime,instance,activation,device,background,exit_group,cx)
+}
+
+fn open_restored_window_for(
+    purpose:WindowPurpose,
+    runtime:Arc<UnifiedRuntimeHandle>,
+    instance:Option<Instance>,
+    activation:Arc<AtomicBool>,
+    device:Option<String>,
+    background:Option<crate::background_service::Client>,
+    exit_group:Arc<FrontendExitGroup>,
+    cx:&mut App,
+) -> Option<WindowHandle<RestoredDashboard>> {
     if exit_group.stopping.load(Ordering::Acquire) {return None;}
     let primary = instance.is_some();
-    let options = restored_window_options(cx, if primary {WindowPurpose::Management} else {WindowPurpose::Stream});
+    let options = restored_window_options(cx,purpose);
     cx.open_window(options, move |window, cx| {
         let view = cx.new(|cx| RestoredDashboard::new(runtime, instance, activation, background, exit_group, window, cx));
         if primary { cx.set_global(ManagementRoot(view.clone())); }
@@ -274,10 +288,10 @@ fn open_restored_window(
 }
 
 fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
-    let (preferred, minimum) = if purpose == WindowPurpose::Management {
-        (size(px(640.), px(600.)), size(px(480.), px(420.)))
-    } else {
-        (size(px(1280.), px(800.)), size(px(800.), px(560.)))
+    let (preferred, minimum) = match purpose {
+        WindowPurpose::Management => (size(px(640.), px(600.)), size(px(480.), px(420.))),
+        WindowPurpose::Sending => (size(px(560.), px(340.)), size(px(420.), px(260.))),
+        WindowPurpose::Stream => (size(px(1280.), px(800.)), size(px(800.), px(560.))),
     };
     let window_bounds = cx.primary_display().map(|display| {
         let work = display.visible_bounds();
@@ -288,6 +302,7 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
         Bounds::centered_at(work.center(), window_size)
     }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), preferred));
     WindowOptions {
+        focus: purpose!=WindowPurpose::Sending,
             app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
         window_bounds: Some(WindowBounds::Windowed(window_bounds)),
         window_min_size: Some(size(minimum.width.min(window_bounds.size.width), minimum.height.min(window_bounds.size.height))),
@@ -938,7 +953,7 @@ impl RestoredDashboard {
             }
             if let Request::Send {request_id,target_device_id,sources,..}=command.request {
                 let result=self.send_screen_request(target_device_id,sources,request_id.clone());
-                if result.is_ok() { self.open_sending_window(&request_id,Vec::new(),Arc::new(Default::default()),cx); }
+                if result.is_ok() { self.open_sending_window(&request_id,Vec::new(),Arc::new(Default::default()),false,cx); }
                 let response=match result {
                     Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().get(&request_id).unwrap().cancellation()),
                     Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
