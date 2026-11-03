@@ -442,6 +442,14 @@ impl TouchStateTracker {
                         self.last_touch_pos = Some((clamped_x, clamped_y));
                     }
                     TouchAction::Up => {
+                        // Android can put the final movement in Up. Translate
+                        // it through the same pointer/scroll path before tap
+                        // classification; Cancel must never synthesize motion.
+                        if self.pointer_positions.get(&pointer_id)
+                            .is_some_and(|point|*point != (clamped_x,clamped_y)) {
+                            events.extend(self.process_touch(TouchAction::Move,pointer_id,
+                                clamped_x,clamped_y,_pressure,now));
+                        }
                         if !self.has_dragged {
                             if self.session_max_pointers == 1 {
                                 // 单指轻触点击：鼠标左键单击
@@ -808,6 +816,29 @@ mod tests {
         tracker.cancel_all();tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
         assert!(tracker.process_touch(TouchAction::Move,0,0.1004,0.5,1.,now).iter()
             .all(|event|!matches!(event,InputEvent::MouseMove {dx,..} if *dx!=0)));
+    }
+
+    #[test]
+    fn virtual_trackpad_includes_lift_motion_without_turning_a_swipe_into_a_tap() {
+        let mut tracker=TouchStateTracker::new(TouchMode::VirtualTrackpad,
+            RemoteScreenBounds {width:640,height:420});
+        let now=Instant::now();
+        tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
+        let mut events=tracker.process_touch(TouchAction::Move,0,0.15,0.55,1.,now);
+        events.extend(tracker.process_touch(TouchAction::Up,0,0.2,0.6,0.,now));
+        let (mut x,mut y)=(0,0);
+        for event in events {
+            let InputEvent::MouseMove {dx,dy}=event else {panic!("a moved finger must not click")};
+            x+=dx;y+=dy;
+        }
+        assert_eq!((x,y),(96,63));
+        assert!(tracker.process_touch(TouchAction::Up,0,0.9,0.9,0.,now).is_empty());
+        tracker.process_touch(TouchAction::Down,1,0.1,0.5,1.,now);
+        assert!(tracker.process_touch(TouchAction::Cancel,1,0.9,0.9,0.,now).is_empty());
+        assert!(tracker.process_touch(TouchAction::Up,1,0.9,0.9,0.,now).is_empty());
+        tracker.process_touch(TouchAction::Down,2,0.1,0.5,1.,now);
+        let lifted=tracker.process_touch(TouchAction::Up,2,0.2,0.5,0.,now);
+        assert!(matches!(lifted.as_slice(),[InputEvent::MouseMove {dx:96,dy:0}]));
     }
 
     #[test]
