@@ -285,9 +285,20 @@ impl VideoCapturer for MacVideoCapturer {
             if !self.camera_started {return Err("capture owner has ended".into());}
             self.await_owned_stop().await?;
             if self.camera.is_none(){self.start_camera()?;}
-        } else if self.stream.is_none() { return Err("capture owner has ended".into()); }
-        self.minimum_capture_ts_us = remote_core::timing::quanta_now_us();
-        drop(self.slot.take());
+        } else {
+            if self.stream.is_none() { return Err("capture owner has ended".into()); }
+            if self.minimum_capture_ts_us == u64::MAX {
+                // A static window need not repaint after an activity change.
+                // Resume with a fresh producer, after all old callbacks stop.
+                self.stop_owned_stream();
+                self.await_owned_stop().await?;
+                self.minimum_capture_ts_us = remote_core::timing::quanta_now_us();
+                drop(self.slot.take());
+                self.start().await?;
+            }
+        }
+        // Initial activation must retain the producer's first frame. Clearing
+        // it here can leave an unchanged window black until its next repaint.
         self.pacer.reset(self.target_fps);
         Ok(())
     }
