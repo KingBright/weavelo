@@ -22,6 +22,14 @@ internal data class VideoFrameGeometry(
         for (value in intArrayOf(sourceWidth, sourceHeight, x, y, cropWidth, cropHeight, width, height)) putInt(value)
     }.array()
     companion object {
+        fun fromJson(value: org.json.JSONObject): VideoFrameGeometry {
+            val crop=value.getJSONObject("crop")
+            return VideoFrameGeometry(value.getInt("source_revision"),value.getLong("demand_revision"),value.getLong("revision"),
+                value.getInt("source_width"),value.getInt("source_height"),crop.getInt("x"),crop.getInt("y"),
+                crop.getInt("width"),crop.getInt("height"),value.getInt("width"),value.getInt("height")).also {
+                require(it.valid()) { "Invalid screen encoder geometry" }
+            }
+        }
         const val HEADER_BYTES = 60
         private val MAGIC = byteArrayOf(87, 86, 82, 79, 73, 0, 1, 0)
         /** A camera keeps normal Annex-B. A malformed screen header fails closed. */
@@ -38,4 +46,9 @@ internal data class VideoFrameGeometry(
             return g to start
         }
     }
+    fun toJson(): org.json.JSONObject = org.json.JSONObject()
+        .put("source_revision",sourceRevision).put("demand_revision",demandRevision).put("revision",revision)
+        .put("source_width",sourceWidth).put("source_height",sourceHeight)
+        .put("crop",org.json.JSONObject().put("x",x).put("y",y).put("width",cropWidth).put("height",cropHeight))
+        .put("width",width).put("height",height)
 }

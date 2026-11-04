@@ -854,3 +854,12 @@ HO5 的 native-linux-video host/client 检查通过（5.46s）。真实 VAAPI �
 - 屏幕帧走专用 JNI 入口，以实际编码帧绑定的几何生成当前协议头；旧的屏幕来源广播入口被拒绝。保留原图采集/入口时戳与本次重新裁剪、编码入队时间，不把静止帧重绘伪造成新采集。单个屏幕编码会话失败只结束对应订阅，不撤销其它会话或整份系统授权。
 - 聚焦 Rust 检查：媒体需求 5 项、真实鉴权传输 16 项全部通过；另以 Android JNI feature 编译并运行 5 项通过。签名集成发布回归 1045 项通过、19 项跳过。包含两观看端相同订阅编号的独立区域、真实传输帧几何/旧图时间保真、独立结束、逐会话失败与旧授权拒绝。
 - 此轮仅完成公共策略与 Android 发布路由。MediaProjection → OES → MediaCodec GPU 发送端尚未接入；未打包、未升级手机，也未声称手机的真实区域编码或多观看者画面验收完成。
+
+### 2026-11-05 Android 原生 GPU 发送端与两部手机检查
+
+- MediaProjection 保留同一次系统授权和唯一 VirtualDisplay，完整来源直接进入 OES 纹理。多个订阅共用原始采集，各自 GPU 裁剪／缩放后写入硬件 HEVC Surface；平移不改变稳定编码尺寸，不读取全帧 CPU 像素。旋转用同一 VirtualDisplay 更换 Surface，先排完已准入的编码帧。
+- 复用接收端的 GpuVideoSurface／EGL／着色器与公共 Rust 区域规划。每路最多三帧已准入编码，原始图像取最新；编码输出凭精确 PTS 取回不可变几何与入口／入队时戳。静止区域与关键帧重绘复用真实原图时间；重复 SurfaceTexture 通知不伪造新原图。系统停止仍撤销原授权，逐会话失败不会关闭其它订阅。
+- 新增 `scripts/test_android_gpu_viewport.py`，只在 ADB shell 中加载当前产品 GPU／编码适配器并生成私有合成灰度图，不安装 APK、采集真实桌面或代替系统授权。红米 2409BRN2CC / UGXC8DQGDYBATKB6 和努比亚 NX741J / 324662166861 均通过：641×371 奇数来源、两路 256×128 硬件 HEVC、静止图像分别平移、PTS 归属、EOS 参考帧排空、关闭一路后另一路继续。独立硬件解码中心 Y 分别为 [32,96] 与 [160,224,32]，匹配生成像素。两机解码器分别 c2.mtk.hevc.decoder / c2.qti.hevc.decoder，实际元数据 BT.709／sRGB／full range。此项不是完整色彩、满分辨率性能或系统屏幕投送验收。
+- 同一份 DEX SHA-256：75183b73b38fb61ffa44ad1fd0c040c2a11ad9bca9356c30f564d5df56c9179b。努比亚远端 operation c9ccd0e8-78a7-4a52-9c64-2e517e4e2bca 明确 exit 0。红米当前日志 roi-android-redmi-native-gpu.log；努比亚日志保存在 Book 对应任务目录。QA 进程主动释放资源后退出，手机临时 DEX 已移除。
+- Android Kotlin 编译与 JVM 80 项全部通过；签名集成发布回归 1045 项通过、19 项跳过。上一轮公共 Android 会话路由的 21 项 Rust 检查与 JNI feature 5 项也已通过。
+- 尚未构建／安装新 APK 或统一升级当前协议。普通手机屏幕真实首帧、控制、旋转、后台与音频仍需新 APK 和本人系统屏幕确认；现有应用与系统授权记录未被 QA 替换。未知色彩不冒充 sRGB，当前发送适配器对其它已明确标记的宽色域返回具体失败。桌面可视区域手势和当前协议全设备验收仍待完成。

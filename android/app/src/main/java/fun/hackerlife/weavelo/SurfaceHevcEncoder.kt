@@ -43,6 +43,7 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
     private val info = MediaCodec.BufferInfo()
     private var header = ByteArray(0)
     private var keyframe = -1L
+    private var ended = false
     init {
         var input: Surface? = null
         try {
@@ -53,7 +54,7 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
                 if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 if (plan.srgb) {
-                    // Only used with an explicitly configured sRGB Camera2 producer.
+                    // Explicit Camera2 sRGB, or an observed sRGB projection buffer.
                     // Platform transfer 2 is sRGB (also exposed by Media3 C.COLOR_TRANSFER_SRGB).
                     setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
                     setInteger(MediaFormat.KEY_COLOR_TRANSFER, 2)
@@ -70,10 +71,11 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
             codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
         }
     }
-    fun drain(send: (ByteArray, Long) -> Boolean): Boolean {
+    fun drain(send: (ByteArray, Long) -> Boolean): Boolean = drain(10_000,send)
+    fun drain(waitUs: Long, send: (ByteArray, Long) -> Boolean): Boolean {
         var accepted = true
         repeat(8) { attempt ->
-            val index = codec.dequeueOutputBuffer(info, if (attempt == 0) 10_000 else 0)
+            val index = codec.dequeueOutputBuffer(info, if (attempt == 0) waitUs else 0)
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return accepted
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 val format = codec.outputFormat
@@ -97,9 +99,18 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
                             accepted = send(payload, info.presentationTimeUs) && accepted
                         }
                     }
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) ended = true
                 } finally { codec.releaseOutputBuffer(index, false) }
             }
         }
+        return accepted
+    }
+    fun finish(send: (ByteArray, Long) -> Boolean): Boolean {
+        codec.signalEndOfInputStream()
+        val deadline=android.os.SystemClock.elapsedRealtimeNanos()+2_000_000_000
+        var accepted=true
+        while (!ended && android.os.SystemClock.elapsedRealtimeNanos()<deadline) accepted=drain(send=send)&&accepted
+        check(ended) { "Hardware screen encoder did not finish its reference frames" }
         return accepted
     }
     override fun close() {

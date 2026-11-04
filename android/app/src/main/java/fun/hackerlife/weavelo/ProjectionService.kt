@@ -17,8 +17,7 @@ class ProjectionService : Service() {
     private val running = AtomicBoolean(false)
     private var worker: Thread? = null
     private var projection: MediaProjection? = null
-    @Volatile private var sourceWidth = 1080
-    @Volatile private var sourceHeight = 1920
+    @Volatile private var captureSize = 1080 to 1920
     @Volatile private var audioAllowed = false
     @Volatile private var controlAllowed = false
     private var sendTarget: String? = null
@@ -41,7 +40,7 @@ class ProjectionService : Service() {
             .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "Stop sharing", stop).build()).build())
         try {
             val metrics = resources.displayMetrics
-            sourceWidth = metrics.widthPixels; sourceHeight = metrics.heightPixels
+            captureSize = metrics.widthPixels to metrics.heightPixels
             controlAllowed = intent?.getBooleanExtra("control", false) == true
             sendTarget = intent?.getStringExtra("send-target")
             audioAllowed = intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
@@ -49,10 +48,9 @@ class ProjectionService : Service() {
             projection = capture
             capture.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { PublisherClient.controlSize = null; runCatching { PublisherClient.action(1) }; running.set(false); stopSelf() }
-                override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1) {
-                    sourceWidth = width; sourceHeight = height
-                    PublisherClient.controlSize = if (controlAllowed) width to height else null
-                    runCatching { PublisherClient.action(3,JSONObject().put("grant",captureGrant).put("width",width).put("height",height).toString()) }
+                override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1 && captureSize != (width to height)) {
+                    PublisherClient.controlSize = null
+                    captureSize = width to height
                 } }
             }, Handler(Looper.getMainLooper()))
             running.set(true)
@@ -63,19 +61,18 @@ class ProjectionService : Service() {
 
     private fun publish(capture: MediaProjection, density: Int) {
         var display: VirtualDisplay? = null
-        var codec: SurfaceHevcEncoder? = null
+        var publisher: GpuScreenPublisher? = null
         var sourceSize = 0 to 0
-        var formatKey = ""
-        var frameEpoch = 0L
         var demand = JSONObject()
         var nextDemand = 0L
         try {
             val directory = File(filesDir, "received").apply { mkdirs() }
             PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001").put("directory", directory.absolutePath).put("audio", audioAllowed).put("control",controlAllowed).toString())
             captureGrant = JSONObject(PublisherClient.action(2)).getLong("grant")
-            PublisherClient.controlSize = if (controlAllowed) sourceWidth to sourceHeight else null
-            // Null surface suspends capture without releasing the authorization.
-            display = capture.createVirtualDisplay("Weavelo", sourceWidth, sourceHeight, density,
+            val initialSize=captureSize
+            // Android 14+ authorizes exactly one VirtualDisplay. Pause and
+            // rotation replace its Surface, never create another with this token.
+            display = capture.createVirtualDisplay("Weavelo", initialSize.first, initialSize.second, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, null, null, Handler(Looper.getMainLooper()))
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
@@ -85,47 +82,37 @@ class ProjectionService : Service() {
                     .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true) }
                 sendTarget = null
             }
-            var selectionKey = ""
-            var selection: SurfaceHevcEncoder.Plan? = null
             while (running.get()) {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
-                    demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 100
+                    demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
                 }
-                if (sourceSize != (sourceWidth to sourceHeight)) {
-                    sourceSize = sourceWidth to sourceHeight
-                    PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width", sourceWidth).put("height", sourceHeight).toString())
+                val size=captureSize
+                if (sourceSize != size) {
+                    PublisherClient.controlSize = null
+                    display.surface = null
+                    publisher?.finish();publisher?.close();publisher=null
+                    display.resize(size.first,size.second,density)
+                    PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width",size.first).put("height",size.second).toString())
+                    sourceSize=size
+                    if (captureSize == size && controlAllowed) PublisherClient.controlSize=size
                     demand = JSONObject(PublisherClient.action(2))
                 }
-                val active = demand.optBoolean("active")
-                if (active) {
-                    val targetW = demand.optInt("width", 1280); val targetH = demand.optInt("height", 720)
-                    val fps = demand.optInt("fps", 30); val bitrate = demand.optInt("bitrate_kbps", 5000)
-                    val requested = "$sourceWidth:$sourceHeight:$targetW:$targetH:$fps:$bitrate"
-                    if (selectionKey != requested) {
-                        selection = SurfaceHevcEncoder.fit(sourceWidth, sourceHeight, targetW, targetH, fps, bitrate)
-                        selectionKey = requested
+                val views=demand.optJSONArray("views") ?: org.json.JSONArray()
+                if (views.length()>0) {
+                    if (publisher == null) {
+                        publisher=GpuScreenPublisher(size.first,size.second)
+                        display.surface=publisher.input
                     }
-                    val supported = selection ?: error("No hardware HEVC encoder supports this resolution, frame rate and bitrate")
-                    val key = "$supported:${demand.optLong("epoch")}"
-                    if (codec == null || key != formatKey) {
-                        display.surface = null
-                        codec?.close(); codec = null
-                        val candidate = SurfaceHevcEncoder(supported)
-                        codec = candidate
-                        display.resize(supported.width, supported.height, density); display.surface = candidate.surface
-                        frameEpoch = demand.getLong("epoch")
-                        formatKey = key
-                    }
-                    val encoder = checkNotNull(codec)
-                    encoder.requestKeyframe(demand.optLong("keyframe"))
-                    if (!encoder.drain { bytes, pts -> PublisherClient.nativeFrame(PublisherClient.SCREEN_SOURCE, frameEpoch, bytes, pts) }) nextDemand = 0
-                } else if (codec != null) {
-                    display.surface = null; codec?.close(); codec = null
+                    if (!publisher.update(views)) nextDemand=0
+                } else if (publisher != null) {
+                    display.surface=null;publisher.close();publisher=null
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")
                 if (wantsAudio && !audioRunning.get()) startAudio(capture,captureGrant)
                 if (!wantsAudio && audioRunning.get()) stopAudio()
-                Thread.sleep(if (active) 4 else 100)
+                val waitMs=(nextDemand-SystemClock.elapsedRealtime()).coerceIn(1,50)
+                val gpu=publisher
+                if (gpu != null) gpu.awaitFrame(if (gpu.pendingFrames) 1 else waitMs) else Thread.sleep(waitMs)
             }
         } catch (e: Exception) {
             if (running.get()) { PublisherClient.status(e.message ?: "Projection stopped", false); runCatching { PublisherClient.action(4, e.message ?: "Projection stopped") } }
@@ -133,7 +120,7 @@ class ProjectionService : Service() {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
             display?.surface = null; display?.release()
-            codec?.close()
+            publisher?.close()
             runCatching { PublisherClient.action(1) }
             if (PublisherClient.active) PublisherClient.status("Screen sharing stopped", false)
             stopSelf()

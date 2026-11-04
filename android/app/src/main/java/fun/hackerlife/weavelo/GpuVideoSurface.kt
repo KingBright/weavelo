@@ -20,9 +20,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * There is no CPU image readback and no extra full/detail video subscription.
  */
 internal class GpuVideoSurface(
-    private val output: Surface,
+    private val output: Surface?,
     sourceWidth: Int,
     sourceHeight: Int,
+    private val captureClockUs: (() -> Long)? = null,
     private val onFrame: (VideoFrameGeometry?) -> Unit = {}
 ) : AutoCloseable {
     data class Presentation(val ready: Boolean = false, val geometry: VideoFrameGeometry? = null)
@@ -34,12 +35,23 @@ internal class GpuVideoSurface(
     private val display = DisplayOwner.acquire()
     private val callbacks = HandlerThread("weavelo-texture-events").apply { start() }
     private val available = AtomicBoolean(false)
+    private val signal = Object()
     private val metadata = TreeMap<Long, VideoFrameGeometry?>()
     private var lastRenderedPts = Long.MIN_VALUE
     private var lastRegisteredPts = Long.MIN_VALUE
     private var ignoreThroughPts = Long.MIN_VALUE
     private var context = EGL14.EGL_NO_CONTEXT
     private var window = EGL14.EGL_NO_SURFACE
+    private var config: android.opengl.EGLConfig? = null
+    internal data class Output(val surface: android.opengl.EGLSurface, val width: Int, val height: Int)
+    private val outputs = mutableSetOf<Output>()
+    var sourceReady = false
+        private set
+    var sourceCaptureUs = 0L
+        private set
+    var sourceDataSpace = 0
+        private set
+    private var sourceTimestampNs: Long? = null
     private var program = 0
     private var texture = 0
     private var image: SurfaceTexture? = null
@@ -53,16 +65,18 @@ internal class GpuVideoSurface(
     }
     init {
         try {
-            require(output.isValid && sourceWidth > 1 && sourceHeight > 1)
+            require(output?.isValid != false && sourceWidth > 1 && sourceHeight > 1)
             val configs = arrayOfNulls<android.opengl.EGLConfig>(1)
             val count = IntArray(1)
             val attrs = intArrayOf(EGL14.EGL_RED_SIZE,8,EGL14.EGL_GREEN_SIZE,8,EGL14.EGL_BLUE_SIZE,8,EGL14.EGL_ALPHA_SIZE,8,
-                EGL14.EGL_RENDERABLE_TYPE,EGL14.EGL_OPENGL_ES2_BIT,EGL14.EGL_SURFACE_TYPE,EGL14.EGL_WINDOW_BIT,
+                EGL14.EGL_RENDERABLE_TYPE,EGL14.EGL_OPENGL_ES2_BIT,EGL14.EGL_SURFACE_TYPE,EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT,
                 0x3142,1,EGL14.EGL_NONE) // EGL_RECORDABLE_ANDROID
             check(EGL14.eglChooseConfig(display,attrs,0,configs,0,1,count,0) && count[0] > 0) { "No native video EGL configuration" }
+            config = checkNotNull(configs[0])
             context = EGL14.eglCreateContext(display,configs[0],EGL14.EGL_NO_CONTEXT,intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION,2,EGL14.EGL_NONE),0)
             check(context != EGL14.EGL_NO_CONTEXT)
-            window = EGL14.eglCreateWindowSurface(display,configs[0],output,intArrayOf(EGL14.EGL_NONE),0)
+            window = if (output != null) EGL14.eglCreateWindowSurface(display,config,output,intArrayOf(EGL14.EGL_NONE),0)
+                else EGL14.eglCreatePbufferSurface(display,config,intArrayOf(EGL14.EGL_WIDTH,1,EGL14.EGL_HEIGHT,1,EGL14.EGL_NONE),0)
             check(window != EGL14.EGL_NO_SURFACE && EGL14.eglMakeCurrent(display,window,window,context))
             program = GLES20.glCreateProgram()
             for ((type, source) in listOf(GLES20.GL_VERTEX_SHADER to VERTEX, GLES20.GL_FRAGMENT_SHADER to FRAGMENT)) {
@@ -83,12 +97,57 @@ internal class GpuVideoSurface(
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
             image = SurfaceTexture(texture).also { st ->
                 st.setDefaultBufferSize(sourceWidth,sourceHeight)
-                st.setOnFrameAvailableListener({ available.set(true) },Handler(callbacks.looper))
+                st.setOnFrameAvailableListener({ synchronized(signal) { available.set(true); signal.notifyAll() } },Handler(callbacks.looper))
                 producer = Surface(st)
             }
         } catch (error: Throwable) { close(); throw error }
     }
     private fun checkThread() = check(Thread.currentThread() === thread && !closed) { "Native video context owner changed" }
+    fun addOutput(surface: Surface): Output {
+        checkThread(); check(output == null && surface.isValid)
+        val target=EGL14.eglCreateWindowSurface(display,config,surface,intArrayOf(EGL14.EGL_NONE),0)
+        check(target != EGL14.EGL_NO_SURFACE) { "Cannot import hardware encoder Surface" }
+        try {
+            val w=IntArray(1);val h=IntArray(1)
+            check(EGL14.eglQuerySurface(display,target,EGL14.EGL_WIDTH,w,0) && EGL14.eglQuerySurface(display,target,EGL14.EGL_HEIGHT,h,0))
+            return Output(target,w[0],h[0]).also { outputs.add(it) }
+        } catch (error: Throwable) { EGL14.eglDestroySurface(display,target); throw error }
+    }
+    fun removeOutput(target: Output) {
+        checkThread()
+        if (outputs.remove(target)) {
+            check(EGL14.eglMakeCurrent(display,window,window,context))
+            EGL14.eglDestroySurface(display,target.surface)
+        }
+    }
+    /** Latest raw image only. A cached redraw retains this ingress clock. */
+    fun latchSource(): Boolean {
+        checkThread(); check(output == null)
+        if (!available.getAndSet(false)) return false
+        check(EGL14.eglMakeCurrent(display,window,window,context))
+        val st=checkNotNull(image);st.updateTexImage();st.getTransformMatrix(matrix)
+        val timestamp=st.timestamp
+        if (sourceTimestampNs == timestamp) return false
+        check(timestamp > 0) { "Screen buffer has no producer timestamp" }
+        sourceTimestampNs=timestamp
+        // SurfaceTexture timestamps have producer-specific timebases. Record
+        // the actual GPU ingress observation, not a guessed physical capture clock.
+        sourceCaptureUs=checkNotNull(captureClockUs) { "Screen GPU ingress clock is unavailable" }()
+        sourceDataSpace=if (android.os.Build.VERSION.SDK_INT >= 33) st.dataSpace else 0
+        sourceReady=true;return true
+    }
+    fun drawSource(target: Output, geometry: VideoFrameGeometry, ptsUs: Long) {
+        checkThread();check(output == null && sourceReady && target in outputs && geometry.valid())
+        check(target.width == geometry.width && target.height == geometry.height)
+        val sample=floatArrayOf(geometry.x.toFloat()/geometry.sourceWidth,
+            1f-(geometry.y+geometry.cropHeight).toFloat()/geometry.sourceHeight,
+            geometry.cropWidth.toFloat()/geometry.sourceWidth,geometry.cropHeight.toFloat()/geometry.sourceHeight)
+        draw(matrix,floatArrayOf(0f,0f,1f,1f),sample,Math.multiplyExact(ptsUs,1000),target)
+    }
+    fun awaitSource(timeoutMs: Long) {
+        checkThread();check(output == null)
+        if (timeoutMs > 0) synchronized(signal) { if (!available.get()) signal.wait(timeoutMs) }
+    }
     fun register(ptsUs: Long, geometry: VideoFrameGeometry?) {
         checkThread()
         check(metadata.size < 128) { "Video decoder retained too many geometry records" }
@@ -104,6 +163,7 @@ internal class GpuVideoSurface(
     fun renderPending() {
         checkThread()
         if (!available.getAndSet(false)) return
+        check(EGL14.eglMakeCurrent(display,window,window,context))
         val st = checkNotNull(image)
         st.updateTexImage(); st.getTransformMatrix(matrix)
         val pts = st.timestamp / 1000
@@ -118,9 +178,12 @@ internal class GpuVideoSurface(
         presentation = Presentation(true,g); outputFrames++; onFrame(g)
         lastRenderedPts = pts
     }
-    private fun draw(textureMatrix: FloatArray, destination: FloatArray, sample: FloatArray, timestampNs: Long?) {
+    private fun draw(textureMatrix: FloatArray, destination: FloatArray, sample: FloatArray, timestampNs: Long?, target: Output? = null) {
+        val targetSurface=target?.surface ?: window
+        check(EGL14.eglMakeCurrent(display,targetSurface,targetSurface,context))
         val w=IntArray(1);val h=IntArray(1)
-        check(EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0) && EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0))
+        if (target == null) check(EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0) && EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0))
+        else { w[0]=target.width;h[0]=target.height }
         GLES20.glViewport(0,0,w[0],h[0]);GLES20.glClearColor(0f,0f,0f,1f);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glUseProgram(program)
         val position=GLES20.glGetAttribLocation(program,"position");val tex=GLES20.glGetAttribLocation(program,"texCoord")
@@ -133,17 +196,21 @@ internal class GpuVideoSurface(
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"image"),0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
         check(GLES20.glGetError()==GLES20.GL_NO_ERROR) { "Native viewport drawing failed" }
-        if (timestampNs != null) check(EGLExt.eglPresentationTimeANDROID(display,window,timestampNs))
-        check(EGL14.eglSwapBuffers(display,window)) { "Native video surface was lost" }
+        if (timestampNs != null) check(EGLExt.eglPresentationTimeANDROID(display,targetSurface,timestampNs))
+        check(EGL14.eglSwapBuffers(display,targetSurface)) { "Native video surface was lost" }
     }
     override fun close() {
         if (closed) return
         check(Thread.currentThread() === thread)
+        if (context != EGL14.EGL_NO_CONTEXT && window != EGL14.EGL_NO_SURFACE)
+            EGL14.eglMakeCurrent(display,window,window,context)
         presentation = Presentation(); closed = true
         image?.setOnFrameAvailableListener(null); producer?.release(); producer=null; image?.release(); image=null
         if (program != 0) GLES20.glDeleteProgram(program)
         if (texture != 0) GLES20.glDeleteTextures(1,intArrayOf(texture),0)
         if (display != EGL14.EGL_NO_DISPLAY) {
+            for (target in outputs) EGL14.eglDestroySurface(display,target.surface)
+            outputs.clear()
             EGL14.eglMakeCurrent(display,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_SURFACE,EGL14.EGL_NO_CONTEXT)
             if (window != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,window)
             if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display,context)
