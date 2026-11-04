@@ -566,3 +566,14 @@ Studio 107 / `da7c985` 已按原签名安装，用 Book 自有 Weavelo 窗口普
 源码现改为在取消接收租约与发送句柄之前，保留所有原窗口所有者及连接，再执行有界关闭；GUI 整体退出入口共用同一准备逻辑。回归模拟先准备退出、所有界面引用全部释放，仍要求两个真实 UDP 连接收到 Close；缺回执仍不能被严格路径判为成功，普通本地退出另行返回未确认。相关 5 项原生检查及 1,045 项签名发布回归（19 项跳过）通过，证据 `native108-retain-before-receive-retirement-native-tests.log`、`native108-retention-release-regression.log`。108 尚需正式安装后重跑该实机反例。
 
 Book 的 107 macOS 构建与 Android 77 正式构建均已完成；APK 77 大小 18,823,646 字节、SHA `79fd7d2b27f77d29cecb175c9121b67bbf65199c0cfb6872bd1c4816a2bff5b1`，沿用原 Android 签名，包含公共 Close 的队列截止时间修复。108 仅修桌面退出连接保留，未更改 Android 77 的该公共实现或网络协议；不为无关桌面改动额外增加 APK 版本。各电脑原生构建读取各自已固定提交的主检出，之后修改另一台电脑的主检出不会改变正在编译的源码；仅冻结真正被该生产者读取的检出。
+
+
+## 2026-11-04 桌面 108 与 Android 77 实机交付
+
+四台电脑已正式兼容安装 `9cbf245` / 108；实际 GUI / 后台分别为 Studio 80987 / 80168、Book 55235 / 55226、HO5 136017 / 135949、cube 37328 / 31900，各自运行文件与正式成品 SHA 相符。两台 Mac 保留各自原授权叶证书与配对。Linux / Windows 包先通过真实 Weavelo 传到 Studio，接收端独立读取并核对完整 SHA 后才执行原安装入口；证据 `native108-independent-received-package-provenance.json`、各机 `native108-actual-installed-owner-proof.json` 及升级日志。
+
+108 已重跑 107 的实机失败条件：Studio 拉取 Book 的自有 Weavelo 窗口，实际已解码 1,098 帧；将唯一来源的精确后台 PID 暂停 20 秒，并在独立自动恢复守护已启动后执行关闭。Studio 本地 GUI 1,800.2 ms 退出，`process_exit_observed=true`、`remote_cleanup_confirmed=false`，后台 80168 存活；同一 Book 来源 PID / 可执行字节均自动恢复，Studio GUI 正常重开。证据 `native108-real-silent-source-gui-close-proof.json`、Book 的 `native108-book-independent-resume-proof.json`。这次只验证本地退出和真实确认语义，不将对端未确认描述为清理成功。
+
+108 三平台包均已正式发布，发布入口逐包验证公网完整 SHA；清单 SHA `59f155f04b3c1a18e0842f64c8a64af9027334671fd5e165533b4aeb314216a1`，证据 `native108-nas-verified.json`。Android 77 也已正式发布并兼容安装到型号 NX741J 与 2409BRN2CC；Studio 接收原 APK 后独立核对 SHA `79fd7d2b27f77d29cecb175c9121b67bbf65199c0cfb6872bd1c4816a2bff5b1`。未新增 APK 版本、签名、系统权限或配对身份。
+
+仍未通过：努比亚 77 拉取 Windows 106 的自有 Win32 应用窗口时，真实截图仍显示等待视频，夹具点击计数为 0、文字为空；不能把辅助工具的触摸动作日志当成输入已送达。已正常断开。独立 WGC + AMF 原命令对同一静态夹具在 18 秒内没有输出；当前 Windows 处于同一交互会话、Default 输入桌面，夹具可见、未最小化且未被 DWM cloak。继续用自有动态画面对照区分静态来源、采集与编码输出边界，不归咎于系统权限。截图 `native108-nubia-own-windows-input-actual.png`，接收端 SHA `501bfad42f24db575fa8c6b097deb469c1605ebfaa4b35c43d3bdf77c74b230a`；未知项继续保留。
