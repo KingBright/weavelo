@@ -132,6 +132,44 @@ fn assert_hardware_pixels(chunks:&[RawChunk],pixel:PixelFormat,expected:remote_c
 #[cfg(all(target_os="linux",feature="native-linux-video"))]
 #[tokio::test]
 #[ignore="requires an accessible VAAPI hardware HEVC encoder"]
+async fn actual_vaapi_viewport_pan_preserves_pixels_and_one_encoder() {
+    use protocol::viewport::{FrameGeometry,PixelRect,split_frame};
+    let hardware=vaapi::HardwareEncoder::probe().unwrap();
+    let settings=RawSettings{width:640,height:360,fps:30,bitrate_kbps:2000};
+    let first=frame_sized(PixelFormat::Nv12,known_color(),0,640,360);
+    let source=vaapi::NativeSource::start(&first,settings,&hardware).unwrap();
+    let mut compressed=Vec::new();let mut luma=Vec::new();
+    for (n,(x,y,expected)) in [(0,0,40u8),(384,0,90),(0,216,145),(384,216,210),
+        (0,0,40),(384,216,210),(384,0,90),(0,216,145)].into_iter().enumerate() {
+        let g=FrameGeometry{source_revision:0,demand_revision:n as u64+1,revision:n as u64+1,
+            source_width:640,source_height:360,crop:PixelRect{x,y,width:256,height:144},width:256,height:144};
+        let mut frame=frame_sized(PixelFormat::Nv12,known_color(),n as u64,640,360);frame.viewport=Some(g);
+        source.submit(frame).unwrap();
+        let chunk=tokio::time::timeout(Duration::from_secs(3),source.pull()).await.unwrap().unwrap();
+        let (actual,bytes)=split_frame(&chunk.nalu).unwrap();assert_eq!(actual,Some(g));
+        assert_eq!(chunk.stamp.sequence,Some(n as u64));
+        if n==0 {
+            assert!(chunk.is_keyframe);
+            let sequence=remote_core::hevc_sequence::sequence_info(bytes).unwrap().unwrap();
+            assert_eq!([sequence.visible[2],sequence.visible[3]],[256,144]);
+            assert_eq!(sequence.signal,Some(vaapi::HardwareEncoder::signal(&first).unwrap()));
+        }
+        compressed.extend_from_slice(bytes);luma.push(expected);
+    }
+    assert_eq!(source.encoder_generations(),1,"panning rebuilt the VAAPI context");
+    // CPU decoding is confined to this synthetic pixel oracle. The production
+    // capture, crop, VPP and encoder remain in their native GPU path.
+    let decoded=inspect("ffmpeg",&["-v","error","-f","hevc","-i","pipe:0","-pix_fmt","yuv420p","-f","rawvideo","pipe:1"],&compressed);
+    let size=256*144*3/2;assert_eq!(decoded.len(),luma.len()*size);
+    for (n,wanted) in luma.into_iter().enumerate() {
+        let actual=decoded[n*size+72*256+128];
+        assert!(actual.abs_diff(wanted)<=6,"frame {n}: native ROI luma {actual} != {wanted}");
+    }
+}
+
+#[cfg(all(target_os="linux",feature="native-linux-video"))]
+#[tokio::test]
+#[ignore="requires an accessible VAAPI hardware HEVC encoder"]
 async fn actual_inprocess_vaapi_delivers_each_idle_frame_and_preserves_pixels() {
     let encoder=vaapi::HardwareEncoder::probe().unwrap();
     let settings=RawSettings{width:320,height:180,fps:30,bitrate_kbps:2000};

@@ -36,6 +36,11 @@ impl OwnedEncoder {
         #[cfg(all(target_os="linux",feature="native-linux-video"))]
         Self::Native(source)=>source.matches(frame),
     }}
+    fn configure(&self,settings:RawSettings)->bool {match self {
+        Self::Process(_)=>{let _=settings;false},
+        #[cfg(all(target_os="linux",feature="native-linux-video"))]
+        Self::Native(source)=>{source.update_settings(settings);true},
+    }}
     fn submit(&self,frame:crate::linux_frame::OwnedFrame)->Result<(),Box<dyn Error+Send+Sync>> {match self {
         Self::Process(source)=>source.submit(frame),
         #[cfg(all(target_os="linux",feature="native-linux-video"))]
@@ -48,6 +53,8 @@ impl OwnedEncoder {
     }}
 }
 
+struct ViewportEncoding {planner:remote_core::viewport::ViewportPlanner,source_revision:u32}
+
 pub struct LinuxVideoEncoder {
     width: u32,
     height: u32,
@@ -59,6 +66,7 @@ pub struct LinuxVideoEncoder {
     native: Option<OwnedEncoder>,
     native_hardware:Option<crate::linux_raw_encode::vaapi::HardwareEncoder>,
     paused: bool,
+    viewport:Option<ViewportEncoding>,
 }
 
 impl LinuxVideoEncoder {
@@ -80,6 +88,7 @@ impl LinuxVideoEncoder {
             native: None,
             native_hardware:None,
             paused: false,
+            viewport:None,
         })
     }
 
@@ -105,7 +114,19 @@ impl LinuxVideoEncoder {
             native: None,
             native_hardware:None,
             paused: false,
+            viewport:None,
         })
+    }
+
+    pub(crate) fn viewport_settings(&mut self,settings:&crate::StreamSettings,source:protocol::session::CaptureSource)->Result<(),Box<dyn Error+Send+Sync>> {
+        // The existing X11 process and software fixtures retain their full-source
+        // semantics. Actual PipeWire/VAAPI owns per-frame GPU viewport import.
+        if self.native_hardware.is_none() || !cfg!(all(target_os="linux",feature="native-linux-video")) {return Ok(());}
+        let state=self.viewport.get_or_insert_with(||ViewportEncoding{planner:remote_core::viewport::ViewportPlanner::for_source(source),source_revision:settings.source_revision});
+        if state.source_revision!=settings.source_revision {state.planner.reset();}
+        state.source_revision=settings.source_revision;
+        if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
+        Ok(())
     }
 
     pub fn request_keyframe(&mut self) {
@@ -142,8 +163,8 @@ impl LinuxVideoEncoder {
         }
         if self.native_generation.is_some() {
             protocol::validate_video_settings(width, height, fps, bitrate_kbps)?;
-            self.native = None;
-            self.force_keyframe = true;
+            let retained=self.native.as_ref().is_some_and(|native|native.configure(RawSettings{width,height,fps,bitrate_kbps}));
+            if !retained {self.native=None;self.force_keyframe=true;}
         } else if self.source.is_some() {
             replace_capture_source(&mut self.source, || {
                 FfmpegHevcSource::start(width, height, fps, bitrate_kbps)
@@ -253,12 +274,16 @@ impl VideoEncoder for LinuxVideoEncoder {
             if self.paused {
                 return Err("native encoder is paused".into());
             }
-            let frame = frame
+            let mut frame = frame
                 .owned
                 .ok_or("native encoder requires an owned capture frame")?;
             frame.validate_owned()?;
             if frame.stamp.generation != generation {
                 return Err("native capture generation is stale".into());
+            }
+            if let Some(viewport)=&mut self.viewport {
+                frame.viewport=Some(viewport.planner.plan([frame.width,frame.height],[self.width,self.height],
+                    viewport.source_revision,std::time::Instant::now())?);
             }
             if self
                 .native
@@ -428,6 +453,7 @@ mod lifecycle_tests {
             native: None,
             native_hardware:None,
             paused: true,
+            viewport:None,
         };
         encoder.update_settings(1280, 720, 30, 4000).unwrap();
         assert!(encoder.source.is_none());

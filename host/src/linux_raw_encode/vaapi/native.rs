@@ -3,7 +3,7 @@
 //! following frame or process EOF before they can be delivered.
 use super::HardwareEncoder;
 use super::super::{Input, NativeEncodeTiming, RawChunk, RawSettings, Result, validate_native_input};
-use crate::linux_frame::{FrameFormat, OwnedFrame, PixelFormat};
+use crate::linux_frame::{OwnedFrame, PixelFormat};
 use std::{ffi::{CString, c_char, c_int, c_void}, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread::JoinHandle};
 use tokio::sync::{Mutex, mpsc};
 use std::os::fd::AsRawFd;
@@ -41,6 +41,10 @@ unsafe extern "C" {
         transfer:c_int,primaries:c_int,out:*mut *mut c_void)->c_int;
     fn weavelo_encoder_frame_drm(encoder:*mut c_void,input:*const DrmFrame,pts:i64,
         lease:*mut c_void,release:extern "C" fn(*mut c_void),out:*mut Encoded)->c_int;
+    fn weavelo_encoder_create_viewport(device:*const c_char,pixel:*const c_char,width:c_int,height:c_int,
+        x:c_int,y:c_int,crop_width:c_int,crop_height:c_int,output_width:c_int,output_height:c_int,
+        fps:c_int,bitrate:c_int,range:c_int,matrix:c_int,transfer:c_int,primaries:c_int,drm_input:c_int,out:*mut *mut c_void)->c_int;
+    fn weavelo_encoder_set_crop(encoder:*mut c_void,x:c_int,y:c_int,width:c_int,height:c_int)->c_int;
     fn weavelo_encoder_drm_modifier(device:*const c_char,modifier:*mut u64)->c_int;
     fn weavelo_encoder_destroy(encoder:*mut c_void);
     fn weavelo_encoder_request_keyframe(encoder:*mut c_void);
@@ -63,24 +67,19 @@ pub(crate) struct NativeSource {
     force_keyframe: Arc<AtomicBool>,
     output: Mutex<mpsc::Receiver<std::result::Result<RawChunk,String>>>,
     worker: Option<JoinHandle<()>>,
-    format: FrameFormat, width: u32, height: u32, generation: u64, revision: u64,
-    dmabuf: bool,
+    generation:u64,
+    settings:Arc<std::sync::Mutex<RawSettings>>,
+    #[cfg(test)] encoder_generations:Arc<std::sync::atomic::AtomicU64>,
 }
 impl NativeSource {
     pub(crate) fn start(first:&OwnedFrame,settings:RawSettings,hardware:&HardwareEncoder)->Result<Self> {
         validate_native_input(first)?;
         settings.validate_for(first.width,first.height)?;
-        let signal=HardwareEncoder::signal(first)?;
         let device=CString::new(hardware.device.as_os_str().as_encoded_bytes())?;
-        let pixel=CString::new(match first.source_format.pixel_format {
-            PixelFormat::Bgra=>"bgra",PixelFormat::Bgrx=>"bgr0",PixelFormat::Rgba=>"rgba",
-            PixelFormat::Rgbx=>"rgb0",PixelFormat::Nv12=>"nv12",PixelFormat::I420=>"yuv420p",
-        })?;
-        let (width,height)=(first.width,first.height);
-        let dmabuf=first.dmabuf.is_some();
-        let source=first.source_format;
-        let crop=source.crop.unwrap_or(crate::linux_frame::Crop {
-            x:0,y:0,width:source.width,height:source.height });
+        let shared_settings=Arc::new(std::sync::Mutex::new(settings));
+        let current_settings=shared_settings.clone();
+        #[cfg(test)] let encoder_generations=Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(test)] let observed_generations=encoder_generations.clone();
         let input=Arc::new(Input::default());
         let force_keyframe=Arc::new(AtomicBool::new(false));
         let keyframe_request=force_keyframe.clone();
@@ -89,19 +88,61 @@ impl NativeSource {
         let worker=std::thread::Builder::new().name("weavelo-vaapi-encode".into()).spawn(move || {
             let result=(||->Result<()> {
                 let mut encoder=Encoder(std::ptr::null_mut());
-                let result=if dmabuf {unsafe {
-                    weavelo_encoder_create_drm(device.as_ptr(),pixel.as_ptr(),source.width as i32,source.height as i32,
-                        crop.x as i32,crop.y as i32,crop.width as i32,crop.height as i32,
-                        settings.width.min(width) as i32,settings.height.min(height) as i32,settings.fps as i32,
-                        settings.bitrate_kbps as i32,if signal.full_range {2}else{1},signal.matrix.unwrap() as i32,
-                        signal.transfer.unwrap() as i32,signal.primaries.unwrap() as i32,&mut encoder.0)
-                }}else{unsafe {weavelo_encoder_create(device.as_ptr(),pixel.as_ptr(),width as i32,height as i32,
-                    settings.width.min(width) as i32,settings.height.min(height) as i32,settings.fps as i32,
-                    settings.bitrate_kbps as i32,if signal.full_range {2}else{1},signal.matrix.unwrap() as i32,
-                    signal.transfer.unwrap() as i32,signal.primaries.unwrap() as i32,&mut encoder.0)}};
-                if result<0 {return Err(format!("Native VAAPI encoder initialization failed ({result})").into());}
+                let mut profile=None;
                 let mut sequence=0i64;
                 while let Some(frame)=pending.receive() {
+                    let settings=*current_settings.lock().unwrap_or_else(|e|e.into_inner());
+                    settings.validate_for(frame.width,frame.height)?;
+                    let signal=HardwareEncoder::signal(&frame)?;
+                    let source=frame.source_format;
+                    let dmabuf=frame.dmabuf.is_some();
+                    let (width,height)=if dmabuf{(source.width,source.height)}else{(frame.width,frame.height)};
+                    let base=if dmabuf{source.crop.unwrap_or(crate::linux_frame::Crop{x:0,y:0,width,height})}
+                        else{crate::linux_frame::Crop{x:0,y:0,width,height}};
+                    let geometry=frame.viewport;
+                    if let Some(g)=geometry {
+                        g.validate()?;
+                        if (g.source_width,g.source_height)!=(frame.width,frame.height) {return Err("Viewport source changed before VAAPI admission".into());}
+                    }
+                    let crop=geometry.map_or(base,|g|crate::linux_frame::Crop {
+                        x:base.x+g.crop.x,y:base.y+g.crop.y,width:g.crop.width,height:g.crop.height});
+                    let output=geometry.map_or([settings.width.min(frame.width),settings.height.min(frame.height)],|g|[g.width,g.height]);
+                    let bitrate=if geometry.is_some(){remote_core::viewport::bitrate_for_pixels(output[0],output[1],settings.fps,settings.bitrate_kbps)}else{settings.bitrate_kbps};
+                    // Only source storage/color and actual codec dimensions/rate
+                    // identify an encoder. Per-frame crop origins do not.
+                    let wanted=(source.width,source.height,source.pixel_format,source.color,dmabuf,width,height,
+                        output,settings.fps,bitrate,geometry.is_some());
+                    if profile.as_ref()!=Some(&wanted) {
+                        // The preceding AU was already copied and sent to the
+                        // ordered output queue. No compressed reference is lost.
+                        encoder=Encoder(std::ptr::null_mut());
+                        let pixel=CString::new(match source.pixel_format {
+                            PixelFormat::Bgra=>"bgra",PixelFormat::Bgrx=>"bgr0",PixelFormat::Rgba=>"rgba",
+                            PixelFormat::Rgbx=>"rgb0",PixelFormat::Nv12=>"nv12",PixelFormat::I420=>"yuv420p",
+                        })?;
+                        let result=if geometry.is_some(){unsafe{
+                            weavelo_encoder_create_viewport(device.as_ptr(),pixel.as_ptr(),width as i32,height as i32,
+                                crop.x as i32,crop.y as i32,crop.width as i32,crop.height as i32,output[0] as i32,output[1] as i32,
+                                settings.fps as i32,bitrate as i32,if signal.full_range{2}else{1},signal.matrix.unwrap() as i32,
+                                signal.transfer.unwrap() as i32,signal.primaries.unwrap() as i32,i32::from(dmabuf),&mut encoder.0)
+                        }}else if dmabuf{unsafe{
+                            weavelo_encoder_create_drm(device.as_ptr(),pixel.as_ptr(),width as i32,height as i32,
+                                base.x as i32,base.y as i32,base.width as i32,base.height as i32,
+                                output[0] as i32,output[1] as i32,settings.fps as i32,bitrate as i32,
+                                if signal.full_range{2}else{1},signal.matrix.unwrap() as i32,signal.transfer.unwrap() as i32,
+                                signal.primaries.unwrap() as i32,&mut encoder.0)
+                        }}else{unsafe{
+                            weavelo_encoder_create(device.as_ptr(),pixel.as_ptr(),width as i32,height as i32,
+                                output[0] as i32,output[1] as i32,settings.fps as i32,bitrate as i32,
+                                if signal.full_range{2}else{1},signal.matrix.unwrap() as i32,signal.transfer.unwrap() as i32,
+                                signal.primaries.unwrap() as i32,&mut encoder.0)
+                        }};
+                        if result<0{return Err(format!("Native VAAPI encoder initialization failed ({result})").into());}
+                        #[cfg(test)] observed_generations.fetch_add(1,Ordering::Relaxed);
+                        profile=Some(wanted);
+                    }
+                    let changed=unsafe{weavelo_encoder_set_crop(encoder.0,crop.x as i32,crop.y as i32,crop.width as i32,crop.height as i32)};
+                    if changed<0{return Err("Native viewport crop is outside its owned source".into());}
                     let started=remote_core::timing::quanta_now_us();
                     if keyframe_request.swap(false, Ordering::AcqRel) {
                         unsafe { weavelo_encoder_request_keyframe(encoder.0); }
@@ -109,9 +150,9 @@ impl NativeSource {
                     let mut planes=[std::ptr::null();3];
                     for (slot,plane) in planes.iter_mut().zip(frame.planes.iter()) {*slot=plane.as_ptr();}
                     let rgb=matches!(frame.source_format.pixel_format,PixelFormat::Bgra|PixelFormat::Bgrx|PixelFormat::Rgba|PixelFormat::Rgbx);
-                    let strides=if rgb {[width as i32*4,0,0]}else if frame.source_format.pixel_format==PixelFormat::Nv12 {
-                        [width as i32,width as i32,0]
-                    }else{[width as i32,width as i32/2,width as i32/2]};
+                    let strides=if rgb {[frame.width as i32*4,0,0]}else if source.pixel_format==PixelFormat::Nv12 {
+                        [frame.width as i32,frame.width as i32,0]
+                    }else{[frame.width as i32,frame.width as i32/2,frame.width as i32/2]};
                     let mut packet=Encoded::default();
                     let result=if let Some(gpu)=frame.dmabuf.as_ref() {
                         let mut descriptor=DrmFrame {fourcc:gpu.fourcc,objects:gpu.objects.len() as u32,
@@ -131,11 +172,18 @@ impl NativeSource {
                     }
                     // Copy compressed bytes before the next native call. Raw pixels
                     // retain their existing allocation, and never cross a pipe.
-                    let nalu=unsafe {std::slice::from_raw_parts(packet.data,packet.bytes)}.to_vec();
-                    if packet.key!=0 && !matches!(remote_core::hevc_sequence::sequence_info(&nalu),
+                    let bytes=unsafe {std::slice::from_raw_parts(packet.data,packet.bytes)};
+                    if packet.key!=0 && !matches!(remote_core::hevc_sequence::sequence_info(bytes),
                         Ok(Some(sequence)) if sequence.signal==Some(signal)) {
                         return Err("Native VAAPI bitstream does not preserve capture color metadata".into());
                     }
+                    if let Some(g)=geometry && packet.key!=0 && !matches!(remote_core::hevc_sequence::sequence_info(bytes),
+                        Ok(Some(s)) if s.visible[2]==g.width && s.visible[3]==g.height) {
+                        return Err("Native VAAPI encoded dimensions differ from viewport geometry".into());
+                    }
+                    let mut nalu=Vec::with_capacity(packet.bytes+geometry.map_or(0,|_|protocol::viewport::FRAME_HEADER_LEN));
+                    if let Some(g)=geometry{g.write_header(&mut nalu);}
+                    nalu.extend_from_slice(bytes);
                     let chunk=RawChunk {nalu,is_keyframe:packet.key!=0,stamp:frame.stamp,
                         encode_done_ts_us:remote_core::timing::quanta_now_us(),native_timing:Some(NativeEncodeTiming {
                             queue_us:started.saturating_sub(frame.stamp.arrival_ts_us),
@@ -152,14 +200,15 @@ impl NativeSource {
             if let Err(error)=result {let _=sender.blocking_send(Err(error.to_string()));}
             pending.close();
         })?;
-        Ok(Self {input,force_keyframe,output:Mutex::new(receiver),worker:Some(worker),format:first.source_format,
-            width,height,generation:first.stamp.generation,revision:first.stamp.format_revision,dmabuf})
+        Ok(Self {input,force_keyframe,output:Mutex::new(receiver),worker:Some(worker),
+            generation:first.stamp.generation,settings:shared_settings,
+            #[cfg(test)] encoder_generations})
     }
-    pub(crate) fn matches(&self,frame:&OwnedFrame)->bool {
-        self.generation==frame.stamp.generation && self.revision==frame.stamp.format_revision
-            && self.dmabuf==frame.dmabuf.is_some()
-            && self.format==frame.source_format && (self.width,self.height)==(frame.width,frame.height)
+    pub(crate) fn matches(&self,frame:&OwnedFrame)->bool {self.generation==frame.stamp.generation}
+    pub(crate) fn update_settings(&self,settings:RawSettings) {
+        *self.settings.lock().unwrap_or_else(|e|e.into_inner())=settings;
     }
+    #[cfg(test)] pub(crate) fn encoder_generations(&self)->u64 {self.encoder_generations.load(Ordering::Relaxed)}
     pub(crate) fn submit(&self,frame:OwnedFrame)->Result<()> {
         frame.validate_owned()?;
         if !self.matches(&frame) {return Err("Native VAAPI input geometry/generation changed".into());}

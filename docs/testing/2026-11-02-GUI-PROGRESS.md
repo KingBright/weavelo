@@ -804,3 +804,5 @@ Android 接收代码将每个已解码 OES 纹理按该帧裁剪区域放回完�
 当前检查：60 项协议测试、25 次相关原生测试（含真实 Metal 合成像素裁剪、连续缩放、VT 动态尺寸/颜色和输入）、80 项 Android JVM 测试通过；签名发布回归 1,045 项通过、19 项跳过。测试日志为 `roi-protocol-all-tests.log`、`roi-native-iteration1-final-checks.log`、`roi-android-iteration1-checks.log`、`roi-iteration1-final-release-regression.log`。首次旧 Kotlin 增量缓存缺失已有顶层符号，全量 Kotlin 编译通过；未添加源码兼容分支。
 
 这批新功能尚未安装或发布，不是设备实机验收。下一步是 Linux VAAPI 逐帧裁剪、Windows WGC/D3D11、Android 来源与采集共享，并进行 Mac→手机真实缩放/拖动/输入、全端升级和性能验收。已有桌面 118/116 与 Android 79 的正式包和设备记录保留。
+
+Linux 来源端第二轮源码已接入逐帧 VAAPI 裁剪：每个观看者在自己的不可变帧引用上携带几何，复用 PipeWire 采集及 DMA-BUF；平移只改 VAAPI 输入区域，不重新启动编码器。尺寸/颜色变化在同一个工作线程中顺序完成，旧压缩访问单元进入原输出队列后才处理新配置。裁剪采用公共策略给出的精确输出尺寸，避免第二次宽高比取整造成帧元数据与实际编码不一致。已增加原生 GPU 合成图的四角移动、逐帧像素及编码器不重建测试，待 HO5 执行；本地四项 Linux 所有权/生命周期模型测试和现有 1,045 项发布回归通过（19 项跳过）。当前仍未部署新协议版本，不以本地模型检查代替 HO5 的原生编译和 GPU 验收。

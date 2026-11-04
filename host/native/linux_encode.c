@@ -64,7 +64,7 @@ void weavelo_encoder_destroy(WeaveloEncoder *e) {
 static int encoder_create(const char *device, const char *pixel, int width, int height,
     int output_width, int output_height, int fps, int bitrate, int range, int matrix,
     int transfer, int primaries, int drm_input, int crop_x, int crop_y,
-    int crop_width, int crop_height, WeaveloEncoder **out) {
+    int crop_width, int crop_height, int exact_output, WeaveloEncoder **out) {
     if (!out || !device || !pixel || width < 16 || height < 16 || output_width < 16 ||
         output_height < 16 || fps < 1 || fps > 120 || bitrate < 1 ||
         crop_x < 0 || crop_y < 0 || crop_width < 16 || crop_height < 16 ||
@@ -109,7 +109,7 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
     if (result < 0) goto fail;
     AVFilterContext *scale;
     const char *fit = ":force_original_aspect_ratio=decrease:force_divisible_by=2";
-    if (drm_input) {
+    if (drm_input && !exact_output) {
         // VPP uses the frame's crop rectangle; fit to that same visible geometry.
         if ((int64_t)crop_width * output_height > (int64_t)crop_height * output_width)
             output_height = (int)((int64_t)crop_height * output_width / crop_width);
@@ -118,6 +118,7 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
         if (output_width < 16 || output_height < 16) { result = AVERROR(EINVAL); goto fail; }
         fit = "";
     }
+    if (exact_output) fit = "";
     snprintf(args, sizeof(args), "w=%d:h=%d%s:format=nv12:out_color_matrix=%s:out_range=%s:out_color_primaries=bt709:out_color_transfer=%s",
         output_width, output_height, fit, matrix == 1 ? "bt709" : "smpte170m",
         range == 2 ? "full" : "limited", transfer == 13 ? "iec61966-2-1" : "bt709");
@@ -138,6 +139,7 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
     e->codec->hw_frames_ctx = av_buffer_ref(av_buffersink_get_hw_frames_ctx(e->sink));
     if (!e->codec->hw_frames_ctx) goto nomem;
     e->codec->time_base = (AVRational){1, fps}; e->codec->framerate = (AVRational){fps, 1};
+    if (exact_output) e->codec->sample_aspect_ratio = (AVRational){1,1};
     e->codec->bit_rate = (int64_t)bitrate * 1000;
     e->codec->rc_max_rate = (int64_t)bitrate * 1000; e->codec->rc_buffer_size = bitrate * 1000;
     e->codec->gop_size = fps; e->codec->max_b_frames = 0; e->codec->thread_count = 1;
@@ -177,7 +179,7 @@ int weavelo_encoder_create(const char *device, const char *pixel, int width, int
     int output_width, int output_height, int fps, int bitrate, int range, int matrix,
     int transfer, int primaries, WeaveloEncoder **out) {
     return encoder_create(device,pixel,width,height,output_width,output_height,fps,bitrate,
-        range,matrix,transfer,primaries,0,0,0,width,height,out);
+        range,matrix,transfer,primaries,0,0,0,width,height,0,out);
 }
 
 int weavelo_encoder_create_drm(const char *device, const char *pixel, int width, int height,
@@ -185,7 +187,22 @@ int weavelo_encoder_create_drm(const char *device, const char *pixel, int width,
     int output_width, int output_height, int fps, int bitrate, int range, int matrix,
     int transfer, int primaries, WeaveloEncoder **out) {
     return encoder_create(device,pixel,width,height,output_width,output_height,fps,bitrate,
-        range,matrix,transfer,primaries,1,crop_x,crop_y,crop_width,crop_height,out);
+        range,matrix,transfer,primaries,1,crop_x,crop_y,crop_width,crop_height,0,out);
+}
+
+/* The shared viewport planner already chose exact, even output dimensions.
+   A second aspect-fit would round them again and invalidate frame metadata. */
+int weavelo_encoder_create_viewport(const char *device,const char *pixel,int width,int height,
+    int crop_x,int crop_y,int crop_width,int crop_height,int output_width,int output_height,
+    int fps,int bitrate,int range,int matrix,int transfer,int primaries,int drm_input,WeaveloEncoder **out) {
+    return encoder_create(device,pixel,width,height,output_width,output_height,fps,bitrate,
+        range,matrix,transfer,primaries,drm_input,crop_x,crop_y,crop_width,crop_height,1,out);
+}
+
+int weavelo_encoder_set_crop(WeaveloEncoder *e,int x,int y,int width,int height) {
+    if (!e || x<0 || y<0 || width<16 || height<16 || x>e->width-width || y>e->height-height) return AVERROR(EINVAL);
+    e->crop_x=x;e->crop_y=y;e->crop_width=width;e->crop_height=height;
+    return 0;
 }
 
 void weavelo_encoder_request_keyframe(WeaveloEncoder *e) {
@@ -205,6 +222,7 @@ static int encode_uploaded(WeaveloEncoder *e, uint64_t started, int64_t pts, Wea
         if (sync != VA_STATUS_SUCCESS) return AVERROR(EIO);
     }
     uint64_t submitted = now_us();
+    if (e->codec->sample_aspect_ratio.num) e->scaled->sample_aspect_ratio=e->codec->sample_aspect_ratio;
     e->scaled->pict_type = e->force_keyframe ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     e->force_keyframe = 0;
     if ((result = avcodec_send_frame(e->codec, e->scaled)) < 0 ||
@@ -223,6 +241,9 @@ int weavelo_encoder_frame(WeaveloEncoder *e, const uint8_t *const data[3],
     if (!e || e->drm_input || !data || !strides || !out) return AVERROR(EINVAL);
     for (int i = 0; i < 3; ++i) { e->raw->data[i] = (uint8_t *)data[i]; e->raw->linesize[i] = strides[i]; }
     e->raw->pts = pts;
+    e->raw->crop_left=e->crop_x;e->raw->crop_top=e->crop_y;
+    e->raw->crop_right=e->width-e->crop_width-e->crop_x;
+    e->raw->crop_bottom=e->height-e->crop_height-e->crop_y;
     av_frame_unref(e->upload); av_frame_unref(e->scaled); av_packet_unref(e->packet);
     uint64_t started = now_us();
     int result = av_hwframe_get_buffer(e->upload_pool, e->upload, 0);

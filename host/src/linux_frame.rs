@@ -157,6 +157,9 @@ pub struct OwnedFrame {
     pub stamp: FrameStamp,
     pub(crate) received_at: std::time::Instant,
     pub(crate) initial_snapshot: bool,
+    /// Per-view metadata on this immutable capture lease. Raw storage is shared;
+    /// a viewer never changes another viewer's crop or capture format.
+    pub(crate) viewport:Option<protocol::viewport::FrameGeometry>,
 }
 
 impl Drop for OwnedFrame {
@@ -279,7 +282,7 @@ impl OwnedFrame {
         let frame = Self { source_format:format,width:crop.width,height:crop.height,
             planes:std::sync::Arc::new(Vec::new()),dmabuf:Some(std::sync::Arc::new(gpu)),
             _memory:None,mapping_offsets:Vec::new(),stamp,
-            received_at:std::time::Instant::now(),initial_snapshot:false };
+            received_at:std::time::Instant::now(),initial_snapshot:false,viewport:None };
         frame.validate_owned()?;
         Ok(frame)
     }
@@ -403,6 +406,7 @@ impl OwnedFrame {
             stamp,
             received_at: std::time::Instant::now(),
             initial_snapshot: false,
+            viewport:None,
         })
     }
 }

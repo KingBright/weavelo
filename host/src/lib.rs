@@ -1143,6 +1143,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         None => LinuxVideoEncoder::new(width, height, fps, bitrate_kbps)?,
     }};
     #[cfg(target_os = "linux")]
+    if !matches!(source,protocol::session::CaptureSource::Camera(_)) {video_encoder.viewport_settings(&initial,source)?;}
+    #[cfg(target_os = "linux")]
     let mut native_revoked = native_capture.as_ref().map(|capture| capture.revocation());
 
     #[cfg(target_os = "windows")]
@@ -1174,6 +1176,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut paused = false;
     let mut resume_capture_after_us = 0_u64;
     let mut awaiting_resume_keyframe = false;
+    let mut reported_settings=(width,height,fps,bitrate_kbps);
     let mut paused_telemetry = tokio::time::interval(Duration::from_secs(5));
     paused_telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -1231,7 +1234,11 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                         frames_since_update = 0;
                         bytes_since_update = 0;
                     }
-                    println!("Applying updated stream settings: {}x{}@{}fps ({} kbps)", new_settings.width, new_settings.height, new_settings.fps, new_settings.bitrate_kbps);
+                    let actual=(new_settings.width,new_settings.height,new_settings.fps,new_settings.bitrate_kbps);
+                    if actual!=reported_settings {
+                        println!("Applying updated stream settings: {}x{}@{}fps ({} kbps)",actual.0,actual.1,actual.2,actual.3);
+                        reported_settings=actual;
+                    }
                     #[cfg(target_os = "macos")]
                     {
                         video_capturer.update_resolution_and_fps(new_settings.width, new_settings.height, new_settings.fps)?;
@@ -1240,7 +1247,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                         }else{video_encoder.update_rate_settings(new_settings.fps, new_settings.bitrate_kbps)?;}
                     }
                     #[cfg(target_os = "linux")]
-                    video_capturer.update_resolution_and_fps(new_settings.height, new_settings.fps)?;
+                    {
+                        video_capturer.update_resolution_and_fps(new_settings.height, new_settings.fps)?;
+                        if !matches!(source,protocol::session::CaptureSource::Camera(_)) {video_encoder.viewport_settings(&new_settings,source)?;}
+                    }
                     #[cfg(target_os="windows")]
                     if !new_settings.paused && keyframe_requested.swap(false,Relaxed) {video_encoder.request_keyframe();}
                 }
