@@ -751,3 +751,13 @@ Android 投送 ID 原本跨 org.json 使用 Long，随机 u64 超过 i64 上限�
 
 补充 CUA IPC / 授权、Dock 图标及 GUI 执行器检查 20 次通过；签名发布回归仍为 1,045 项通过、19 项跳过。日志 `native115-dock-cua-tests.log`、`native115-release-regression.log`。测试未开启系统权限，也未采集第三方私有窗口。正式 115 / Android 79 的安装与实机结果随后单独记录。
 
+### 115 实际双应用、独立 Dock 激活/退出与名称修正
+
+Studio 115 已正式兼容安装，实际 GUI 39434 / 后台 39427，文件与两进程 SHA 一致为 `1308e9f326bb6528dbb687aac6f480c30938afd623fea94b2034683567cf1b8e`，来源 `e1069f566852db428906db1f22c92347bae10465`。MacBook、Linux、Windows 115 正式构建均已成功；其余三台尚未安装，将直接使用名称修正后的 116。Android 79 初次打包在同机 Mac producer 活跃时正确拒绝并退出，未重复并发写输出；Mac producer 完成后已重新开始正式打包。
+
+Studio 正常 GUI 显式接收 Book 的两个自有 AppKit 来源（PID 24850 / Window 14895，PID 28655 / Window 14905），两路均真实解码、提交且无解码错误。初次辅助判断错误地比较调试标签 `source` 而非结构化 `source_id`，独立读取已保存状态证实两路为 328 / 293 帧；这项辅助判断失败不作为产品失败。后续完整原生试验同时获得两条独立 `--macos-dock-tile` 子进程与系统 Dock 项；以 NSRunningApplication 的真实系统激活/退出调用验证：分别激活 A / B 精确定位对应窗口，退出第一个只结束 A，B 继续出画，退出第二个后计数归零。此处是系统应用事件路径，不宣称实体鼠标点击 Dock 验收。证据 `native115-studio-dock-complete-native-proof.json`。历史未知测试进程未清理。
+
+真实单应用窗口截图 `native115-studio-owned-app-actual.png` 已查看，640×452 点 / 1280×904 源像素的中性自有测试内容清楚可见，原生窗口标题、应用图标与远端标记正确。截图只包含该接收窗口，随后正常结束租约；未采集 ChatGPT、Codex 或整个桌面。
+
+同次系统 Dock 的实际 AX 记录显示三个项目仍都叫 Weavelo。原因是代码把符号名称 `_kLSDisplayNameKey` 当作了 CFString 键值，未读取该数据符号所指向的真实键。现改为解引用实际键，不改变签名或 bundle 标识。实现核对参考 [WebKit LaunchServices 声明](https://chromium.googlesource.com/external/github.com/WebKit/webkit/+/283c780414b7c24e4a911c823af665f53a15e8f7/Source/WebCore/PAL/pal/spi/cocoa/LaunchServicesSPI.h)；该私有符号仍需在实际系统验证，不能把动态解析成功当作 Dock 名称已改变。四项图标/边界检查及签名发布回归 1,045 项通过、19 项跳过，日志 `native116-dock-name-tests.log`、`native116-release-regression.log`。116 的实际名称、截图和安装随后记录。
+

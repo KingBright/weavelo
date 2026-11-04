@@ -414,12 +414,16 @@ pub(crate) mod macos_dock {
         unsafe {
             let get_asn = libc::dlsym(libc::RTLD_DEFAULT, c"_LSGetCurrentApplicationASN".as_ptr());
             let set_info = libc::dlsym(libc::RTLD_DEFAULT, c"_LSSetApplicationInformationItem".as_ptr());
-            if !get_asn.is_null() && !set_info.is_null() {
+            let display_name_key = libc::dlsym(libc::RTLD_DEFAULT, c"_kLSDisplayNameKey".as_ptr());
+            if !get_asn.is_null() && !set_info.is_null() && !display_name_key.is_null() {
                 let get_asn: GetCurrentAsn = std::mem::transmute(get_asn);
                 let set_info: SetAppInfoItem = std::mem::transmute(set_info);
                 let asn = get_asn();
-                if !asn.is_null() {
-                    let key = ns_string("_kLSDisplayNameKey") as *const std::ffi::c_void;
+                // This symbol stores a CFStringRef. The symbol's name is not
+                // the key's value; passing a new string with that name silently
+                // leaves every Dock tile labeled "Weavelo".
+                let key = *(display_name_key as *const *const std::ffi::c_void);
+                if !asn.is_null() && !key.is_null() {
                     let value = ns_string(title) as *const std::ffi::c_void;
                     let _ = set_info(-2, asn, key, value, std::ptr::null_mut());
                 }
