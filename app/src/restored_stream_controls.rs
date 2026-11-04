@@ -386,6 +386,23 @@ impl RestoredDashboard {
                         cx.refresh_windows();
                     })),
             );
+        let cua_mode = snapshot.computer_use_status.mode;
+        let cua_label = snapshot
+            .computer_use_status
+            .status_label
+            .clone()
+            .unwrap_or_else(|| match cua_mode {
+                Some(crate::desktop::original_owner::ComputerUseMode::Observing) => {
+                    "AI Observing screen".into()
+                }
+                Some(crate::desktop::original_owner::ComputerUseMode::Controlling) => {
+                    "AI Controlling — Move mouse or press Esc to take over".into()
+                }
+                Some(crate::desktop::original_owner::ComputerUseMode::PausedByHuman) => {
+                    "AI Paused — Human took over input".into()
+                }
+                None => String::new(),
+            });
         div()
             .id("floating_auto_hide_toolbar_container")
             .absolute()
@@ -397,6 +414,51 @@ impl RestoredDashboard {
             .items_center()
             .gap_2()
             .child(row)
+            .when_some(cua_mode, |tree, mode| {
+                let badge_color = match mode {
+                    crate::desktop::original_owner::ComputerUseMode::Observing => {
+                        Hsla::from(color_accent_cyan())
+                    }
+                    crate::desktop::original_owner::ComputerUseMode::Controlling => {
+                        Hsla::from(color_accent_emerald())
+                    }
+                    crate::desktop::original_owner::ComputerUseMode::PausedByHuman => {
+                        cx.theme().content.secondary
+                    }
+                };
+                tree.child(
+                    div()
+                        .id("computer-use-status-capsule")
+                        .occlude()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .rounded_full()
+                        .bg(color_glass_card())
+                        .border_1()
+                        .border_color(badge_color)
+                        .shadow_md()
+                        .child(div().size(px(8.)).rounded_full().bg(badge_color))
+                        .child(div().text_size(px(11.)).child(cua_label))
+                        .child(
+                            command_button("computer-use-dismiss-pill", ActionVariantKind::Neutral, cx)
+                                .h(px(20.))
+                                .px_2()
+                                .child(if mode == crate::desktop::original_owner::ComputerUseMode::PausedByHuman {
+                                    "Dismiss"
+                                } else {
+                                    "Pause AI"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.owner.release_input();
+                                    this.owner.set_computer_use_active(None, None);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .when(self.show_apps_menu, |tree| {
                 tree.child(capture_source_menu(
                     &snapshot.capture_sources,
@@ -592,6 +654,20 @@ impl RestoredDashboard {
                     let enabled = owner.clipboard_sync_enabled();
                     move |_| {
                         owner.set_clipboard_sync_enabled(!enabled);
+                    }
+                },
+                cx,
+            ))
+            .child(security_toggle_row(
+                "Background AI Computer Use",
+                "Allow authorized AI agents to control this window while unfocused",
+                snapshot.computer_use_status.background_allowed,
+                snapshot.active_capture_supports_input,
+                {
+                    let owner = self.owner.clone();
+                    let enabled = snapshot.computer_use_status.background_allowed;
+                    move |_| {
+                        owner.set_computer_use_background_allowed(!enabled);
                     }
                 },
                 cx,

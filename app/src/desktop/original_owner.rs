@@ -17,11 +17,12 @@ use remote_core::{
     shared_files::ShareScope,
     stream_settings::{PendingStreamSettingsState, StreamSettingsValues},
     workspace_session::WorkspaceConnection,
+    VideoFrame,
 };
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, Weak},
-    time::Instant,
+    time::{Instant,Duration},
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -92,6 +93,7 @@ pub(crate) struct ComputerUseFence {
     source: CaptureSource,
     source_started: Instant,
     video_epoch: remote_core::video_recovery::VideoEpoch,
+    geometry: Option<protocol::viewport::FrameGeometry>,
     input: Option<protocol::realtime_input::InputBinding>,
 }
 pub(crate) type ComputerUseObservation = super::computer_use::Observation<
@@ -103,24 +105,72 @@ pub(crate) enum ComputerUseExportError {
     Pixels(client::observation_pixels::PixelError),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComputerUseMode {
+    Observing,
+    Controlling,
+    PausedByHuman,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComputerUseVisualStatus {
+    pub mode: Option<ComputerUseMode>,
+    pub background_allowed: bool,
+    pub cursor_norm: Option<(u16, u16)>,
+    pub cursor_geometry: Option<protocol::viewport::FrameGeometry>,
+    pub last_action_style: Option<client::observation_pixels::ReticleStyle>,
+    pub status_label: Option<String>,
+}
+
 struct ComputerUseInput<'a> {
     connection: &'a WorkspaceConnection,
     binding: protocol::realtime_input::InputBinding,
+    text_owner: Option<remote_core::workspace_session::TextInputOwner>,
+    geometry: Option<protocol::viewport::FrameGeometry>,
+    admit: Option<&'a dyn Fn(bool,&mut dyn FnMut()->bool)->bool>,
 }
 impl super::computer_use::InputPort for ComputerUseInput<'_> {
     fn send(&mut self, event: super::computer_use::Event) -> bool {
         use super::computer_use::Event;
-        let event = match event {
-            Event::Move { x, y } => InputEvent::MouseMoveAbsolute { x, y },
-            Event::Button { button, pressed: true } => InputEvent::MouseDown(button),
-            Event::Button { button, pressed: false } => InputEvent::MouseUp(button),
-            Event::Key { key_code, pressed } => InputEvent::Key { key_code, pressed, modifiers: 0 },
-            Event::Scroll { delta_x, delta_y } => InputEvent::MouseScroll { delta_x, delta_y },
+        let event=match (event,self.geometry) {
+            (Event::Move{x,y},Some(geometry))=>{let (x,y)=geometry.source_point(x,y);
+                let (x,y)=geometry.clamp_source_point((f64::from(x)/65535.,f64::from(y)/65535.));
+                Event::Move{x:(x*65535.).round() as u16,y:(y*65535.).round() as u16}},
+            (event,_)=>event,
         };
-        self.connection.try_bound_input(self.binding, Some(event))
+        let mut enqueue=|| match event.clone() {
+            Event::Move { x, y } => self
+                .connection
+                .try_bound_input(self.binding, Some(InputEvent::MouseMoveAbsolute { x, y })),
+            Event::Button { button, pressed: true } => self
+                .connection
+                .try_bound_input(self.binding, Some(InputEvent::MouseDown(button))),
+            Event::Button { button, pressed: false } => self
+                .connection
+                .try_bound_input(self.binding, Some(InputEvent::MouseUp(button))),
+            Event::Key { key_code, pressed, modifiers } => self
+                .connection
+                .try_bound_input(self.binding, Some(InputEvent::Key { key_code, pressed, modifiers })),
+            Event::Modifiers { modifiers } => self
+                .connection
+                .try_bound_input(self.binding, Some(InputEvent::ModifiersChanged(modifiers))),
+            Event::Text(text) => {
+                let Some(owner) = self.text_owner else {
+                    return false;
+                };
+                self.connection
+                    .try_commit_text_for_owner(owner, &text, std::time::Duration::ZERO)
+                    .is_ok()
+            }
+            Event::Scroll { delta_x, delta_y } => self
+                .connection
+                .try_bound_input(self.binding, Some(InputEvent::MouseScroll { delta_x, delta_y })),
+        };
+        if let Some(admit)=self.admit{admit(true,&mut enqueue)}else{enqueue()}
     }
     fn release(&mut self) -> bool {
-        self.connection.try_bound_input(self.binding, None)
+        let mut enqueue=||self.connection.try_bound_input(self.binding,None);
+        if let Some(admit)=self.admit{admit(false,&mut enqueue)}else{enqueue()}
     }
 }
 
@@ -278,6 +328,8 @@ pub(crate) struct OriginalOwner {
     observed_service_epoch: std::sync::atomic::AtomicU64,
     pool: Mutex<Pool>,
     computer_use_epoch: std::sync::atomic::AtomicU64,
+    computer_use_background_allowed: std::sync::atomic::AtomicBool,
+    computer_use_status: Mutex<ComputerUseVisualStatus>,
     pending_exit_connections: Mutex<Vec<Arc<WorkspaceConnection>>>,
     updates: tokio::sync::watch::Sender<u64>,
     presentation_visible: std::sync::atomic::AtomicBool,
@@ -303,6 +355,7 @@ pub(crate) struct ViewSnapshot {
     pub message: String,
     pub input_status: String,
     pub input_eligible: bool,
+    pub computer_use_status: ComputerUseVisualStatus,
 }
 impl OriginalOwner {
     pub fn new(backend: Arc<UnifiedServiceOwner>) -> Arc<Self> {
@@ -320,6 +373,8 @@ impl OriginalOwner {
             presentation_visible: std::sync::atomic::AtomicBool::new(true),
             input_focused: std::sync::atomic::AtomicBool::new(true),
             computer_use_epoch: std::sync::atomic::AtomicU64::new(0),
+            computer_use_background_allowed: std::sync::atomic::AtomicBool::new(false),
+            computer_use_status: Mutex::new(ComputerUseVisualStatus::default()),
             pool: Mutex::new(Pool {
                 sessions: Vec::new(),
                 tabs: SessionTabsState::default(),
@@ -437,6 +492,14 @@ impl OriginalOwner {
     }
     pub fn snapshot(&self) -> ViewSnapshot {
         let devices = self.backend.runtime().lock().unwrap().devices();
+        let mut computer_use_status = self
+            .computer_use_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        computer_use_status.background_allowed = self
+            .computer_use_background_allowed
+            .load(std::sync::atomic::Ordering::Acquire);
         let mut p = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         p.expire_retry(remote_core::shared_files::current_share_scope());
         if let Some(connecting) = p.tabs.connecting() {
@@ -462,6 +525,7 @@ impl OriginalOwner {
                 message: p.message.clone(),
                 input_status: "Connecting to selected device".into(),
                 input_eligible: false,
+                computer_use_status,
             };
         }
         if let Some(e) = p.active() {
@@ -501,6 +565,7 @@ impl OriginalOwner {
                     s.error.clone()
                 },
                 input_eligible: s.can_input(),
+                computer_use_status,
             }
         } else {
             let role = self.backend.runtime().lock().unwrap().role_state().clone();
@@ -523,6 +588,7 @@ impl OriginalOwner {
                 message: p.message.clone(),
                 input_status: "Choose a device".into(),
                 input_eligible: false,
+                computer_use_status,
             }
         }
     }
@@ -1085,6 +1151,33 @@ impl OriginalOwner {
         // Wire revisions are nonzero; the session's u32 revision may start at zero.
         u64::from(observation.fence().source_revision)+1
     }
+    pub(crate) fn computer_use_snapshot_context(&self) -> Option<super::computer_use_mcp::SessionSnapshotContext> {
+        let p = self.pool.lock().ok()?;
+        let s = &p.active()?.session;
+        let frame = s.texture.as_ref()?;
+        let source_title = s
+            .sources
+            .iter()
+            .find(|info| info.source == s.source)
+            .map(|info| info.title.clone())
+            .unwrap_or_else(|| format!("{:?}", s.source));
+        Some(super::computer_use_mcp::SessionSnapshotContext {
+            peer_device_id: s.key.clone(),
+            peer_name: s.name.clone(),
+            connection_id: s.conn.id,
+            source: s.source,
+            source_title,
+            source_revision: u64::from(s.source_revision()) + 1,
+            frame_width: frame.width(),
+            frame_height: frame.height(),
+            can_input: self.computer_use_can_input(s),
+            cursor_norm: self
+                .computer_use_status
+                .lock()
+                .ok()
+                .and_then(|st| st.cursor_norm),
+        })
+    }
     pub async fn request_bound_capture_sources(&self, binding: &SourceViewBinding) -> Result<(), Error> {
         let mut p = self.pool.lock().unwrap();
         let e = p.active_mut().ok_or("No active connection")?;
@@ -1200,10 +1293,57 @@ impl OriginalOwner {
 
     // Call only while holding pool: explicit local user intent cannot race a
     // receipt minted from the state immediately before that intent is applied.
-    fn revoke_computer_use(&self) {
+    pub(super) fn revoke_computer_use(&self) {
         use std::sync::atomic::Ordering;
-        let epoch = self.computer_use_epoch.load(Ordering::Relaxed);
-        self.computer_use_epoch.store(epoch.saturating_add(1), Ordering::Release);
+        let _=self.computer_use_epoch.fetch_update(Ordering::AcqRel,Ordering::Acquire,|epoch|Some(epoch.saturating_add(1)));
+    }
+
+    pub(crate) fn set_computer_use_background_allowed(&self, allowed: bool) {
+        self.computer_use_background_allowed
+            .store(allowed, std::sync::atomic::Ordering::Release);
+        let _ = self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    pub(crate) fn computer_use_background_allowed(&self) -> bool {
+        self.computer_use_background_allowed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn set_computer_use_active(&self, mode: Option<ComputerUseMode>, label: Option<String>) {
+        if let Ok(mut status) = self.computer_use_status.lock() {
+            status.mode = mode;
+            status.status_label = label;
+            if mode.is_none() {
+                status.cursor_norm = None;
+                status.cursor_geometry = None;
+                status.last_action_style = None;
+            }
+        }
+        let _ = self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    fn record_computer_use_visual_feedback(&self, action: &super::computer_use::Action,geometry:Option<protocol::viewport::FrameGeometry>) {
+        if let Some((coords, style, label)) = action.visual_feedback() {
+            if let Ok(mut status) = self.computer_use_status.lock() {
+                status.mode = Some(ComputerUseMode::Controlling);
+                status.cursor_norm = Some(coords);
+                status.cursor_geometry = geometry;
+                status.last_action_style = Some(style);
+                status.status_label = Some(format!(
+                    "AI Controlling: {label} ({}, {}) — Move mouse or press Esc to take over",
+                    coords.0, coords.1
+                ));
+            }
+            let _ = self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
+
+    fn computer_use_can_input(&self, s: &OriginalGuiSession) -> bool {
+        if self.computer_use_background_allowed() {
+            s.can_computer_use_input()
+        } else {
+            s.can_input()
+        }
     }
 
     fn computer_use_fence(&self, s: &OriginalGuiSession)
@@ -1237,13 +1377,15 @@ impl OriginalOwner {
             subscription: s.video_id, source_revision: s.source_revision(),
             source: s.source, source_started: s.first_frame_after,
             video_epoch: frame.video_epoch,
+            geometry:frame.frame_geometry,
             input: s.conn.input_binding(s.video_id, s.source_revision()),
         })
     }
 
     /// Trusted in-process adapter only. The caller must already be authorized
     /// for this device and possess its selected-source binding. Access is an
-    /// upper bound, not a permission grant; Control also requires can_input().
+    /// upper bound, not a permission grant; Control also requires can_input()
+    /// (or can_computer_use_input() when background Computer Use is enabled).
     /// Native frame handles are returned unchanged: no CPU readback, new capture
     /// or claim of physical presentation. A wire/export adapter is still needed.
     pub(crate) fn observe_bound_computer_use(
@@ -1258,7 +1400,7 @@ impl OriginalOwner {
             || !binding.matches(&s.conn, fence.scope) {
             return Err(Rejection::StaleSession);
         }
-        if access == Access::Control && (!s.can_input() || fence.input.is_none()) {
+        if access == Access::Control && (!self.computer_use_can_input(s) || fence.input.is_none()) {
             return Err(Rejection::InputNotAllowed);
         }
         if access == Access::Control && (!s.keys.is_empty() || !s.mouse.is_empty() || s.modifiers != 0) {
@@ -1292,10 +1434,32 @@ impl OriginalOwner {
         &self, observation: &mut ComputerUseObservation, maximum: usize,
     ) -> Result<client::observation_pixels::CpuRgba, ComputerUseExportError> {
         self.validate_bound_computer_use(observation)?;
-        let pixels = client::desktop_frame::observation_rgba(observation.frame(), maximum)
+        let mut pixels = client::desktop_frame::observation_rgba(observation.frame(), maximum)
             .map_err(ComputerUseExportError::Pixels)?;
         self.validate_bound_computer_use(observation)?;
+        if let Ok(status) = self.computer_use_status.lock() {
+            if let (Some((cx, cy)), Some(style)) = (status.cursor_norm, status.last_action_style) {
+                if status.cursor_geometry!=observation.frame().frame_geometry{return Ok(pixels);}
+                pixels = pixels.with_reticle(cx, cy, style);
+            }
+        }
         Ok(pixels)
+    }
+
+    /// Crop a full-resolution sub-rectangle `[x0, y0, x1, y1]` (on the `[0, 1000]`
+    /// normalized coordinate grid) from the validated observation frame.
+    pub(crate) fn zoom_bound_computer_use(
+        &self, observation: &mut ComputerUseObservation, region: [u16; 4], maximum: usize,
+    ) -> Result<client::observation_pixels::CpuRgba, ComputerUseExportError> {
+        self.validate_bound_computer_use(observation)?;
+        let full_budget = maximum.max(16 * 1024 * 1024);
+        let full = client::desktop_frame::observation_rgba(observation.frame(), full_budget)
+            .map_err(ComputerUseExportError::Pixels)?;
+        let cropped = full
+            .zoom_crop(region, maximum)
+            .map_err(ComputerUseExportError::Pixels)?;
+        self.validate_bound_computer_use(observation)?;
+        Ok(cropped)
     }
 
     /// Dispatch to the exact observed host grant, under the same session lock.
@@ -1324,9 +1488,15 @@ impl OriginalOwner {
         let binding = fence.input.ok_or_else(|| {
             observation.invalidate(); Rejection::InputNotAllowed
         })?;
+        let text_owner = s.conn.text_input_owner(s.video_id, s.source_revision());
+        let can_input = self.computer_use_can_input(s);
+        let visual_action = action.clone();
         let connection = s.conn.clone();
-        let mut port = ComputerUseInput { connection: &connection, binding };
-        let result = observation.act(&connection, &fence, Instant::now(), s.can_input(), action, &mut port);
+        let mut port = ComputerUseInput { connection: &connection, binding, text_owner,geometry:fence.geometry,admit:None };
+        let result = observation.act(&connection, &fence, Instant::now(), can_input, action, &mut port);
+        if result.is_ok() {
+            self.record_computer_use_visual_feedback(&visual_action,fence.geometry);
+        }
         if result.is_ok() || matches!(result, Err(Rejection::QueueRejected { .. })) {
             // Require a new observation after every attempted effect, including
             // for other receipts captured concurrently from the same picture.
@@ -1337,6 +1507,144 @@ impl OriginalOwner {
             s.error = "Computer-use input queue rejected; exact-grant release attempted, remote result unknown".into();
         }
         result
+    }
+
+    /// Execute a multi-action batch on a single observed frame receipt with
+    /// Anthropic `computer_toolset_20260801` cascading abort semantics.
+    pub(crate) fn act_batch_bound_computer_use(
+        &self,
+        observation: &mut ComputerUseObservation,
+        actions: &[super::computer_use::Action],
+        deadline: Instant,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<super::computer_use::BatchOutcome, super::computer_use::Rejection> {
+        use super::computer_use::Rejection;
+        let mut p = self.pool.lock().unwrap();
+        if Instant::now() >= deadline || cancelled() {
+            observation.invalidate();
+            return Err(Rejection::Expired);
+        }
+        let s = &mut p.active_mut().ok_or_else(|| {
+            observation.invalidate();
+            Rejection::NoSession
+        })?.session;
+        let fence = self.computer_use_fence(s).inspect_err(|_| observation.invalidate())?;
+        if !s.keys.is_empty() || !s.mouse.is_empty() || s.modifiers != 0 {
+            observation.invalidate();
+            return Err(Rejection::InputBusy);
+        }
+        let binding = fence.input.ok_or_else(|| {
+            observation.invalidate();
+            Rejection::InputNotAllowed
+        })?;
+        let text_owner = s.conn.text_input_owner(s.video_id, s.source_revision());
+        let can_input = self.computer_use_can_input(s);
+        let connection = s.conn.clone();
+        let view_binding=SourceViewBinding::new(&connection,fence.scope);
+        // The input grant remains exact, but waits must not own the session lock:
+        // decoding, source changes and human takeover must continue progressing.
+        drop(p);
+        let valid=|| {
+            if Instant::now()>=deadline||cancelled(){return false;}
+            let pool=self.pool.lock().unwrap();
+            pool.active().is_some_and(|entry|Arc::ptr_eq(&entry.session.conn,&connection)
+                &&self.computer_use_can_input(&entry.session)
+                &&self.computer_use_fence(&entry.session).is_ok_and(|current|current==fence))
+        };
+        let admit=|effect:bool,enqueue:&mut dyn FnMut()->bool| {
+            // Validation and dispatch share this short lock, including after waits.
+            let pool=self.pool.lock().unwrap();
+            let Some(entry)=pool.active()else{return false;};let session=&entry.session;
+            let current=self.computer_use_epoch.load(std::sync::atomic::Ordering::Acquire)==fence.owner_epoch
+                &&Arc::ptr_eq(&session.conn,&connection)&&remote_core::shared_files::current_share_scope()==fence.scope
+                &&session.conn.input_binding(session.video_id,session.source_revision())==Some(binding);
+            if !current{return false;}
+            if effect&&(Instant::now()>=deadline||cancelled()||!self.computer_use_can_input(session)
+                ||!self.computer_use_fence(session).is_ok_and(|current|current==fence)){return false;}
+            enqueue()
+        };
+        let mut port=ComputerUseInput{connection:&connection,binding,text_owner,geometry:fence.geometry,admit:Some(&admit)};
+        let mut wait_fn=|action:&super::computer_use::Action|->bool {
+            if !valid(){return false;}
+            if let super::computer_use::Action::WaitForStability{timeout_ms}=action {
+                let budget=(*timeout_ms).min(deadline.saturating_duration_since(Instant::now()).as_millis() as u32);
+                return self.wait_for_visual_stability(&view_binding,&fence.device,fence.source,budget,0.002,&||!valid()).1;
+            }
+            let super::computer_use::Action::Wait{duration_ms}=action else{return false;};
+            let target=Instant::now()+Duration::from_millis(u64::from(*duration_ms));
+            while Instant::now()<target {
+                if !valid(){return false;}
+                std::thread::sleep(target.saturating_duration_since(Instant::now()).min(Duration::from_millis(20)));
+            }
+            valid()
+        };
+        let outcome = observation.act_batch_with_wait(
+            &connection,
+            &fence,
+            Instant::now(),
+            can_input,
+            actions,
+            &mut port,
+            &mut wait_fn,
+        )?;
+        for (idx, step) in outcome.results.iter().enumerate() {
+            if !step.is_error {
+                if let Some(act) = actions.get(idx) {
+                    self.record_computer_use_visual_feedback(act,fence.geometry);
+                }
+            }
+        }
+        self.revoke_computer_use();
+        if outcome
+            .results
+            .iter()
+            .any(|step| step.error.as_deref() == Some("outcome_unknown"))
+        {
+            let mut pool=self.pool.lock().unwrap();
+            if let Some(entry)=pool.active_mut().filter(|entry|Arc::ptr_eq(&entry.session.conn,&connection)
+                &&entry.session.video_id==fence.subscription&&entry.session.source_revision()==fence.source_revision) {
+                entry.session.locked=true;
+                entry.session.error="Computer-use batch input queue rejected; exact-grant release attempted, remote result unknown".into();
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// Adaptive visual convergence check: samples lightweight 256x256 thumbnail
+    /// observations at 40ms intervals outside the pool lock and stops as soon as
+    /// consecutive frames differ by `<= threshold_ratio` (e.g. 0.002 = 0.2%).
+    pub(crate) fn wait_for_visual_stability(
+        &self,
+        binding: &SourceViewBinding,
+        expected_device: &str,
+        expected_source: CaptureSource,
+        timeout_ms: u32,
+        threshold_ratio: f32,
+        cancelled: &impl Fn() -> bool,
+    ) -> (u32, bool) {
+        use super::computer_use::Access;
+        let began = Instant::now();
+        let budget = std::time::Duration::from_millis(u64::from(timeout_ms.clamp(40, 5_000)));
+        let mut prev_pixels: Option<client::observation_pixels::CpuRgba> = None;
+        while began.elapsed() < budget && !cancelled() {
+            let current=self.observe_bound_computer_use(binding,expected_device,expected_source,Access::Observe).ok()
+                .and_then(|mut observation| {
+                    let pixels=client::desktop_frame::observation_thumbnail(observation.frame(),256).ok()?;
+                    self.validate_bound_computer_use(&mut observation).ok()?;Some(pixels)
+                });
+            if let Some(curr) = current {
+                if let Some(prev) = &prev_pixels {
+                    if let Some(diff) = prev.frame_diff_ratio(&curr) {
+                        if diff <= threshold_ratio {
+                            return (began.elapsed().as_millis() as u32, true);
+                        }
+                    }
+                }
+                prev_pixels = Some(curr);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        (began.elapsed().as_millis() as u32, false)
     }
 
     pub(crate) fn text_input_owner(&self) -> Option<(SourceViewBinding,remote_core::workspace_session::TextInputOwner)> {
@@ -1374,10 +1682,19 @@ impl OriginalOwner {
         let mut p = self.pool.lock().unwrap();
         if target.is_some_and(|target|p.active().is_none_or(|entry|!Self::viewport_matches(&entry.session,target))){return false;}
         self.revoke_computer_use();
+        let mut taking_over=false;
+        if let Ok(mut status) = self.computer_use_status.lock() {
+            if status.mode == Some(ComputerUseMode::Controlling) {
+                taking_over=true;
+                status.mode = Some(ComputerUseMode::PausedByHuman);
+                status.status_label = Some("AI Paused — Human took over input".into());
+            }
+        }
         let Some(e) = p.active_mut() else {
             return false;
         };
         let s = &mut e.session;
+        if taking_over{s.release_input();}
         if !s.can_input() {
             return false;
         }
@@ -1445,7 +1762,9 @@ impl OriginalOwner {
         self.presentation_visible.store(visible, std::sync::atomic::Ordering::Release);
         self.input_focused.store(focused, std::sync::atomic::Ordering::Release);
         let mut p = self.pool.lock().unwrap();
-        if !visible || !focused { self.revoke_computer_use(); }
+        if !visible || (!focused && !self.computer_use_background_allowed()) {
+            self.revoke_computer_use();
+        }
         if let Some(e) = p.active_mut() {
             e.session.set_presentation_hidden(!visible);
             e.session.set_input_focused(focused);
@@ -1774,6 +2093,8 @@ impl OriginalOwner {
                 "scene_submitted_frame":s.uploaded_at.is_some(),"input_locked":s.locked,"error":s.error,"video_error":s.video_error,
                 "clipboard_sync_supported":s.conn.clipboard_available,"clipboard_sync_enabled":s.clipboard_enabled,
                 "files_listed":s.files.len(),"transfers":s.transfers.lock().unwrap().snapshots().len()});
+            result["computer_use_eligible"]=self.computer_use_can_input(s).into();
+            result["background_computer_use_allowed"]=self.computer_use_background_allowed().into();
             result["input_status"]=s.input_status().into();
             result["video_diagnostics"]=video_diagnostics;
             result

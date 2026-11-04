@@ -33,6 +33,8 @@ pub(crate) mod computer_use;
 #[cfg(feature = "gpui-restoration")]
 pub(crate) mod computer_use_ipc;
 #[cfg(feature = "gpui-restoration")]
+pub(crate) mod computer_use_mcp;
+#[cfg(feature = "gpui-restoration")]
 mod computer_use_authority;
 #[cfg(all(test, target_os = "macos", feature = "gpui-restoration"))]
 mod computer_use_process_tests;

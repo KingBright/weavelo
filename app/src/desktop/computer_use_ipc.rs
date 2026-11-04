@@ -3,7 +3,8 @@
 //! private IPC authenticates the local user and the owner checks the exact source.
 use super::{
     computer_use::Access,
-    original_owner::{OriginalOwner, SourceViewBinding},
+    computer_use_mcp::SnapshotRefStore,
+    original_owner::{ComputerUseMode, OriginalOwner, SourceViewBinding},
 };
 use protocol::session::CaptureSource;
 use serde::{Deserialize, Serialize};
@@ -54,12 +55,38 @@ pub(crate) enum Call {
         actor: Actor,
         lease_id: String,
     },
+    Zoom {
+        actor: Actor,
+        lease_id: String,
+        source_revision: u64,
+        frame_sequence: u64,
+        region: [u16; 4],
+    },
+    Snapshot {
+        actor: Actor,
+        lease_id: String,
+        #[serde(default)]
+        skeleton: bool,
+        #[serde(default)]
+        interactive_only: bool,
+        #[serde(default)]
+        root_ref: Option<String>,
+    },
     Act {
         actor: Actor,
         lease_id: String,
         source_revision: u64,
         frame_sequence: u64,
         action: super::computer_use::Action,
+    },
+    BatchAct {
+        actor: Actor,
+        lease_id: String,
+        source_revision: u64,
+        frame_sequence: u64,
+        actions: Vec<super::computer_use::Action>,
+        #[serde(default)]
+        keep_lease: bool,
     },
     Validate {
         actor: Actor,
@@ -83,6 +110,7 @@ struct Lease {
     sequence: u64,
     control: bool,
     pending: Option<PendingFrame<super::original_owner::ComputerUseObservation>>,
+    ref_store: SnapshotRefStore,
     binding: SourceViewBinding,
 }
 struct PendingFrame<T> {
@@ -106,6 +134,10 @@ fn take_frame<T>(
 impl Drop for Lease {
     fn drop(&mut self) {
         self.watchdog.abort();
+        self.owner.revoke_computer_use();
+        if self.owner.snapshot().computer_use_status.mode != Some(ComputerUseMode::PausedByHuman) {
+            self.owner.set_computer_use_active(None, None);
+        }
     }
 }
 pub(crate) struct Dispatcher(
@@ -136,23 +168,22 @@ impl Call {
             | Self::Act {
                 actor, lease_id, ..
             }
+            | Self::BatchAct {
+                actor, lease_id, ..
+            }
+            | Self::Zoom {
+                actor, lease_id, ..
+            }
+            | Self::Snapshot {
+                actor, lease_id, ..
+            }
             | Self::Observe { actor, lease_id }
             | Self::Validate { actor, lease_id }
             | Self::Close { actor, lease_id } => (actor, lease_id),
         }
     }
     pub fn valid(&self) -> bool {
-        let (actor, id) = match self {
-            Self::Open {
-                actor, lease_id, ..
-            }
-            | Self::Act {
-                actor, lease_id, ..
-            }
-            | Self::Observe { actor, lease_id }
-            | Self::Close { actor, lease_id } => (actor, lease_id),
-            Self::Validate { actor, lease_id } => (actor, lease_id),
-        };
+        let (actor, id) = self.identity();
         if actor.owner.is_empty()
             || actor.owner.len() > 128
             || actor.owner.chars().any(char::is_control)
@@ -179,25 +210,36 @@ impl Call {
                     && (1..=30_000).contains(lease_ms)
                     && (1..=16 * 1024 * 1024).contains(max_bytes)
             }
+            Self::Zoom {
+                source_revision,
+                frame_sequence,
+                region,
+                ..
+            } => {
+                *source_revision > 0
+                    && *frame_sequence > 0
+                    && region[0] < region[2]
+                    && region[1] < region[3]
+                    && region[2] <= 1000
+                    && region[3] <= 1000
+            }
             Self::Act {
                 source_revision,
                 frame_sequence,
                 action,
                 ..
+            } => *source_revision > 0 && *frame_sequence > 0 && action.valid(),
+            Self::BatchAct {
+                source_revision,
+                frame_sequence,
+                actions,
+                ..
             } => {
                 *source_revision > 0
                     && *frame_sequence > 0
-                    && match action {
-                        super::computer_use::Action::Click { button, .. } => *button <= 2,
-                        super::computer_use::Action::Scroll {
-                            delta_x, delta_y, ..
-                        } => delta_x.unsigned_abs() <= 1200 && delta_y.unsigned_abs() <= 1200,
-                        // Explicit Mac key-space is approved by both authority records.
-                        super::computer_use::Action::KeyPress { key_code } => {
-                            *key_code < 128
-                                && ![54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(key_code)
-                        }
-                    }
+                    && !actions.is_empty()
+                    && actions.len() <= super::computer_use::MAX_BATCH_ACTIONS
+                    && actions.iter().all(super::computer_use::Action::valid)
             }
             _ => true,
         }
@@ -321,6 +363,18 @@ impl Dispatcher {
                 owner
                     .validate_bound_computer_use(&mut scope)
                     .map_err(|_| "frame_expired")?;
+                owner.set_computer_use_active(
+                    Some(if control {
+                        ComputerUseMode::Controlling
+                    } else {
+                        ComputerUseMode::Observing
+                    }),
+                    Some(if control {
+                        "AI Controlling — Move mouse or press Esc to take over".into()
+                    } else {
+                        "AI Observing screen".into()
+                    }),
+                );
                 let expires = Instant::now() + Duration::from_millis(lease_ms.into());
                 let weak = Arc::downgrade(self);
                 let key = lease_id.clone();
@@ -350,6 +404,7 @@ impl Dispatcher {
                     sequence: 0,
                     control,
                     pending: None,
+                    ref_store: SnapshotRefStore::new(),
                     binding,
                 });
                 Ok(Output {
@@ -382,6 +437,12 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id && l.control)
                     .ok_or("control_lease_mismatch")?;
+                let resolved_action = action.resolve_with(|target_ref| {
+                    lease
+                        .ref_store
+                        .resolve(target_ref)
+                        .map(|node| (grid_to_input(node.center_norm.0),grid_to_input(node.center_norm.1)))
+                })?;
                 let owner = lease.owner.clone();
                 owner
                     .validate_bound_computer_use(&mut lease.scope)
@@ -395,9 +456,9 @@ impl Dispatcher {
                 // Retire the entire lease before any effect. The owner revokes its
                 // epoch on dispatch, so refreshing the old lease would revive a fence.
                 // A new gesture requires close/open/observe through existing authority.
-                state.take();
+                let _retired=state.take();
                 owner
-                    .act_bound_computer_use(&mut observation, action, deadline, cancelled)
+                    .act_bound_computer_use(&mut observation, resolved_action, deadline, cancelled)
                     .map_err(|error| match error {
                         super::computer_use::Rejection::QueueRejected { .. } => "outcome_unknown",
                         _ => "input_rejected",
@@ -406,6 +467,156 @@ impl Dispatcher {
                     body: serde_json::json!({"ok":true,"effect_confirmed":false}),
                     pixels: None,
                 })
+            }
+            Call::BatchAct {
+                actor,
+                lease_id,
+                source_revision,
+                frame_sequence,
+                actions,
+                keep_lease,
+            } => {
+                let lease = state
+                    .as_mut()
+                    .filter(|l| l.actor == actor && l.id == lease_id && l.control)
+                    .ok_or("control_lease_mismatch")?;
+                let mut resolved_actions = Vec::with_capacity(actions.len());
+                for act in &actions {
+                    let resolved = act.resolve_with(|target_ref| {
+                        lease
+                            .ref_store
+                            .resolve(target_ref)
+                            .map(|node| (grid_to_input(node.center_norm.0),grid_to_input(node.center_norm.1)))
+                    })?;
+                    resolved_actions.push(resolved);
+                }
+                let owner = lease.owner.clone();
+                owner
+                    .validate_bound_computer_use(&mut lease.scope)
+                    .map_err(|_| "source_changed")?;
+                let mut observation =
+                    take_frame(&mut lease.pending, source_revision, frame_sequence)?;
+                let remaining = caller.expires_at_ms.saturating_sub(crate::unix_now_ms());
+                let deadline = lease
+                    .expires
+                    .min(Instant::now() + Duration::from_millis(remaining));
+                let binding = lease.binding.clone();
+                let target = lease.target.clone();
+                drop(state);
+                let outcome = owner
+                    .act_batch_bound_computer_use(&mut observation, &resolved_actions, deadline, cancelled)
+                    .map_err(|error| match error {
+                        super::computer_use::Rejection::QueueRejected { .. } => "outcome_unknown",
+                        _ => "input_rejected",
+                    })?;
+                if keep_lease {
+                    let mut state = self.0.lock().map_err(|_| "state_unavailable")?;
+                    // Refresh the lease scope fence to the post-batch owner epoch so a
+                    // subsequent Observe in the same lease can mint a new frame receipt,
+                    // or drop the lease if the source/session became unavailable.
+                    match owner.observe_bound_computer_use(
+                        &binding,
+                        &target.peer_device_id,
+                        target.source,
+                        Access::Observe,
+                    ) {
+                        Ok(new_scope) => {
+                            if let Some(active_lease) = state
+                                .as_mut()
+                                .filter(|l| l.actor == actor && l.id == lease_id)
+                            {
+                                active_lease.scope = new_scope;
+                            }
+                        }
+                        Err(_) => {
+                            state.take();
+                        }
+                    }
+                }
+                if !keep_lease {
+                    let mut state=self.0.lock().map_err(|_|"state_unavailable")?;
+                    if state.as_ref().is_some_and(|lease|lease.actor==actor&&lease.id==lease_id){state.take();}
+                }
+                let completed = outcome.failed_at.is_none();
+                Ok(Output {
+                    body: serde_json::json!({
+                        "ok": completed,
+                        "completed": completed,
+                        "failed_at": outcome.failed_at,
+                        "effect_confirmed": false,
+                        "steps": outcome.results,
+                    }),
+                    pixels: None,
+                })
+            }
+            Call::Zoom {
+                actor,
+                lease_id,
+                source_revision,
+                frame_sequence,
+                region,
+            } => {
+                let lease = state
+                    .as_mut()
+                    .filter(|l| l.actor == actor && l.id == lease_id)
+                    .ok_or("lease_mismatch")?;
+                let owner = lease.owner.clone();
+                owner
+                    .validate_bound_computer_use(&mut lease.scope)
+                    .map_err(|_| "source_changed")?;
+                let pending = lease
+                    .pending
+                    .as_mut()
+                    .filter(|p| p.revision == source_revision && p.sequence == frame_sequence)
+                    .ok_or("frame_mismatch_or_consumed")?;
+                let maximum = lease.maximum;
+                let cropped = owner
+                    .zoom_bound_computer_use(&mut pending.observation, region, maximum)
+                    .map_err(|_| "pixels_unavailable")?;
+                let body = serde_json::json!({
+                    "ok": true,
+                    "lease_id": lease_id,
+                    "source_revision": source_revision,
+                    "frame_sequence": frame_sequence,
+                    "region": region,
+                    "size": [cropped.layout().width(), cropped.layout().height()],
+                    "bytes": cropped.layout().bytes(),
+                    "encoding": match cropped.color() {
+                        client::observation_pixels::ColorMetadata::Srgb => "rgba8_srgb",
+                        client::observation_pixels::ColorMetadata::Unspecified => "rgba8",
+                    }
+                });
+                Ok(Output {
+                    body,
+                    pixels: Some(cropped.into_pixels()),
+                })
+            }
+            Call::Snapshot {
+                actor,
+                lease_id,
+                skeleton,
+                interactive_only,
+                root_ref,
+            } => {
+                let lease = state
+                    .as_mut()
+                    .filter(|l| l.actor == actor && l.id == lease_id)
+                    .ok_or("lease_mismatch")?;
+                let owner = lease.owner.clone();
+                owner
+                    .validate_bound_computer_use(&mut lease.scope)
+                    .map_err(|_| "source_changed")?;
+                let ctx = owner
+                    .computer_use_snapshot_context()
+                    .ok_or("session_unavailable")?;
+                let body = lease.ref_store.build_session_snapshot(
+                    &ctx,
+                    lease.sequence.saturating_add(1),
+                    skeleton,
+                    interactive_only,
+                    root_ref.as_deref(),
+                )?;
+                Ok(Output { body, pixels: None })
             }
             Call::Validate { actor, lease_id } => {
                 let lease = state
@@ -532,4 +743,51 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn zoom_and_batch_act_calls_validate_bounds_and_actions() {
+        let actor = Actor {
+            owner: "fixture".into(),
+            task_id: "11111111-1111-1111-1111-111111111111".into(),
+            executor_device_id: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let zoom_ok = Call::Zoom {
+            actor: actor.clone(),
+            lease_id: "33333333-3333-3333-3333-333333333333".into(),
+            source_revision: 1,
+            frame_sequence: 1,
+            region: [100, 100, 400, 400],
+        };
+        assert!(zoom_ok.valid());
+        let zoom_bad = Call::Zoom {
+            actor: actor.clone(),
+            lease_id: "33333333-3333-3333-3333-333333333333".into(),
+            source_revision: 1,
+            frame_sequence: 1,
+            region: [500, 100, 400, 400],
+        };
+        assert!(!zoom_bad.valid());
+
+        let batch_ok = Call::BatchAct {
+            actor,
+            lease_id: "33333333-3333-3333-3333-333333333333".into(),
+            source_revision: 1,
+            frame_sequence: 1,
+            actions: vec![
+                super::super::computer_use::Action::Move { x: 250, y: 300 },
+                super::super::computer_use::Action::Click {
+                    x: 250,
+                    y: 300,
+                    button: 0,
+                },
+                super::super::computer_use::Action::CommitText {
+                    text: "hello".into(),
+                },
+            ],
+            keep_lease: true,
+        };
+        assert!(batch_ok.valid());
+    }
 }
+
+fn grid_to_input(value:u16)->u16 { ((u32::from(value)*65535+500)/1000).min(65535) as u16 }

@@ -4,11 +4,12 @@
 #import <dispatch/dispatch.h>
 
 // Status: 0 completed, 1 unsupported buffer, 2 missing color, 3 render failure.
-int weavelo_observation_rgba(CVPixelBufferRef buffer, size_t width, size_t height,
-                             unsigned char *output, size_t length) {
+static int copy_rgba(CVPixelBufferRef buffer, size_t width, size_t height,
+                             unsigned char *output, size_t length, BOOL scaled) {
     if (!buffer || !output || !width || !height || width > 8192 || height > 8192 ||
         width * height * 4 != length || length > 16 * 1024 * 1024 ||
-        CVPixelBufferGetWidth(buffer) != width || CVPixelBufferGetHeight(buffer) != height)
+        (!scaled && (CVPixelBufferGetWidth(buffer) != width || CVPixelBufferGetHeight(buffer) != height)) ||
+        (scaled && (width > CVPixelBufferGetWidth(buffer) || height > CVPixelBufferGetHeight(buffer))))
         return 1;
     OSType format = CVPixelBufferGetPixelFormatType(buffer);
     if (format != kCVPixelFormatType_420YpCbCr8BiPlanarFullRange &&
@@ -39,7 +40,10 @@ int weavelo_observation_rgba(CVPixelBufferRef buffer, size_t width, size_t heigh
                 options:@{kCIImageColorSpace: (__bridge id)source,
                           kCIImageApplyOrientationProperty: @NO}];
             CGColorSpaceRelease(source);
-            if (!image || !CGRectEqualToRect(image.extent, CGRectMake(0, 0, width, height))) return 1;
+            if (!image || !CGRectEqualToRect(image.extent, CGRectMake(0, 0, CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer)))) return 1;
+
+            if (scaled) image = [image imageByApplyingTransform:CGAffineTransformMakeScale(
+                (double)width / CVPixelBufferGetWidth(buffer), (double)height / CVPixelBufferGetHeight(buffer))];
 
             static CIContext *context;
             static dispatch_once_t once;
@@ -74,4 +78,11 @@ int weavelo_observation_rgba(CVPixelBufferRef buffer, size_t width, size_t heigh
             return 3;
         }
     }
+}
+
+int weavelo_observation_rgba(CVPixelBufferRef buffer,size_t width,size_t height,unsigned char *output,size_t length) {
+    return copy_rgba(buffer,width,height,output,length,NO);
+}
+int weavelo_observation_thumbnail_rgba(CVPixelBufferRef buffer,size_t width,size_t height,unsigned char *output,size_t length) {
+    return copy_rgba(buffer,width,height,output,length,YES);
 }

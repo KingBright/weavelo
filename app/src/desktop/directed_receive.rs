@@ -231,10 +231,24 @@ impl Adapter {
                     Ok::<_,Error>(request)
                 }).await;
                 let Ok(Ok(request))=decoded else {continue;};
-                // Only admitted observation work gets a longer completion budget;
+                // Only admitted observation/batch work gets a longer completion budget;
                 // reading a partial client frame retains its original two seconds.
-                let budget=if matches!(&request,Request::ComputerUse {call:super::computer_use_ipc::Call::Observe {..},..}) {35}
-                    else if matches!(&request,Request::CloseGui {..}) {15} else {2};
+                let budget = if matches!(
+                    &request,
+                    Request::ComputerUse {
+                        call: super::computer_use_ipc::Call::Observe { .. }
+                            | super::computer_use_ipc::Call::Zoom { .. }
+                            | super::computer_use_ipc::Call::Snapshot { .. }
+                            | super::computer_use_ipc::Call::BatchAct { .. },
+                        ..
+                    }
+                ) {
+                    35
+                } else if matches!(&request, Request::CloseGui { .. }) {
+                    15
+                } else {
+                    2
+                };
                 let _ = tokio::time::timeout(Duration::from_secs(budget), async {
                     let (reply, response) = oneshot::channel();
                     tx.try_send(Command { request, reply, peer_pid })
@@ -399,8 +413,15 @@ impl Drop for Adapter {
     }
 }
 pub(crate) fn exchange(directory: &Path, request: &Request) -> Result<serde_json::Value, Error> {
+    Ok(exchange_with_pixels(directory, request)?.0)
+}
+pub(crate) fn exchange_with_pixels(
+    directory: &Path,
+    request: &Request,
+) -> Result<(serde_json::Value, Option<Vec<u8>>), Error> {
     let timeout = match request {
-        Request::CloseGui {..} => Duration::from_secs(15),
+        Request::ComputerUse { .. } => Duration::from_secs(35),
+        Request::CloseGui { .. } => Duration::from_secs(15),
         Request::Menu => Duration::from_millis(500),
         _ => Duration::from_secs(3),
     };
@@ -411,14 +432,26 @@ pub(crate) fn exchange(directory: &Path, request: &Request) -> Result<serde_json
     socket.write_all(&bytes)?;
     let mut header = [0; 4];
     socket.read_exact(&mut header)?;
-    // Status diagnostics can be larger than a command; still strictly bounded.
+    // Status diagnostics and Snapshot JSON can be larger than a command; still strictly bounded.
     let size = u32::from_be_bytes(header) as usize;
-    if size == 0 || size > 256 * 1024 {
+    if size == 0 || size > 512 * 1024 {
         return Err("Invalid GUI response length".into());
     }
     let mut bytes = vec![0; size];
     socket.read_exact(&mut bytes)?;
-    Ok(serde_json::from_slice(&bytes)?)
+    let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let pixel_len = body["bytes"].as_u64().unwrap_or(0) as usize;
+    let pixels = if pixel_len > 0 {
+        if pixel_len > 16 * 1024 * 1024 {
+            return Err("Invalid GUI pixel payload length".into());
+        }
+        let mut raw = vec![0u8; pixel_len];
+        socket.read_exact(&mut raw)?;
+        Some(raw)
+    } else {
+        None
+    };
+    Ok((body, pixels))
 }
 pub(crate) fn command(profile: &Path, args: &[String]) -> Result<serde_json::Value, Error> {
     let directory = crate::private_ipc::gui_directory(profile)?;

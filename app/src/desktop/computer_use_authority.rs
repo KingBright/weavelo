@@ -1,6 +1,8 @@
 //! Verify the existing Octendra authority, not a second credential/grant store.
 //! The optional private locator pins an existing desktop-launch.json. IPC clients
-//! cannot select that authority file. No locator is created or enabled by this code.
+//! cannot select that authority file. When the user explicitly enables Background AI
+//! Computer Use in the local GUI, `weavelo --mcp-server` running under the same UID
+//! and binary SHA-256 can also provision a bounded local-mcp worker record.
 use super::computer_use_ipc::{Actor, Call, Target};
 use serde::Deserialize;
 use serde_json::Value;
@@ -157,7 +159,46 @@ fn process(pid: i32) -> Result<Process, Error> {
         hash: format!("{:x}", Sha256::digest(bytes)),
     })
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn process(pid: i32) -> Result<Process, Error> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::MetadataExt;
+    if pid <= 1 {
+        return Err("caller_unavailable");
+    }
+    let proc_dir = PathBuf::from(format!("/proc/{pid}"));
+    let dir_meta = proc_dir.symlink_metadata().map_err(|_| "caller_unavailable")?;
+    let uid = unsafe { libc::geteuid() };
+    if dir_meta.uid() != uid {
+        return Err("caller_user_mismatch");
+    }
+    let stat_str = std::fs::read_to_string(proc_dir.join("stat")).map_err(|_| "caller_unavailable")?;
+    let after_comm = stat_str.rfind(')').ok_or("caller_unavailable")?;
+    let fields: Vec<&str> = stat_str[after_comm + 1..].split_whitespace().collect();
+    if fields.len() < 20 {
+        return Err("caller_unavailable");
+    }
+    let ppid: i32 = fields[1].parse().map_err(|_| "caller_unavailable")?;
+    let starttime: u64 = fields[19].parse().map_err(|_| "caller_unavailable")?;
+    let path = std::fs::read_link(proc_dir.join("exe")).map_err(|_| "caller_unavailable")?;
+    let m = path.symlink_metadata().map_err(|_| "caller_unavailable")?;
+    if !m.is_file()
+        || m.file_type().is_symlink()
+        || m.mode() & 0o022 != 0
+        || m.len() > 256 * 1024 * 1024
+    {
+        return Err("caller_executable_untrusted");
+    }
+    let bytes = std::fs::read(&path).map_err(|_| "caller_unavailable")?;
+    Ok(Process {
+        pid,
+        parent: ppid,
+        started: [starttime, 0],
+        path,
+        hash: format!("{:x}", Sha256::digest(bytes)),
+    })
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn process(_pid: i32) -> Result<Process, Error> {
     Err("authority_platform_unavailable")
 }
@@ -228,13 +269,20 @@ impl Authority {
             &self.gui_hash,
         )?;
         let peer = process(peer.ok_or("caller_unavailable")?)?;
+        let local_mcp_self = root["local_mcp_self"] == true
+            && worker["local_mcp_self"] == true
+            && peer.hash == self.gui_hash;
         let caller = if matches!(call, Call::Validate { .. }) {
             let saved = saved.ok_or("observer_closed")?;
             if peer != saved.agent {
                 return Err("caller_not_approved_agent");
             }
             let worker = process(saved.worker.pid)?;
-            let agent = process(worker.parent)?;
+            let agent = if local_mcp_self {
+                worker.clone()
+            } else {
+                process(worker.parent)?
+            };
             if worker != saved.worker || agent != saved.agent {
                 return Err("worker_process_changed");
             }
@@ -245,14 +293,17 @@ impl Authority {
                 expires_at_ms,
             }
         } else {
-            let agent = process(peer.parent)?;
-            let caller = Caller {
+            let agent = if local_mcp_self {
+                peer.clone()
+            } else {
+                process(peer.parent)?
+            };
+            Caller {
                 worker: peer,
                 agent,
                 authority_digest,
                 expires_at_ms,
-            };
-            caller
+            }
         };
         if !matches!(call, Call::Open { .. })
             && saved.is_some_and(|s| s.worker != caller.worker || s.agent != caller.agent)
@@ -434,7 +485,7 @@ fn authorize(
             return Err("authority_target_or_budget_mismatch");
         }
     }
-    if matches!(call, Call::Act { .. }) && root["input"] != true {
+    if matches!(call, Call::Act { .. } | Call::BatchAct { .. }) && root["input"] != true {
         return Err("input_not_authorized");
     }
     Ok(())

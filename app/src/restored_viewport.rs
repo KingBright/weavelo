@@ -60,6 +60,14 @@ impl State {
     pub fn acknowledges(&self,frame:&MacDecodedVideoFrame)->bool {
         self.painted.as_ref().is_some_and(|painted|painted.decoded_at==frame.decoded_at&&Some(painted.geometry)==frame.frame_geometry)
     }
+    pub fn cursor_position(&self,x:u16,y:u16,geometry:Option<FrameGeometry>)->Option<Point<Pixels>> {
+        let painted=self.painted()?;let geometry=geometry?;
+        if geometry.source_revision!=painted.geometry.source_revision{return None;}
+        let crop=painted.view.crop_bounds(geometry)?;
+        let point=[crop.x+f64::from(x)/65535.*crop.width,crop.y+f64::from(y)/65535.*crop.height];
+        painted.view.source_point(point)?;
+        Some(gpui::point(painted.bounds.origin.x+px(point[0] as f32),painted.bounds.origin.y+px(point[1] as f32)))
+    }
     pub fn zoom(&mut self,factor:f64,anchor:Option<Point<Pixels>>)->bool {
         let Some((_,bounds,_,_))=self.layout else{return false;};
         let anchor=anchor.map(|point|[f64::from(f32::from(point.x-bounds.origin.x)),f64::from(f32::from(point.y-bounds.origin.y))])

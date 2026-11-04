@@ -581,6 +581,9 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         }
     }
     pub fn can_input(&self) -> bool {
+        self.can_computer_use_input() && self.input_focused
+    }
+    pub fn can_computer_use_input(&self) -> bool {
         let recovery = self.stats.video_recovery.snapshot();
         self.video_error.is_none()
             && self.input_error.is_none()
@@ -592,7 +595,6 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             && self.conn.input_ready(self.video_id,self.source_revision)
             && !self.locked
             && self.view_selected
-            && self.input_focused
             && !self.paused
             && !self.presentation_hidden
             && self.activity_pending.is_none()

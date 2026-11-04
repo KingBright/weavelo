@@ -879,3 +879,10 @@ HO5 的 native-linux-video host/client 检查通过（5.46s）。真实 VAAPI �
 - 需求按 50 ms 合并最新区域；队列繁忙等待后重试。绑定真实连接、订阅和来源修订，旧来源结果不能清除新请求。解码恢复保持缩放与单调请求编号，不因恢复重启编号而被来源拒绝。完全移出可视区的旧裁剪帧不被当作已绘制；绘制回执不冒充物理呈现。
 - 公共几何 5 项、连接绑定 9 项、桌面状态模型 4 项通过。使用实际 VideoToolbox 解码合成 HEVC 帧和生产 GPUI 元素的新增输入检查通过，验证精确坐标、按下／拖动／释放、键盘、滚动、本地导航隔离；原有输入和菜单隔离检查也通过。签名集成发布回归 1045 项通过、19 项跳过（35.026s）。日志 `roi-desktop-viewport-native-input-checks.log`、`roi-desktop-viewport-release-regression.log`。
 - 此轮尚未打包或安装。原生测试界面的布局与协议事件不等同于真实显示器可见画面；Linux／Windows 产品构建、已签名程序截图、连续缩放／平移和完整跨设备输入验收继续进行。
+
+### 2026-11-05 正式 119 升级与 computer-use 接管
+
+- Studio、HO5、cube 均从已推送 main `4cff437` 完成正式打包与兼容升级；Studio 原签名保留，实际程序 SHA-256 为 `81b380087bf0892dd84e67b920ac968eb15910e98acdb5c95273c6c172928245`。Linux 实际程序为 `09c414698ff28d8824569bcf096a82f2a318e6e9b44dae184b6cf0de798d78ea`，Windows 为 `9c7bc9c3bd2bf7ef167179abd804961c043aae62dc49e59899f6c3b41305618a`。Linux 首次链接失败是库路径错误，改用现有项目缓存中的实际 Opus 路径后正式包成功，未新装依赖。
+- 已签名 Studio 的实际主窗口与加载完成的投送选择器截图检查通过：紧凑卡片、固定图标／选择列、标题左对齐、应用分组、筛选入口；未选择或投送用户应用。截图为任务目录 `roi-studio119-management-native.png`、`roi-studio119-send-picker-loaded.png`。
+- Studio 同时接收新版 Windows 与 Linux，均得到真实解码帧及绘制回执，解码错误为零；Windows 的真实截图确认画面显示。Linux 两次实际截图均黑屏，检查 HO5 会话得 `Type=wayland, Active=yes, LockedHint=yes`，与锁屏状态一致；不能把帧／回执作为可见画面通过。自有测试窗口／订阅已按精确请求编号全部结束。Linux 解锁后的可见画面、输入与性能仍待验收。
+- MacBook 两项本地 computer-use 提交已完整读取并接管，在当前 main 整合、修正坐标、来源归属、批次等待和 MCP 实现；详见 [整合记录](2026-11-05-COMPUTER-USE-INTEGRATION.md)。30 项接口／授权、16 项像素、两组原生输入回归及 1,045 项签名发布回归通过。此轮 computer-use 代码尚未正式打包／安装；没有宣称未实现的远端 AX 或非 Mac 原生截图导出已完成。

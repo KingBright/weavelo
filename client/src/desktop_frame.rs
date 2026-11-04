@@ -116,3 +116,15 @@ pub fn observation_rgba(
             frame.cv_pixel_buffer, frame.width(), frame.height(), maximum) }
     }
 }
+
+/// Bounded observer thumbnail; native adapters reduce on the GPU before readback.
+pub fn observation_thumbnail(frame:&crate::MacDecodedVideoFrame,edge:u32)->Result<crate::observation_pixels::CpuRgba,crate::observation_pixels::PixelError> {
+    #[cfg(target_os="macos")] {
+        use remote_core::VideoFrame;
+        let edge=edge.clamp(2,256);let longest=frame.width().max(frame.height()).max(1);
+        let width=(u64::from(frame.width())*u64::from(edge.min(longest))/u64::from(longest)).max(1) as u32;
+        let height=(u64::from(frame.height())*u64::from(edge.min(longest))/u64::from(longest)).max(1) as u32;
+        unsafe { crate::observation_pixels::macos::copy_thumbnail(frame.cv_pixel_buffer,width,height,256*256*4) }
+    }
+    #[cfg(not(target_os="macos"))] {let _=(frame,edge);Err(crate::observation_pixels::PixelError::NativeReadbackUnsupported)}
+}

@@ -10,6 +10,13 @@ unsafe extern "C" {
         output: *mut u8,
         length: usize,
     ) -> i32;
+    fn weavelo_observation_thumbnail_rgba(
+        buffer: *mut c_void,
+        width: usize,
+        height: usize,
+        output: *mut u8,
+        length: usize,
+    ) -> i32;
 }
 
 /// # Safety
@@ -21,6 +28,12 @@ pub(crate) unsafe fn copy_pixel_buffer(
     height: u32,
     maximum: usize,
 ) -> Result<CpuRgba, PixelError> {
+    unsafe { copy_native(buffer,width,height,maximum,false) }
+}
+pub(crate) unsafe fn copy_thumbnail(buffer:*mut c_void,width:u32,height:u32,maximum:usize)->Result<CpuRgba,PixelError> {
+    unsafe { copy_native(buffer,width,height,maximum,true) }
+}
+unsafe fn copy_native(buffer:*mut c_void,width:u32,height:u32,maximum:usize,thumbnail:bool)->Result<CpuRgba,PixelError> {
     let row = (width as usize)
         .checked_mul(4)
         .ok_or(PixelError::ArithmeticOverflow)?;
@@ -30,7 +43,7 @@ pub(crate) unsafe fn copy_pixel_buffer(
     let layout = RgbaLayout::validate(width, height, row, bytes, maximum)?;
     let mut pixels = vec![0; layout.bytes()];
     let status = unsafe {
-        weavelo_observation_rgba(
+        (if thumbnail {weavelo_observation_thumbnail_rgba}else{weavelo_observation_rgba})(
             buffer,
             width as usize,
             height as usize,
@@ -95,6 +108,18 @@ mod tests {
         fn drop(&mut self) {
             unsafe { CVPixelBufferRelease(self.0) }
         }
+    }
+    #[test]
+    fn thumbnail_downsamples_native_buffer_with_color_and_orientation_preserved() {
+        let source=fixture(false,true);
+        let thumb=unsafe{copy_thumbnail(source.0,2,2,16)}.unwrap();
+        assert_eq!((thumb.layout().width(),thumb.layout().height()),(2,2));
+        assert!(thumb.pixels()[0]<32,"top remains dark");
+        assert!(thumb.pixels()[8]>223,"bottom remains light");
+        assert!(unsafe{copy_pixel_buffer(source.0,2,2,16)}.is_err(),"full export must keep exact source dimensions");
+        assert!(unsafe{copy_thumbnail(source.0,8,8,256)}.is_err(),"observer thumbnail cannot upsample");
+        let unknown=fixture(false,false);
+        assert!(matches!(unsafe{copy_thumbnail(unknown.0,2,2,16)},Err(PixelError::ColorMetadataUnavailable)));
     }
     // Actual Core Video buffers with synthetic pixels, never screen capture.
     fn fixture(video_range: bool, metadata: bool) -> Buffer {

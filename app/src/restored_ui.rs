@@ -862,6 +862,7 @@ impl RestoredDashboard {
             capture_source_error: snapshot.error,
             input_status: snapshot.input_status,
             input_eligible: snapshot.input_eligible,
+            computer_use_status: snapshot.computer_use_status,
         }
     }
 
@@ -2559,6 +2560,72 @@ impl Render for RestoredDashboard {
                     cx,
                 ),
             ))
+            .when_some(snapshot.computer_use_status.mode, |this, mode| {
+                let border_color = match mode {
+                    crate::desktop::original_owner::ComputerUseMode::Observing => {
+                        Hsla::from(color_accent_cyan())
+                    }
+                    crate::desktop::original_owner::ComputerUseMode::Controlling => {
+                        Hsla::from(color_accent_emerald())
+                    }
+                    crate::desktop::original_owner::ComputerUseMode::PausedByHuman => {
+                        cx.theme().content.secondary
+                    }
+                };
+                let cursor_overlay=snapshot.computer_use_status.cursor_norm.and_then(|(x,y)| {
+                    self.viewport.lock().unwrap().cursor_position(x,y,snapshot.computer_use_status.cursor_geometry)
+                        .map(|point|(f32::from(point.x),f32::from(point.y)))
+                });
+                this.child(
+                    div()
+                        .id("computer-use-viewport-highlight")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h_full()
+                        .border_2()
+                        .border_color(border_color)
+                        .when_some(cursor_overlay, |ring_layer, (cx_px, cy_px)| {
+                            ring_layer.child(
+                                div()
+                                    .id("computer-use-virtual-cursor")
+                                    .absolute()
+                                    .left(px((cx_px - 12.0).max(0.0)))
+                                    .top(px((cy_px - 12.0).max(0.0)))
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .size(px(24.))
+                                            .rounded_full()
+                                            .border_2()
+                                            .border_color(border_color)
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .size(px(4.))
+                                                    .rounded_full()
+                                                    .bg(border_color),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .px_1()
+                                            .rounded_sm()
+                                            .bg(color_glass_card())
+                                            .border_1()
+                                            .border_color(border_color)
+                                            .text_size(px(10.))
+                                            .child("AI"),
+                                    ),
+                            )
+                        }),
+                )
+            })
             .when(
                 !matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_))
                     || self.toolbar_revealed
@@ -5742,6 +5809,7 @@ struct DashboardSnapshot {
     capture_source_error: Option<String>,
     input_status: String,
     input_eligible: bool,
+    computer_use_status: crate::desktop::original_owner::ComputerUseVisualStatus,
 }
 
 // Coarse state in the existing control, exact backend reason in its tooltip.

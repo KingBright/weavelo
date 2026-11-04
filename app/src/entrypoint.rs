@@ -33,6 +33,12 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         #[cfg(not(all(any(unix, windows), feature = "gpui-restoration")))]
         return Err("Attached GPUI frontend is currently available on macOS only".into());
     }
+    if arguments == ["--mcp-server"] {
+        #[cfg(feature = "gpui-restoration")]
+        return crate::desktop::computer_use_mcp::run_stdio_mcp_server(&config.mesh_dir);
+        #[cfg(not(feature = "gpui-restoration"))]
+        return Err("Weavelo Computer Use MCP server requires the desktop feature set".into());
+    }
     if !arguments.is_empty() {
         return Err("Unknown Weavelo command; no window or runtime was started".into());
     }
