@@ -2,10 +2,9 @@
 //! workspace client. No discovery identity, permissions, pixels or settings change.
 //! This does not claim decode, compositor presentation, or physical display.
 use protocol::session::{CameraFacing, CameraSwitchRequest, CaptureSourceInfo, SessionCommand, SubscriptionRequest};
-use remote_core::{client_session::{SharedHostStats, VideoPacket}, stats::Statistics,
+use remote_core::{client_session::SharedHostStats, stats::Statistics,
     workspace_session::{WorkspaceConnection, WorkspaceEvents}};
 use std::{error::Error, net::SocketAddr, sync::Arc, time::{Duration, Instant}};
-use tokio::sync::mpsc;
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 async fn control(events: &mut WorkspaceEvents, accept: impl Fn(&SessionCommand)->bool) -> Result<SessionCommand> {
@@ -22,7 +21,7 @@ async fn stop(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, id: u32)
     Ok(())
 }
 async fn capture(conn: &WorkspaceConnection, events: &mut WorkspaceEvents, source: &CaptureSourceInfo, id: u32) -> Result<serde_json::Value> {
-    let (tx,mut video)=mpsc::channel::<VideoPacket>(16);
+    let (tx,mut video)=remote_core::video_queue::channel(16);
     let start=Instant::now();
     let host_stats=Arc::new(SharedHostStats::default());
     conn.subscribe(SubscriptionRequest {id,source:source.source,width:1280,height:720,fps:30,bitrate_kbps:4000,audio:false},

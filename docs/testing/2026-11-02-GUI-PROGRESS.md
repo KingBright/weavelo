@@ -771,3 +771,11 @@ Android 79 → Studio 116 独立原生应用实际输入再次通过：红米点
 
 117 继续只修 macOS Dock 注册时机：先读取有界初始标题/图标，在 AppKit 注册 Dock 项之前设置该辅助进程内的显示名称；切换来源身份时重新创建对应 Dock 项。只改进程内缓存的 CFBundleName/CFBundleDisplayName，不改磁盘 Info.plist、bundle ID、签名或网络身份。四项相关检查通过，签名发布回归 1,045 项通过、19 项跳过；实际 Dock 名称仍待新包验证。Linux/Windows 当前 116 已包含所有公共修复，此项 macOS 专用代码不改变它们的编译行为；不为统一显示编号引入额外版本门槛。Android APK 79 同样保留已验证原包，不因 Mac 专用修复重复生成。
 
+### Dock 采用公开系统角标和完整身份菜单；摄像头链路补验
+
+117 的新鲜双应用来源已再次真实出画、激活及独立退出；但系统 Dock AX 名称仍缓存 Weavelo，提前改进程内 bundle 名称也没有实现期望。因此 118 删除私有 LaunchServices 符号调用、CFBundle 字典修改和改名时重启辅助进程的逻辑，改为公开 NSDockTile 的设备角标，并在同一个“Show 应用 · 设备”菜单动作中显示完整身份。实际应用图标＋Weavelo 标记、原生窗口完整标题和每路独立入口保留；不宣称系统固定 tooltip 已改为每流名称。设备名通过本地父子管道显式传递，沿用有界 UTF-8 与 64×64 RGBA，不从格式化标题猜设备名，也不改网络会话协议。五项图标/管道/角标检查通过，签名发布回归 1,045 项通过、19 项跳过；实际角标与菜单随后验收。
+
+努比亚 79 在已有相机系统许可下，通过正常 Sharing → Camera → Share 启动前台共享，未授予新权限。当前源码的 `camera_stream_probe` 已适配既有 VideoSender 队列 API 并从 primary main 编译，使用现有配对配置及实际设备端点完成后摄到前摄切换：分别接收 303 / 107 帧，约 30.16 / 10.55 fps，均获得 HEVC 序列信息。证据 `android79-nubia-camera-current.json`、`android79-nubia-camera-probe-summary.log`。这是实际采集/编码/传输与普通拉取切摄验收，尚不是解码、物理呈现或暗画面改善结论；编码耗时没有有效样本，不编造性能数字。该诊断例程只修正旧队列类型，没有修改产品采集/编码管线。
+
+Android 79 已由正式入口发布，完整公网 APK SHA 校验通过。Linux / Windows 116 的正式 ZIP 已分别经真实 Weavelo 传到 Studio，由接收端独立计算 SHA 并核对 ZIP 内源码和编译身份，证据 `native116-independent-received-package-provenance.json`；当前发布 provenance 已更新，保留原正式包和接收文件。macOS 当前未发布 117，将直接发布经过实际角标验收的后续修复包。
+

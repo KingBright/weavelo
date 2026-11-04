@@ -2462,7 +2462,8 @@ impl Render for RestoredDashboard {
         let bitmap=matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
             .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten();
         if self.purpose == WindowPurpose::Stream {
-            self.native_window_artwork.sync_stream(window,cx,bitmap.as_deref(),&self.native_window_title);
+            self.native_window_artwork.sync_stream(window,cx,bitmap.as_deref(),&self.native_window_title,
+                peer.or(self.stream_device.as_deref()).unwrap_or("Device"));
         } else {
             self.native_window_artwork.sync(window,cx,bitmap.as_deref());
         }

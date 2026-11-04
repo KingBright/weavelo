@@ -16,6 +16,8 @@ pub(super) struct Artwork {
     #[cfg(target_os = "macos")]
     dock_title: String,
     #[cfg(target_os = "macos")]
+    dock_device: String,
+    #[cfg(target_os = "macos")]
     dock_proxy: Option<macos_dock::Proxy>,
 }
 impl Artwork {
@@ -36,7 +38,7 @@ impl Artwork {
         }
     }
 
-    pub fn sync_stream(&mut self, window: &mut Window, cx: &App, bitmap: Option<&IconBitmap>, title: &str) {
+    pub fn sync_stream(&mut self, window: &mut Window, cx: &App, bitmap: Option<&IconBitmap>, title: &str, device: &str) {
         self.sync(window, cx, bitmap);
         #[cfg(target_os = "macos")]
         {
@@ -46,15 +48,9 @@ impl Artwork {
             {
                 return;
             }
-            // Dock caches a process's label when its tile is registered. A
-            // source/title change therefore needs a new tile, not just an LS
-            // metadata update on the old process.
-            if self.dock_proxy.is_some() && self.dock_title != title {
-                self.dock_proxy = None;
-            }
             let next_icon = Some(bitmap.map_or([0u8; 32], |b| b.id));
             let icon_changed = self.dock_icon != next_icon || self.dock_proxy.is_none();
-            let title_changed = self.dock_title != title || self.dock_proxy.is_none();
+            let title_changed = self.dock_title != title || self.dock_device != device || self.dock_proxy.is_none();
             if !icon_changed && !title_changed {
                 return;
             }
@@ -84,16 +80,17 @@ impl Artwork {
                 }
             }
             if let Some(proxy) = &mut self.dock_proxy {
-                if proxy.send(title, pixels.as_deref()).is_ok() {
+                if proxy.send(title, device, pixels.as_deref()).is_ok() {
                     self.dock_icon = next_icon;
                     self.dock_title = title.to_owned();
+                    self.dock_device = device.to_owned();
                 } else {
                     self.dock_proxy = None;
                 }
             }
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = title;
+        let _ = (title, device);
     }
 
     pub fn poll_dock_action(&mut self) -> Option<DockAction> {
@@ -112,6 +109,7 @@ impl Artwork {
             self.dock_proxy = None;
             self.dock_icon = None;
             self.dock_title.clear();
+            self.dock_device.clear();
         }
     }
 }
@@ -269,9 +267,9 @@ pub(crate) mod macos_dock {
             })
         }
 
-        pub fn send(&mut self, title: &str, rgba: Option<&[u8]>) -> Result<(), String> {
+        pub fn send(&mut self, title: &str, device: &str, rgba: Option<&[u8]>) -> Result<(), String> {
             let stdin = self.stdin.as_mut().ok_or("Dock proxy closed")?;
-            let frame = encode_frame(title, rgba)?;
+            let frame = encode_frame(title, device, rgba)?;
             stdin.write_all(&frame).map_err(|e| e.to_string())?;
             stdin.flush().map_err(|e| e.to_string())
         }
@@ -296,7 +294,7 @@ pub(crate) mod macos_dock {
         }
     }
 
-    pub(super) fn encode_frame(title: &str, rgba: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    pub(super) fn encode_frame(title: &str, device: &str, rgba: Option<&[u8]>) -> Result<Vec<u8>, String> {
         let title_bytes = title.as_bytes();
         let bounded_title = &title_bytes[..title.floor_char_boundary(MAX_TITLE_BYTES.min(title_bytes.len()))];
         let pixels = match rgba {
@@ -304,15 +302,18 @@ pub(crate) mod macos_dock {
             Some(_) => return Err("Dock icon frame must be 64x64 RGBA".into()),
             None => &[][..],
         };
-        let mut out = Vec::with_capacity(8 + bounded_title.len() + pixels.len());
+        let bounded_device = &device.as_bytes()[..device.floor_char_boundary(MAX_TITLE_BYTES.min(device.len()))];
+        let mut out = Vec::with_capacity(12 + bounded_title.len() + bounded_device.len() + pixels.len());
         out.extend_from_slice(&(bounded_title.len() as u32).to_be_bytes());
         out.extend_from_slice(bounded_title);
+        out.extend_from_slice(&(bounded_device.len() as u32).to_be_bytes());
+        out.extend_from_slice(bounded_device);
         out.extend_from_slice(&(pixels.len() as u32).to_be_bytes());
         out.extend_from_slice(pixels);
         Ok(out)
     }
 
-    pub(super) fn decode_frame(mut reader: impl Read) -> std::io::Result<(String, Option<Vec<u8>>)> {
+    pub(super) fn decode_frame(mut reader: impl Read) -> std::io::Result<(String, String, Option<Vec<u8>>)> {
         let mut header = [0u8; 4];
         reader.read_exact(&mut header)?;
         let title_len = u32::from_be_bytes(header) as usize;
@@ -322,6 +323,14 @@ pub(crate) mod macos_dock {
         let mut title_bytes = vec![0u8; title_len];
         reader.read_exact(&mut title_bytes)?;
         let title = String::from_utf8_lossy(&title_bytes).into_owned();
+        reader.read_exact(&mut header)?;
+        let device_len = u32::from_be_bytes(header) as usize;
+        if device_len > MAX_TITLE_BYTES {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Dock device name too long"));
+        }
+        let mut device_bytes = vec![0u8; device_len];
+        reader.read_exact(&mut device_bytes)?;
+        let device = String::from_utf8_lossy(&device_bytes).into_owned();
         reader.read_exact(&mut header)?;
         let pixels_len = u32::from_be_bytes(header) as usize;
         let pixels = if pixels_len == 0 {
@@ -333,7 +342,7 @@ pub(crate) mod macos_dock {
         } else {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Dock icon length"));
         };
-        Ok((title, pixels))
+        Ok((title, device, pixels))
     }
 
     fn ns_string(value: &str) -> id {
@@ -378,13 +387,15 @@ pub(crate) mod macos_dock {
 
     extern "C" fn dock_menu(this: &Object, _: Sel, _: id) -> id {
         unsafe {
+            let title: id = *this.get_ivar("streamTitle");
+            let label = if title == nil { ns_string("Show remote window") } else { title };
             let menu: id = msg_send![class!(NSMenu), new];
             let _: id = msg_send![menu, autorelease];
             let _: () = msg_send![menu, setAutoenablesItems: NO];
             let show: id = msg_send![class!(NSMenuItem), alloc];
             let show: id = msg_send![
                 show,
-                initWithTitle: ns_string("Bring Remote Window to Front")
+                initWithTitle: label
                 action: sel!(activateWeaveloStream:)
                 keyEquivalent: ns_string("")
             ];
@@ -408,52 +419,29 @@ pub(crate) mod macos_dock {
         }
     }
 
-    unsafe fn set_dock_display_name(title: &str) {
-        type GetCurrentAsn = unsafe extern "C" fn() -> *const std::ffi::c_void;
-        type SetAppInfoItem = unsafe extern "C" fn(
-            i32,
-            *const std::ffi::c_void,
-            *const std::ffi::c_void,
-            *const std::ffi::c_void,
-            *mut *const std::ffi::c_void,
-        ) -> i32;
-        unsafe {
-            let get_asn = libc::dlsym(libc::RTLD_DEFAULT, c"_LSGetCurrentApplicationASN".as_ptr());
-            let set_info = libc::dlsym(libc::RTLD_DEFAULT, c"_LSSetApplicationInformationItem".as_ptr());
-            let display_name_key = libc::dlsym(libc::RTLD_DEFAULT, c"_kLSDisplayNameKey".as_ptr());
-            if !get_asn.is_null() && !set_info.is_null() && !display_name_key.is_null() {
-                let get_asn: GetCurrentAsn = std::mem::transmute(get_asn);
-                let set_info: SetAppInfoItem = std::mem::transmute(set_info);
-                let asn = get_asn();
-                // This symbol stores a CFStringRef. The symbol's name is not
-                // the key's value; passing a new string with that name silently
-                // leaves every Dock tile labeled "Weavelo".
-                let key = *(display_name_key as *const *const std::ffi::c_void);
-                if !asn.is_null() && !key.is_null() {
-                    let value = ns_string(title) as *const std::ffi::c_void;
-                    let _ = set_info(-2, asn, key, value, std::ptr::null_mut());
-                }
-            }
-        }
+    pub(super) fn device_badge(device: &str) -> String {
+        let name = device.trim();
+        let chars: Vec<_> = name.chars().collect();
+        if chars.len() <= 7 { return name.to_owned(); }
+        format!("{}…{}", chars[..3].iter().collect::<String>(),
+            chars[chars.len()-2..].iter().collect::<String>())
     }
 
-    unsafe fn set_startup_bundle_name(title: &str) {
-        use std::ffi::c_void;
-        #[link(name = "CoreFoundation", kind = "framework")]
-        unsafe extern "C" {
-            fn CFBundleGetMainBundle() -> *const c_void;
-            fn CFBundleGetInfoDictionary(bundle: *const c_void) -> *mut c_void;
-            fn CFDictionarySetValue(dictionary: *mut c_void, key: *const c_void, value: *const c_void);
-        }
+    unsafe fn update_presentation(title: &str, device: &str) {
         unsafe {
-            // Presentation metadata in this helper's cached bundle dictionary
-            // only. Never edit its signed Info.plist or bundle identifier.
-            let info = CFBundleGetInfoDictionary(CFBundleGetMainBundle());
-            if !info.is_null() {
-                let name = ns_string(title) as *const c_void;
-                for key in ["CFBundleName", "CFBundleDisplayName"] {
-                    CFDictionarySetValue(info, ns_string(key) as *const c_void, name);
-                }
+            let app = NSApplication::sharedApplication(nil);
+            let delegate: id = msg_send![app, delegate];
+            if delegate != nil {
+                let old: id = *(*delegate).get_ivar("streamTitle");
+                let next = ns_string(&format!("Show {}", title.trim_end_matches(" — Weavelo")));
+                let _: id = msg_send![next, retain];
+                (*delegate).set_ivar("streamTitle", next);
+                if old != nil { let _: () = msg_send![old, release]; }
+            }
+            let tile: id = msg_send![app, dockTile];
+            if tile != nil {
+                let _: () = msg_send![tile, setBadgeLabel: ns_string(&device_badge(device))];
+                let _: () = msg_send![tile, display];
             }
         }
     }
@@ -500,26 +488,17 @@ pub(crate) mod macos_dock {
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let (title, pixels) = match decode_frame(std::io::stdin().lock()) {
-            Ok(frame) => frame,
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) => return Err(error.into()),
-        };
         // This helper starts directly on main, before Tokio initialization. It
         // owns no async media/network tasks and must not enter the GUI runtime
         // adapter, which intentionally requires a multi-thread Tokio executor.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            set_startup_bundle_name(&title);
             let app = NSApplication::sharedApplication(nil);
             app.setActivationPolicy_(
                 NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
             );
-            set_dock_display_name(&title);
-            if let Some(rgba) = pixels {
-                set_dock_icon_rgba(&rgba);
-            }
             if let Some(mut decl) = ClassDecl::new("WeaveloDockTileDelegate", class!(NSObject)) {
+                decl.add_ivar::<id>("streamTitle");
                 decl.add_method(
                     sel!(applicationDidBecomeActive:),
                     did_become_active as extern "C" fn(&Object, Sel, id),
@@ -545,15 +524,14 @@ pub(crate) mod macos_dock {
                     dock_menu as extern "C" fn(&Object, Sel, id) -> id,
                 );
                 let delegate: id = msg_send![decl.register(), new];
+                (*delegate).set_ivar("streamTitle", nil);
                 let _: () = msg_send![app, setDelegate: delegate];
             }
             std::thread::spawn(|| {
                 let mut stdin = std::io::stdin().lock();
-                while let Ok((title, pixels)) = decode_frame(&mut stdin) {
+                while let Ok((title, device, pixels)) = decode_frame(&mut stdin) {
                     dispatch::Queue::main().exec_async(move || unsafe {
-                        if !title.is_empty() {
-                            set_dock_display_name(&title);
-                        }
+                        update_presentation(&title, &device);
                         if let Some(rgba) = pixels {
                             set_dock_icon_rgba(&rgba);
                         }
@@ -594,14 +572,16 @@ mod tests {
     #[test]
     fn macos_dock_frame_round_trips_title_and_optional_icon() {
         let pixels = vec![42u8; 64 * 64 * 4];
-        let encoded = macos_dock::encode_frame("Safari · MacStudio", Some(&pixels)).unwrap();
-        let (title, decoded_pixels) = macos_dock::decode_frame(&encoded[..]).unwrap();
+        let encoded = macos_dock::encode_frame("Safari · MacStudio", "MacStudio", Some(&pixels)).unwrap();
+        let (title, device, decoded_pixels) = macos_dock::decode_frame(&encoded[..]).unwrap();
         assert_eq!(title, "Safari · MacStudio");
+        assert_eq!(device, "MacStudio");
         assert_eq!(decoded_pixels.as_deref(), Some(pixels.as_slice()));
 
-        let title_only = macos_dock::encode_frame("Terminal · Mini", None).unwrap();
-        let (title2, decoded_none) = macos_dock::decode_frame(&title_only[..]).unwrap();
+        let title_only = macos_dock::encode_frame("Terminal · Mini", "Mini", None).unwrap();
+        let (title2, device2, decoded_none) = macos_dock::decode_frame(&title_only[..]).unwrap();
         assert_eq!(title2, "Terminal · Mini");
+        assert_eq!(device2, "Mini");
         assert!(decoded_none.is_none());
     }
 
@@ -609,13 +589,23 @@ mod tests {
     #[test]
     fn dock_title_preserves_utf8_at_the_length_boundary_and_rejects_bad_pixels() {
         let title = format!("{}远程📱", "a".repeat(511));
-        let encoded = macos_dock::encode_frame(&title, None).unwrap();
-        let (decoded, pixels) = macos_dock::decode_frame(&encoded[..]).unwrap();
+        let encoded = macos_dock::encode_frame(&title, "工作室", None).unwrap();
+        let (decoded, device, pixels) = macos_dock::decode_frame(&encoded[..]).unwrap();
         assert_eq!(decoded, "a".repeat(511));
+        assert_eq!(device, "工作室");
         assert!(pixels.is_none());
-        assert!(macos_dock::encode_frame("title", Some(&[0; 4])).is_err());
+        assert!(macos_dock::encode_frame("title", "Device", Some(&[0; 4])).is_err());
         let mut invalid = 513u32.to_be_bytes().to_vec();
         invalid.extend_from_slice(&[0; 513]);
         assert!(macos_dock::decode_frame(&invalid[..]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn device_badge_keeps_short_aliases_and_both_ends_of_long_names() {
+        assert_eq!(macos_dock::device_badge("  Studio  "), "Studio");
+        assert_eq!(macos_dock::device_badge("MBPM2MAX"), "MBP…AX");
+        assert_eq!(macos_dock::device_badge("工作室电脑二号"), "工作室电脑二号");
+        assert_eq!(macos_dock::device_badge("A very long device 42"), "A v…42");
     }
 }
