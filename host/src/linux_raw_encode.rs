@@ -40,6 +40,7 @@ pub struct RawChunk {
     pub is_keyframe: bool,
     pub stamp: FrameStamp,
     pub encode_done_ts_us: u64,
+    pub admitted_at_us:u64,
     pub native_timing: Option<NativeEncodeTiming>,
 }
 
@@ -52,10 +53,11 @@ pub struct NativeEncodeTiming {
 
 #[derive(Default)]
 struct InputState {
-    latest: Option<OwnedFrame>,
+    latest: Option<QueuedFrame>,
     closed: bool,
     finishing: bool,
 }
+struct QueuedFrame {frame:OwnedFrame,admitted_at_us:u64}
 #[derive(Default)]
 struct Input {
     state: Mutex<InputState>,
@@ -63,17 +65,19 @@ struct Input {
 }
 impl Input {
     fn submit(&self, frame: OwnedFrame) -> Result<()> {
+        let admitted_at_us=remote_core::timing::quanta_now_us();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed || state.finishing {
             return Err("native encoder input is closed".into());
         }
         // Only the not-yet-submitted raw frame is replaced. Writer-owned frames
         // and every compressed AU retain their order under backpressure.
-        state.latest = Some(frame);
+        let previous=state.latest.replace(QueuedFrame{frame,admitted_at_us});drop(state);
         self.ready.notify_one();
+        drop(previous);
         Ok(())
     }
-    fn receive(&self) -> Option<OwnedFrame> {
+    fn receive(&self) -> Option<QueuedFrame> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         loop {
             if state.closed {
@@ -82,9 +86,9 @@ impl Input {
             if let Some(frame) = state.latest.take() {
                 // Drop only pending raw pixels, never compressed/reference AUs.
                 // First handoff and a later publish cannot renew capture age.
-                if frame.stamp.format_revision != 0
-                    && !frame.initial_snapshot
-                    && frame.is_expired(std::time::Duration::from_millis(250))
+                if frame.frame.stamp.format_revision != 0
+                    && !frame.frame.initial_snapshot
+                    && frame.frame.is_expired(std::time::Duration::from_millis(250))
                 {
                     continue;
                 }
@@ -146,16 +150,16 @@ impl RawHevcSource {
             .take()
             .ok_or("native encoder stdout is unavailable")?;
         let input = Arc::new(Input::default());
-        let (stamps_tx, stamps_rx) = sync_mpsc::sync_channel::<FrameStamp>(4);
+        let (stamps_tx, stamps_rx) = sync_mpsc::sync_channel::<(FrameStamp,u64)>(4);
         let (output_tx, mut output_rx) = mpsc::channel(4);
         let writer_input = input.clone();
         let writer_errors = output_tx.clone();
         let writer = match std::thread::Builder::new()
             .name("rp-native-hevc-writer".into())
             .spawn(move || {
-                while let Some(frame) = writer_input.receive() {
+                while let Some(QueuedFrame{frame,admitted_at_us}) = writer_input.receive() {
                     // Register timing before any bytes can produce an AU.
-                    if stamps_tx.send(frame.stamp).is_err() {
+                    if stamps_tx.send((frame.stamp,admitted_at_us)).is_err() {
                         break;
                     }
                     for plane in frame.planes.iter() {
@@ -424,7 +428,7 @@ fn take_au(bytes: &mut Vec<u8>, eof: bool) -> std::result::Result<Option<(Vec<u8
 }
 fn drain_reader(
     mut stdout: impl Read,
-    stamps: sync_mpsc::Receiver<FrameStamp>,
+    stamps: sync_mpsc::Receiver<(FrameStamp,u64)>,
     output: mpsc::Sender<std::result::Result<RawChunk, String>>,
     expected_signal:Option<remote_core::hevc_sequence::VideoSignal>,
 ) {
@@ -442,7 +446,7 @@ fn drain_reader(
                         return;
                     }
                 }
-                let Ok(stamp) = stamps.recv() else {
+                let Ok((stamp,admitted_at_us)) = stamps.recv() else {
                     let _ =
                         output.blocking_send(Err("native HEVC timing association ended".into()));
                     return;
@@ -451,6 +455,7 @@ fn drain_reader(
                     nalu,
                     is_keyframe,
                     stamp,
+                    admitted_at_us,
                     encode_done_ts_us: remote_core::timing::quanta_now_us(),
                     native_timing: None,
                 };

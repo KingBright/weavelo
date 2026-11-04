@@ -12,6 +12,7 @@ pub struct EncodedChunk {
     pub is_keyframe: bool,
     pub encode_cost_ms: f32,
     pub timing: protocol::FrameTimingCheckpoints,
+    pub admitted_at_us:u64,
     /// Local sidecar only; no public wire timing/identity changes.
     pub native_stamp: Option<crate::linux_frame::FrameStamp>,
     pub native_timing: Option<crate::linux_raw_encode::NativeEncodeTiming>,
@@ -53,7 +54,8 @@ impl OwnedEncoder {
     }}
 }
 
-struct ViewportEncoding {planner:remote_core::viewport::ViewportPlanner,source_revision:u32}
+struct ViewportEncoding {planner:remote_core::viewport::ViewportPlanner,source_revision:u32,
+    last_geometry:Option<protocol::viewport::FrameGeometry>,force_redraw:bool}
 
 pub struct LinuxVideoEncoder {
     width: u32,
@@ -122,7 +124,7 @@ impl LinuxVideoEncoder {
         // The existing X11 process and software fixtures retain their full-source
         // semantics. Actual PipeWire/VAAPI owns per-frame GPU viewport import.
         if self.native_hardware.is_none() || !cfg!(all(target_os="linux",feature="native-linux-video")) {return Ok(());}
-        let state=self.viewport.get_or_insert_with(||ViewportEncoding{planner:remote_core::viewport::ViewportPlanner::for_source(source),source_revision:settings.source_revision});
+        let state=self.viewport.get_or_insert_with(||ViewportEncoding{planner:remote_core::viewport::ViewportPlanner::for_source(source),source_revision:settings.source_revision,last_geometry:None,force_redraw:false});
         if state.source_revision!=settings.source_revision {state.planner.reset();}
         state.source_revision=settings.source_revision;
         if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
@@ -130,6 +132,7 @@ impl LinuxVideoEncoder {
     }
 
     pub fn request_keyframe(&mut self) {
+        if let Some(viewport)=&mut self.viewport{viewport.force_redraw=true;}
         #[cfg(all(target_os="linux",feature="native-linux-video"))]
         if let Some(OwnedEncoder::Native(source)) = &self.native {
             // Keep queued compressed reference frames in order. The next raw
@@ -141,6 +144,13 @@ impl LinuxVideoEncoder {
         if self.native_generation.is_some() {
             self.native = None;
         }
+    }
+
+    pub(crate) async fn redraw_if_needed(&mut self,frame:crate::linux_frame::OwnedFrame)->Result<bool,Box<dyn Error+Send+Sync>> {
+        let Some(viewport)=&mut self.viewport else{return Ok(false);};
+        let geometry=viewport.planner.plan([frame.width,frame.height],[self.width,self.height],viewport.source_revision,std::time::Instant::now())?;
+        if !viewport.force_redraw&&viewport.last_geometry.is_some_and(|last|last.revision==geometry.revision&&last.source_revision==geometry.source_revision){return Ok(false);}
+        self.submit_frame(LinuxVideoFrame::from_owned(frame)).await?;Ok(true)
     }
 
     pub(crate) fn from_hardware_frames(generation:u64,width:u32,height:u32,fps:u32,bitrate_kbps:u32,
@@ -220,13 +230,17 @@ impl LinuxVideoEncoder {
                     .encode_done_ts_us
                     .saturating_sub(chunk.stamp.arrival_ts_us);
                 let mut timing = protocol::FrameTimingCheckpoints::new(chunk.stamp.arrival_ts_us);
+                timing.encode_queue_ts_us=chunk.admitted_at_us.saturating_sub(chunk.stamp.arrival_ts_us)
+                    .saturating_add(chunk.native_timing.map_or(0,|v|v.queue_us)).min(u64::from(u32::MAX)) as u32;
                 timing.encode_done_ts_us = elapsed.min(u32::MAX as u64) as u32;
+                let encode_cost=chunk.encode_done_ts_us.saturating_sub(chunk.admitted_at_us);
                 return Ok(EncodedChunk {
                     nalu: chunk.nalu,
                     capture_time_ms: (chunk.stamp.arrival_ts_us / 1000) as u32,
                     is_keyframe: chunk.is_keyframe,
-                    encode_cost_ms: elapsed as f32 / 1000.0,
+                    encode_cost_ms: encode_cost as f32 / 1000.0,
                     timing,
+                    admitted_at_us:chunk.admitted_at_us,
                     native_stamp: Some(chunk.stamp),
                     native_timing: chunk.native_timing,
                 });
@@ -252,6 +266,7 @@ impl LinuxVideoEncoder {
                     is_keyframe,
                     encode_cost_ms: started.elapsed().as_secs_f32() * 1000.0,
                     timing,
+                    admitted_at_us:capture_ts_us,
                     native_stamp: None,
                     native_timing: None,
                 });
@@ -307,7 +322,9 @@ impl VideoEncoder for LinuxVideoEncoder {
                 });
                 self.force_keyframe = true;
             }
+            let geometry=frame.viewport;
             self.native.as_ref().unwrap().submit(frame)?;
+            if let Some(viewport)=&mut self.viewport{viewport.last_geometry=geometry;viewport.force_redraw=false;}
         } else if frame.owned.is_some() {
             return Err("owned frames cannot be discarded by the X11 compatibility encoder".into());
         }

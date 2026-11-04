@@ -170,6 +170,38 @@ async fn actual_vaapi_viewport_pan_preserves_pixels_and_one_encoder() {
 #[cfg(all(target_os="linux",feature="native-linux-video"))]
 #[tokio::test]
 #[ignore="requires an accessible VAAPI hardware HEVC encoder"]
+async fn actual_vaapi_static_viewport_reuses_pixels_and_measures_processing_separately_from_capture_age() {
+    use protocol::viewport::{ViewportDemand,NormalizedRect,split_frame};
+    let hardware=vaapi::HardwareEncoder::probe().unwrap();
+    let mut raw=frame_sized(PixelFormat::Nv12,known_color(),0,640,360);raw.stamp.format_revision=1;
+    raw.stamp.arrival_ts_us-=10_000_000;raw.received_at-=Duration::from_secs(10);raw.initial_snapshot=true;
+    let capture=raw.stamp.arrival_ts_us;
+    let mut encoder=crate::linux_video_encode::LinuxVideoEncoder::from_hardware_frames(9,320,180,30,2000,hardware).unwrap();
+    let demand=|revision,x|ViewportDemand{id:7,source_revision:3,revision,visible:NormalizedRect{x,y:0,width:500_000,height:500_000},width:320,height:180};
+    let mut settings=crate::StreamSettings{width:320,height:180,fps:30,bitrate_kbps:2000,paused:false,source_revision:3,viewport:Some(demand(1,0))};
+    encoder.viewport_settings(&settings,protocol::session::CaptureSource::MainDisplay).unwrap();
+    let mut compressed=Vec::new();let mut costs=Vec::new();
+    for revision in 1..=3 {
+        if revision==2{settings.viewport=Some(demand(2,500_000));encoder.viewport_settings(&settings,protocol::session::CaptureSource::MainDisplay).unwrap();}
+        if revision==3{encoder.request_keyframe();}
+        let admitted=remote_core::timing::quanta_now_us();assert!(encoder.redraw_if_needed(raw.clone()).await.unwrap());
+        let chunk=tokio::time::timeout(Duration::from_secs(3),encoder.pull_encoded_chunk()).await.unwrap().unwrap();
+        assert_eq!(chunk.timing.capture_ts_us,capture);assert!(chunk.admitted_at_us>=admitted);
+        assert!(chunk.timing.encode_done_ts_us>=10_000_000);assert!(chunk.encode_cost_ms<5000.,"Cached image age was reported as encode processing");
+        let(g,bytes)=split_frame(&chunk.nalu).unwrap();let g=g.unwrap();assert_eq!([g.width,g.height],[320,180]);
+        assert_eq!(g.demand_revision,if revision==1{1}else{2});if revision==3{assert!(chunk.is_keyframe);}
+        compressed.extend_from_slice(bytes);costs.push(chunk.encode_cost_ms);
+        assert!(!encoder.redraw_if_needed(raw.clone()).await.unwrap(),"Static idle ROI repeated encoding");
+    }
+    let decoded=inspect("ffmpeg",&["-v","error","-f","hevc","-i","pipe:0","-pix_fmt","yuv420p","-f","rawvideo","pipe:1"],&compressed);
+    let size=320*180*3/2;assert_eq!(decoded.len(),3*size);
+    for(n,wanted)in[40u8,90,90].into_iter().enumerate(){let actual=decoded[n*size+90*320+160];assert!(actual.abs_diff(wanted)<=6,"Static ROI {n} luma {actual} != {wanted}");}
+    eprintln!("VAAPI static ROI processing_ms={costs:?}, original_capture_us={capture}");
+}
+
+#[cfg(all(target_os="linux",feature="native-linux-video"))]
+#[tokio::test]
+#[ignore="requires an accessible VAAPI hardware HEVC encoder"]
 async fn actual_inprocess_vaapi_delivers_each_idle_frame_and_preserves_pixels() {
     let encoder=vaapi::HardwareEncoder::probe().unwrap();
     let settings=RawSettings{width:320,height:180,fps:30,bitrate_kbps:2000};
@@ -222,7 +254,7 @@ async fn native_keyframe_request_preserves_queued_output_and_decodes_independent
     assert!(next.is_keyframe);
     assert_eq!(next.native_stamp.unwrap().sequence,Some(2));
     let stamp=next.native_stamp.unwrap();
-    let standalone=RawChunk {nalu:next.nalu,is_keyframe:true,stamp,
+    let standalone=RawChunk {nalu:next.nalu,is_keyframe:true,stamp,admitted_at_us:next.admitted_at_us,
         encode_done_ts_us:stamp.arrival_ts_us+u64::from(next.timing.encode_done_ts_us),native_timing:next.native_timing};
     // A recovery keyframe must carry usable parameters and decode without the
     // old reference chain, preserving the actual SDR signal and pixels.
@@ -532,13 +564,13 @@ fn reference_au_backpressure_preserves_order_and_multislice_frames() {
     let (stamps_tx, stamps_rx) = sync_mpsc::sync_channel(16);
     for sequence in 0..12u64 {
         stamps_tx
-            .send(FrameStamp {
+            .send((FrameStamp {
                 generation: 1,
                 format_revision: 0,
                 sequence: Some(sequence),
                 pipewire_pts_ns: None,
                 arrival_ts_us: sequence + 1,
-            })
+            },sequence+1))
             .unwrap();
     }
     drop(stamps_tx);
@@ -569,7 +601,7 @@ fn unsubmitted_slot_keeps_latest_and_rejects_malformed_or_unknown_rgb() {
     input
         .submit(frame(PixelFormat::Nv12, known_color(), 2))
         .unwrap();
-    assert_eq!(input.receive().unwrap().stamp.sequence, Some(2));
+    assert_eq!(input.receive().unwrap().frame.stamp.sequence, Some(2));
     let mut invalid = frame(PixelFormat::I420, known_color(), 1);
     Arc::get_mut(&mut invalid.planes).unwrap()[0].pop();
     assert!(RawHevcSource::start(&invalid, settings()).is_err());
@@ -626,7 +658,7 @@ fn expired_raw_encoder_input_is_not_renewed_on_submit_and_initial_snapshot_is_ex
     initial.initial_snapshot = true;
     initial.received_at = std::time::Instant::now() - Duration::from_secs(1);
     input.submit(initial).unwrap();
-    let retained = input.receive().unwrap();
+    let retained = input.receive().unwrap().frame;
     assert!(retained.is_expired(Duration::from_millis(250)));
     assert_eq!(retained.stamp.sequence, Some(2));
     input.close();

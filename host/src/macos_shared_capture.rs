@@ -15,9 +15,9 @@ struct State {
     viewers:HashMap<u64,Viewer>,next_id:u64,started:bool,ending:bool,
     stopped:Option<Result<(),String>>,error:Option<String>,sequence:u64,latest:Option<MacVideoFrame>,
 }
-struct Root {scope:ShareScope,state:Mutex<State>,control:watch::Sender<()>,progress:watch::Sender<()>,resources:Arc<Resources>}
+struct Root {scope:ShareScope,state:Mutex<State>,control:watch::Sender<()>,progress:watch::Sender<()>,resources:Arc<Resources>,health:crate::capture::StreamHealth}
 impl Root {
-    fn new(scope:ShareScope)->Arc<Self>{Arc::new(Self{scope,state:Mutex::new(State::default()),control:watch::channel(()).0,progress:watch::channel(()).0,resources:Arc::new(Resources::default())})}
+    fn new(scope:ShareScope)->Arc<Self>{Arc::new(Self{scope,state:Mutex::new(State::default()),control:watch::channel(()).0,progress:watch::channel(()).0,resources:Arc::new(Resources::default()),health:Default::default()})}
     fn notify(&self){self.progress.send_replace(());}
     fn register(self:&Arc<Self>,fps:u32,resources:Option<Arc<Resources>>)->Result<ViewerLease,&'static str> {
         let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());
@@ -31,6 +31,7 @@ impl Root {
     fn stopped(&self,result:Result<(),String>){let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());state.ending=true;let previous=state.latest.take();state.stopped=Some(result);drop(state);drop(previous);self.notify();}
     async fn wait_started(&self)->Result<(),Failure>{
         let mut progress=self.progress.subscribe();loop{
+            if let Some(reason)=self.health.reason(){return Err(reason.into());}
             {let state=self.state.lock().unwrap_or_else(|e|e.into_inner());if let Some(reason)=&state.error{return Err(reason.clone().into());}if state.started{return Ok(());}if state.ending{return Err("Native capture ended before startup".into());}}
             progress.changed().await?;
         }
@@ -119,7 +120,7 @@ impl MacVideoCapturer {
     }
     pub(crate) fn snapshot(&self)->Option<(u64,MacVideoFrame)>{
         if self.paused{return None;}let viewer=self.viewer.as_ref()?;let state=viewer.root.state.lock().unwrap_or_else(|e|e.into_inner());
-        if state.ending||state.error.is_some(){return None;}let frame=(state.sequence,state.latest.as_ref()?.clone());drop(state);viewer.observe_geometry();Some(frame)
+        if state.ending||state.error.is_some()||viewer.root.health.reason().is_some(){return None;}let frame=(state.sequence,state.latest.as_ref()?.clone());drop(state);viewer.observe_geometry();Some(frame)
     }
     pub(crate) fn accepted_snapshot(&mut self,sequence:u64){self.seen=self.seen.max(sequence);}
     async fn await_stop(&mut self)->Result<(),Failure>{if let Some(receipt)=&self.pending_stop{receipt.wait().await?;self.pending_stop=None;}Ok(())}
@@ -142,7 +143,7 @@ impl VideoCapturer for MacVideoCapturer {
                 roots.retain(|_,root|root.upgrade().is_some_and(|root|root.state.lock().unwrap_or_else(|e|e.into_inner()).stopped.is_none()));
                 if let Some(root)=roots.get(&key).and_then(Weak::upgrade){let lease=root.register(self.fps,self.resources.clone());(root,lease)}
                 else{let root=Root::new(scope);let lease=root.register(self.fps,self.resources.clone());roots.insert(key,Arc::downgrade(&root));
-                    let owner=Owner::new(self.width,self.height,self.fps).with_source(self.source).with_resources(root.resources.clone());
+                    let owner=Owner::new(self.width,self.height,self.fps).with_source(self.source).with_resources(root.resources.clone()).with_stream_health(root.health.clone());
                     root.clone().run(owner);(root,lease)}};
             let lease=match registration{
                 Ok(lease)=>lease,Err(_)=>{root.wait_stopped().await?;drop(root);tokio::task::yield_now().await;continue;}
@@ -167,6 +168,7 @@ impl VideoCapturer for MacVideoCapturer {
         if let Some(camera)=&mut self.camera{return camera.capture_frame().await;}
         loop{
             let viewer=self.viewer.as_ref().ok_or("Native capture owner ended")?;
+            if let Some(reason)=viewer.root.health.reason(){return Err(reason.into());}
             let candidate={let state=viewer.root.state.lock().unwrap_or_else(|e|e.into_inner());
                 if let Some(reason)=&state.error{return Err(reason.clone().into());}if state.ending{return Err("Native capture ended".into());}
                 (!self.paused&&state.sequence>self.seen).then(||state.latest.clone().map(|frame|(state.sequence,frame))).flatten()};

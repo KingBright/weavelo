@@ -1185,9 +1185,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut reported_settings=(width,height,fps,bitrate_kbps);
     let mut paused_telemetry = tokio::time::interval(Duration::from_secs(5));
     paused_telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    #[cfg(target_os="macos")]
+    #[cfg(any(target_os="macos",target_os="linux"))]
     let mut viewport_ticks=tokio::time::interval(remote_core::viewport::DEMAND_INTERVAL);
-    #[cfg(target_os="macos")]
+    #[cfg(any(target_os="macos",target_os="linux"))]
     viewport_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -1200,8 +1200,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         if !capture_ready {resources.encoder_backpressure_ticks.fetch_add(1,Relaxed);}
         tokio::select! {
             _ = async {
-                #[cfg(target_os="macos")] {viewport_ticks.tick().await;}
-                #[cfg(not(target_os="macos"))] std::future::pending::<()>().await;
+                #[cfg(any(target_os="macos",target_os="linux"))] {viewport_ticks.tick().await;}
+                #[cfg(not(any(target_os="macos",target_os="linux")))] std::future::pending::<()>().await;
             }, if !paused && capture_ready && !matches!(source,protocol::session::CaptureSource::Camera(_)) => {
                 #[cfg(target_os="macos")]
                 {
@@ -1209,6 +1209,13 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     if let Some((sequence,frame))=video_capturer.snapshot(){
                         let started=std::time::Instant::now();
                         if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(sequence);resources.video_submit.record(started.elapsed());}
+                    }
+                }
+                #[cfg(target_os="linux")]
+                {
+                    if keyframe_requested.swap(false,Relaxed){video_encoder.request_keyframe();}
+                    if let Some(frame)=video_capturer.snapshot(){let stamp=frame.stamp;let started=std::time::Instant::now();
+                        if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(stamp);resources.video_submit.record(started.elapsed());}
                     }
                 }
             }
@@ -1301,11 +1308,11 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 let chunk = chunk_res?;
                 #[cfg(target_os="linux")]
                 if let Some(timing)=chunk.native_timing {
-                    resources.native_encode_total.record(std::time::Duration::from_micros(chunk.timing.encode_done_ts_us.into()));
+                    resources.native_encode_total.record(std::time::Duration::from_secs_f64(f64::from(chunk.encode_cost_ms)/1000.));
                     resources.encode_queue.record(std::time::Duration::from_micros(timing.queue_us));
                     resources.upload_vpp.record(std::time::Duration::from_micros(timing.upload_vpp_us));
                     resources.hardware_encode.record(std::time::Duration::from_micros(timing.encode_us));
-                    let total_us = u64::from(chunk.timing.encode_done_ts_us);
+                    let total_us = (f64::from(chunk.encode_cost_ms)*1000.).round() as u64;
                     if total_us > 20_000 {
                         *resources.last_slow_encode.lock().unwrap() = Some(lifecycle::SlowEncodeFrame {
                             observed_at_ms: remote_core::session_crypto::now_unix_ms(), total_us,
@@ -1321,7 +1328,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 if paused || chunk.nalu.is_empty() {
                     continue;
                 }
-                #[cfg(target_os="linux")] let freshness_ts=chunk.timing.capture_ts_us;
+                #[cfg(target_os="linux")] let freshness_ts=chunk.admitted_at_us;
                 #[cfg(target_os="macos")] let freshness_ts=chunk.admitted_at_us;
                 #[cfg(target_os="windows")] let freshness_ts=chunk.encoded_at_us;
                 if freshness_ts < resume_capture_after_us

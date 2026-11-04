@@ -413,6 +413,9 @@ impl OwnedFrame {
 
 struct MailboxState {
     latest: Option<(OwnedFrame, std::time::Instant)>,
+    // Private current-source pixels, never a queue or a renewed capture time.
+    // Only native damage-driven sources retain this shared immutable lease.
+    snapshot:Option<OwnedFrame>,
     format_revision: u64,
     dimensions: Option<(u32, u32)>,
     delivered: bool,
@@ -465,6 +468,7 @@ impl FrameMailbox {
                 format_revision: 0,
                 dimensions: None,
                 delivered: false,
+                snapshot:None,
                 paused: false,
                 closed: false,
             }),
@@ -485,6 +489,7 @@ impl FrameMailbox {
         {
             let mut next=child.state.lock().unwrap_or_else(|e|e.into_inner());
             next.latest=state.latest.clone();
+            next.snapshot=state.snapshot.clone();
             next.dimensions=state.dimensions;
             next.format_revision=state.format_revision;
             next.paused=state.paused;
@@ -502,25 +507,30 @@ impl FrameMailbox {
     fn publish_inner(&self, frame: OwnedFrame, only_if_empty: bool) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed
-            || state.paused
             || frame.stamp.generation != self.generation
             || frame.stamp.format_revision != state.format_revision
         {
             return false;
         }
-        if !only_if_empty || state.latest.is_none() {
-            state.dimensions = Some((frame.width, frame.height));
-            let received_at = frame.received_at;
-            state.latest = Some((frame.clone(), received_at));
+        let old_snapshot=if self.allow_initial_snapshot&&(!only_if_empty||state.snapshot.is_none()) {
+            state.dimensions=Some((frame.width,frame.height));state.snapshot.replace(frame.clone())
+        }else{None};
+        let mut old_latest=None;
+        if !state.paused&&(!only_if_empty || state.latest.is_none()) {
+            let selected=if only_if_empty {state.snapshot.as_ref().unwrap_or(&frame)}else{&frame}.clone();
+            state.dimensions = Some((selected.width, selected.height));
+            let received=selected.received_at;old_latest=state.latest.replace((selected,received));
         }
+        let paused=state.paused;
         drop(state);
-        self.changed.notify_one();
+        drop(old_latest);drop(old_snapshot);
+        if !paused{self.changed.notify_one();}
         self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
             let Some(child)=child.upgrade() else {return false;};
             child.publish_inner(frame.clone(),only_if_empty);
             true
         });
-        true
+        !paused
     }
 
     /// Invalidate queued pixels before admitting a newly negotiated format.
@@ -530,8 +540,9 @@ impl FrameMailbox {
             return false;
         }
         state.format_revision = revision;
-        state.latest = None;
+        let previous=(state.latest.take(),state.snapshot.take());
         drop(state);
+        drop(previous);
         self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
             let Some(child)=child.upgrade() else {return false;};
             child.set_format_revision(revision);
@@ -568,13 +579,34 @@ impl FrameMailbox {
             .dimensions
     }
 
+    /// A new viewport may reuse a valid static image. Its capture stamp and
+    /// received_at remain original, and epoch/pause/revocation still apply.
+    pub(crate) fn snapshot(&self)->Option<OwnedFrame>{
+        let state=self.state.lock().unwrap_or_else(|e|e.into_inner());
+        if state.closed||state.paused{return None;}
+        let mut frame=state.snapshot.clone()?;frame.initial_snapshot=true;Some(frame)
+    }
+    pub(crate) fn accepted_snapshot(&self,stamp:FrameStamp){
+        let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());
+        let same=state.latest.as_ref().is_some_and(|(frame,_)|frame.stamp.generation==stamp.generation
+            &&frame.stamp.format_revision==stamp.format_revision&&frame.stamp.arrival_ts_us==stamp.arrival_ts_us&&frame.stamp.sequence==stamp.sequence);
+        let previous=if same{state.delivered=true;state.latest.take()}else{None};drop(state);drop(previous);
+    }
+
     pub fn set_paused(&self, paused: bool) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.paused = paused;
+        let mut previous=None;
         if paused {
-            state.latest = None;
+            previous=state.latest.take();
+        }else if self.allow_initial_snapshot {
+            // Ingress kept only the current private source lease during pause.
+            // Resuming cannot mistake its original age for a new capture.
+            if let Some(frame)=state.snapshot.clone(){let received=frame.received_at;previous=state.latest.replace((frame,received));state.delivered=false;}
         }
         drop(state);
+        drop(previous);
+        if !paused{self.changed.notify_one();}
         self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
             let Some(child)=child.upgrade() else {return false;};
             child.set_paused(paused);
@@ -585,8 +617,9 @@ impl FrameMailbox {
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
-        state.latest = None;
+        let previous=(state.latest.take(),state.snapshot.take());
         drop(state);
+        drop(previous);
         self.changed.notify_waiters();
         self.children.lock().unwrap_or_else(|e|e.into_inner()).retain(|child| {
             let Some(child)=child.upgrade() else {return false;};
@@ -686,6 +719,27 @@ mod tests {
         assert!(!source.is_closed() && !b.is_closed());
         source.close();
         assert!(b.receive().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn native_static_snapshots_keep_capture_age_and_resume_with_current_source_pixels() {
+        let source=FrameMailbox::native_stream(1,std::time::Duration::from_millis(1)).unwrap();
+        let a=source.fork().unwrap();let b=source.fork().unwrap();
+        let mut frame=packed(1);frame.received_at=std::time::Instant::now()-std::time::Duration::from_secs(2);
+        assert!(source.publish(frame.clone()));let initial=a.receive().await.unwrap();let cached=a.snapshot().unwrap();
+        assert!(cached.is_expired(std::time::Duration::from_secs(1)));assert_eq!(cached.stamp.arrival_ts_us,initial.stamp.arrival_ts_us);
+        assert!(std::sync::Arc::ptr_eq(&initial.planes,&cached.planes));assert!(cached.initial_snapshot);
+        a.set_paused(true);assert!(a.snapshot().is_none());assert!(source.publish(packed(2)));
+        assert_eq!(b.snapshot().unwrap().stamp.sequence,Some(2));a.set_paused(false);
+        let resumed=a.receive().await.unwrap();assert_eq!(resumed.stamp.sequence,Some(2));assert!(resumed.initial_snapshot);
+        a.close();assert!(a.snapshot().is_none());assert!(b.snapshot().is_some());
+        source.set_format_revision(2);assert!(b.snapshot().is_none());source.close();assert!(b.snapshot().is_none());
+    }
+
+    #[tokio::test]
+    async fn process_mailboxes_do_not_retain_pixels_for_native_viewport_replay() {
+        let source=FrameMailbox::new(1).unwrap();let frame=packed(1);let pixels=std::sync::Arc::downgrade(&frame.planes);
+        assert!(source.publish(frame));drop(source.receive().await.unwrap());assert!(source.snapshot().is_none());assert!(pixels.upgrade().is_none());
     }
 
     #[test]

@@ -6,6 +6,26 @@ use std::sync::Arc;
 
 use screencapturekit::cm::CMSampleBuffer;
 
+#[derive(Default)]
+struct StreamFailure {error:std::sync::Mutex<Option<String>>,changed:tokio::sync::Notify}
+impl StreamFailure {
+    fn stop(&self,reason:String){let mut error=self.error.lock().unwrap_or_else(|e|e.into_inner());
+        if error.is_none(){*error=Some(reason);}drop(error);self.changed.notify_one();}
+    fn reason(&self)->Option<String>{self.error.lock().unwrap_or_else(|e|e.into_inner()).clone()}
+}
+struct StreamDelegate(Arc<StreamFailure>);
+impl screencapturekit::stream::delegate_trait::SCStreamDelegateTrait for StreamDelegate {
+    fn did_stop_with_error(&self,error:screencapturekit::error::SCError){self.0.stop(error.to_string());}
+    fn stream_did_stop(&self,error:Option<String>){self.0.stop(error.unwrap_or_else(||"Native screen capture ended".into()));}
+}
+#[derive(Clone,Default)]
+pub(crate) struct StreamHealth(Arc<std::sync::Mutex<Arc<StreamFailure>>>);
+impl StreamHealth {
+    fn current(&self)->Arc<StreamFailure>{self.0.lock().unwrap_or_else(|e|e.into_inner()).clone()}
+    fn restart(&self)->Arc<StreamFailure>{let next=Arc::new(StreamFailure::default());*self.0.lock().unwrap_or_else(|e|e.into_inner())=next.clone();next}
+    pub(crate) fn reason(&self)->Option<String>{self.current().reason()}
+}
+
 #[derive(Clone)]
 pub struct MacVideoFrame {
     pub width: u32,
@@ -83,6 +103,7 @@ impl SCStreamOutputTrait for StreamOutput {
 pub struct MacVideoCapturer {
     slot: Arc<remote_core::LatestFrameSlot<MacVideoFrame>>,
     stream: Option<SCStream>,
+    stream_health:StreamHealth,
     camera: Option<crate::cameras::CameraHandle>,
     camera_started: bool,
     stream_running: bool,
@@ -103,6 +124,7 @@ impl MacVideoCapturer {
         Self {
             slot: Arc::new(remote_core::LatestFrameSlot::new()),
             stream: None,
+            stream_health:StreamHealth::default(),
             camera: None,
             camera_started: false,
             stream_running: false,
@@ -128,6 +150,7 @@ impl MacVideoCapturer {
         self.resources = Some(resources);
         self
     }
+    pub(crate) fn with_stream_health(mut self,health:StreamHealth)->Self{self.stream_health=health;self}
     fn stop_owned_stream(&mut self) {
         self.camera_started=false;
         if let Some(camera)=self.camera.take() {
@@ -265,7 +288,10 @@ impl VideoCapturer for MacVideoCapturer {
             last_format: std::sync::atomic::AtomicU64::new(0),
         };
 
-        let mut stream = SCStream::new(&filter, &config);
+        // A late callback belongs to this capture generation only. A restart
+        // must never inherit its old stream's stop/error signal.
+        let failure=self.stream_health.restart();
+        let mut stream = SCStream::new_with_delegate(&filter, &config,StreamDelegate(failure));
         stream.add_output_handler(output, SCStreamOutputType::Screen);
         stream.start_capture()?;
 
@@ -320,14 +346,18 @@ impl VideoCapturer for MacVideoCapturer {
             if !self.camera_started {return Err("capture owner has ended".into());}
             self.await_owned_stop().await?;self.start_camera()?;
         }
+        let health=self.stream_health.current();
         loop {
+            if let Some(reason)=health.reason(){return Err(format!("Native screen capture stopped: {reason}").into());}
             self.refresh_geometry()?;
-            match tokio::time::timeout(
+            let next=tokio::select!{
+                _=health.changed.notified()=>continue,
+                frame=tokio::time::timeout(
                 std::time::Duration::from_millis(500),
                 self.slot.take_async(),
-            )
-            .await
-            {
+                )=>frame,
+            };
+            match next {
                 Ok(frame) => {
                     if let Some(resources)=&self.resources {resources.raw_capture_samples.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
                     if frame.timing.capture_ts_us < self.minimum_capture_ts_us {continue;}
@@ -348,6 +378,25 @@ impl VideoCapturer for MacVideoCapturer {
 impl Drop for MacVideoCapturer {
     fn drop(&mut self) {
         self.stop_owned_stream();
+    }
+}
+
+#[cfg(test)]
+mod stream_lifecycle_tests {
+    use super::*;
+    use screencapturekit::stream::delegate_trait::SCStreamDelegateTrait;
+    #[tokio::test]
+    async fn native_stop_event_wakes_capture_without_reading_any_screen() {
+        let mut capture=MacVideoCapturer::new(320,180,30);
+        StreamDelegate(capture.stream_health.current()).stream_did_stop(Some("Source stopped".into()));
+        let result=tokio::time::timeout(std::time::Duration::from_millis(100),capture.capture_frame()).await.unwrap();
+        assert!(result.err().expect("Stopped capture must return its native error").to_string().contains("Source stopped"));
+    }
+    #[test]
+    fn a_late_stop_from_the_previous_stream_cannot_invalidate_a_new_generation() {
+        let health=StreamHealth::default();let old=StreamDelegate(health.current());let current=health.restart();
+        old.stream_did_stop(Some("Old source stopped".into()));assert!(health.reason().is_none());
+        StreamDelegate(current).stream_did_stop(Some("Current source stopped".into()));assert_eq!(health.reason().as_deref(),Some("Current source stopped"));
     }
 }
 

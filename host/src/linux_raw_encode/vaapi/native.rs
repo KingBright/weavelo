@@ -90,7 +90,7 @@ impl NativeSource {
                 let mut encoder=Encoder(std::ptr::null_mut());
                 let mut profile=None;
                 let mut sequence=0i64;
-                while let Some(frame)=pending.receive() {
+                while let Some(super::super::QueuedFrame{frame,admitted_at_us})=pending.receive() {
                     let settings=*current_settings.lock().unwrap_or_else(|e|e.into_inner());
                     settings.validate_for(frame.width,frame.height)?;
                     let signal=HardwareEncoder::signal(&frame)?;
@@ -184,9 +184,9 @@ impl NativeSource {
                     let mut nalu=Vec::with_capacity(packet.bytes+geometry.map_or(0,|_|protocol::viewport::FRAME_HEADER_LEN));
                     if let Some(g)=geometry{g.write_header(&mut nalu);}
                     nalu.extend_from_slice(bytes);
-                    let chunk=RawChunk {nalu,is_keyframe:packet.key!=0,stamp:frame.stamp,
+                    let chunk=RawChunk {nalu,is_keyframe:packet.key!=0,stamp:frame.stamp,admitted_at_us,
                         encode_done_ts_us:remote_core::timing::quanta_now_us(),native_timing:Some(NativeEncodeTiming {
-                            queue_us:started.saturating_sub(frame.stamp.arrival_ts_us),
+                            queue_us:started.saturating_sub(admitted_at_us),
                             upload_vpp_us:packet.upload_vpp_us,encode_us:packet.encode_us,
                         })};
                     // VPP/encoding has completed and the AU owns its bytes.
