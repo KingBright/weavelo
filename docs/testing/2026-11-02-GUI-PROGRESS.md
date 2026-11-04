@@ -1,6 +1,6 @@
 # GUI 重构进展与接续点
 
-2026-11-02。用户已批准主管理界面、独立单流窗口、统一操作栏和系统托盘方案；当前优先实际实现 GUI，Computer Use 与联合验收随后安排。
+更新于 2026-11-04。用户已批准主管理界面、独立单流窗口、统一操作栏、系统托盘及 UI 精修 A 方案；四台电脑当前正式版 113，两部手机当前正式版 78。下方先列当前事实，后文保留各轮记录；历史版本验收不自动等同于当前版本全部验收。
 
 方案：[窗口职责与完整功能去向](/Users/jinliang/workspace/remote_hosts/docs/weavelo-window-ui-plan.md)。本轮短 checkpoint：`.rust-storage/validation-logs/weavelo-gui-20261102/CHECKPOINT.md`。代码始终在 primary `main` 的同一个 worktree 修改；每个完整小步检查后提交并推送。
 
@@ -8,14 +8,14 @@
 
 | 项目 | 当前验证事实 | 待完成 |
 | --- | --- | --- |
-| 四台桌面 | 四机均已原身份兼容安装 106 / `4f606a7`；三平台当前安装包已发布，正式入口公网逐包 SHA 通过；NAS relay 为 `c533754` | 继续全部设备方向的真实视频、输入、通知、音频及摄像头验收 |
-| 管理与会话窗口 | 默认管理内容 640×600；独立来源窗口，End / 显式关闭清理当前流并退出；发送窗口关闭保留发送 | 覆盖全部 DPI、错误与长时场景 |
+| 四台桌面 | 四机均已原身份兼容安装 113 / `b4b89ca`，实际 GUI 与后台字节已逐机核对；三平台正式包已发布，公网逐包 SHA 通过 | 继续全部设备方向的真实视频、输入、通知、音频及摄像头验收 |
+| 管理与会话窗口 | 默认管理内容 580×500、最小 520×440；状态归属设备卡片；独立来源窗口，End / 显式关闭清理当前流并退出；后台投送由对应卡片管理 | 覆盖全部 DPI、错误与长时场景 |
 | 全屏 | 移除自定义最小化；全屏 / 恢复保留；Studio 实际操作确认全屏隐藏、恢复显示原生按钮 | 其他平台实际全屏检查 |
 | 原生托盘 | 设备、流、传输、设置有明确目标；HO5 在 GUI 已关闭时，经真实 tray → Devices → Studio → Files 成功启动正确上下文 | Mac / Windows 实际菜单操作 |
-| 双向与并行视频 | 既有 HO5 → Book / 努比亚链路已验证；103 的 Linux → Studio / 红米保持同一会话跨过 NAS 升级，红米真实动态画面已核对，自动发送不抢焦点 | 全设备全部方向与控制、音频仍未全验收 |
-| Android | 两机均已原签名安装 76；既有实机已核对设备页竖屏、串流横屏、退出恢复；全屏视频和浮动 HUD；努比亚真实中文 / emoji 已核对；两机收到 Studio 文件后，均已在手机上独立计算 SHA 并匹配 | 红米完整中文输入及独立多设备页面 / 会话池仍未全验收 |
-| 最新窗口反馈 | 图标差异、左下角精简、网络分级已实现；Mac 原生标题栏图标已修正 | 跨平台全部窗口状态的视觉验收仍未齐全 |
-| Linux 编码 | 101 五分钟双路动态采样均值 6.955 / 6.249 ms，超过 20 ms 均为零；文件描述符 103–105 | 该次测试已达到上限目标；103、更多来源和分辨率仍需分别测量 |
+| 双向与并行视频 | 本轮 MacBook 同时接收 Studio 两个自有应用，实际画面清楚；只结束其中一路时另一路继续；设备卡片 2→1→0；来源列表未选择时不订阅桌面 | 全设备全部方向与控制、音频仍未全验收；本轮双应用实测在 112，113 只细调布局与标题分类 |
+| Android | 两机均已原签名安装 78，已独立核对安装 APK 字节；竖屏设备页与型号、横屏全屏 HUD 均已看实际截图；两机 → Studio 113 单应用点击、触控板滚动、精确文字通过；两机 Weavelo 无障碍当前均已启用 | 努比亚此次文字对照使用已授权临时切换的百度 OEM，之后恢复微信；完整软键盘候选、中文及多设备会话池仍需分别验收 |
+| 最新窗口反馈 | 显式选来源，不默认附带桌面；应用图标含 Weavelo 标记，原生标题含应用和设备；Mac 共用一个主 Dock 入口 | 不宣称每个会话有独立 Dock 应用；跨平台全部窗口状态的视觉验收仍未齐全 |
+| Linux 编码 | 101 五分钟双路动态采样均值 6.955 / 6.249 ms，超过 20 ms 均为零；文件描述符 103–105 | 历史该次测试达到目标；113 未重新测量全部来源和分辨率，不作为当前全部场景保证 |
 
 首步检查：原生生产配置构建通过，实际编译的默认入口仍为 `restored-original-gpui`；真实 GPUI 窗口关闭 / 重新打开 / PiP 引用测试 1 项通过；相关输入回归 37 项通过、1 项跳过。五处旧测试夹具已改用当前视频通道 API，未改动媒体内核。检查完整日志位于上述本轮 checkpoint 同目录。此处不宣称媒体连续性、物理呈现、安装或发布通过。
 
@@ -657,3 +657,58 @@ MacBook 通过当前生产 GUI 接收两个独立的自有 AppKit 应用窗口�
 证据保存在两机任务目录的 `native112-book-two-app-native-proof.json`、`native112-book-focused-two-app-proof.json`、对应状态文件，以及 Studio 接收的 `native112-book-focused-{A,B}-actual.png`。A SHA `71d81bcb5c4a9b3167265c20797d05936ab07089e0767dd5975dd9d58bcf949d`；B SHA `7c9e87b732288a2dff50e9fcdcf1c2223b494124f0bbfdffdb81871cfc368e25`。
 
 实机管理页复核后，113 再收紧导航、本机卡片和设备行的垂直空间，使当前五台远端完整展示；为搜索框补上用途提示，沿用既有产品图标并显式设为 18 px、32 px 点击区域。屏幕及摄像头标题按来源类别显示，避免把 MediaProjection 等采集后端名称当成应用名。两项既有设备卡片交互检查通过；签名发布回归 1,045 项通过、19 项跳过。此处是 113 源码检查，正式安装与截图尚待后续记录。Android 78 的正式原签名打包继续在 MacBook 执行，未用本机验证产物替代发布包。
+
+## 2026-11-04：桌面 113 / Android 78 正式交付与实机输入
+
+源码 `115b9d47c1fee50e95a7c9f250a29acda179f472` 与布局微调 `b4b89cab91d8308ac1e7bdcf305edafbc71ec80f` 均已提交、推送并核对远端 main。四台电脑均经正式打包、兼容安装至 113 / `b4b89ca`，两部手机均安装正式原签名 78 / `115b9d4`。以下为实际安装和运行记录，不以 NAS 发布代替安装证明；本节文档提交不改变上述二进制来源。
+
+| 设备 | 实际 GUI / 后台 PID | 实际可执行文件 SHA-256 |
+| --- | --- | --- |
+| Mac Studio | 56068 / 56059 | `cafc9c861bdbb5f4b6722025b2e440853738a89a0654dd9dc65966915ab82794` |
+| MacBook | 9865 / 9822 | `7da20e8de237259d968214019b1c915b130d8194dc87a063764260396c8caa0a` |
+| HO5 | 487680 / 487594 | `47c3fb17cc4291debecddbe5a5a886d5865f6c859e76ec2b891bb5ac42dc7346` |
+| cube | 5288 / 33812 | `b8e3ddeff7d0dea0fa2ff52f0038c9465d142f521418faa5212ccabaa9e6a5e3` |
+
+四机实际默认入口均为 `restored-original-gpui`，包含原生视频；GUI、后台与实际文件哈希一致。Studio / Book 保留各自证书 `D38BEDCE6830FB01240F97C11C7984514AB715C0` / `8EAA97365D97B8A987CDF1232430EDDF9ABA8ECF`，未交叉安装或替换身份。各机任务目录保留 `native113-{studio,book,linux,windows}-actual-installed-owner-proof.json`；远端三机摘要已保存到 Studio 的 `native113-final-recorded-owner-snapshots.json`。
+
+两部手机已分别核对真实型号 NX741J / 2409BRN2CC、versionCode 78 和已安装 base.apk 的独立 SHA：`4a0723bde7cc19566de4202d46a3605fcf5bf2848029cdd890e748efa621be4c`，与同一正式 APK 一致。签名仍为 `215aedabf17f40a454ad381d9027772eef9446346cae3db031cac2a5ae51c3a5`。两机当前 Weavelo 无障碍均已启用；这项事实取代此前“红米未开启”的记录，未由工具代为授权。安装证据 `android78-{nubia,redmi}-actual-installed-proof.json`。
+
+### 实际界面、来源与输入
+
+113 的 Studio 管理窗口实际截图 `native113-studio-manager-actual.png` 已审阅：580×501 内容，五个远端均完整展示，18 px 产品图标与 32 px 动作区域、用途明确的搜索框，没有独立 Activity 区域。Android 78 两机设备页实际截图也已审阅：竖屏、型号可区分、紧凑两行卡片和 48 dp 操作目标；努比亚截图经真实 Weavelo 回传并独立核对 SHA `182d0cbd5b81136f27331a144ea05b5e50145aed4f1b43f134bbfb71ed4bb90c`，红米截图 SHA `0318456bf537a691d49d0a58aacd26e08981cd97a63df9d8b81f795b3c44401c`。
+
+MacBook 生产菜单打开来源选择后的实际状态为 receiving 0、无解码器；未选择来源不会默认订阅桌面，证据 `native112-book-source-browser-no-default-proof.json`。前节两个实际应用窗口及卡片 2→1→0 试验使用同一轮来源与订阅实现；113 后续变更仅为设备行间距、搜索提示和来源分类标题，不将该试验重述为 113 全链路重测。未采集或操作 ChatGPT、Codex 或整个桌面。
+
+两部 Android 78 均经应用内正常设备卡片和来源选择，接收 Studio 113 的独立自有原生应用窗口，并在目标端独立读取交互计数：
+
+| 查看端 | 实际来源 | 直接点击 | 触控板滚动 | 精确输入 | 输入法范围 |
+| --- | --- | --- | --- | --- | --- |
+| 努比亚 78 | 自有 PID 62263 / Window 18389 | 1 次 | 16 个滚动事件、累计 96 | `MAC113`，无重复 | 使用此前获准临时切换的百度 OEM，随后已恢复微信输入法 |
+| 红米 78 | 自有 PID 65385 / Window 18406 | 1 次 | 16 个滚动事件、累计 96 | `RED113`，无重复 | 默认输入法未改变 |
+
+独立证据为 `android78-{nubia,redmi}-native113-independent-host-input-proof.json`。两机均隐藏键盘后拍到清楚的横屏实际画面，红米截图为 1640×720、HUD 自动收起；努比亚 SHA `c8def50a606eb7e753064e518861a66a593442dd854ea1a7d2c9ab43b8978cbe`，红米 SHA `7c63b5ded7073b7b1b0fa0a96b3cdcfa20a5c0b0920b0a8db387148bd1284b86`。努比亚截图经真实 Weavelo 回传、接收端独立校验，均已查看。两机均从产品操作正常 Disconnect，Studio 最后 sharing / receiving 均为 0；本轮自有测试窗口已结束。
+
+验证过程曾遇到测试窗口计时退出和 Android 测试辅助器参数白名单遗漏，均发生于辅助验收步骤；改用仍存活的独立窗口及已建立的有界辅助器后，完整流程通过。旧失败截图不作为成功证据。此次 ASCII 输入不能替代微信软键盘候选、中文或实体 MacBook 触控板的完整验收。
+
+### 发布、检查与接续
+
+正式发布入口为 `https://weavelo.hackerlife.fun:8443/download/`。电脑三包及 Android APK 均已由正式发布器完整公网下载、核对 SHA；Linux / Windows 包还通过真实 Weavelo 传至 Studio，接收端独立核对字节和嵌入源码身份。当前电脑清单 SHA `8eab0efdf6370568c1cd144a4f36fc8e3d15c9ced4484947102488e3f04425c9`。
+
+| 正式包 | SHA-256 |
+| --- | --- |
+| `Weavelo-desktop-macos-arm64-20261104.113-b4b89ca.zip` | `e4ca521cd7399240851e9bf33445b3758742d68b78247d0a0ca5b3a2d3ae8988` |
+| `Weavelo-desktop-linux-x64-b4b89ca.zip` | `c5378c8247d5b8af5b43cdd0c4077e9ac470e4e42dd837a8f37109e0bc17d92d` |
+| `Weavelo-Windows-x64-b4b89ca.zip` | `f32141bcc66e97a4d9c1ce1b7f17d26ea2b19fb5039ceb34b5be722e0a659cf1` |
+| `Weavelo-Android-2.0.0-alpha.9-115b9d4-release.apk` | `4a0723bde7cc19566de4202d46a3605fcf5bf2848029cdd890e748efa621be4c` |
+
+相关 Rust 检查 73 项、布局交互 2 项、Android JVM 76 项通过；签名发布回归 1,045 项通过、19 项跳过。日志分别为 `native112-final-focused.log`、`native112-state-owner-focused.log`、`native112-reopen-focused.log`、`native113-layout-focused.log`、`native112-android-kotlin-check.log`、`native113-layout-release-regression.log`。SDK 工具传输结束后只删除已核对字节的本轮两份临时 ZIP；已安装 SDK、共享编译缓存、正式包及既有身份记录均保留。
+
+尚未完成的范围继续保留：
+
+- 本轮未重跑六设备全部 30 个文件发送方向、12 个桌面视频方向及全部实体输入、音频、现有控制通知和长时验收；历史 103 / APK 75 的矩阵与 Linux 101 编码成绩仍是历史证据。
+- 普通 Android 新建屏幕采集仍需机主系统确认；相机就绪不代表屏幕已共享。用户此前暂缓 USB 托管采集方案，本轮未实现或绕过系统确认。
+- 努比亚微信输入法的软键盘候选/硬件输入差异仍待独立验收；红米中文、emoji 及多设备会话池未在本轮完全覆盖。
+- 收到投送后的远端摄像头切换仍需按已批准方案创建新意图/票据；未放宽旧票据。部分手机摄像头暗画面原因仍未知，Windows 摄像头枚举为零仍未解决。
+- macOS 仍共用一个主 Dock 应用入口，远程应用标记已用于原生标题栏与最小化窗口；不宣称每个会话已拥有独立 Dock 应用。未按来源 IP 或名字推断无设备绑定的直连身份，此类订阅明确显示在本机卡片。
+
+本轮汇总证据 `native113-android78-final-acceptance-summary.json` 与约 40 行 `CHECKPOINT.md` 保留当前状态和上述接续点，避免后续把历史失败或旧安装状态当成现状。
