@@ -73,6 +73,7 @@ pub struct EncodedChunk {
     pub encode_cost_ms: f32,
     pub is_keyframe: bool,
     pub timing: protocol::FrameTimingCheckpoints,
+    pub admitted_at_us:u64,
     _admission:Arc<OwnedSemaphorePermit>,
 }
 
@@ -82,6 +83,7 @@ struct FrameContext {
     timing: protocol::FrameTimingCheckpoints,
     admission:Arc<OwnedSemaphorePermit>,
     geometry:Option<protocol::viewport::FrameGeometry>,
+    admitted_at_us:u64,
 }
 
 struct ViewportEncoding {
@@ -90,6 +92,7 @@ struct ViewportEncoding {
     source_revision:u32,
     bitrate_cap:u32,
     cropper:Option<crate::macos_viewport::Cropper>,
+    last_geometry:Option<protocol::viewport::FrameGeometry>,
 }
 
 pub struct MacVideoEncoder {
@@ -119,7 +122,7 @@ extern "C" fn compression_callback(
     let capture_time_ms=ctx.capture_time_ms;
     let encode_cost_ms=ctx.submit_instant.elapsed().as_secs_f32()*1000.;
     let mut timing=ctx.timing;
-    timing.encode_done_ts_us=remote_core::timing::quanta_now_us().saturating_sub(timing.capture_ts_us) as u32;
+    timing.encode_done_ts_us=remote_core::timing::quanta_now_us().saturating_sub(timing.capture_ts_us).min(u64::from(u32::MAX)) as u32;
     let admission=ctx.admission;
 
     if status != 0 || sample_buffer.is_null() {
@@ -218,6 +221,7 @@ extern "C" fn compression_callback(
                 encode_cost_ms,
                 is_keyframe,
                 timing,
+                admitted_at_us:ctx.admitted_at_us,
                 _admission:admission,
             });
         }
@@ -420,12 +424,22 @@ impl MacVideoEncoder {
 
     pub(crate) fn viewport_settings(&mut self,settings:&crate::StreamSettings,source:protocol::session::CaptureSource)->Result<(),Box<dyn Error+Send+Sync>> {
         let state=self.viewport.get_or_insert_with(||ViewportEncoding{planner:remote_core::viewport::ViewportPlanner::for_source(source),cap:[settings.width,settings.height],
-            source_revision:settings.source_revision,bitrate_cap:settings.bitrate_kbps,cropper:None});
+            source_revision:settings.source_revision,bitrate_cap:settings.bitrate_kbps,cropper:None,last_geometry:None});
         if state.source_revision!=settings.source_revision {state.planner.reset();}
         state.source_revision=settings.source_revision;state.cap=[settings.width,settings.height];state.bitrate_cap=settings.bitrate_kbps;
         if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
         self.update_rate_settings(settings.fps,self.bitrate_kbps.min(settings.bitrate_kbps))?;
         Ok(())
+    }
+
+    /// Static sources need not emit another capture buffer when the viewer pans.
+    /// Reuse their actual latest IOSurface only when geometry or an IDR changed.
+    pub(crate) async fn redraw_if_needed(&mut self,frame:MacVideoFrame)->Result<bool,Box<dyn Error+Send+Sync>> {
+        let Some(state)=&mut self.viewport else{return Ok(false);};
+        let geometry=state.planner.plan([frame.width,frame.height],state.cap,state.source_revision,std::time::Instant::now())?;
+        if !self.force_keyframe&&state.last_geometry.is_some_and(|last|last.revision==geometry.revision
+            &&last.source_revision==geometry.source_revision){return Ok(false);}
+        self.submit_frame(frame).await?;Ok(true)
     }
 
     fn prepare_source_color(&mut self,color:crate::video_color::SourceColor)->Result<VTCompressionSessionRef,Box<dyn Error+Send+Sync>> {
@@ -561,6 +575,8 @@ impl VideoEncoder for MacVideoEncoder {
         &mut self,
         frame: Self::Frame,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let admitted_at_us=remote_core::timing::quanta_now_us();
+        let submit_instant=std::time::Instant::now();
         let admission=Arc::new(self.admission.clone().try_acquire_owned().map_err(|_|"Drain encoded output before submitting another raw frame")?);
         let cv_pixel_buffer = match frame.sample_buffer.image_buffer() {
             Some(buf) => buf,
@@ -595,17 +611,17 @@ impl VideoEncoder for MacVideoEncoder {
 
         let mut timing = frame.timing;
         if timing.capture_ts_us == 0 {
-            timing.capture_ts_us = remote_core::timing::quanta_now_us();
+            timing.capture_ts_us = admitted_at_us;
         }
-        let now_us = remote_core::timing::quanta_now_us();
-        timing.encode_queue_ts_us = (now_us.saturating_sub(timing.capture_ts_us)) as u32;
+        timing.encode_queue_ts_us = admitted_at_us.saturating_sub(timing.capture_ts_us).min(u64::from(u32::MAX)) as u32;
 
         let ctx = Box::new(FrameContext {
             capture_time_ms: frame.capture_time_ms,
-            submit_instant: std::time::Instant::now(),
+            submit_instant,
             timing,
             admission,
             geometry,
+            admitted_at_us,
         });
         let source_frame_ref_con = Box::into_raw(ctx) as *mut c_void;
 
@@ -660,6 +676,7 @@ impl VideoEncoder for MacVideoEncoder {
                 return Err(format!("Encode failed: {}", status).into());
             }
         }
+        if let Some(state)=&mut self.viewport{state.last_geometry=geometry;}
 
         Ok(())
     }

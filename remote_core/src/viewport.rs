@@ -18,10 +18,14 @@ fn crop_with_margin(visible: PixelRect, source:[u32;2], motion:[i64;2]) -> Pixel
     let axis=|origin:u32,size:u32,full:u32,direction:i64| {
         // Preserve crop size at edges. Panning cannot resize the codec merely
         // because a margin reached the source boundary. NV12 is even aligned.
-        let extent=(size.saturating_add(size.div_ceil(5)).saturating_add(1)&!1).min(full&!1).max(2);
+        let extent=(size.saturating_add(size.div_ceil(5)).saturating_add(1)&!1).min(full).max(2);
         let margin=i64::from(extent.saturating_sub(size))/2;
         let ahead=direction.clamp(-margin,margin)/2;
         let start=(i64::from(origin)-margin+ahead).clamp(0,i64::from(full-extent)) as u32&!1;
+        // Keep NV12 origins aligned, without dropping the last real source
+        // column/row when the native window has an odd extent. GPU scaling
+        // still produces an even coded surface.
+        let extent=extent.max(origin+size-start).min(full-start);
         (start,extent)
     };
     let (x,width)=axis(visible.x,visible.width,source[0],motion[0]);
@@ -42,6 +46,7 @@ pub struct ViewportPlanner {
     last_resize: Option<Instant>,
     last_applied: Option<Instant>,
     last_visible: Option<PixelRect>,
+    last_limits:Option<([u32;2],Option<[u32;2]>)>,
     current: Option<FrameGeometry>,
     next_revision: u64,
 }
@@ -70,6 +75,7 @@ impl ViewportPlanner {
             return Err("Source or viewport pixel size is unavailable");
         }
         let demand=self.demand.filter(|v|v.source_revision==source_revision);
+        let limits=(cap,demand.map(|v|[v.width,v.height]));
         let visible=visible_pixels(demand.map_or(NormalizedRect::FULL,|v|v.visible),source);
         let old=self.current.filter(|g|g.source_revision==source_revision
             &&[g.source_width,g.source_height]==source);
@@ -96,17 +102,21 @@ impl ViewportPlanner {
             let interval=self.last_resize.is_none_or(|t|now.saturating_duration_since(t)>=RESIZE_INTERVAL);
             let old_fits=old.width<=source[0] && old.height<=source[1]
                 &&old.width<=cap[0]&&old.height<=cap[1];
+            let stable_pan=self.last_limits==Some(limits)&&self.last_visible.is_some_and(|v|(v.width,v.height)==(visible.width,visible.height));
             // Keep the old codec during active navigation. Per-frame geometry
             // restores the crop's true display aspect after GPU scaling, even
             // when integer alignment changes its aspect by a few pixels.
-            if proposed && old_fits && (!settled||!interval) {
+            if proposed&&old_fits&&stable_pan&&old.width<=crop.width&&old.height<=crop.height {
+                output=[old.width,old.height];
+            }else if proposed && old_fits && (!settled||!interval) {
                 // While zooming in, keep enough real source pixels for the
                 // current codec instead of upsampling or recreating it at 20Hz.
                 // The local GPU still follows every gesture immediately.
                 let expand=|origin:u32,size:u32,minimum:u32,full:u32| {
-                    let extent=size.max(minimum).min(full&!1);
+                    let extent=size.max(minimum).min(full);
                     let start=i64::from(origin)-i64::from(extent-size)/2;
-                    (start.clamp(0,i64::from(full-extent)) as u32&!1,extent)
+                    let start=start.clamp(0,i64::from(full-extent)) as u32&!1;
+                    (start,extent.max(origin+size-start).min(full-start))
                 };
                 let (x,width)=expand(crop.x,crop.width,old.width,source[0]);
                 let (y,height)=expand(crop.y,crop.height,old.height,source[1]);
@@ -122,7 +132,7 @@ impl ViewportPlanner {
             self.last_applied=Some(now);
         }
         g.revision=if changed {self.next_revision}else{old.unwrap().revision};
-        g.validate()?;self.last_visible=Some(visible);self.current=Some(g);Ok(g)
+        g.validate()?;self.last_visible=Some(visible);self.last_limits=Some(limits);self.current=Some(g);Ok(g)
     }
 }
 
@@ -145,6 +155,24 @@ mod tests {
             let g=planner.plan([3840,2160],[1920,1080],3,time).unwrap();
             assert_eq!((g.width,g.height),(first.width,first.height));
             assert!(g.crop.contains(visible_pixels(demand(1,x,4).visible,[3840,2160])));
+        }
+    }
+    #[test]
+    fn odd_native_sources_keep_the_last_column_and_row_in_view() {
+        let now=Instant::now();let mut planner=ViewportPlanner::default();let source=[641,371];
+        let geometry=planner.plan(source,[320,180],3,now).unwrap();
+        assert!(geometry.crop.contains(PixelRect{x:0,y:0,width:source[0],height:source[1]}));
+    }
+    #[test]
+    fn odd_edge_prefetch_keeps_coverage_and_one_coded_size_during_pan() {
+        let now=Instant::now();let mut planner=ViewportPlanner::default();let source=[641,371];
+        let mut size=None;
+        for(n,(x,y))in [(0,0),(500_000,0),(500_000,500_000),(0,500_000),(0,0)].into_iter().enumerate(){
+            let demand=ViewportDemand{id:7,source_revision:3,revision:n as u64+1,visible:NormalizedRect{x,y,width:500_000,height:500_000},width:320,height:180};
+            let time=now+Duration::from_millis(n as u64*500);planner.update(demand,time).unwrap();
+            let geometry=planner.plan(source,[320,180],3,time).unwrap();
+            assert!(geometry.crop.contains(visible_pixels(demand.visible,source)),"Visible edge was clipped: {geometry:?}");
+            assert_eq!(*size.get_or_insert([geometry.width,geometry.height]),[geometry.width,geometry.height],"Panning must retain one codec size");
         }
     }
     #[test]

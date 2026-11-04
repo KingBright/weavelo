@@ -188,7 +188,7 @@ mod tests {
             let thread=std::thread::spawn(move||unsafe{
                 let _dpi=crate::windows_sources::PhysicalCoordinates::enter().unwrap();
                 let class:Vec<u16>="STATIC\0".encode_utf16().collect();let title:Vec<u16>="Weavelo owned ROI pixel fixture\0".encode_utf16().collect();
-                let hwnd=CreateWindowExW(0,class.as_ptr(),title.as_ptr(),WS_OVERLAPPEDWINDOW,60,60,660,410,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null());
+                let hwnd=CreateWindowExW(0,class.as_ptr(),title.as_ptr(),WS_OVERLAPPEDWINDOW,60,60,661,410,std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null_mut(),std::ptr::null());
                 assert!(!hwnd.is_null());SetWindowLongPtrW(hwnd,GWLP_WNDPROC,procedure as *const () as isize);
                 ShowWindow(hwnd,SW_SHOWNOACTIVATE);UpdateWindow(hwnd);tx.send(hwnd as usize).unwrap();
                 let mut message=std::mem::zeroed();while GetMessageW(&mut message,std::ptr::null_mut(),0,0)>0{TranslateMessage(&message);DispatchMessageW(&message);}
@@ -231,6 +231,10 @@ mod tests {
             if g.unwrap().demand_revision==2{break chunk;}
         }}).await.unwrap();
         let g=protocol::viewport::split_frame(&moved.nalu).unwrap().0.unwrap();assert!(g.crop.x>0);assert_eq!(g.crop.y,0);
+        let initial_geometry=protocol::viewport::split_frame(&first.nalu).unwrap().0.unwrap();
+        assert_eq!(g.source_width%2,1,"Own fixture must exercise an odd native width");
+        assert_eq!([g.width,g.height],[initial_geometry.width,initial_geometry.height]);
+        assert!(g.crop.contains(remote_core::viewport::visible_pixels(demand(1,500_000,0,2).visible,[g.source_width,g.source_height])));
         assert!(moved.timing.capture_ts_us>=first.timing.capture_ts_us);
         let decoded=decode(moving_stream);let size=g.width as usize*g.height as usize;let last=&decoded[decoded.len()-size*3/2..];
         let actual=i32::from(last[size/2+g.width as usize/2]);assert!((actual-173).abs()<=8,"Pan must decode the actual green source region: {actual}");

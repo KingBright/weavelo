@@ -5,6 +5,8 @@ mod audio_encode;
 mod linux_system_audio;
 #[cfg(target_os = "macos")]
 mod capture;
+#[cfg(target_os="macos")]
+mod macos_shared_capture;
 #[cfg(target_os = "windows")]
 mod capture_readiness;
 pub mod capture_sources;
@@ -131,7 +133,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, watch};
 
 #[cfg(target_os = "macos")]
-use capture::MacVideoCapturer;
+use macos_shared_capture::MacVideoCapturer;
 use remote_core::net::UdpSender;
 #[cfg(target_os = "macos")]
 use remote_platform::MacClipboardProvider;
@@ -1183,6 +1185,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut reported_settings=(width,height,fps,bitrate_kbps);
     let mut paused_telemetry = tokio::time::interval(Duration::from_secs(5));
     paused_telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    #[cfg(target_os="macos")]
+    let mut viewport_ticks=tokio::time::interval(remote_core::viewport::DEMAND_INTERVAL);
+    #[cfg(target_os="macos")]
+    viewport_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         // Leave the newest raw frame in its capture mailbox while encoded output
@@ -1193,6 +1199,19 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         let capture_ready=true;
         if !capture_ready {resources.encoder_backpressure_ticks.fetch_add(1,Relaxed);}
         tokio::select! {
+            _ = async {
+                #[cfg(target_os="macos")] {viewport_ticks.tick().await;}
+                #[cfg(not(target_os="macos"))] std::future::pending::<()>().await;
+            }, if !paused && capture_ready && !matches!(source,protocol::session::CaptureSource::Camera(_)) => {
+                #[cfg(target_os="macos")]
+                {
+                    if keyframe_requested.swap(false,Relaxed){video_encoder.request_keyframe();}
+                    if let Some((sequence,frame))=video_capturer.snapshot(){
+                        let started=std::time::Instant::now();
+                        if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(sequence);resources.video_submit.record(started.elapsed());}
+                    }
+                }
+            }
             _ = async {
                 #[cfg(target_os = "linux")]
                 if let Some(revoked) = &mut native_revoked { loop { if *revoked.borrow() || revoked.changed().await.is_err() { return; } } }
@@ -1302,7 +1321,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 if paused || chunk.nalu.is_empty() {
                     continue;
                 }
-                #[cfg(not(target_os="windows"))] let freshness_ts=chunk.timing.capture_ts_us;
+                #[cfg(target_os="linux")] let freshness_ts=chunk.timing.capture_ts_us;
+                #[cfg(target_os="macos")] let freshness_ts=chunk.admitted_at_us;
                 #[cfg(target_os="windows")] let freshness_ts=chunk.encoded_at_us;
                 if freshness_ts < resume_capture_after_us
                     || (awaiting_resume_keyframe && !chunk.is_keyframe) { continue; }

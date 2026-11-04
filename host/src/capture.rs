@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use screencapturekit::cm::CMSampleBuffer;
 
+#[derive(Clone)]
 pub struct MacVideoFrame {
     pub width: u32,
     pub height: u32,
-    pub sample_buffer: CMSampleBuffer,
+    pub sample_buffer: Arc<CMSampleBuffer>,
     pub capture_time_ms: u32,
     pub timing: protocol::FrameTimingCheckpoints,
     /// Source timeline for pacing; callback delivery can arrive in bursts.
@@ -69,7 +70,7 @@ impl SCStreamOutputTrait for StreamOutput {
         let frame = MacVideoFrame {
             width: buffer.width() as u32,
             height: buffer.height() as u32,
-            sample_buffer: sample,
+            sample_buffer: Arc::new(sample),
             capture_time_ms: now_ms,
             timing: protocol::FrameTimingCheckpoints::new(capture_ts_us),
             pacing_ts_us: capture_ts_us,
@@ -239,6 +240,9 @@ impl MacVideoCapturer {
             }
         }
         Ok(())
+    }
+    pub(crate) fn update_capture_fps(&mut self,fps:u32)->Result<(),Box<dyn Error+Send+Sync>> {
+        self.update_resolution_and_fps(self.target_width,self.target_height,fps)
     }
 }
 
