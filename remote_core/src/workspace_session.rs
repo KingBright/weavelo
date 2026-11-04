@@ -336,16 +336,20 @@ impl WorkspaceConnection {
     /// Retry Close while the receiver is alive; a lost first datagram must not
     /// strand a capture. Bounded shutdown still relies on host lease expiry if offline.
     pub async fn close(&self) {
-        let _ = self.control(SessionCommand::Close { connection_id: self.id }).await;
         let _ = tokio::time::timeout(Duration::from_millis(1600), async {
+            let _ = self.control(SessionCommand::Close { connection_id: self.id }).await;
             while !self.task.is_finished() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await;
         let _ = self.cancel.send(());
     }
 
+    pub fn remote_cleanup_confirmed(&self) -> bool {
+        self.close_confirmed.load(std::sync::atomic::Ordering::Acquire) && self.task.is_finished()
+    }
+
     /// Only an authenticated matching Closed receipt proves remote cleanup.
     pub async fn close_verified(&self) -> Result<(), String> {
-        if self.close_confirmed.load(std::sync::atomic::Ordering::Acquire) && self.task.is_finished() { return Ok(()); }
+        if self.remote_cleanup_confirmed() { return Ok(()); }
         tokio::time::timeout(Duration::from_secs(10), async {
             self.control(SessionCommand::Close { connection_id: self.id }).await?;
             while !self.task.is_finished() { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -1394,6 +1398,30 @@ mod tests {
         state.grant(42, binding, request, 1002); assert!(!state.ready(7, 11));
         binding.epoch = [2; 16]; state.grant(42, binding, next, 1003);
         assert!(matches!(&state.snapshots()[0].payload, protocol::realtime_input::InputPayload::Held(held) if held.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn normal_close_is_bounded_even_when_the_control_queue_is_full() {
+        let (actor,_) = source_switch_actor().await;
+        let (commands,mut receiver) = mpsc::channel(1);
+        commands.send(Command::Clipboard(None)).await.unwrap_or_else(|_|panic!("Fixture receiver ended"));
+        let (file_commands,_) = mpsc::channel(1);
+        let (_,last_response_rx) = tokio::sync::watch::channel(Instant::now());
+        let (cancel,mut cancelled) = broadcast::channel(1);
+        let connection = WorkspaceConnection {
+            pointer_queue:Default::default(),text_pending:Default::default(),source_icons:Default::default(),
+            close_confirmed:Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            last_response_rx,input:actor.input.clone(),max_subscriptions:1,files_available:false,clipboard_available:false,
+            settings_revision:std::sync::atomic::AtomicU64::new(0),id:82,sender:actor.sender.clone(),target:actor.target,
+            file_commands,file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),commands,cancel,
+            task:tokio::spawn(std::future::pending::<()>()),
+        };
+        tokio::time::timeout(Duration::from_secs(3),connection.close()).await
+            .expect("local close must include control admission in its deadline");
+        assert!(cancelled.try_recv().is_ok(),"local actor cancellation must follow the bounded wait");
+        assert!(!connection.remote_cleanup_confirmed(),"cancellation is not an authenticated remote receipt");
+        assert!(matches!(receiver.try_recv().unwrap(),Command::Clipboard(None)));
+        assert!(receiver.try_recv().is_err(),"timed-out control admission must not enqueue a late Close");
     }
 
     #[tokio::test]

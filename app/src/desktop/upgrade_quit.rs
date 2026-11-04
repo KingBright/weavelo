@@ -51,7 +51,8 @@ pub fn command(directory:&Path,args:&[String]) -> Result<Value,Error> {
     let lock=std::fs::OpenOptions::new().read(true).open(lock_path)?;
     lock.try_lock().map_err(|_|"GUI lifecycle lock is still held; stop unconfirmed")?;
     Ok(serde_json::json!({"ok":true,"kind":capability,"generation":generation,"pid":pid,
-        "executable_sha256":hash,"cleanup_verified":true,"process_exit_observed":true}))
+        "executable_sha256":hash,"cleanup_verified":true,"process_exit_observed":true,
+        "cleanup_scope":result["cleanup_scope"],"remote_cleanup_confirmed":result["remote_cleanup_confirmed"]}))
 }
 #[cfg(test)]
 mod tests {

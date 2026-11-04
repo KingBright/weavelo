@@ -8,7 +8,7 @@
 
 | 项目 | 当前验证事实 | 待完成 |
 | --- | --- | --- |
-| 四台桌面 | 四机均已原身份兼容安装 105 / `308569e`；三平台当前安装包已发布，正式入口公网逐包 SHA 通过；NAS relay 为 `c533754` | 继续全部设备方向的真实视频、输入、通知、音频及摄像头验收 |
+| 四台桌面 | 四机均已原身份兼容安装 106 / `4f606a7`；三平台当前安装包已发布，正式入口公网逐包 SHA 通过；NAS relay 为 `c533754` | 继续全部设备方向的真实视频、输入、通知、音频及摄像头验收 |
 | 管理与会话窗口 | 默认管理内容 640×600；独立来源窗口，End / 显式关闭清理当前流并退出；发送窗口关闭保留发送 | 覆盖全部 DPI、错误与长时场景 |
 | 全屏 | 移除自定义最小化；全屏 / 恢复保留；Studio 实际操作确认全屏隐藏、恢复显示原生按钮 | 其他平台实际全屏检查 |
 | 原生托盘 | 设备、流、传输、设置有明确目标；HO5 在 GUI 已关闭时，经真实 tray → Devices → Studio → Files 成功启动正确上下文 | Mac / Windows 实际菜单操作 |
@@ -545,3 +545,15 @@ MacBook 原有系统相机许可生效：105 的真实 FaceTime 来源被 Studio
 
 
 退出源码小步已完成：`CloseGui` 不再因保留清理记录而直接永久拒绝，而是再次调用原有 `close_verified` 检查原连接；未知远端清理仍保留、仍拒绝假成功，未改变本地身份或操作权限。退出命令现在返回真实、有界的服务端错误。相关原生检查为 5 项：双窗口清理与缺失远端回执 1 项、GUI 升级退出 3 项、真实 GPUI 关闭 / End 保留其他窗口及文件上下文 1 项；签名发布回归 1,045 项通过、19 项跳过。最初一个过滤名称匹配 0 项，已改用真实测试名称执行并通过；一次误用 debug 配置的构建已停止，没有把它记作验证。证据 `native106-exit-cached-native-tests.log`、`native106-exit-window-lifetime-native-test.log`、`native106-exit-release-regression.log`。这些是下一版 106 的源码与检查，四机当前实际安装仍为 105；无法取得远端回执时的完整离线退出语义仍待后续处理。
+
+
+## 2026-11-04 桌面 106 实际升级与普通退出后续修复
+
+四台电脑均已兼容安装 106 / `4f606a7`，实际 GUI：Studio 38885（可执行 SHA `9989256a…`）、Book 85604（`9381f323…`）、HO5 62426（`c504dceb…`）、cube 35072（`e36b514d…`）。三平台公网正式包完整 SHA 均通过发布入口校验，清单 SHA `11bab78c9dfec2385df6320ac817fe5aab2d2e6bf31d8331b90d7bdd85367e86`。Linux / Windows 成品真实发往 Studio 后再由 Studio 独立 SHA 核对，分别为 20,477,353 / 51,700,061 字节。原签名、配对、权限保持。证据 `native106-studio-received-package-proof.json`、`native106-nas-verified.json`、各机 `native106-*-upgrade-apply.log` 与实际所有者记录。首次 Linux 构建漏传已有 SDK 的正确环境变量而失败，改用既有 `WEAVELO_VERIFIED_FFMPEG_INCLUDE` 后完成，没有安装 SDK 或清理缓存。
+
+Linux 的只读系统状态为屏幕 / 控制 Allowed，Display 1 为已记住的 ControlledDisplay；相机 NeedsReview。Windows 三项摄像头隐私开关均为 Allow，PnP 有状态 OK 的 AMD Camera Device；但直接原生 Media Foundation 在新 MTA 线程中也枚举 0 个来源，不能将 PnP 名称认作可用摄像头或断言缺权限。独立诊断还确认在已是 STA 的线程上调用现有相机枚举会报 COM MTA / `0x80010106`；这条适配限制已记录，未把它当成当前没有 MF 来源的唯一原因，也未改驱动或系统设置。证据 `native105-windows-real-camera-catalog-permissions.json`、`windows-camera-apartment-probe-result.txt`（cube）。
+
+下一源码小步将普通 GUI 退出与远端回执分开：先释放本地输入，将 Close 的控制队列准入也放入 1.6 秒等待范围；结果分别报告本地 GUI 清理、远端是否确认，保留显式严格检查路径。新增满队列回归已实际在 1.6 秒返回，且未排入迟到 Close；保留原未确认回执的严格失败检查。首轮 7 项原生测试均通过，最后写证据文件因过滤名称组成的文件名过长而失败，已缩短该临时验证工具的证据文件名；不把工具失败记成产品失败或伪报整个执行成功。Android 下一版 77 同步采用公共 Close 修复。尚未构建、安装这份后续源码。
+
+
+上述普通退出修复的最终一轮已完成：7 项原生检查均通过，验证工具退出 0 并保存短文件名证据；1,045 项签名发布回归通过、19 项跳过。正常 GUI 关闭将回报 `cleanup_scope=frontend-local` 与单独的 `remote_cleanup_confirmed`，实际退出仍由原生进程观察确认；缺少远端回执不会被标成远端已清理。Android versionCode 已升至 77，以在下一次正式包中同步公共 Close 的满队列截止时间。最终证据 `native107-bounded-gui-exit-final-native-tests.log`、`test-result-3f0a5c4505c4bbf230157938.json`、`native107-bounded-exit-final-release-regression.log`；安装与离线实机退出继续单独验收。

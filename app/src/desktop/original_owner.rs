@@ -1722,10 +1722,10 @@ impl OriginalOwner {
         p.tabs.select(0, &key, count);
     }
 
-    pub async fn close_all_verified(&self) -> Result<(), String> {
+    fn exit_connections(&self, allow_connecting: bool) -> Result<Vec<Arc<remote_core::workspace_session::WorkspaceConnection>>, String> {
         let connections = {
             let mut pool = self.pool.lock().unwrap();
-            if pool.tabs.connecting().is_some() { return Err("A connection is still being established; cancel it before full exit".into()); }
+            if !allow_connecting && pool.tabs.connecting().is_some() { return Err("A connection is still being established; cancel it before full exit".into()); }
             for view in &mut pool.sessions { view.session.release_input(); }
             let mut retained=self.pending_exit_connections.lock().unwrap();
             for view in &pool.sessions {
@@ -1734,6 +1734,30 @@ impl OriginalOwner {
             retained.clone()
         };
         self.close_all();
+        Ok(connections)
+    }
+
+    /// Normal GUI exit releases local input and waits only a bounded time for
+    /// the peer. Missing remote receipts remain explicit, not a permanent Quit gate.
+    pub async fn close_all_for_gui_exit(&self) -> Result<bool, String> {
+        let connections = self.exit_connections(true)?;
+        let mut pending = tokio::task::JoinSet::new();
+        for connection in connections {
+            pending.spawn(async move {
+                connection.close().await;
+                connection.remote_cleanup_confirmed()
+            });
+        }
+        let mut confirmed = true;
+        while let Some(result) = pending.join_next().await {
+            confirmed &= result.map_err(|_| "A frontend cleanup worker failed".to_string())?;
+        }
+        self.pending_exit_connections.lock().unwrap().clear();
+        Ok(confirmed)
+    }
+
+    pub async fn close_all_verified(&self) -> Result<(), String> {
+        let connections = self.exit_connections(false)?;
         let mut pending = tokio::task::JoinSet::new();
         for connection in connections { pending.spawn(async move { connection.close_verified().await }); }
         let mut failure = false;

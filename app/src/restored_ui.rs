@@ -424,14 +424,27 @@ impl FrontendExitGroup {
         owners.retain(|owner|owner.strong_count()>0);
         owners.iter().filter_map(std::sync::Weak::upgrade).collect()
     }
-    async fn close_verified(&self) -> Result<(), String> {
-        let owners={
+    fn exit_owners(&self) -> Vec<Arc<OriginalOwner>> {
+        {
             let mut retained=self.pending.lock().unwrap();
             for owner in self.owners() {
                 if !retained.iter().any(|old|Arc::ptr_eq(old,&owner)) { retained.push(owner); }
             }
             retained.clone()
-        };
+        }
+    }
+    async fn close_for_gui_exit(&self) -> Result<bool, String> {
+        let mut tasks=tokio::task::JoinSet::new();
+        for owner in self.exit_owners() { tasks.spawn(async move {owner.close_all_for_gui_exit().await}); }
+        let mut confirmed=true;
+        while let Some(result)=tasks.join_next().await {
+            confirmed &= result.map_err(|_| "A frontend cleanup worker failed".to_string())??;
+        }
+        self.pending.lock().unwrap().clear();
+        Ok(confirmed)
+    }
+    async fn close_verified(&self) -> Result<(), String> {
+        let owners=self.exit_owners();
         let mut tasks=tokio::task::JoinSet::new();
         for owner in owners { tasks.spawn(async move { owner.close_all_verified().await }); }
         let mut failure=None;
@@ -1979,14 +1992,19 @@ impl RestoredDashboard {
         self.stop_directed_receive();self.directed_send.lock().unwrap().clear();
         let group=self.exit_group.clone();
         cx.spawn(async move |view,cx| {
-            if let Err(error)=group.close_verified().await {
-                group.stopping.store(false,Ordering::Release);
-                if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":error}).into());}
-                let _=view.update(cx,|this,cx|{this.full_exit_pending=false;this.status=format!("GUI exit not confirmed: {error}");cx.notify();});return;
-            }
+            let result=if idle_only {group.close_verified().await.map(|()|true)} else {group.close_for_gui_exit().await};
+            let remote_cleanup_confirmed=match result {
+                Ok(confirmed)=>confirmed,
+                Err(error)=>{
+                    group.stopping.store(false,Ordering::Release);
+                    if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":error}).into());}
+                    let _=view.update(cx,|this,cx|{this.full_exit_pending=false;this.status=format!("GUI exit not confirmed: {error}");cx.notify();});return;
+                }
+            };
             if let Some((reply,generation,executable_sha256,request_id))=reply {
                 let (written,ack)=tokio::sync::oneshot::channel();
                 let _=reply.send(Reply::upgrade_exit(serde_json::json!({"ok":true,"cleanup_verified":true,
+                    "cleanup_scope":"frontend-local","remote_cleanup_confirmed":remote_cleanup_confirmed,
                     "generation":generation,"executable_sha256":executable_sha256,"request_id":request_id,"pid":std::process::id()}),written));
                 let _=tokio::time::timeout(Duration::from_secs(2),ack).await;
             }
@@ -2010,7 +2028,7 @@ impl RestoredDashboard {
         let group = self.exit_group.clone(); let runtime = self.runtime.clone(); let background = self.background.clone();
         cx.spawn(async move |view, cx| {
             let result = async {
-                group.close_verified().await?;
+                let _remote_cleanup_confirmed=group.close_for_gui_exit().await?;
                 if let Some(background) = background {
                     tokio::task::spawn_blocking(move || background.shutdown_verified().map(|receipt| { eprintln!("WEAVELO_STOP_RECEIPT {receipt}"); }).map_err(|e|e.to_string()))
                         .await.map_err(|_| "Background shutdown observer failed".to_string())?
@@ -5781,6 +5799,10 @@ mod input_tests {
                 // connection must survive. Empty UI lists are not a receipt.
                 owners.pop();
                 assert!(group.close_verified().await.is_err(),"a repeated whole-exit request must not erase missing cleanup proof");
+                assert!(!group.close_for_gui_exit().await.unwrap(),
+                    "local GUI exit must report the missing remote cleanup receipt");
+                assert!(group.pending.lock().unwrap().is_empty(),
+                    "normal GUI exit must release its retained local owners");
             }
             for server in servers {server.abort();let _=server.await;}
             drop(owners);
