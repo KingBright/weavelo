@@ -3159,6 +3159,7 @@ dependencies = [
  "core-media-sys",
  "cpal",
  "futures-util",
+ "metal 0.27.0",
  "opus",
  "pipewire",
  "protocol",

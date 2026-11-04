@@ -77,6 +77,7 @@ fn start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
 }
 /// Parse the first SPS in one bounded Annex B access unit. No SPS is a normal None.
 pub fn sequence_info(bytes: &[u8]) -> Result<Option<SequenceInfo>, &'static str> {
+    let (_,bytes)=protocol::viewport::split_frame(bytes)?;
     Ok(sequence_details(bytes)?.map(|sps| sps.info))
 }
 

@@ -15,6 +15,7 @@ pub(crate) struct WorkspaceTouch {
     tracker: TouchStateTracker,
     keyboard: crate::touch_mapper::VirtualKeyboard,
     cursor: (f64, f64),
+    geometry:Option<protocol::viewport::FrameGeometry>,
 }
 
 impl WorkspaceTouch {
@@ -31,6 +32,7 @@ impl WorkspaceTouch {
             tracker: TouchStateTracker::default(),
             keyboard: Default::default(),
             cursor: (0.5, 0.5),
+            geometry:None,
         }
     }
     pub fn cancel(&mut self) -> Option<InputBinding> {
@@ -115,6 +117,7 @@ impl WorkspaceTouch {
                 InputEvent::MouseMove {dx,dy} if trackpad => {
                     self.cursor.0 = (self.cursor.0+f64::from(dx)/f64::from(self.tracker.bounds.width)).clamp(0.,1.);
                     self.cursor.1 = (self.cursor.1+f64::from(dy)/f64::from(self.tracker.bounds.height)).clamp(0.,1.);
+                    if let Some(g)=self.geometry {self.cursor=g.clamp_source_point(self.cursor);}
                     output.push(position(self.cursor));
                 }
                 InputEvent::MouseMoveAbsolute {x,y} => {
@@ -122,6 +125,7 @@ impl WorkspaceTouch {
                     output.push(InputEvent::MouseMoveAbsolute {x,y});
                 }
                 event @ (InputEvent::MouseDown(_) | InputEvent::MouseScroll {..}) if trackpad => {
+                    if let Some(g)=self.geometry {self.cursor=g.clamp_source_point(self.cursor);}
                     // Window input requires source-normalized coordinates. A tap
                     // uses the cursor, never the finger's position on the glass.
                     output.push(position(self.cursor)); output.push(event);
@@ -135,6 +139,7 @@ impl WorkspaceTouch {
         self.visible = visible;
         if visible { None } else { self.invalidate() }
     }
+    pub fn presented_geometry(&mut self,geometry:Option<protocol::viewport::FrameGeometry>) {self.geometry=geometry;}
     pub fn surface(&mut self, token: u64, phase: &str) -> (Option<InputBinding>, Vec<InputEvent>) {
         if phase == "begin" {
             if token == 0 || token <= self.surface {

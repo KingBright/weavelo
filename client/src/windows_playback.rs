@@ -65,6 +65,7 @@ struct Metadata {
     timestamp: u32,
     timing: protocol::FrameTimingCheckpoints,
     entered: Instant,
+    geometry:Option<protocol::viewport::FrameGeometry>,
 }
 // One latest decoded surface waiting for a free copy slot. This is not a
 // compressed-frame queue, and holding it does not block network/UI execution.
@@ -156,6 +157,7 @@ impl DecoderState {
                 );
             }
             let frame = DecodedFrame {
+                frame_geometry:meta.geometry,
                 width: g.visible[2],
                 height: g.visible[3],
                 rgba: Arc::new(Vec::new()),
@@ -241,8 +243,8 @@ impl DecoderState {
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-        let described =
-            hevc_sequence::sequence_info(&packet.payload).map_err(anyhow::Error::msg)?;
+        let (geometry,payload)=protocol::viewport::split_frame(&packet.payload).map_err(anyhow::Error::msg)?;
+        let described = hevc_sequence::sequence_info(payload).map_err(anyhow::Error::msg)?;
         if let Some(s) = described {
             if self.sequence.is_some_and(|old| old != s) {
                 self.reset(shared, generation);
@@ -278,12 +280,13 @@ impl DecoderState {
             timing.decode_enter_ts_us = timing.jitter_exit_ts_us.max(timing.recv_ts_us);
         }
         self.metadata.push_back(Metadata {
+            geometry,
             tag,
             timestamp: packet.header.timestamp,
             timing,
             entered,
         });
-        let frames = decoder.push(&packet.payload, tag as i64, key)?;
+        let frames = decoder.push(payload, tag as i64, key)?;
         // A valid random-access input starts a decode sequence, but input safety
         // still waits for actual current-generation GPU-ready output publication.
         self.waiting = false;

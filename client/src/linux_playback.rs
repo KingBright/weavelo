@@ -41,6 +41,7 @@ struct Metadata {
     timestamp: u32,
     timing: protocol::FrameTimingCheckpoints,
     entered: Instant,
+    geometry:Option<protocol::viewport::FrameGeometry>,
 }
 struct DecoderState {
     decoder: Option<LinuxHevcDecoder>,
@@ -109,6 +110,7 @@ impl DecoderState {
             }
             let geometry = decoded.frame.geometry();
             let frame = DecodedFrame {
+                frame_geometry:metadata.geometry,
                 width: geometry.visible[2],
                 height: geometry.visible[3],
                 rgba: Arc::new(Vec::new()),
@@ -174,6 +176,7 @@ impl DecoderState {
             self.metadata.len() < 128,
             "native decoder delayed too many outputs"
         );
+        let (geometry,payload)=protocol::viewport::split_frame(&packet.payload).map_err(anyhow::Error::msg)?;
         self.tag = self
             .tag
             .checked_add(1)
@@ -183,6 +186,7 @@ impl DecoderState {
             timing.decode_enter_ts_us = timing.jitter_exit_ts_us.max(timing.recv_ts_us);
         }
         self.metadata.push_back(Metadata {
+            geometry,
             tag: self.tag,
             timestamp: packet.header.timestamp,
             timing,
@@ -192,14 +196,14 @@ impl DecoderState {
             .decoder
             .as_mut()
             .unwrap()
-            .submit(&packet.payload, self.tag)?
+            .submit(payload, self.tag)?
         {
             self.output(s)?;
             ensure!(
                 self.decoder
                     .as_mut()
                     .unwrap()
-                    .submit(&packet.payload, self.tag)?,
+                    .submit(payload, self.tag)?,
                 "native decoder input did not resume after output drain"
             );
         }

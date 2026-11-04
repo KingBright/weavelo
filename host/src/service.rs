@@ -261,6 +261,15 @@ struct Subscription {
     native_capture: Option<PreparedPortalCapture>,
 }
 impl Subscription {
+    fn viewport(&mut self,demand:protocol::viewport::ViewportDemand)->Result<u64,String> {
+        demand.validate()?;
+        if self.request.id!=demand.id || self.source_revision!=demand.source_revision || matches!(self.request.source,CaptureSource::Camera(_)) {
+            return Err("Viewport does not belong to the current screen or window".into());
+        }
+        let current=self.settings.borrow().viewport.map_or(0,|v|v.revision);
+        if demand.revision>current {self.settings.send_modify(|settings|settings.viewport=Some(demand));}
+        Ok(current.max(demand.revision))
+    }
     fn request_keyframe(&self) {
         self.keyframe.store(true,Relaxed);
         // Wake the existing settings watch; native capture does not need a polling timer.
@@ -556,6 +565,8 @@ fn stream_settings(request: &SubscriptionRequest) -> crate::StreamSettings {
         fps: request.fps,
         bitrate_kbps: request.bitrate_kbps,
         paused: false,
+        source_revision: 0,
+        viewport: None,
     }
 }
 
@@ -1425,6 +1436,7 @@ impl Connection {
             .get_mut(&id)
             .ok_or("subscription disappeared")?;
         current.source_revision = request_id;
+        current.settings.send_modify(|v|{v.source_revision=request_id;v.viewport=None;});
         Ok(SessionCommand::SourceSwitched {
             id,
             request_id,
@@ -2258,6 +2270,16 @@ async fn run_host_service_inner(
                                         SessionCommand::Configured { id, revision:s.settings_revision }
                                     } else { SessionCommand::Error { request_id:id, reason:"subscription is unavailable".into() } };
                                     input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await;
+                                }
+                                SessionCommand::Viewport(demand) => {
+                                    let reply=match peers.get_mut(&addr).and_then(|p|p.subscriptions.get_mut(&demand.id)) {
+                                        Some(subscription)=>match subscription.viewport(demand) {
+                                            Ok(revision)=>SessionCommand::ViewportAccepted{id:demand.id,source_revision:demand.source_revision,revision},
+                                            Err(reason)=>SessionCommand::Error{request_id:demand.id,reason},
+                                        },
+                                        None=>SessionCommand::Error{request_id:demand.id,reason:"Viewport subscription is unavailable".into()},
+                                    };
+                                    input_owner.during_control(&injector,send_session(&udp_sender,addr,reply)).await;
                                 }
                                 SessionCommand::SetClipboard { enabled } if peers.contains_key(&addr) => {
                                     let enabled = enabled && config.enable_clipboard_sync;
@@ -4145,6 +4167,23 @@ mod failure_admission_tests {
             },
             stopped,
         )
+    }
+
+    #[tokio::test]
+    async fn viewport_coalesces_only_its_current_subscription_and_source() {
+        let (mut subscription,_) = mock_subscription(CaptureSource::Window(77));
+        let demand=protocol::viewport::ViewportDemand{id:100,source_revision:10,revision:2,
+            visible:protocol::viewport::NormalizedRect{x:250_000,y:250_000,width:500_000,height:500_000},width:1280,height:720};
+        assert_eq!(subscription.viewport(demand),Ok(2));
+        assert_eq!(subscription.viewport(protocol::viewport::ViewportDemand{revision:1,..demand}),Ok(2));
+        assert_eq!(subscription.settings.borrow().viewport,Some(demand));
+        for wrong in [protocol::viewport::ViewportDemand{id:101,..demand},protocol::viewport::ViewportDemand{source_revision:9,..demand}] {
+            assert!(subscription.viewport(wrong).is_err());
+            assert_eq!(subscription.settings.borrow().viewport,Some(demand));
+        }
+        subscription.request.source=CaptureSource::Camera(42);assert!(subscription.viewport(demand).is_err());
+        assert_eq!(subscription.source_revision,10);assert_eq!(subscription.settings_revision,11);
+        assert!(subscription.settings.borrow().paused);assert!(!subscription.keyframe.load(Relaxed));
     }
 
     #[cfg(target_os = "macos")]

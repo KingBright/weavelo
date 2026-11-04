@@ -459,6 +459,7 @@ impl MobileWorkspace {
             width: u16,
             height: u16,
             event: protocol::InputEvent,
+            #[serde(default)] geometry:Option<protocol::viewport::FrameGeometry>,
         }
         let event: Touch = serde_json::from_str(json).map_err(|e| e.to_string())?;
         if !matches!(event.event, protocol::InputEvent::Touch { .. }) {
@@ -469,6 +470,14 @@ impl MobileWorkspace {
             return Ok(None);
         };
         let current = self.connection.input_binding(event.id, touch.revision);
+        if let Some(g)=event.geometry {
+            g.validate()?;
+            if g.source_revision!=touch.revision || g.source_width!=u32::from(event.width) || g.source_height!=u32::from(event.height) {
+                if let Some(binding)=touch.cancel(){self.connection.try_bound_input(binding,None);}
+                return Err("The displayed source geometry changed".into());
+            }
+        }
+        touch.presented_geometry(event.geometry);
         let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..});
         let unavailable=touch.unavailable_reason(event.token,current);
         let mode=match event.mode {
@@ -489,6 +498,11 @@ impl MobileWorkspace {
         }
         if starting && let Some(reason)=unavailable {return Err(reason.into());}
         if let Some(binding) = touch.binding() {
+            if event.geometry.is_some_and(|g|events.iter().any(|event|matches!(event,
+                protocol::InputEvent::MouseMoveAbsolute{x,y} if !g.contains_source_point(f32::from(*x)/65535.,f32::from(*y)/65535.)))) {
+                touch.cancel();self.connection.try_bound_input(binding,None);
+                return Ok(None);
+            }
             for event in events {
                 if !self.connection.try_bound_input(binding, Some(event)) {
                     touch.cancel();

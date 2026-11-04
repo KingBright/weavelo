@@ -163,8 +163,10 @@ impl MacVideoCapturer {
     }
 
     fn configuration(&self, size: (u32, u32)) -> SCStreamConfiguration {
-        let (width, height) =
-            protocol::session::fit_capture_size(size, (self.target_width, self.target_height));
+        // Preserve the selected source's native pixels. Each independent viewer
+        // crops/scales its IOSurface on the GPU, so zoom never magnifies a
+        // previously downscaled 1080p capture of a Retina window/display.
+        let (width, height) = (size.0.max(2),size.1.max(2));
         let mut config = SCStreamConfiguration::new();
         config.set_width(width);
         config.set_height(height);

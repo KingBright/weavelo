@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Inspect the first HEVC VCL NAL; normal P frames return after their header.
 pub fn is_hevc_keyframe(data: &[u8]) -> bool {
+    let Ok((_,data))=protocol::viewport::split_frame(data) else {return false;};
     data.windows(5)
         .find_map(|w| {
             if w[..3] != [0, 0, 1] || w[3] & 0x80 != 0 || w[4] & 7 == 0 {

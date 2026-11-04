@@ -1100,6 +1100,7 @@ async fn start_live_session(
 }
 
 fn hevc_keyframe(data: &[u8]) -> bool {
+    let Ok((_,data))=protocol::viewport::split_frame(data) else{return false;};
     // The last three bytes of either Annex B prefix are 00 00 01.
     // Require the complete two-byte HEVC header and an IRAP VCL type.
     data.windows(5).any(|window| {

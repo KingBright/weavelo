@@ -1462,6 +1462,7 @@ impl RestoredDashboard {
         let Some(frame) = self.current_frame.as_ref() else {
             return None;
         };
+        if frame.frame_geometry.is_some_and(|g|!self.owner.accepts_frame_source_revision(g.source_revision)) {return None;}
         let Some(bounds) = *self
             .video_surface_bounds
             .lock()
@@ -1482,9 +1483,9 @@ impl RestoredDashboard {
                 ViewportScaleMode::AspectFit => VideoFit::Contain,
                 ViewportScaleMode::Fill => VideoFit::Cover,
             };
-            return native_pointer_event(geometry,viewport,fit,[f32::from(position.x),f32::from(position.y)]);
+            return frame_source_pointer(frame,native_pointer_event(geometry,viewport,fit,[f32::from(position.x),f32::from(position.y)]));
         }
-        absolute_pointer_event(
+        frame_source_pointer(frame,absolute_pointer_event(
             (f32::from(position.x), f32::from(position.y)),
             (
                 f32::from(bounds.origin.x),
@@ -1494,7 +1495,7 @@ impl RestoredDashboard {
             ),
             (frame.width(), frame.height()),
             self.scale_mode,
-        )
+        ))
     }
 
     fn queue_pointer_button(&mut self, button: MouseButton, pressed: bool) {
@@ -5476,6 +5477,15 @@ fn quantize_delta(delta: (f32, f32)) -> (i32, i32) {
         delta.0.clamp(i32::MIN as f32, i32::MAX as f32).trunc() as i32,
         delta.1.clamp(i32::MIN as f32, i32::MAX as f32).trunc() as i32,
     )
+}
+
+fn frame_source_pointer(frame:&MacDecodedVideoFrame,event:Option<protocol::InputEvent>)->Option<protocol::InputEvent> {
+    event.map(|event|match (event,frame.frame_geometry) {
+        (protocol::InputEvent::MouseMoveAbsolute{x,y},Some(geometry))=>{
+            let (x,y)=geometry.source_point(x,y);protocol::InputEvent::MouseMoveAbsolute{x,y}
+        }
+        (event,_)=>event,
+    })
 }
 
 pub(crate) fn absolute_pointer_event(

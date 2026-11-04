@@ -36,6 +36,7 @@ pub struct DecodedFrame {
     pub decoded_at: Instant,
     /// Display transform attached by the current authenticated camera view.
     pub display_rotation: u16,
+    pub frame_geometry: Option<protocol::viewport::FrameGeometry>,
 }
 impl remote_core::VideoFrame for DecodedFrame {
     fn width(&self) -> u32 {
@@ -259,6 +260,7 @@ impl DecoderPipe {
                             video_epoch: recovery,
                             decoded_at: Instant::now(),
                             display_rotation: 0,
+                            frame_geometry: None,
                         };
                         let Some(previous) = stats.video_recovery.publish(recovery, || {
                             report.lock().unwrap().clear();

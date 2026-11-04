@@ -316,6 +316,14 @@ object WorkspaceClient {
         action(3, request(updated).toString())
         mutable.value = mutable.value.copy(panes = mutable.value.panes.map { if (it.id == id) updated else it })
     }
+    fun viewport(id: Int,sessionKey: String,generation: Long,visible: IntArray,width: Int,height: Int) = guarded {
+        if (!currentView(id,sessionKey,generation,false)) return@guarded
+        val pane=mutable.value.panes.firstOrNull { it.id==id && it.accepted && !it.source.isCamera } ?: return@guarded
+        require(visible.size==4 && width in 16..8192 && height in 16..8192)
+        command("Viewport",JSONObject().put("id",pane.id).put("source_revision",0).put("revision",++revision)
+            .put("width",width).put("height",height).put("visible",JSONObject().put("x",visible[0]).put("y",visible[1])
+                .put("width",visible[2]).put("height",visible[3])))
+    }
     fun sendFile(file: File, expectedSessionKey: String) = guarded {
         check(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey) {
             "The destination changed or disconnected. Select the file again for the intended device."
@@ -433,8 +441,9 @@ object WorkspaceClient {
             DirectedDelivery.rendered(it, generation, id, mutable.value.panes)
         }
     }
-    fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
+    internal fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
         mode: TouchMode, width: Int, height: Int, event: JSONObject,
+        geometry: VideoFrameGeometry? = null,
         onCursor: (Float, Float) -> Unit = { _, _ -> }) = guarded {
         if (!currentView(id, sessionKey, generation, true)) {
             inputViewIssue(id,sessionKey,generation)
@@ -446,8 +455,14 @@ object WorkspaceClient {
             if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.")
             return@guarded
         }
+        val presented = geometry?.let { g -> JSONObject().put("source_revision",Integer.toUnsignedLong(g.sourceRevision))
+            .put("demand_revision",java.math.BigInteger(java.lang.Long.toUnsignedString(g.demandRevision)))
+            .put("revision",java.math.BigInteger(java.lang.Long.toUnsignedString(g.revision)))
+            .put("source_width",g.sourceWidth).put("source_height",g.sourceHeight).put("width",g.width).put("height",g.height)
+            .put("crop",JSONObject().put("x",g.x).put("y",g.y).put("width",g.cropWidth).put("height",g.cropHeight)) }
         runCatching { action(12, JSONObject().put("id", id).put("token", token)
             .put("mode", mode.code).put("width", width).put("height", height)
+            .put("geometry",presented ?: JSONObject.NULL)
             .put("event", JSONObject().put("Touch", event)).toString()) }
             .onFailure { inputIssue(id, it.message ?: "Control is unavailable") }
             .onSuccess { result ->

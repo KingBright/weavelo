@@ -8,6 +8,7 @@ pub mod session_auth;
 pub mod realtime_input;
 pub mod shared_files;
 pub mod timing;
+pub mod viewport;
 
 pub use timing::{
     FRAME_TIMING_CHECKPOINTS_WIRE_LEN, FrameTimingCheckpoints, HOST_TIMING_WIRE_LEN,

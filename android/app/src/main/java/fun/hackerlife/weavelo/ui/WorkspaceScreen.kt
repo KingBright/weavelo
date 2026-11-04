@@ -394,19 +394,36 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     var touchMode by remember(pane.id, sessionKey, generation) { mutableStateOf(TouchMode.DIRECT) }
     var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
-    LaunchedEffect(measured, pane.accepted, keyboardVisible, imeVisible) {
+    val nativeViewport = remember(pane.id, sessionKey, generation) { java.util.concurrent.atomic.AtomicReference<GpuVideoSurface?>() }
+    LaunchedEffect(measured, dimensions, pane.accepted, keyboardVisible, imeVisible) {
         // IME insets resize presentation and its inverse touch transform. Keep
         // the encoder/decoder and composition owner stable while typing.
         if (!pane.accepted || keyboardVisible || imeVisible) return@LaunchedEffect
         delay(250)
         // Negotiate only visible video pixels. Letterboxing/IME/toolbars are not video.
         val quarterTurn = pane.source.rotation % 180 != 0
-        VideoDimensions.fitEncoder(pane.source.width, pane.source.height,
-            (if (quarterTurn) measured.height else measured.width).coerceAtMost(4096),
-            (if (quarterTurn) measured.width else measured.height).coerceAtMost(4096), 2, 2)
+        (if (!pane.source.isCamera) MediaCodecPlayer.screenSize(dimensions.width,dimensions.height) else VideoDimensions.fitEncoder(dimensions.width, dimensions.height,
+            if (pane.source.isCamera) (if (quarterTurn) measured.height else measured.width).coerceAtMost(4096) else 4096,
+            if (pane.source.isCamera) (if (quarterTurn) measured.width else measured.height).coerceAtMost(4096) else 4096, 2, 2))
             ?.takeIf { it.width >= 32 && it.height >= 32 }?.let {
                 WorkspaceClient.settings(pane.id, sessionKey, generation, width = it.width, height = it.height)
             }
+    }
+    LaunchedEffect(pane.id, sessionKey, generation, pane.accepted) {
+        if (!pane.accepted || pane.source.isCamera) return@LaunchedEffect
+        var previous = emptyList<Int>()
+        while (isActive) {
+            val size = measured
+            if (size.width >= 16 && size.height >= 16) {
+                val rect = transform.value.visibleRect(size.width.toFloat(),size.height.toFloat())
+                val next = rect.toList() + listOf(size.width,size.height)
+                if (next != previous) {
+                    WorkspaceClient.viewport(pane.id,sessionKey,generation,rect,size.width,size.height)
+                    previous=next
+                }
+            }
+            delay(50) // latest state only; continuous gestures cannot starve updates
+        }
     }
     LaunchedEffect(touching, surfaceToken) {
         val token = surfaceToken
@@ -430,6 +447,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             modifier = Modifier.fillMaxSize(),
             onViewportSizeChanged = { measured = it },
             sendTouch = { action, id, x, y, pressure, eventTime ->
+                val presentation = nativeViewport.get()?.presentation
+                val geometry = presentation?.geometry
+                if (action != 3 && (presentation?.ready != true || geometry != null &&
+                    (geometry.sourceRevision != 0 || geometry.sourceWidth != dimensions.width || geometry.sourceHeight != dimensions.height ||
+                        touchMode == TouchMode.DIRECT && !geometry.contains(x,y)))) {
+                    pointers.clear(); touching=false
+                    WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
+                } else {
                 when (action) {
                     0 -> pointers.add(id)
                     2 -> pointers.remove(id)
@@ -437,10 +462,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
                 touching = pointers.isNotEmpty()
                 WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
-                    touchMode, pane.source.width, pane.source.height,
+                    touchMode, geometry?.sourceWidth ?: pane.source.width, geometry?.sourceHeight ?: pane.source.height,
                     JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
-                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure)) { cx, cy ->
+                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure),geometry) { cx, cy ->
                     if (surfaceToken == token) cursor = Offset(cx, cy)
+                if (surfaceToken == token && touchMode == TouchMode.TRACKPAD && transform.value.scale>1f) {
+                    transform.value=transform.value.reveal(cx,cy,measured.width.toFloat(),measured.height.toFloat())
+                }
+                }
                 }
             },
             overlay = {
@@ -491,11 +520,24 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             val running = AtomicBoolean(true)
                             active = running
                             worker = Thread({
-                                val codec = MediaCodecPlayer(holder.surface) { decoded -> post {
-                                    if (running.get() && surfaceToken == token) dimensions = decoded
-                                } }
+                                var target: GpuVideoSurface? = null
+                                var codec: MediaCodecPlayer? = null
                                 try {
-                                    codec.start(pane.width, pane.height)
+                                    if (!pane.source.isCamera) {
+                                        target=GpuVideoSurface(holder.surface,pane.source.width,pane.source.height) { geometry ->
+                                            if (geometry != null) post {
+                                                if (running.get() && surfaceToken == token) dimensions=VideoDimensions(geometry.sourceWidth,geometry.sourceHeight)
+                                            }
+                                        }
+                                        nativeViewport.set(target)
+                                    }
+                                    val player=MediaCodecPlayer(target?.input ?: holder.surface,target) { decoded -> post {
+                                        if (running.get() && surfaceToken == token && nativeViewport.get()?.presentation?.geometry == null) dimensions=decoded
+                                    } }
+                                    codec=player
+                                    val size=if (target != null) checkNotNull(MediaCodecPlayer.screenSize(pane.source.width,pane.source.height)) { "No supported native screen decoder size" }
+                                        else VideoDimensions(pane.width,pane.height)
+                                    player.start(size.width,size.height)
                                     WorkspaceClient.keyframe(pane.id)
                                     var waiting = true
                                     var pending: ByteArray? = null
@@ -518,27 +560,27 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                             val keyframe = bytes[0].toInt() != 0
                                             val pts = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
                                             if (waiting && !keyframe) pending = null
-                                            else if (codec.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false; submittedPackets++ }
+                                            else if (player.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false; submittedPackets++ }
                                         }
                                         if (pending != null && System.nanoTime() - pendingSince > 250_000_000) {
                                             pending = null; waiting = true
                                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "reset")
-                                            codec.flush()
-                                            framesBeforeReset = codec.outputFrames
+                                            player.flush()
+                                            framesBeforeReset = player.outputFrames
                                             reportedFirstFrame = false
                                             WorkspaceClient.keyframe(pane.id)
                                             lastRequest = System.nanoTime()
                                         }
-                                        codec.drain()
-                                        if (!reportedFirstFrame && codec.outputFrames > framesBeforeReset) {
+                                        player.drain()
+                                        if (!reportedFirstFrame && player.outputFrames > framesBeforeReset) {
                                             post { if (running.get() && surfaceToken == token) videoStatus = null }
                                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "ready")
                                             android.util.Log.i("WeaveloWorkspace", "First decoded frame for subscription ${pane.id}")
                                             WorkspaceClient.videoDiagnostic(pane.id,sessionKey,generation,token,"first-decoder-output",
-                                                receivedPackets,submittedPackets,codec.outputFrames)
+                                                receivedPackets,submittedPackets,player.outputFrames)
                                             reportedFirstFrame = true
                                         }
-                                        if (!startupReported && codec.outputFrames == 0L && System.nanoTime() - started > 10_000_000_000L) {
+                                        if (!startupReported && player.outputFrames == 0L && System.nanoTime() - started > 10_000_000_000L) {
                                             startupReported = true
                                             val message = when {
                                                 receivedPackets == 0L -> "Waiting for video from this device."
@@ -547,7 +589,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                             }
                                             android.util.Log.w("WeaveloWorkspace", "Video startup stalled: subscription=${pane.id}, received=$receivedPackets, submitted=$submittedPackets, surface=${holder.surface.isValid}")
                                             WorkspaceClient.videoDiagnostic(pane.id,sessionKey,generation,token,"startup-stalled",
-                                                receivedPackets,submittedPackets,codec.outputFrames)
+                                                receivedPackets,submittedPackets,player.outputFrames)
                                             post { if (running.get() && surfaceToken == token) videoStatus = message }
                                         }
                                         if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
@@ -556,7 +598,9 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                 } catch (e: Exception) { if (running.get()) post { currentError(e.message ?: "Video decoder failed") } }
                                 finally {
                                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "end")
-                                    codec.stop()
+                                    codec?.stop()
+                                    nativeViewport.compareAndSet(target,null)
+                                    target?.close()
                                 }
                             }, "workspace-video-${pane.id}").apply { start() }
                         }

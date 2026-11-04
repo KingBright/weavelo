@@ -1386,6 +1386,10 @@ impl OriginalOwner {
         }
         true
     }
+
+    pub(crate) fn accepts_frame_source_revision(&self,revision:u32)->bool {
+        self.pool.lock().unwrap().active().is_some_and(|entry|entry.session.source_revision()==revision)
+    }
     pub fn set_input_locked(&self, locked: bool) {
         let mut p = self.pool.lock().unwrap();
         self.revoke_computer_use();

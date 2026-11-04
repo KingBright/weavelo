@@ -8,6 +8,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ViewportTransformTest {
+    @Test fun viewportDemandTracksContinuousPanAndZoomWithNoCoordinateDrift() {
+        assertArrayEquals(intArrayOf(0,0,1_000_000,1_000_000),ViewportTransform().visibleRect(1000f,600f))
+        var t=ViewportTransform(scale=2f)
+        assertArrayEquals(intArrayOf(250_000,250_000,500_000,500_000),t.visibleRect(1000f,600f))
+        for (offset in listOf(Offset(500f,300f),Offset(-500f,-300f),Offset.Zero)) {
+            t=t.copy(offset=offset)
+            val rect=t.visibleRect(1000f,600f)
+            val (x,y)=t.screenToNormalized(0f,0f,1000f,600f)
+            assertEquals(x,rect[0]/1_000_000f,.000002f);assertEquals(y,rect[1]/1_000_000f,.000002f)
+            assertTrue(rect[0]+rect[2]<=1_000_000 && rect[1]+rect[3]<=1_000_000)
+        }
+        val followed=t.reveal(.9f,.9f,1000f,600f)
+        val screen=followed.normalizedToScreen(.9f,.9f,1000f,600f)
+        assertTrue(screen.first in 0f..1000f && screen.second in 0f..600f)
+        assertEquals(Offset.Zero,followed.reset().offset)
+    }
 
     @Test
     fun resizingPreservesTheNormalizedCenterFocus() {
@@ -37,9 +53,9 @@ class ViewportTransformTest {
     @Test
     fun scaleLimitsAreRespected() {
         val transform = ViewportTransform()
-        // 放大测试：缩放因子 5.0，上限应被限制在 3.5x
+        // 放大测试：缩放因子 5.0，上限应被限制在 4x
         val zoomedIn = transform.update(zoomFactor = 5.0f, panDelta = Offset.Zero, viewWidth = 1920f, viewHeight = 1080f)
-        assertEquals(3.5f, zoomedIn.scale, 0.0001f)
+        assertEquals(4.0f, zoomedIn.scale, 0.0001f)
 
         // 缩小测试：缩放因子 0.2，下限应被限制在 1.0x
         val zoomedOut = zoomedIn.update(zoomFactor = 0.1f, panDelta = Offset.Zero, viewWidth = 1920f, viewHeight = 1080f)
@@ -96,7 +112,7 @@ class ViewportTransformTest {
     fun inverseMappingHasZeroDriftAcrossScalesAndOffsets() {
         val viewWidth = 1920f
         val viewHeight = 1080f
-        val testScales = listOf(1.0f, 1.25f, 2.0f, 3.0f, 3.5f)
+        val testScales = listOf(1.0f, 1.25f, 2.0f, 3.0f, 4.0f)
         val testOffsets = listOf(
             Offset.Zero,
             Offset(100f, -50f),

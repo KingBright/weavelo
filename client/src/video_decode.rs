@@ -73,6 +73,7 @@ pub struct MacDecodedVideoFrame {
     pub decoded_at: std::time::Instant,
     /// Display transform attached by the current authenticated camera view.
     pub display_rotation: u16,
+    pub frame_geometry: Option<protocol::viewport::FrameGeometry>,
     width: u32,
     height: u32,
 }
@@ -189,6 +190,7 @@ extern "C" fn decompression_callback(
             video_epoch: Default::default(),
             decoded_at: std::time::Instant::now(),
             display_rotation: 0,
+            frame_geometry: None,
             width,
             height,
         };
@@ -317,6 +319,7 @@ impl VideoDecoder for MacVideoDecoder {
     type Frame = MacDecodedVideoFrame;
 
     async fn decode(&mut self, data: &[u8]) -> Result<Self::Frame, Box<dyn Error + Send + Sync>> {
+        let (frame_geometry,data)=protocol::viewport::split_frame(data)?;
         // Simple Annex B parsing
         let mut vps = None;
         let mut sps = None;
@@ -448,6 +451,10 @@ impl VideoDecoder for MacVideoDecoder {
         // Add a timeout to prevent deadlocks if the callback is never called
         match tokio::time::timeout(std::time::Duration::from_millis(200), self.rx.recv()).await {
             Ok(Some(Some(mut frame))) => {
+                if let Some(g)=frame_geometry {
+                    if (g.width,g.height)!=(frame.width,frame.height) {return Err("Decoded viewport dimensions differ from its frame geometry".into());}
+                }
+                frame.frame_geometry=frame_geometry;
                 frame.decode_cost_ms = start_time.elapsed().as_secs_f32() * 1000.0;
                 Ok(frame)
             }

@@ -30,6 +30,8 @@ mod video_color;
 #[cfg(target_os = "macos")]
 mod video_encode;
 #[cfg(target_os = "macos")]
+mod macos_viewport;
+#[cfg(target_os = "macos")]
 mod window_input;
 
 #[cfg(any(test, target_os = "linux", target_os = "windows"))]
@@ -390,6 +392,8 @@ pub struct StreamSettings {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub paused: bool,
+    pub source_revision: u32,
+    pub viewport: Option<protocol::viewport::ViewportDemand>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -1062,6 +1066,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             fps,
             bitrate_kbps,
             paused: false,
+            source_revision: 0,
+            viewport: None,
         },
         || async {
             let _ = udp_sender
@@ -1100,6 +1106,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         .with_resources(resources.clone());
     #[cfg(target_os = "macos")]
     let mut video_encoder = MacVideoEncoder::new(width, height, fps, bitrate_kbps)?;
+    #[cfg(target_os = "macos")]
+    if !matches!(source,protocol::session::CaptureSource::Camera(_)) {video_encoder.viewport_settings(&initial,source)?;}
 
     #[cfg(target_os="linux")]
     let native_encoder=if native_capture.is_some() || matches!(source,protocol::session::CaptureSource::Camera(_)) {
@@ -1227,7 +1235,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     #[cfg(target_os = "macos")]
                     {
                         video_capturer.update_resolution_and_fps(new_settings.width, new_settings.height, new_settings.fps)?;
-                        video_encoder.update_rate_settings(new_settings.fps, new_settings.bitrate_kbps);
+                        if !matches!(source,protocol::session::CaptureSource::Camera(_)) {
+                            video_encoder.viewport_settings(&new_settings,source)?;
+                        }else{video_encoder.update_rate_settings(new_settings.fps, new_settings.bitrate_kbps)?;}
                     }
                     #[cfg(target_os = "linux")]
                     video_capturer.update_resolution_and_fps(new_settings.height, new_settings.fps)?;
@@ -1376,6 +1386,8 @@ mod capture_start_lifecycle_tests {
             fps: 60,
             bitrate_kbps: 8000,
             paused,
+            source_revision: 0,
+            viewport: None,
         }
     }
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 6;
+pub const SESSION_VERSION: u32 = 7;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -215,6 +215,8 @@ pub enum SessionCommand {
     TextRejected { binding: crate::realtime_input::InputBinding, request_id: u64, reason: String },
     RequestCameraSwitch(CameraSwitchRequest),
     CameraSwitchResult { request: CameraSwitchRequest, ready: Result<(), String> },
+    Viewport(crate::viewport::ViewportDemand),
+    ViewportAccepted { id: u32, source_revision: u32, revision: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -41,7 +41,7 @@ data class ViewportTransform(
     val scale: Float = 1.0f,
     val offset: Offset = Offset.Zero,
     val minScale: Float = 1.0f,
-    val maxScale: Float = 3.5f
+    val maxScale: Float = 4.0f
 ) {
     /**
      * 计算平移边界限制：确保局部放大状态下视口始终覆盖在内容有效区域内。
@@ -86,6 +86,25 @@ data class ViewportTransform(
      * 快速复位至 1.0x
      */
     fun reset(): ViewportTransform = copy(scale = 1.0f, offset = Offset.Zero)
+
+    /** Full-source edge coordinates of the real visible video viewport. */
+    fun visibleRect(viewWidth: Float, viewHeight: Float): IntArray {
+        val (left,top)=screenToNormalized(0f,0f,viewWidth,viewHeight)
+        val (right,bottom)=screenToNormalized(viewWidth,viewHeight,viewWidth,viewHeight)
+        val x=kotlin.math.floor(left.toDouble()*1_000_000).toInt().coerceIn(0,999_999)
+        val y=kotlin.math.floor(top.toDouble()*1_000_000).toInt().coerceIn(0,999_999)
+        val endX=kotlin.math.ceil(right.toDouble()*1_000_000).toInt().coerceIn(x+1,1_000_000)
+        val endY=kotlin.math.ceil(bottom.toDouble()*1_000_000).toInt().coerceIn(y+1,1_000_000)
+        return intArrayOf(x,y,endX-x,endY-y)
+    }
+    /** Trackpad navigation follows its cursor while it stays in known pixels. */
+    fun reveal(nx: Float,ny: Float,width: Float,height: Float): ViewportTransform {
+        val (x,y)=normalizedToScreen(nx,ny,width,height)
+        val margin=minOf(24f,width/8f,height/8f)
+        val dx=when {x<margin->margin-x; x>width-margin->width-margin-x; else->0f}
+        val dy=when {y<margin->margin-y; y>height-margin->height-margin-y; else->0f}
+        return copy(offset=clampOffset(offset+Offset(dx,dy),width,height))
+    }
 
     fun reclamp(viewWidth: Float, viewHeight: Float): ViewportTransform =
         copy(offset = clampOffset(offset, viewWidth, viewHeight))

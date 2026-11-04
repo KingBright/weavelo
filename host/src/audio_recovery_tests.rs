@@ -51,6 +51,8 @@ fn settings(paused: bool) -> StreamSettings {
         fps: 30,
         bitrate_kbps: 4000,
         paused,
+        source_revision: 0,
+        viewport: None,
     }
 }
 async fn data(rx: &UdpReceiver) -> DataEnvelope {

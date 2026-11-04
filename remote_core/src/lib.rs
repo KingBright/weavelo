@@ -45,6 +45,7 @@ pub mod stream_settings;
 pub mod view_commands;
 pub mod telemetry;
 pub mod timing;
+pub mod viewport;
 pub mod trace;
 pub mod traits;
 pub mod video_recovery;

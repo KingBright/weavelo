@@ -81,6 +81,15 @@ struct FrameContext {
     submit_instant: std::time::Instant,
     timing: protocol::FrameTimingCheckpoints,
     admission:Arc<OwnedSemaphorePermit>,
+    geometry:Option<protocol::viewport::FrameGeometry>,
+}
+
+struct ViewportEncoding {
+    planner:remote_core::viewport::ViewportPlanner,
+    cap:[u32;2],
+    source_revision:u32,
+    bitrate_cap:u32,
+    cropper:Option<crate::macos_viewport::Cropper>,
 }
 
 pub struct MacVideoEncoder {
@@ -95,6 +104,7 @@ pub struct MacVideoEncoder {
     height: u32,
     fps: u32,
     bitrate_kbps: u32,
+    viewport:Option<ViewportEncoding>,
 }
 
 extern "C" fn compression_callback(
@@ -138,6 +148,7 @@ extern "C" fn compression_callback(
         }
 
         let mut out_buffer = Vec::with_capacity(total_length + 256);
+        if let Some(geometry)=ctx.geometry {geometry.write_header(&mut out_buffer);}
         let mut offset = 0;
         let mut is_keyframe = true;
 
@@ -403,7 +414,18 @@ impl MacVideoEncoder {
             height,
             fps,
             bitrate_kbps,
+            viewport:None,
         })
+    }
+
+    pub(crate) fn viewport_settings(&mut self,settings:&crate::StreamSettings,source:protocol::session::CaptureSource)->Result<(),Box<dyn Error+Send+Sync>> {
+        let state=self.viewport.get_or_insert_with(||ViewportEncoding{planner:remote_core::viewport::ViewportPlanner::for_source(source),cap:[settings.width,settings.height],
+            source_revision:settings.source_revision,bitrate_cap:settings.bitrate_kbps,cropper:None});
+        if state.source_revision!=settings.source_revision {state.planner.reset();}
+        state.source_revision=settings.source_revision;state.cap=[settings.width,settings.height];state.bitrate_cap=settings.bitrate_kbps;
+        if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
+        self.update_rate_settings(settings.fps,self.bitrate_kbps.min(settings.bitrate_kbps))?;
+        Ok(())
     }
 
     fn prepare_source_color(&mut self,color:crate::video_color::SourceColor)->Result<VTCompressionSessionRef,Box<dyn Error+Send+Sync>> {
@@ -446,15 +468,15 @@ impl MacVideoEncoder {
         self.force_keyframe = true;
     }
 
-    pub fn update_rate_settings(&mut self, fps: u32, bitrate_kbps: u32) {
-        self.update_settings(self.width, self.height, fps, bitrate_kbps);
+    pub fn update_rate_settings(&mut self, fps: u32, bitrate_kbps: u32) -> Result<(),Box<dyn Error+Send+Sync>> {
+        self.update_settings(self.width, self.height, fps, bitrate_kbps)
     }
 
-    pub fn update_settings(&mut self, width: u32, height: u32, fps: u32, bitrate_kbps: u32) {
+    pub fn update_settings(&mut self, width: u32, height: u32, fps: u32, bitrate_kbps: u32) -> Result<(),Box<dyn Error+Send+Sync>> {
         if (self.width, self.height, self.fps, self.bitrate_kbps)
             == (width, height, fps, bitrate_kbps)
         {
-            return;
+            return Ok(());
         }
         if self.width == width && self.height == height {
             self.fps = fps;
@@ -499,26 +521,22 @@ impl MacVideoEncoder {
                 }
             }
         } else {
-            // Recreate session for new resolution and trigger mandatory IDR KeyFrame
-            if let Some(old_session) = self.session.take() {
-                unsafe {
-                    VTCompressionSessionInvalidate(old_session);
-                    CFRelease(old_session as _);
-                }
-            }
             let ref_con = self._tx_box.as_mut() as *mut _ as *mut c_void;
-            if let Ok(new_session) =
-                unsafe { Self::create_session(width, height, fps, bitrate_kbps, ref_con) }
-            {
-                self.session = Some(new_session);
-                self.source_color = None;
-                self.width = width;
-                self.height = height;
-                self.fps = fps;
-                self.bitrate_kbps = bitrate_kbps;
-                self.force_keyframe = true;
+            let candidate=unsafe{Self::create_session(width,height,fps,bitrate_kbps,ref_con)?};
+            if let Some(old_session)=self.session {
+                // Finish every admitted old-size access unit before introducing
+                // the new SPS/IDR. Its original geometry stays in FrameContext.
+                let result=unsafe{VTCompressionSessionCompleteFrames(old_session,CMTime{value:0,timescale:0,flags:0,epoch:0})};
+                if result!=0 {
+                    unsafe{VTCompressionSessionInvalidate(candidate);CFRelease(candidate);}
+                    return Err(format!("Cannot finish previous viewport encoder: {result}").into());
+                }
+                unsafe{VTCompressionSessionInvalidate(old_session);CFRelease(old_session);}
             }
+            self.session=Some(candidate);self.source_color=None;
+            self.width=width;self.height=height;self.fps=fps;self.bitrate_kbps=bitrate_kbps;self.force_keyframe=true;
         }
+        Ok(())
     }
 
     pub async fn pull_encoded_chunk(
@@ -548,13 +566,25 @@ impl VideoEncoder for MacVideoEncoder {
             Some(buf) => buf,
             None => return Ok(()),
         };
-        let (width, height) = (
+        let (source_width, source_height) = (
             cv_pixel_buffer.width() as u32,
             cv_pixel_buffer.height() as u32,
         );
-        if (self.width, self.height) != (width, height) {
-            self.update_settings(width, height, self.fps, self.bitrate_kbps);
-            self.request_keyframe();
+        let geometry=if let Some(state)=&mut self.viewport {
+            Some(state.planner.plan([source_width,source_height],state.cap,state.source_revision,std::time::Instant::now())?)
+        } else {None};
+        let cropped=if let Some(g)=geometry.filter(|g|g.crop.x!=0||g.crop.y!=0
+            ||g.crop.width!=source_width||g.crop.height!=source_height||g.width!=source_width||g.height!=source_height) {
+            let state=self.viewport.as_mut().unwrap();
+            if state.cropper.is_none(){state.cropper=Some(crate::macos_viewport::Cropper::new()?);}
+            Some(state.cropper.as_mut().unwrap().crop(cv_pixel_buffer.as_ptr().cast(),g)?)
+        }else{None};
+        let pixel_buffer=cropped.as_ref().map_or(cv_pixel_buffer.as_ptr().cast(),|buffer|buffer.0);
+        let (width,height)=geometry.map_or((source_width,source_height),|g|(g.width,g.height));
+        let bitrate=self.viewport.as_ref().map_or(self.bitrate_kbps,|state|
+            remote_core::viewport::bitrate_for_pixels(width,height,self.fps,state.bitrate_cap));
+        if (self.width, self.height, self.bitrate_kbps) != (width, height, bitrate) {
+            self.update_settings(width, height, self.fps, bitrate)?;
         }
         let pts = frame.sample_buffer.presentation_timestamp();
         let duration = frame.sample_buffer.duration();
@@ -575,6 +605,7 @@ impl VideoEncoder for MacVideoEncoder {
             submit_instant: std::time::Instant::now(),
             timing,
             admission,
+            geometry,
         });
         let source_frame_ref_con = Box::into_raw(ctx) as *mut c_void;
 
@@ -615,7 +646,7 @@ impl VideoEncoder for MacVideoEncoder {
 
             let status = VTCompressionSessionEncodeFrame(
                 session,
-                cv_pixel_buffer.as_ptr() as _,
+                pixel_buffer.cast(),
                 pts_sys,
                 dur_sys,
                 frame_props,
@@ -672,12 +703,12 @@ mod tests {
         assert_eq!(encoder.bitrate_kbps, 20_000);
 
         // Dynamic bitrate and fps switch
-        encoder.update_settings(1920, 1080, 30, 5_000);
+        encoder.update_settings(1920, 1080, 30, 5_000).unwrap();
         assert_eq!(encoder.fps, 30);
         assert_eq!(encoder.bitrate_kbps, 5_000);
 
         // Dynamic resolution switch (720p)
-        encoder.update_settings(1280, 720, 60, 10_000);
+        encoder.update_settings(1280, 720, 60, 10_000).unwrap();
         assert_eq!(encoder.width, 1280);
         assert_eq!(encoder.height, 720);
         assert_eq!(encoder.fps, 60);
