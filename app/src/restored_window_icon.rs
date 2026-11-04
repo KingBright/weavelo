@@ -46,6 +46,12 @@ impl Artwork {
             {
                 return;
             }
+            // Dock caches a process's label when its tile is registered. A
+            // source/title change therefore needs a new tile, not just an LS
+            // metadata update on the old process.
+            if self.dock_proxy.is_some() && self.dock_title != title {
+                self.dock_proxy = None;
+            }
             let next_icon = Some(bitmap.map_or([0u8; 32], |b| b.id));
             let icon_changed = self.dock_icon != next_icon || self.dock_proxy.is_none();
             let title_changed = self.dock_title != title || self.dock_proxy.is_none();
@@ -431,6 +437,27 @@ pub(crate) mod macos_dock {
         }
     }
 
+    unsafe fn set_startup_bundle_name(title: &str) {
+        use std::ffi::c_void;
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFBundleGetMainBundle() -> *const c_void;
+            fn CFBundleGetInfoDictionary(bundle: *const c_void) -> *mut c_void;
+            fn CFDictionarySetValue(dictionary: *mut c_void, key: *const c_void, value: *const c_void);
+        }
+        unsafe {
+            // Presentation metadata in this helper's cached bundle dictionary
+            // only. Never edit its signed Info.plist or bundle identifier.
+            let info = CFBundleGetInfoDictionary(CFBundleGetMainBundle());
+            if !info.is_null() {
+                let name = ns_string(title) as *const c_void;
+                for key in ["CFBundleName", "CFBundleDisplayName"] {
+                    CFDictionarySetValue(info, ns_string(key) as *const c_void, name);
+                }
+            }
+        }
+    }
+
     unsafe fn set_dock_icon_rgba(rgba: &[u8]) {
         if rgba.len() != ICON_BYTES {
             return;
@@ -473,15 +500,25 @@ pub(crate) mod macos_dock {
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (title, pixels) = match decode_frame(std::io::stdin().lock()) {
+            Ok(frame) => frame,
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
         // This helper starts directly on main, before Tokio initialization. It
         // owns no async media/network tasks and must not enter the GUI runtime
         // adapter, which intentionally requires a multi-thread Tokio executor.
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
+            set_startup_bundle_name(&title);
             let app = NSApplication::sharedApplication(nil);
             app.setActivationPolicy_(
                 NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
             );
+            set_dock_display_name(&title);
+            if let Some(rgba) = pixels {
+                set_dock_icon_rgba(&rgba);
+            }
             if let Some(mut decl) = ClassDecl::new("WeaveloDockTileDelegate", class!(NSObject)) {
                 decl.add_method(
                     sel!(applicationDidBecomeActive:),

@@ -761,3 +761,13 @@ Studio 正常 GUI 显式接收 Book 的两个自有 AppKit 来源（PID 24850 / 
 
 同次系统 Dock 的实际 AX 记录显示三个项目仍都叫 Weavelo。原因是代码把符号名称 `_kLSDisplayNameKey` 当作了 CFString 键值，未读取该数据符号所指向的真实键。现改为解引用实际键，不改变签名或 bundle 标识。实现核对参考 [WebKit LaunchServices 声明](https://chromium.googlesource.com/external/github.com/WebKit/webkit/+/283c780414b7c24e4a911c823af665f53a15e8f7/Source/WebCore/PAL/pal/spi/cocoa/LaunchServicesSPI.h)；该私有符号仍需在实际系统验证，不能把动态解析成功当作 Dock 名称已改变。四项图标/边界检查及签名发布回归 1,045 项通过、19 项跳过，日志 `native116-dock-name-tests.log`、`native116-release-regression.log`。116 的实际名称、截图和安装随后记录。
 
+### 四机 116 / 两机 79 的安装、手机输入与 Dock 名称后续
+
+四台电脑均已正式兼容安装 116 / `d90ef03a90117e6898f904a48f6629b6fd943c63`，逐机实际 GUI/后台/文件字节一致；Studio 57899/57895、Book 63871/63835、Linux 872110/872024、Windows 32700/8472。各机保留 `native116-{studio,book,linux,windows}-actual-installed-owner-proof.json`。两部手机均已安装原签名 Android 79 / `e1069f5`，安装 base.apk 独立 SHA `b692b4814f19d1e9c24024169bb8ead397803b76f245fcacd5a3e06badac2cca`；正式源和 producer receipt 均指向完整 `e1069f566852db428906db1f22c92347bae10465`。红米包经真实 Weavelo 到 Studio，接收端独立核对后安装；两机无障碍仍已启用，未代为授予系统权限。SDK 报告中的“USB”是连接方式，真实 ADB 序列为 `UGXC8DQGDYBATKB6` / `324662166861`。
+
+Android 79 → Studio 116 独立原生应用实际输入再次通过：红米点击 1 次、滚动 16 个事件、准确 `RED116`，默认输入法未改变；努比亚复用同一个专用测试窗口，以红米后状态为基线再点击 1 次、滚动 16 个事件，字段从 `RED116` 变为精确的 `RED116MAC116`，新增 `MAC116` 没有重复。努比亚仍使用已授权临时百度 OEM 对照并恢复微信。两次正常断开，实际截图和目标端独立状态分别记录于 `android79-{redmi,nubia}-native116-*`。一次为重开测试窗口而作的进程保护检查未能匹配 `ps comm` 路径表示，故未发送信号；没有据此终止未知进程，后续使用原专用窗口和明确基线验收。
+
+116 的独立 Dock 入口实际激活/退出仍通过，两路画面都提交且无解码错误；应用元数据中的名字已更新，但实际 Dock AX 名称即使激活后等待仍缓存 Weavelo，不能视为 Dock 名称完成。一轮空来源来自测试窗口计时退出；重新核对新 PID/来源后验收，没有盲用旧 Window ID。证据 `native116-studio-dock-complete-native-proof.json`。
+
+117 继续只修 macOS Dock 注册时机：先读取有界初始标题/图标，在 AppKit 注册 Dock 项之前设置该辅助进程内的显示名称；切换来源身份时重新创建对应 Dock 项。只改进程内缓存的 CFBundleName/CFBundleDisplayName，不改磁盘 Info.plist、bundle ID、签名或网络身份。四项相关检查通过，签名发布回归 1,045 项通过、19 项跳过；实际 Dock 名称仍待新包验证。Linux/Windows 当前 116 已包含所有公共修复，此项 macOS 专用代码不改变它们的编译行为；不为统一显示编号引入额外版本门槛。Android APK 79 同样保留已验证原包，不因 Mac 专用修复重复生成。
+
