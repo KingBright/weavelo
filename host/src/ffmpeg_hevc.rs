@@ -4,7 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
-/// Long-running native capture → HEVC pipeline used by Linux and Windows hosts.
+/// Long-running process capture → HEVC pipeline for the Linux process backend.
 /// Stdout is drained on a dedicated bounded reader so cancellation never waits on a
 /// blocking pipe read and an overloaded viewer cannot grow memory without bound.
 pub struct FfmpegHevcSource {
@@ -37,19 +37,9 @@ impl FfmpegHevcSource {
         Self::spawn(capture_command(width, height, fps, bitrate_kbps)?,width,height,fps,bitrate_kbps)
     }
 
-    #[cfg(target_os="windows")]
-    pub(crate) fn start_native(selection:&crate::windows_sources::Selection,width:u32,height:u32,fps:u32,kbps:u32)->Result<Self,Box<dyn Error+Send+Sync>> {
-        let program=crate::capture_readiness::ffmpeg_program()?;
-        let bounds=selection.current_bounds()?;
-        crate::capture_readiness::require_srgb_capture_profile(&selection.monitor)?;
-        let canvas=crate::windows_capture_plan::fit(bounds,width,height)?;
-        let command=crate::windows_capture_plan::command(&program,selection.handle,selection.window,canvas,fps,kbps,selection.encoder);
-        Self::spawn(command,canvas.0,canvas.1,fps,kbps)
-    }
-
     fn spawn(mut command:Command,width:u32,height:u32,fps:u32,bitrate_kbps:u32)->Result<Self,Box<dyn Error+Send+Sync>> {
         let backend = crate::capture_backend::ffmpeg_input_format(&command);
-        // A static WGC source may produce only one picture. Length-framed packets
+        // A static source may produce only one picture. Length-framed packets
         // let us submit that picture immediately, without waiting for the next AUD
         // or guessing that an arbitrary stdout read ended at a frame boundary.
         command.args(["-flush_packets", "1", "-f", "avi", "pipe:1"]);

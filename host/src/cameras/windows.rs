@@ -55,20 +55,9 @@ impl Drop for Lease {fn drop(&mut self){registry().lock().unwrap_or_else(|e|e.in
 #[derive(Clone)]
 struct Expected {size:[u32;2],signal:VideoSignal}
 fn validate_keyframe(nalu:&mut Vec<u8>,expected:&Expected)->Result<(),String> {
-    // The actual NV12 source/media types declare this transfer function. AMD's
-    // hardware MFT emits 709 instead for sRGB without changing the YUV pixels;
-    // use the same bounded SPS correction as the existing native screen path.
-    if expected.signal.transfer==Some(13) {
-        remote_core::hevc_sequence::set_srgb_transfer_for_matrix(nalu,expected.signal.matrix.ok_or("Camera matrix is unavailable")?)
-            .map_err(str::to_owned)?;
-    }
-    let sequence=remote_core::hevc_sequence::sequence_info(nalu).map_err(str::to_owned)?
-        .ok_or("Hardware camera keyframe has no SPS")?;
-    if sequence.bit_depth!=8||sequence.visible[2..]!=expected.size||sequence.signal!=Some(expected.signal) {
-        return Err("Hardware camera HEVC dimensions/color differ from the actual source".into());
-    }
-    Ok(())
+    crate::windows_media::validate_keyframe(nalu,expected.size,expected.signal)
 }
+
 struct Context {
     tx:mpsc::Sender<Result<EncodedChunk,String>>,
     pacer:Mutex<FramePacer>,format:Mutex<Option<Expected>>,

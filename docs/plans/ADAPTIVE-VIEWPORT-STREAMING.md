@@ -63,3 +63,12 @@
 ## 实施进度（2026-11-05）
 
 第一轮已实现公共需求/几何协议、Mac 原生 GPU 裁剪与 Android 接收展示代码，并通过相关原生、GPU 像素和 JVM 检查。尚未做新功能实机升级；Linux、Windows、Android 作为来源的动态裁剪、采集共享及完整连续手势验收仍待完成。详细事实见 [GUI 进展](../testing/2026-11-02-GUI-PROGRESS.md)。
+
+## 局域网延迟验收（2026-11-05 补充）
+
+用户提出 WiFi → WiFi 下约 25 ms 的目标。将它作为待实测的端到端优化目标，分别记录网络 RTT、采集等待、GPU 裁剪、编码、传输、解码、呈现等待和真实可见画面；不能以其中一项代替完整延迟。记录设备、连接路径（直连或中继）、分辨率、FPS、刷新率、样本量与 P50/P95/P99。源码时间戳必须保持原始采集归属，静止帧因新 ROI 重编码也不伪造新采集时间。实际显示使用独立拍摄或可核对的源/接收画面观测，编解码提交时间不能作为显示时间。
+
+优先消除排队、原始像素读回和额外同步等待，保留正确颜色、参考帧链、图像质量和输入。不同设备是否稳定达到目标仍需实机验证，不承诺所有 WiFi 环境均为 25 ms。可参考 [Moonlight 统计口径](https://github.com/moonlight-stream/moonlight-docs/wiki/Frequently-Asked-Questions) 对呈现等待和网络波动的区分，以及 [NVIDIA 官方低延迟编码建议](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.1/ffmpeg-with-nvidia-gpu/index.html)。
+
+
+Linux VAAPI 和 Windows WGC/D3D11 已补齐原生逐帧裁剪并在真实 GPU 上验证。Windows 还通过静止窗口、双观看者共享采集、独立区域与独立结束测试。Android 作为来源、Mac 共享采集、桌面可视区域手势及全设备当前协议升级仍未完成，不能将这些部件测试表述为全产品交付。

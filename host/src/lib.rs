@@ -85,6 +85,10 @@ mod windows_keymap;
 mod windows_input_contract_tests;
 #[cfg(target_os = "windows")]
 mod windows_video_encode;
+#[cfg(target_os="windows")]
+mod windows_screen;
+#[cfg(target_os="windows")]
+mod windows_media;
 
 use protocol::{
     AudioSource, AudioStreamConfig, DataEnvelope, RtpPacket, remote_microphone_audio_stream_id,
@@ -1149,7 +1153,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
 
     #[cfg(target_os = "windows")]
     let mut video_encoder =
-        crate::windows_video_encode::WindowsVideoEncoder::new(width, height, fps, bitrate_kbps, source, resources.clone())?;
+        crate::windows_video_encode::WindowsVideoEncoder::new(initial.clone(), source, resources.clone())?;
 
     #[cfg(not(target_os="windows"))]
     video_capturer.start().await?;
@@ -1213,10 +1217,13 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     #[cfg(any(target_os = "linux", target_os = "windows"))]
                     {
                         if new_settings.paused { video_encoder.set_paused(true)?; }
+                        #[cfg(target_os="linux")]
                         video_encoder.update_settings(
                             new_settings.width, new_settings.height,
                             new_settings.fps, new_settings.bitrate_kbps,
                         )?;
+                        #[cfg(target_os="windows")]
+                        video_encoder.update_settings(new_settings.clone())?;
                         if !new_settings.paused { video_encoder.set_paused(false)?; }
                     }
                     if new_settings.paused != paused {
