@@ -531,3 +531,17 @@ Linux 103 在自有全屏动态夹具内投送到 Studio / Book / Windows，分�
 物理画面另行审阅：努比亚前摄有清晰真实场景；努比亚后摄和红米前后摄当前图像很暗，不能据此判定画质通过，也未将原因归于遮挡、照明或权限。红米 CAMERA AppOp 为 allow 且有真实 CameraService 客户端；继续用手机之间的接收及切换作对照。当前未完成完整多设备音频、全部方向物理呈现 / 输入、红米中文输入与触摸板几何；这些仍是待验收项。
 
 已知接续问题：旧 GUI 的失败清理记录会让后续 CloseGui 直接拒绝，错误为 `Previous frontend cleanup is unconfirmed; observe it before closing`；当前 105 仍保留同一行为，需修复退出重观察及离线结束语义，不能把本次精确旧进程停止记成源码已修复。移动端主动收到的摄像头流目前不显示远端切换按钮；先完成普通拉取切换实机，再补对等交互，不能把已有前后摄目录当成已完成切换。
+
+
+## 2026-11-04 摄像头切换与移动输入实机补验
+
+红米前摄已通过普通主动投送到努比亚，实际 Android 接收画面与 Studio 的暗画面一致；接收截图经真实 Weavelo 文件传回 Studio，独立 SHA 为 `8e7b6a865c6844e592b2d69cf75cd8e892618d17f9aee71a44ebc6deca84a0e4`。随后正常停止该投送，努比亚通过设备页普通拉取红米前摄，并使用真实 HUD 连续切换前→后→前。接收端分别显示 Back camera / Front camera；红米 CameraService 的活动客户端实际按 1→0→1 切换，均为 Weavelo，非仅替换标签。之后正常 Disconnect。证据 `android76-nubia-redmi-remote-{front-back,back-front}-switch-ui.json`、`android76-redmi-{before-remote-camera-switch,after-remote-camera-switch,after-remote-camera-switch-back-front}-readonly.json`。
+
+MacBook 原有系统相机许可生效：105 的真实 FaceTime 来源被 Studio 普通拉取，快照为 551 帧、scene_submitted=true、video_error=null；原生接收窗口的真实图像清晰，已审阅 `native105-book-camera-to-studio-actual.png`。该测试租约已正常到期，未留摄像头订阅。
+
+努比亚 76 接收 Studio 的专用 `Weavelo input check`（PID 3157、Window 17788、640×452）。直接触摸按钮中心使宿主计数 3→4；切换 Touchpad 后，在画面另一个位置轻点，宿主同一按钮计数 4→5，未把触摸板点击位置当成绝对坐标。全屏视频可见区域为 `[483,0]–[2205,1216]`，直接点击为 `(805.875,285.168)`，触摸板轻点为 `(1774.5,912)`。证据 `android76-nubia-{direct-touch-fixture-tap-ui,direct-touch-host-result,touchpad-mode-and-tap-ui,touchpad-host-result}.json`。该专用投送已按原请求正常停止。
+
+76 的真实生产 Workspace 编辑器测试另已通过（`LiveWorkspaceKeyboardTest`，5.723 秒）：通过正常设备入口与专用原生窗口，真实原生点击聚焦、打开键盘，再对生产 InputConnection 组字 `nihao`、提交 `你好🙂`。宿主中文 / emoji 出现次数仅增加一次、Unicode 码点仅增加 3，未出现组字内容泄漏。这里验证输入连接及传输，不将程序化 InputConnection 提交当作所有实体输入法候选交互通过。测试后已重开努比亚正常 Devices 页面。证据 `android76-nubia-production-input-connection-live-test.log`（Book）、`android76-nubia-production-ime-host-after-proof.json`（Studio）。红米 CJK、输入法挤压及完整手势仍待分别验收。
+
+
+退出源码小步已完成：`CloseGui` 不再因保留清理记录而直接永久拒绝，而是再次调用原有 `close_verified` 检查原连接；未知远端清理仍保留、仍拒绝假成功，未改变本地身份或操作权限。退出命令现在返回真实、有界的服务端错误。相关原生检查为 5 项：双窗口清理与缺失远端回执 1 项、GUI 升级退出 3 项、真实 GPUI 关闭 / End 保留其他窗口及文件上下文 1 项；签名发布回归 1,045 项通过、19 项跳过。最初一个过滤名称匹配 0 项，已改用真实测试名称执行并通过；一次误用 debug 配置的构建已停止，没有把它记作验证。证据 `native106-exit-cached-native-tests.log`、`native106-exit-window-lifetime-native-test.log`、`native106-exit-release-regression.log`。这些是下一版 106 的源码与检查，四机当前实际安装仍为 105；无法取得远端回执时的完整离线退出语义仍待后续处理。

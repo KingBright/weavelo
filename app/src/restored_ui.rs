@@ -1958,9 +1958,9 @@ impl RestoredDashboard {
             if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested"}).into());}
             return;
         }
-        let refusal = if !self.exit_group.pending.lock().unwrap().is_empty() {
-            Err("Previous frontend cleanup is unconfirmed; observe it before closing")
-        } else if self.background.is_none() {
+        // Re-observe retained owners in close_verified below. A previous
+        // connecting/cleanup failure must not permanently disable normal Quit.
+        let refusal = if self.background.is_none() {
             Err("GUI-only exit requires an attached background service")
         } else if idle_only {
             let adapter=self.directed_receive.as_ref().unwrap();

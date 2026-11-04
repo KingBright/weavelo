@@ -39,7 +39,10 @@ pub fn command(directory:&Path,args:&[String]) -> Result<Value,Error> {
     let result=super::directed_receive::exchange(directory,&request)?;
     if result["ok"]!=true || result["cleanup_verified"]!=true || result["generation"]!=*generation
         || result["executable_sha256"]!=*hash || result["request_id"]!=id || result["pid"]!=pid {
-        return Err("GUI upgrade quit was rejected or outcome is unconfirmed; observe original owner, do not replay".into());
+        let detail = result.get("error").and_then(Value::as_str)
+            .map(|error| error.chars().take(512).collect::<String>())
+            .unwrap_or_else(|| "GUI outcome is unconfirmed; observe the original owner".into());
+        return Err(format!("GUI quit was not completed: {detail}").into());
     }
     observer.wait(Duration::from_secs(5))?;
     if !crate::private_ipc::absent(directory,"gui-receive.sock")? {return Err("GUI endpoint remains or was replaced; stop unconfirmed".into());}
