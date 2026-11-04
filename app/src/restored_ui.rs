@@ -2967,9 +2967,11 @@ fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::Ca
     match peer {
         Some(peer) => match source {
             Some(source) => {
-                let label=if !source.application.trim().is_empty() {source.application.trim().to_owned()}
-                    else if matches!(source.source,protocol::session::CaptureSource::MainDisplay|protocol::session::CaptureSource::Display(_)) {"Desktop".into()}
-                    else {capture_source_label(source)};
+                let label=match source.source.category() {
+                    protocol::session::SourceCategory::Screen=>"Screen".into(),
+                    protocol::session::SourceCategory::Camera=>if source.title.trim().is_empty(){"Camera".into()}else{source.title.trim().to_owned()},
+                    protocol::session::SourceCategory::Window=>if source.application.trim().is_empty(){capture_source_label(source)}else{source.application.trim().to_owned()},
+                };
                 format!("{label} · {peer} — Weavelo")
             },
             None => format!("{peer} · Remote — Weavelo"),
@@ -3404,14 +3406,14 @@ fn slide_over_management_drawer(
         ))
         .when(management, |panel| panel.child(
             div().flex().items_center().gap_2().px_3().py_2()
-                .child(component::text_input("device-search").content(device_query.to_owned())
+                .child(component::text_input("device-search").placeholder("Search devices").height(px(32.).into()).content(device_query.to_owned())
                     .on_change({ let view=cx.weak_entity(); move |text, _, cx| {
                         let _=view.update(cx, |this,cx| {this.device_query=text.to_string();cx.notify();});
                     }}))
                 .child(command_button("add-device",ActionVariantKind::Neutral,cx).size(px(32.)).p_0().icon(ely_gpui_component::primitives::IconName::Plus).tooltip(tooltip("Add device").build())
                     .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
         ))
-        .child(div().flex_none().flex().items_center().gap_1().p_2().bg(theme.surface.sunken)
+        .child(div().flex_none().flex().items_center().gap_1().px_2().py_1().bg(theme.surface.sunken)
             .children(if management {
                 vec![("Devices",DrawerTab::Devices),("Transfers",DrawerTab::Files),
                     ("Sharing & permissions",DrawerTab::Security),("Settings",DrawerTab::Network)]
@@ -3511,7 +3513,7 @@ fn drawer_devices_tab(
         Some(Err(_))=>"Permission status unavailable",
         _=>"This device",
     };
-    let local=div().flex().items_center().gap_2().px_2().py_2().rounded(px(10.))
+    let local=div().flex().items_center().gap_2().px_2().py_1().rounded(px(10.))
         .bg(cx.theme().surface.sunken)
         .child(icon(IconName::Display).size(px(18.)))
         .child(div().min_w_0().flex_1().flex().flex_col()

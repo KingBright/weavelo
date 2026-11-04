@@ -646,3 +646,14 @@ MacBook 111 单独拉取用户指定的 Studio DeepSeek Harness 窗口，随后�
 - Android 78 管理页改成两行卡片，型号与动作分开，操作目标 48 dp；设备页仍竖屏，会话沿用沉浸横屏 HUD、当前输入和媒体路径。移除独立遥测汇总，详细诊断保留在设置；卡片直接读取发布端订阅、当前接收会话及文件传输状态。
 - 相关 Rust 检查 73 项通过（来源、多窗口、图标、卡片、所有者、路由、发布端、生命周期及窗口重开）；签名发布回归 1,045 项通过、19 项跳过。Android Kotlin 编译及 76 项 JVM 检查通过。本机验证复用 MacBook 已安装 SDK 35（真实 Weavelo 传输后接收端独立 SHA）及本机已有 Build Tools 36.1.0；正式 Android 打包仍使用 MacBook 既有签名和正式入口。
 - 本节是源码与检查结果；此时安装版仍是桌面 111 / Android 77。112 / 78 的实际渲染、多应用首帧、输入、状态清理和各机安装将在后续记录，不能把控制器回归写成实机呈现完成。
+
+
+### 112 两台 Mac 的实际画面与卡片状态；113 布局微调
+
+`115b9d4` 已推送 main。Studio 与 MacBook 正式 112 已兼容安装，实际运行二进制分别为 `53f717fd…e5b7f` / `8f242d2b…adf8e`，保留各自原签名。Linux、Windows 的 112 正式包已构建，尚未安装，将直接使用下轮 113，避免重复升级。
+
+MacBook 通过当前生产 GUI 接收两个独立的自有 AppKit 应用窗口（Studio A：PID 41170 / Window 18320；B：PID 41171 / Window 18321），两路均收到首帧并提交。Studio 对应 MacBook 卡片显示 Sharing · 2，MacBook 对应 Studio 显示 Receiving · 2；结束 B 后 A 仍持续收帧（2,776 帧记录），结束全部后两端为零，接收窗口均关闭，管理窗口保留。首轮截图落在 Stage Manager 的缩略变换中，未当作正常窗口验收；经现有原生菜单唤到前台后，两路 2560×1664 实际接收窗口截图均已查看，画面清楚，原生标题显示应用与设备，图标含 Weavelo 标记。截图经真实 Weavelo 文件传输，Studio 独立 SHA 与发送端一致。仅采集自有测试窗口，没有采集 ChatGPT 或整个桌面。此处不代表 MacBook 实体键盘/触控板验收。
+
+证据保存在两机任务目录的 `native112-book-two-app-native-proof.json`、`native112-book-focused-two-app-proof.json`、对应状态文件，以及 Studio 接收的 `native112-book-focused-{A,B}-actual.png`。A SHA `71d81bcb5c4a9b3167265c20797d05936ab07089e0767dd5975dd9d58bcf949d`；B SHA `7c9e87b732288a2dff50e9fcdcf1c2223b494124f0bbfdffdb81871cfc368e25`。
+
+实机管理页复核后，113 再收紧导航、本机卡片和设备行的垂直空间，使当前五台远端完整展示；为搜索框补上用途提示，沿用既有产品图标并显式设为 18 px、32 px 点击区域。屏幕及摄像头标题按来源类别显示，避免把 MediaProjection 等采集后端名称当成应用名。两项既有设备卡片交互检查通过；签名发布回归 1,045 项通过、19 项跳过。此处是 113 源码检查，正式安装与截图尚待后续记录。Android 78 的正式原签名打包继续在 MacBook 执行，未用本机验证产物替代发布包。

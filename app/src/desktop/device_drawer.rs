@@ -1,13 +1,12 @@
 use super::device_list::{
-    DeviceActivity, DeviceConnectionStatus, DeviceFilterKind, DeviceListAction, DeviceListState,
+    DeviceActivity, DeviceFilterKind, DeviceListAction, DeviceListState,
     DeviceListViewModel,
 };
 use crate::design_system::{color_accent_cyan, color_accent_emerald, color_border_fine};
-use crate::product_components::component::tooltip;
+use crate::product_components::{component::tooltip,icon,IconName};
 use crate::product_components::theme::ActiveTheme;
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
-    primitives::IconName,
     theme::ControlSize,
 };
 use gpui::{App, FontWeight, IntoElement, RenderOnce, Window, div, prelude::*, px, rgb};
@@ -69,21 +68,21 @@ impl RenderOnce for DeviceDrawer {
             let send=self.send.clone();let detail_id=id.clone();
             let mut actions=div().flex().flex_none().items_center().gap_1();
             for (key,symbol,label,enabled,action) in [
-                ("connect",IconName::Monitor,"View screens, apps or cameras",row.can_connect,DeviceListAction::Connect(id.clone())),
-                ("send",IconName::ScreenShare,"Send screens, apps or cameras",row.online,DeviceListAction::SendScreen(id.clone())),
-                ("files",IconName::FolderOpen,"Files",row.can_open_files,DeviceListAction::OpenFiles(id.clone())),
-                ("more",IconName::Ellipsis,"More device actions",true,DeviceListAction::More(id.clone())),
+                ("connect",IconName::Display,"View screens, apps or cameras",row.can_connect,DeviceListAction::Connect(id.clone())),
+                ("send",IconName::Sharing,"Send screens, apps or cameras",row.online,DeviceListAction::SendScreen(id.clone())),
+                ("files",IconName::Files,"Files",row.can_open_files,DeviceListAction::OpenFiles(id.clone())),
+                ("more",IconName::More,"More device actions",true,DeviceListAction::More(id.clone())),
             ] {
                 let send=self.send.clone();let selector=format!("{key}-{id}");
                 actions=actions.child(Button::new(format!("device-{key}-{id}"),"")
-                    .debug_selector(move||selector.clone()).icon(symbol).tooltip(tooltip(label).build())
+                    .debug_selector(move||selector.clone()).child(icon(symbol).size(px(18.))).tooltip(tooltip(label).build())
                     .control_size(ControlSize::Sm).variant(ButtonVariant::Ghost).size(px(32.)).p_0()
                     .disabled(!enabled).on_click(move|_,_,cx|send(action.clone(),cx)));
             }
             let mut card=div().flex().flex_col().gap_1().px_2().py_1().rounded(px(10.))
                 .bg(if active {rgb(0x192830).into()}else{theme.surface.raised})
                 .border_1().border_color(if active {color_accent_cyan()}else{color_border_fine()})
-                .child(div().min_h(px(44.)).flex().items_center().gap_2()
+                .child(div().min_h(px(42.)).flex().items_center().gap_2()
                     .child(div().size(px(7.)).flex_none().rounded_full().bg(if row.online {color_accent_emerald().into()}else{theme.content.disabled}))
                     .child(div().min_w_0().flex_1().flex().flex_col()
                         .child(Button::new(format!("device-name-{id}"),row.display_name.clone())
