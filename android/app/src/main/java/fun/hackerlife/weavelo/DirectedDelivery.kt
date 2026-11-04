@@ -82,8 +82,8 @@ object DirectedDelivery {
         return JSONObject(incoming!!.getJSONObject("claim").toString())
     }
 
-    @Synchronized fun requestId(id: String): Long? =
-        if (alive(id)) incoming?.optJSONObject("claim")?.optLong("request_id")?.takeIf { it != 0L } else null
+    @Synchronized fun requestId(id: String): String? =
+        if (alive(id)) incoming?.optJSONObject("claim")?.optString("request_id")?.takeIf { it.isNotEmpty() && it != "0" } else null
 
     @Synchronized fun sources(id: String): List<String> {
         if (!alive(id)) return emptyList()

@@ -247,7 +247,7 @@ impl MobileWorkspace {
                             }
                         }
                         if state.events.len() == 128 { state.events.pop_front(); }
-                        state.events.push_back(serde_json::json!({"control":event}));
+                        state.events.push_back(serde_json::json!({"control":crate::delivery_claim_json::encode_control(&event)}));
                     }
                     Some(event) = events.files.recv() => {
                         state.lock().unwrap().push_file(event);
@@ -293,7 +293,7 @@ impl MobileWorkspace {
     }
 
     pub async fn command(&self, json: &str) -> Result<(), String> {
-        let command: SessionCommand = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let command = crate::delivery_claim_json::decode_control(json)?;
         {
             let mut touches = self.touches.lock().unwrap();
             let release = match &command {

@@ -639,6 +639,9 @@ impl Broker {
         if t.claimed_requests.get(&peer).copied() != Some(request_id) {
             return Err("Camera switch does not match this sending intention");
         }
+        if !t.sources.contains(&target) {
+            return Err("Start a new send to share a camera outside this sending intention");
+        }
         if t.claimed
             .iter()
             .any(|(other, selected)| *other != peer && selected.contains(&target))
@@ -654,15 +657,7 @@ impl Broker {
         if selected.iter().enumerate().any(|(idx, source)| idx != claimed_idx && *source == target) {
             return Err("Target camera is already selected in this sending intention");
         }
-        if let Some(ticket_idx) = t.sources.iter().position(|source| *source == from) {
-            if !t.sources.contains(&target) {
-                t.sources[ticket_idx] = target;
-            }
-        } else if !t.sources.contains(&target) {
-            t.sources.push(target);
-        }
         selected[claimed_idx] = target;
-        t.expires = now + LEASE;
         Ok(())
     }
     fn allows_source_in_scope(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource, scope: ShareScope) -> bool {
@@ -1196,8 +1191,8 @@ mod tests {
         )
         .unwrap();
     }
-    #[test]
-    fn directed_camera_switch_replaces_claimed_camera_without_widening_ticket() {
+    #[tokio::test]
+    async fn directed_camera_switch_replaces_claimed_camera_without_widening_ticket() {
         let (broker, _rx) = Broker::new();
         let token = [8; 32];
         let first = peer();
@@ -1215,10 +1210,22 @@ mod tests {
         assert!(broker.switch_camera_source_in_scope(
             first, token, 42, CaptureSource::Camera(1), CaptureSource::MainDisplay, first.scope
         ).is_err());
+        let expires = broker.state.lock().unwrap().tickets[&token].expires;
+        assert!(broker.switch_camera_source_in_scope(
+            first, token, 42, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
+        ).is_err());
+        assert!(broker.allows_source_in_scope(first, token, CaptureSource::Camera(1), first.scope));
+        assert!(!broker.allows_source_in_scope(first, token, CaptureSource::Camera(2), first.scope));
+        // A source owner may originally authorize both cameras. The receiver
+        // can move its own claim within that fixed set, never enlarge it.
+        broker.state.lock().unwrap().tickets.get_mut(&token).unwrap().sources.push(CaptureSource::Camera(2));
         broker.switch_camera_source_in_scope(
             first, token, 42, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
         ).unwrap();
         assert!(!broker.allows_source_in_scope(first, token, CaptureSource::Camera(1), first.scope));
         assert!(broker.allows_source_in_scope(first, token, CaptureSource::Camera(2), first.scope));
+        let state = broker.state.lock().unwrap();
+        assert_eq!(state.tickets[&token].sources, vec![CaptureSource::Camera(1), CaptureSource::Camera(2)]);
+        assert_eq!(state.tickets[&token].expires, expires);
     }
 }

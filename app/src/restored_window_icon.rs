@@ -292,11 +292,7 @@ pub(crate) mod macos_dock {
 
     pub(super) fn encode_frame(title: &str, rgba: Option<&[u8]>) -> Result<Vec<u8>, String> {
         let title_bytes = title.as_bytes();
-        let bounded_title = if title_bytes.len() > MAX_TITLE_BYTES {
-            &title_bytes[..MAX_TITLE_BYTES]
-        } else {
-            title_bytes
-        };
+        let bounded_title = &title_bytes[..title.floor_char_boundary(MAX_TITLE_BYTES.min(title_bytes.len()))];
         let pixels = match rgba {
             Some(bytes) if bytes.len() == ICON_BYTES => bytes,
             Some(_) => return Err("Dock icon frame must be 64x64 RGBA".into()),
@@ -563,5 +559,19 @@ mod tests {
         let (title2, decoded_none) = macos_dock::decode_frame(&title_only[..]).unwrap();
         assert_eq!(title2, "Terminal · Mini");
         assert!(decoded_none.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dock_title_preserves_utf8_at_the_length_boundary_and_rejects_bad_pixels() {
+        let title = format!("{}远程📱", "a".repeat(511));
+        let encoded = macos_dock::encode_frame(&title, None).unwrap();
+        let (decoded, pixels) = macos_dock::decode_frame(&encoded[..]).unwrap();
+        assert_eq!(decoded, "a".repeat(511));
+        assert!(pixels.is_none());
+        assert!(macos_dock::encode_frame("title", Some(&[0; 4])).is_err());
+        let mut invalid = 513u32.to_be_bytes().to_vec();
+        invalid.extend_from_slice(&[0; 513]);
+        assert!(macos_dock::decode_frame(&invalid[..]).is_err());
     }
 }

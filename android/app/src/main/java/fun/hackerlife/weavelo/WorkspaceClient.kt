@@ -503,8 +503,8 @@ object WorkspaceClient {
                     val pane = mutable.value.panes.firstOrNull { it.id == pending.pane }
                     val incomingId = ownership.request()?.incomingId
                     val expectedDeliveryRequest = incomingId?.let { DirectedDelivery.requestId(it) }
-                    val deliveryMatches = if (expectedDeliveryRequest == null) request.isNull("delivery_request_id")
-                    else !request.isNull("delivery_request_id") && request.getLong("delivery_request_id") == expectedDeliveryRequest
+                    val deliveryMatches = if (incomingId == null) request.isNull("delivery_request_id")
+                    else expectedDeliveryRequest != null && !request.isNull("delivery_request_id") && request.getString("delivery_request_id") == expectedDeliveryRequest
                     if (pane != null && request.getInt("id") == pane.id && request.getInt("source_revision") == 0 &&
                         deliveryMatches && request.get("from").toString() == pane.source.source.toString() &&
                         request.get("target").toString() == pending.source.source.toString()) {

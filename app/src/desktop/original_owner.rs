@@ -379,9 +379,6 @@ impl OriginalOwner {
                 *entry.frame.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 entry.source_seen = s.source;
             }
-            if let Some(binding) = pool.directed_receive.as_mut().filter(|b| b.connection == Some(s.conn.id)) {
-                binding.capture = s.source;
-            }
             // Observe the exact prior native frame's submission before replacing
             // it with a newer frame. Continuous video must not starve the input
             // gate, nor may stream-wide counters unlock an unpainted new source.
@@ -411,6 +408,15 @@ impl OriginalOwner {
                     retired[index] = previous;
                 }
             }
+        }
+        let received_source = pool.directed_receive.as_ref().and_then(|binding| {
+            pool.sessions.iter().find(|entry| binding.connection == Some(entry.session.conn.id))
+                .map(|entry| entry.session.source)
+        });
+        if let Some(source) = received_source
+            && let Some(binding) = pool.directed_receive.as_mut()
+        {
+            binding.capture = source;
         }
         let selected = pool.tabs.selected_index();
         if pool.sessions.get(selected).is_some_and(|s| {

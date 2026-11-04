@@ -729,3 +729,15 @@ MacBook 生产菜单打开来源选择后的实际状态为 receiving 0、无解
 4. **Windows 摄像头枚举 STA/MTA 线程模式修复**：
    - `host/native/windows_camera.cpp`：`weavelo_windows_camera_catalog` 放入独立 `std::thread`（`COINIT_MULTITHREADED`）执行，避免在 GUI/STA 线程触发 `0x80010106 (RPC_E_CHANGED_MODE)` 导致枚举返回 0；`weavelo_windows_camera_epoch` 同时注册 `KSCATEGORY_VIDEO_CAMERA` 与 `KSCATEGORY_CAPTURE`。
 
+### Gemini `c72752a` 拉取后的验证与修复
+
+用户明确要求拉取 Gemini 的远端迭代、测试、升级，发现问题直接修复。primary main 已快进至 `c72752afbb5cb1569e2759b76184ebe11482a3ea`，没有创建分支或第二个 worktree。初次编译发现 `original_owner.rs` 在遍历 sessions 时再次可变借用整个 pool，报 E0499；将定向来源状态同步移至循环结束后，保留实际当前来源记录。
+
+投送切摄审查发现原实现会修改 `Ticket.sources` 并延长其到期时间，与已批准摄像头方案的不可扩权约定不符。现在只允许在来源方最初授权的固定来源集合内移动当前 claim；未在原集合中的摄像头明确要求创建新投送，切摄本身不续期。不把原地扩大旧票据作为“投送切摄完成”。单摄像头投送的完整新意图/新票据切换仍为后续待办；普通拉取切摄保留。
+
+Android 投送 ID 原本跨 org.json 使用 Long，随机 u64 超过 i64 上限时会失真；现在沿用既有 claim JSON 的十进制文本规则，在 JNI 边界精确转换并校验，结果匹配也使用文本。补充覆盖 2^53+1、i64 上限之外和 u64 最大值的往返及错误表示拒绝。Mac Dock 子进程入口移到 Tokio 初始化之前，避免每个会话创建完整网络工作线程池；标题截断保留 UTF-8 边界。
+
+修复后原生定向检查 48 次执行、47 项不同检查全部通过（来源所有者、投送、摄像头、JSON 精度、图标及设备行）；Android Kotlin 编译与 76 项 JVM 测试通过；签名发布回归 1,045 项通过、19 项跳过。证据 `gemini114-focused-tests.log`、`gemini114-camera-owner-tests.log`、`gemini114-android-kotlin-check.log`、`gemini114-final-release-regression.log`。这一步尚无 114 / 79 的正式安装、Dock 实际点击或相机画质改善结论，后续分别记录。
+
+用户随后提出窗口原生清晰度与放大局部串流，并强调持续缩放和拖动。具体实现方案见 [自适应窗口清晰度与可视区域串流](../plans/ADAPTIVE-VIEWPORT-STREAMING.md)，新原生媒体/协议范围等待一次方案确认，既有 Gemini 交付继续执行。
+
