@@ -77,7 +77,8 @@ mod sender {
                 progress.confirmation_timeout = confirmation_timeout;
                 progress.status = match &result {
                     Ok(()) => "Sending stopped".into(),
-                    Err(error) => format!("Delivery stopped: {error}"),
+                    Err(_) if progress.confirmation_timeout.is_some() => "Could not start sharing: connection timed out".into(),
+                    Err(error) => format!("Sharing stopped: {error}"),
                 };
                 progress.result = Some(result);
             });

@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 
-data class OutgoingScreenState(val id: Long = 0, val active: Boolean = false, val target: String = "", val status: String = "")
+data class OutgoingScreenState(val id: Long = 0, val active: Boolean = false, val target: String = "", val status: String = "", val peers: Map<String, Int> = emptyMap(), val unattributedSharing: Int = 0)
 
 object PublisherClient {
     external fun nativeAction(operation: Int, payload: String): String
@@ -29,7 +29,16 @@ object PublisherClient {
     }
     fun refreshOutgoing() {
         val result = JSONObject(action(23))
-        mutableOutgoing.value = OutgoingScreenState(result.optLong("id"), result.optBoolean("active"), result.optString("target"), result.optString("status"))
+        val peers = mutableMapOf<String, Int>()
+        var unattributed = 0
+        result.optJSONArray("peers")?.let { entries ->
+            for (index in 0 until entries.length()) {
+                val entry = entries.getJSONArray(index)
+                if (entry.isNull(0)) unattributed += entry.getInt(1)
+                else peers[entry.getString(0)] = entry.getInt(1)
+            }
+        }
+        mutableOutgoing.value = OutgoingScreenState(result.optLong("id"), result.optBoolean("active"), result.optString("target"), result.optString("status"), peers, unattributed)
     }
     fun sendScreen(deviceId: String) {
         WeaveloClient.refreshDevices()

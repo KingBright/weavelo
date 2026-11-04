@@ -5,7 +5,7 @@ use crate::desktop::menu::{
 };
 
 impl RestoredDashboard {
-    fn menu_streams(&self, cx: &Context<Self>) -> Vec<Entity<Self>> {
+    pub(super) fn menu_streams(&self, cx: &Context<Self>) -> Vec<Entity<Self>> {
         let mut seen = BTreeSet::new();
         cx.windows()
             .into_iter()
@@ -102,7 +102,7 @@ impl RestoredDashboard {
             Call::Manager(section) => {
                 self.active_tab = match section {
                     Section::Devices => DrawerTab::Devices,
-                    Section::Activity => DrawerTab::Activity,
+                    Section::Activity => DrawerTab::Devices,
                     Section::Transfers => DrawerTab::Files,
                     Section::Preferences => DrawerTab::Network,
                     Section::Sharing => DrawerTab::Security,
@@ -177,19 +177,12 @@ impl RestoredDashboard {
                 }
             }
             Call::OpenSend(request) => {
-                if !self
-                    .directed_send
-                    .lock()
-                    .unwrap()
-                    .get(&request)
-                    .is_some_and(|s| !s.is_finished())
-                {
-                    return Err("This sending request has ended".into());
-                }
-                if !self.open_sending_window(&request, Vec::new(), Arc::new(Default::default()), cx)
-                {
-                    return Err("Could not open the sending window".into());
-                }
+                let target=self.directed_send.lock().unwrap().get(&request)
+                    .filter(|sender|!sender.is_finished()).map(|sender|sender.target.clone())
+                    .ok_or("This sending request has ended")?;
+                self.active_tab=DrawerTab::Devices;
+                self.device_list_state.more=Some(target);
+                cx.defer(show_management_window);
             }
             Call::StopSend(request) => {
                 if !self.directed_send.lock().unwrap().contains_key(&request) {

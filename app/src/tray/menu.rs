@@ -356,12 +356,6 @@ impl Menu {
             roots.push(self.item("Send files to…", true, None, files));
         }
         roots.push(self.item(
-            "Activity",
-            true,
-            Some(ui(Call::Manager(Section::Activity))),
-            vec![],
-        ));
-        roots.push(self.item(
             "Transfer center",
             true,
             Some(ui(Call::Manager(Section::Transfers))),

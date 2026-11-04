@@ -108,8 +108,16 @@ impl MobileSubscription {
     fn input_allowed(&self)->bool {self.request.source==CaptureSource::MainDisplay&&self.video}
 }
 fn recompute(peers:&HashMap<SocketAddr,Peer>,media:&Mutex<MediaSources>) {
-    media.lock().unwrap().recompute(peers.values().flat_map(|peer|peer.subscriptions.values())
+    let mut media=media.lock().unwrap();
+    media.recompute(peers.values().flat_map(|peer|peer.subscriptions.values())
         .map(|sub|ActiveRequest{request:&sub.request,video:sub.video,audio:sub.audio}));
+    let mut streams=std::collections::BTreeMap::new();
+    for peer in peers.values() {
+        let count=peer.subscriptions.values().filter(|sub|media.sources.get(&sub.request.source)
+            .is_some_and(|source|source.enabled&&source.grant==sub.grant)).count();
+        if count>0 {*streams.entry(remote_core::routed_relay::incoming_device(peer.addr)).or_insert(0)+=count;}
+    }
+    media.peer_streams=streams.into_iter().collect();
 }
 async fn refresh_sources(peers:&mut HashMap<SocketAddr,Peer>,media:&Mutex<MediaSources>,
     input:&Mutex<crate::publisher_input::PublisherInput>,sender:&UdpSender,
@@ -147,11 +155,14 @@ impl MobilePublisher {
         *self.identity.lock().unwrap()=Some(identity);
     }
     pub fn outgoing_status(&self) -> serde_json::Value {
-        self.outgoing.lock().unwrap().as_ref().map_or_else(
+        let mut status=self.outgoing.lock().unwrap().as_ref().map_or_else(
             ||serde_json::json!({"id":0,"active":false,"target":"","status":""}),
             |send|serde_json::json!({"id":send.id,"active":!send.task.is_finished(),"target":send.target,"status":*send.status.lock().unwrap(),
                 "confirmation_timeout":*send.confirmation_timeout.lock().unwrap()}),
-        )
+        );
+        status["peers"]=if self.task.is_finished() {serde_json::json!([])}
+            else {serde_json::json!(self.media.lock().unwrap().peer_streams)};
+        status
     }
     pub fn stop_sending(&self) { self.outgoing.lock().unwrap().take(); }
     pub fn stop_sending_id(&self, id:u64)->Result<(),String> {

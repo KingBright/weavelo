@@ -90,6 +90,14 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
                                     height: 360,
                                     supports_input: false,
                                     camera: None,
+                                }, CaptureSourceInfo {
+                                    source: CaptureSource::Display(1), title: "Fixture desktop".into(),
+                                    application: String::new(), process_id: None, width: 1280, height: 720,
+                                    supports_input: false, camera: None,
+                                }, CaptureSourceInfo {
+                                    source: CaptureSource::Window(88), title: "Second fixture window".into(),
+                                    application: "Second fixture".into(), process_id: Some(88), width: 640, height: 360,
+                                    supports_input: false, camera: None,
                                 }]
                             },
                             source_icons: vec![],
@@ -223,7 +231,11 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
         this.owner.snapshot().source_catalog_revision == 1
     });
     let connection = replacement;
-    view.update(cx, |this, cx| this.confirm_source_selection(cx));
+    view.update(cx, |this, cx| {
+        assert!(this.source_selection.as_ref().unwrap().selected.is_empty());
+        this.source_selection.as_mut().unwrap().toggle(CaptureSource::Window(77));
+        this.confirm_source_selection(cx);
+    });
     pump_until(cx, &view, |this| this.owner.receiving_streams() > 0);
     let request = executor
         .block_on(tokio::time::timeout(
@@ -270,7 +282,11 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
     pump_until(cx, &browser_view, |this| {
         this.owner.snapshot().source_catalog_revision == 1
     });
-    browser_view.update(cx, |this, cx| this.confirm_source_selection(cx));
+    browser_view.update(cx, |this, cx| {
+        assert!(this.source_selection.as_ref().unwrap().selected.is_empty());
+        this.source_selection.as_mut().unwrap().toggle(CaptureSource::Window(77));
+        this.confirm_source_selection(cx);
+    });
     cx.run_until_parked();
     assert!(
         browser.update(cx, |_, _, _| ()).is_err(),
@@ -282,6 +298,31 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
         "the existing source is focused without a second subscription"
     );
     drop(browser_view);
+    // The production picker opens a second app with independent ownership.
+    view.update(cx, |this, cx| this.begin_remote_source_selection(this.owner.source_view_binding(), cx));
+    pump_until(cx, &view, |this| this.source_selection.as_ref().is_some_and(|selection| !selection.loading));
+    view.update(cx, |this, cx| {
+        assert!(this.source_selection.as_ref().unwrap().selected.is_empty(), "neither the desktop nor the current app is preselected");
+        this.source_selection.as_mut().unwrap().toggle(CaptureSource::Window(88));
+        this.confirm_source_selection(cx);
+    });
+    let second = cx.update(|cx| cx.windows().into_iter().find_map(|handle| {
+        let handle = handle.downcast::<RestoredDashboard>()?;
+        handle.read(cx).is_ok_and(|v| v.stream_source == Some(CaptureSource::Window(88))).then_some(handle)
+    })).expect("a separate app window");
+    let second_view = second.root(cx).unwrap();
+    pump_until(cx, &second_view, |this| this.owner.device_activity().get(device).is_some_and(|activity|activity.receiving==1));
+    let request = executor.block_on(tokio::time::timeout(Duration::from_secs(2), observed.recv())).unwrap().unwrap();
+    assert_eq!(view.read_with(cx,|this,_|this.stream_activity().devices[device].receiving),2);
+    assert_eq!(request.source, CaptureSource::Window(88));
+    assert!(observed.try_recv().is_err(), "opening another app must never subscribe to the desktop or duplicate the first app");
+    assert_ne!(second_view.read_with(cx, |this, _| this.owner.active_connection().unwrap().id), connection);
+    second_view.update(cx, |this, cx| this.end_stream_window(cx));
+    cx.run_until_parked();
+    drop(second_view);
+    assert_eq!(owner.active_connection().unwrap().id, connection);
+    assert_eq!(owner.receiving_streams(), 1, "closing the second app preserves the first");
+    assert_eq!(view.read_with(cx,|this,_|this.stream_activity().devices[device].receiving),1);
     // The native menu uses the established media owner, never a new stream.
     let (runtime,group)=view.read_with(cx,|view,_|(view.runtime.clone(),view.exit_group.clone()));
     let manager=cx.update(|cx|open_restored_window(runtime,None,Default::default(),None,None,group,cx).unwrap());

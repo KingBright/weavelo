@@ -56,6 +56,30 @@ impl DeviceRowViewModel {
     }
 }
 
+/// A projection of existing owners, without a second connection lifecycle.
+#[derive(Clone,Default,serde::Serialize)]
+pub(crate) struct DeviceActivity {
+    pub receiving:usize,
+    pub sharing:usize,
+    pub connecting:bool,
+    pub error:Option<String>,
+    pub transfer:Option<(u64,u64)>,
+    pub can_stop_sending:bool,
+}
+impl DeviceActivity {
+    pub fn label(&self)->String {
+        let mut parts=Vec::new();
+        if self.connecting {parts.push("Connecting…".into());}
+        if self.receiving>0 {parts.push(format!("Receiving · {}",self.receiving));}
+        if self.sharing>0 {parts.push(format!("Sharing · {}",self.sharing));}
+        if let Some((done,total))=self.transfer {
+            parts.push(if total>0 {format!("Files · {}%",done.saturating_mul(100).checked_div(total).unwrap_or(0).min(100))} else {"Transferring files…".into()});
+        }
+        if self.error.is_some() {parts.push("Needs attention".into());}
+        parts.join("  ·  ")
+    }
+}
+
 pub(crate) struct DeviceListModel<'a> {
     pub devices: &'a [AppDevice],
     pub role: &'a RoleState,
@@ -128,6 +152,9 @@ pub(crate) struct DeviceListState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeviceListAction {
+    EndStreams(String),
+    StopSending(String),
+    ShowStreams(String),
     SelectFilter(DeviceFilterKind),
     Connect(String),
     OpenFiles(String),
@@ -140,6 +167,9 @@ pub(crate) enum DeviceListAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeviceListEffect {
+    EndStreams(String),
+    StopSending(String),
+    ShowStreams(String),
     ConnectStream(String),
     ConnectFiles(String),
     OpenWorkspace(String),
@@ -152,6 +182,9 @@ impl DeviceListState {
     /// through the existing OriginalOwner; this module starts no tasks or runtimes.
     pub(crate) fn reduce(&mut self, action: DeviceListAction) -> Option<DeviceListEffect> {
         match action {
+            DeviceListAction::EndStreams(device)=>Some(DeviceListEffect::EndStreams(device)),
+            DeviceListAction::StopSending(device)=>Some(DeviceListEffect::StopSending(device)),
+            DeviceListAction::ShowStreams(device)=>Some(DeviceListEffect::ShowStreams(device)),
             DeviceListAction::More(device) => {
                 self.more = (self.more.as_ref() != Some(&device)).then_some(device);
                 self.details = None;

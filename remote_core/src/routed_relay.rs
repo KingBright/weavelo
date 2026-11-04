@@ -16,6 +16,16 @@ use tokio::{
     task::JoinHandle,
 };
 
+// Display metadata for an existing authenticated routed endpoint. This is
+// process-local bookkeeping, never authorization or an IP/name heuristic.
+fn incoming_identities() -> &'static Mutex<HashMap<SocketAddr, String>> {
+    static IDENTITIES:std::sync::OnceLock<Mutex<HashMap<SocketAddr,String>>>=std::sync::OnceLock::new();
+    IDENTITIES.get_or_init(Default::default)
+}
+pub fn incoming_device(endpoint:SocketAddr)->Option<String> {
+    incoming_identities().lock().unwrap().get(&endpoint).cloned()
+}
+
 const MAX_PEERS: usize = 64;
 const MAX_ROUTES: usize = 128;
 const IDLE: Duration = Duration::from_secs(60);
@@ -279,6 +289,9 @@ impl Listener {
     ) -> io::Result<Self> {
         let failure = Arc::new(Mutex::new(None));
         let task = Self::spawn_reader(socket.clone(), kind.clone(), tx, failure.clone())?;
+        if let ListenerKind::Host {peer,..}=&kind {
+            incoming_identities().lock().unwrap().insert(socket.local_addr()?,peer.clone());
+        }
         Ok(Self {
             socket,
             task,
@@ -364,6 +377,9 @@ impl Listener {
 }
 impl Drop for Listener {
     fn drop(&mut self) {
+        if matches!(self.kind,ListenerKind::Host {..}) {
+            if let Ok(endpoint)=self.socket.local_addr() {incoming_identities().lock().unwrap().remove(&endpoint);}
+        }
         self.task.abort();
     }
 }
@@ -864,6 +880,9 @@ mod tests {
             assert_eq!(got_b, pa);
             assert_eq!(got_c, pb);
             assert_eq!(got_a, pc);
+            assert_eq!(incoming_device(addr_b).as_deref(),Some("ho5"));
+            assert_eq!(incoming_device(addr_c).as_deref(),Some("ho5"));
+            assert_eq!(incoming_device(addr_a).as_deref(),Some("studio"));
             b.host.send_to(b"STUDIO_FRAME", addr_b).await.unwrap();
             c.host.send_to(b"MACBOOK_FRAME", addr_c).await.unwrap();
             a.host.send_to(b"HO5_FRAME", addr_a).await.unwrap();
@@ -917,6 +936,13 @@ mod tests {
         router.expire();
         assert!(router.outgoing.is_empty());
         assert!(router.clients.is_empty());
+        let socket=Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let endpoint=socket.local_addr().unwrap();
+        let listener=Listener::new(socket,ListenerKind::Host {peer:"bound-peer".into(),token:[4;16],host:local},router.tx.clone()).unwrap();
+        assert_eq!(incoming_device(endpoint).as_deref(),Some("bound-peer"));
+        router.incoming.insert(("bound-peer".into(),[4;16]),Incoming {listener,seen:Instant::now()-IDLE-Duration::from_secs(1)});
+        router.expire();
+        assert_eq!(incoming_device(endpoint),None,"expired routing metadata must not attach a later connection to an old device");
     }
 }
 

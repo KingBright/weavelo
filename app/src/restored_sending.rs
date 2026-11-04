@@ -11,6 +11,7 @@ pub(super) struct SendActivity {
     pub target_name: String,
     pub source: String,
     pub status: String,
+    pub(super) error:Option<String>,
     pub finished: bool,
 }
 
@@ -96,7 +97,10 @@ impl RestoredDashboard {
         let labels = self.exit_group.send_labels.lock().unwrap();
         senders
             .values()
-            .map(|sender| SendActivity {
+            .map(|sender| {
+                let progress=sender.progress();
+                let error=progress.result.as_ref().and_then(|result|result.as_ref().err()).map(|_|progress.status.clone());
+                SendActivity {
                 request_id: sender.request_id.clone(),
                 target: sender.target.clone(),
                 target_name: devices
@@ -110,9 +114,10 @@ impl RestoredDashboard {
                     .map(|source| source_name(*source))
                     .collect::<Vec<_>>()
                     .join(", ")),
-                status: sender.poll(),
+                status: progress.status,
+                error,
                 finished: sender.is_finished(),
-            })
+            }})
             .collect()
     }
 

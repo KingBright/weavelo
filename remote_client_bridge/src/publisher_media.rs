@@ -32,13 +32,14 @@ pub(crate) struct ActiveRequest<'a> {
     pub audio:bool,
 }
 pub(crate) struct MediaSources {
+    pub peer_streams:Vec<(Option<String>,usize)>,
     pub sources:HashMap<CaptureSource,Source>,
     cameras:CameraRegistry,
     sequence:u64,
 }
 impl MediaSources {
     pub fn new(screen:bool,audio:bool)->Self {
-        let mut this=Self{sources:HashMap::new(),cameras:CameraRegistry::default(),sequence:1};
+        let mut this=Self{peer_streams:Vec::new(),sources:HashMap::new(),cameras:CameraRegistry::default(),sequence:1};
         this.sources.insert(CaptureSource::MainDisplay,Source {
             info:CaptureSourceInfo {source:CaptureSource::MainDisplay,title:"Android selected screen or app".into(),
                 application:"MediaProjection".into(),process_id:None,width:1080,height:1920,supports_input:false,camera:None},

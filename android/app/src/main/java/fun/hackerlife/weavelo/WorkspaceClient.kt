@@ -22,7 +22,7 @@ data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false, val inputError: String? = null, val videoError: String? = null)
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
-data class WorkspaceState(val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
+data class WorkspaceState(val deviceId: String = "", val transferring: Boolean = false, val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
     val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
     val incomingEnded: Boolean = false, val connectionId: Long = 0)
@@ -127,7 +127,7 @@ object WorkspaceClient {
                     this.context = context.applicationContext
                     endpoint = request.endpoint; deviceId = request.deviceId
                     mutable.value = if (sameSession) mutable.value.copy(connected = false, status = "Connecting…")
-                        else WorkspaceState(sessionKey = request.sessionKey).also { applicationIcons.clear() }
+                        else WorkspaceState(sessionKey = request.sessionKey, deviceId = request.deviceId).also { applicationIcons.clear() }
                     if (!sameSession) nextId = 256
                     revision = 0; asleep = false
                     background = WeaveloClient.backgrounded; transfersActive = false
@@ -490,7 +490,10 @@ object WorkspaceClient {
         val events = JSONArray(action(5))
         for (i in 0 until events.length()) {
             val event = events.getJSONObject(i)
-            if (event.has("transfers_active")) transfersActive = event.getBoolean("transfers_active")
+            if (event.has("transfers_active")) {
+                transfersActive = event.getBoolean("transfers_active")
+                mutable.value = mutable.value.copy(transferring = transfersActive)
+            }
             val control = event.optJSONObject("control")
             control?.optJSONObject("CameraSwitchResult")?.let { reply ->
                 val request = reply.getJSONObject("request")

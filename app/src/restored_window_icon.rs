@@ -10,7 +10,7 @@ impl Artwork {
         if self.current==next {return;}
         let result=(||->Result<(),String> {
             if let Some(bitmap)=bitmap {
-                let (edge,pixels)=native_pixels(bitmap);
+                let (edge,pixels)=remote_application_pixels(bitmap)?;
                 let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
                 window.set_window_icon(&icon).map_err(|e|e.to_string())?;
             } else {apply(window,cx);}
@@ -21,6 +21,31 @@ impl Artwork {
             Err(error)=>eprintln!("Weavelo application window icon: {error}"),
         }
     }
+}
+
+fn remote_application_pixels(bitmap:&IconBitmap)->Result<(u32,Vec<u8>),String> {
+    let (edge,pixels)=native_pixels(bitmap);
+    let image=image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid application icon")?;
+    let mut image=image::imageops::resize(&image,64,64,image::imageops::FilterType::Triangle);
+    static BADGE:OnceLock<image::RgbaImage>=OnceLock::new();
+    let badge=if let Some(badge)=BADGE.get() {badge}else {
+        let mut badge=image::load_from_memory(include_bytes!("../../assets/brand/weavelo/icon-24.png"))
+            .map_err(|error|error.to_string())?.into_rgba8();
+        for pixel in badge.pixels_mut() {
+            for channel in 0..3 {pixel[channel]=((u16::from(pixel[channel])*u16::from(pixel[3])+127)/255) as u8;}
+        }
+        BADGE.get_or_init(||badge)
+    };
+    // Source-over in premultiplied space: keep the application's identity and
+    // add the product mark once per asset change, never in the video path.
+    for (x,y,foreground) in badge.enumerate_pixels() {
+        let background=image.get_pixel_mut(x+40,y+40);
+        let remaining=255-u16::from(foreground[3]);
+        for channel in 0..4 {
+            background[channel]=(u16::from(foreground[channel])+(u16::from(background[channel])*remaining+127)/255).min(255) as u8;
+        }
+    }
+    Ok((64,image.into_raw()))
 }
 
 fn native_pixels(bitmap:&IconBitmap)->(u32,Vec<u8>) {
@@ -71,5 +96,15 @@ mod tests {
         assert_eq!(edge,2);
         assert_eq!(pixels,vec![128,64,32,128, 0,0,0,0, 0,0,0,0, 0,0,0,0]);
         assert!(WindowIcon::new(edge,pixels).is_ok());
+    }
+    #[test]
+    fn remote_badge_keeps_the_application_and_has_valid_premultiplied_alpha() {
+        let bitmap=IconBitmap{id:[2;32],width:64,height:64,
+            rgba:[240,80,20,255].repeat(64*64).into(),png:vec![].into()};
+        let (edge,pixels)=remote_application_pixels(&bitmap).unwrap();
+        assert_eq!(edge,64);
+        assert_eq!(&pixels[..4],&[240,80,20,255]);
+        assert_ne!(&pixels[(54*64+54)*4..(54*64+54)*4+4],&[240,80,20,255]);
+        assert!(pixels.chunks_exact(4).all(|pixel|pixel[..3].iter().all(|channel|*channel<=pixel[3])));
     }
 }

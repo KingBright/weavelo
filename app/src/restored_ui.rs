@@ -18,7 +18,7 @@ mod source_browser_tests;
 #[cfg(test)]
 #[path="restored_stream_lifetime_tests.rs"]
 mod stream_lifetime_tests;
-use management::{ManagementRoot, WindowPurpose, management_activity_panel, reopen_restored_window, show_management_window};
+use management::{ManagementRoot, WindowPurpose, reopen_restored_window, show_management_window};
 #[path="restored_text_input.rs"]
 mod remote_text_input;
 #[path="restored_acceptance.rs"]
@@ -296,7 +296,7 @@ fn open_restored_window_for(
 
 fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
     let (preferred, minimum) = match purpose {
-        WindowPurpose::Management => (size(px(640.), px(600.)), size(px(480.), px(420.))),
+        WindowPurpose::Management => (size(px(580.), px(500.)), size(px(520.), px(440.))),
         WindowPurpose::Sending => (size(px(560.), px(340.)), size(px(420.), px(260.))),
         WindowPurpose::Stream => (size(px(1280.), px(800.)), size(px(800.), px(560.))),
     };
@@ -400,6 +400,8 @@ struct StreamActivity {
     can_stop_sending: bool,
     can_stop_receiving: bool,
     sends: Vec<SendActivity>,
+    devices:std::collections::BTreeMap<String,crate::desktop::device_list::DeviceActivity>,
+    unattributed_sharing:usize,
 }
 
 /// Only the existing views in this GUI process; no persistent registry or IPC authority.
@@ -581,15 +583,43 @@ struct RestoredDashboard {
 impl RestoredDashboard {
     #[cfg(any(unix, windows))]
     fn stream_activity(&self) -> StreamActivity {
-        // Drop the sender guard before collecting per-send presentation data.
-        // Struct-field temporaries otherwise survive the entire initializer.
-        let can_stop_sending=self.directed_send.lock().unwrap().values().any(|sender|!sender.is_finished());
+        let mut devices=std::collections::BTreeMap::<String,crate::desktop::device_list::DeviceActivity>::new();
+        for owner in self.exit_group.owners() {
+            for (device,current) in owner.device_activity() {
+                let activity=devices.entry(device).or_default();
+                activity.receiving+=current.receiving;
+                activity.connecting|=current.connecting;
+                if current.error.is_some() {activity.error=current.error;}
+                if let Some((done,total))=current.transfer {
+                    let progress=activity.transfer.get_or_insert((0,0));
+                    progress.0=progress.0.saturating_add(done);progress.1=progress.1.saturating_add(total);
+                }
+            }
+        }
+        let mut unattributed_sharing=0;
+        if let Some(background)=&self.background {
+            for (device,streams) in background.outgoing_peers() {
+                if let Some(device)=device {devices.entry(device).or_default().sharing+=streams;}
+                else {unattributed_sharing+=streams;}
+            }
+        }
+        let sends=self.send_activity();
+        for send in sends.iter().filter(|send|send.finished && send.error.is_some()) {
+            if !sends.iter().any(|active|active.target==send.target&&!active.finished) {
+                devices.entry(send.target.clone()).or_default().error=send.error.clone();
+            }
+        }
+        for send in sends.iter().filter(|send|!send.finished) {
+            let activity=devices.entry(send.target.clone()).or_default();
+            activity.can_stop_sending=true;
+            if activity.sharing==0 {activity.connecting=true;}
+        }
         StreamActivity {
-            sharing: self.background.as_ref().map_or(0, |background| background.outgoing_streams()),
-            receiving: self.exit_group.owners().iter().map(|owner| owner.receiving_streams()).sum(),
-            can_stop_sending,
-            can_stop_receiving: self.directed_receive.as_ref().is_some_and(|adapter| !adapter.leases.is_empty()),
-            sends: self.send_activity(),
+            sharing:self.background.as_ref().map_or(0,|background|background.outgoing_streams()),
+            receiving:devices.values().map(|activity|activity.receiving).sum(),
+            can_stop_sending:sends.iter().any(|send|!send.finished),
+            can_stop_receiving:self.directed_receive.as_ref().is_some_and(|adapter|!adapter.leases.is_empty()),
+            sends,devices,unattributed_sharing,
         }
     }
     #[cfg(any(unix, windows))]
@@ -2936,8 +2966,13 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
 fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::CaptureSourceInfo>) -> String {
     match peer {
         Some(peer) => match source {
-            Some(source) => format!("{} · {peer} · Receiving — Weavelo", capture_source_label(source)),
-            None => format!("{peer} · Receiving — Weavelo"),
+            Some(source) => {
+                let label=if !source.application.trim().is_empty() {source.application.trim().to_owned()}
+                    else if matches!(source.source,protocol::session::CaptureSource::MainDisplay|protocol::session::CaptureSource::Display(_)) {"Desktop".into()}
+                    else {capture_source_label(source)};
+                format!("{label} · {peer} — Weavelo")
+            },
+            None => format!("{peer} · Remote — Weavelo"),
         },
         None => "Weavelo".into(),
     }
@@ -3282,7 +3317,7 @@ fn drawer_trigger_capsule(
 #[allow(clippy::too_many_arguments)]
 fn slide_over_management_drawer(
     management: bool,
-    current_window: AnyWindowHandle,
+    _current_window: AnyWindowHandle,
     device_query: &str,
     devices: &[AppDevice],
     role: &RoleState,
@@ -3323,7 +3358,7 @@ fn slide_over_management_drawer(
         .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
             cx.stop_propagation();
         }))
-        .child(
+        .when(!management, |panel| panel.child(
             div()
                 .h(px(56.0))
                 .flex_none()
@@ -3366,49 +3401,41 @@ fn slide_over_management_drawer(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("X"),
                 )),
-        )
+        ))
         .when(management, |panel| panel.child(
-            div().flex().items_center().gap_2().p_3()
+            div().flex().items_center().gap_2().px_3().py_2()
                 .child(component::text_input("device-search").content(device_query.to_owned())
                     .on_change({ let view=cx.weak_entity(); move |text, _, cx| {
                         let _=view.update(cx, |this,cx| {this.device_query=text.to_string();cx.notify();});
                     }}))
-                .child(command_button("add-device",ActionVariantKind::Primary,cx).child("Add device")
+                .child(command_button("add-device",ActionVariantKind::Neutral,cx).size(px(32.)).p_0().icon(ely_gpui_component::primitives::IconName::Plus).tooltip(tooltip("Add device").build())
                     .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
         ))
         .child(div().flex_none().flex().items_center().gap_1().p_2().bg(theme.surface.sunken)
             .children(if management {
-                vec![("Devices",DrawerTab::Devices),("Activity",DrawerTab::Activity),
-                    ("Transfers",DrawerTab::Files),("Settings",DrawerTab::Network)]
+                vec![("Devices",DrawerTab::Devices),("Transfers",DrawerTab::Files),
+                    ("Sharing & permissions",DrawerTab::Security),("Settings",DrawerTab::Network)]
             } else {
                 vec![("Devices",DrawerTab::Devices),("Pairing",DrawerTab::DeviceGroup),
                     ("Files",DrawerTab::Files),("Sharing",DrawerTab::Security),("Settings",DrawerTab::Network)]
             }.into_iter().map(|(label,tab)| {
-                let selected=if management && matches!(active_tab,DrawerTab::DeviceGroup|DrawerTab::Security) {
-                    DrawerTab::Network
-                } else {active_tab};
+                let selected=match active_tab {DrawerTab::Activity=>DrawerTab::Devices,DrawerTab::DeviceGroup=>DrawerTab::Network,_=>active_tab};
                 drawer_tab_button(label,tab,selected,cx)
             })))
-        .when(management && matches!(active_tab,DrawerTab::DeviceGroup|DrawerTab::Security|DrawerTab::Network), |panel| {
-            panel.child(div().flex_none().flex().gap_2().px_4().py_2()
-                .child(drawer_tab_button("Preferences",DrawerTab::Network,active_tab,cx))
-                .child(drawer_tab_button("Sharing & permissions",DrawerTab::Security,active_tab,cx))
-                .child(drawer_tab_button("Pairing & device name",DrawerTab::DeviceGroup,active_tab,cx)))
-        })
         .child(
             div()
                 .id("drawer_scrollable_container")
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .p_4()
+                .p_3()
                 .child(match active_tab {
-                    DrawerTab::Activity => management_activity_panel(current_window, #[cfg(any(unix, windows))] activity, cx).into_any_element(),
-                    DrawerTab::Devices => drawer_devices_tab(
+                    DrawerTab::Activity | DrawerTab::Devices => drawer_devices_tab(
                         devices,
                         role,
                         mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()),
                         device_list_state,
+                        local_permissions.clone(),
                         #[cfg(any(unix, windows))] activity,
                         owner.clone(),
                         cx,
@@ -3457,7 +3484,7 @@ fn drawer_tab_button(
         cx,
     )
     .h(px(26.0))
-    .flex_1()
+    .px_2()
     .text_size(px(10.0))
     .font_weight(FontWeight::MEDIUM)
     .on_click(move |_event, _window, cx| {
@@ -3470,81 +3497,40 @@ fn drawer_tab_button(
     .child(label)
 }
 
-fn stream_activity_badge(symbol: IconName, label: String) -> Div {
-    div().flex().items_center().gap_1().h(px(22.)).px_2().rounded_full()
-        .bg(color_glass_card()).border_1().border_color(color_border_fine())
-        .text_size(px(10.)).text_color(color_accent_emerald())
-        .child(icon(symbol).size(px(12.)).color(color_accent_emerald()))
-        .child(label)
-}
-
 fn drawer_devices_tab(
-    devices: &[AppDevice], role: &RoleState, local_name: Option<String>, state: &DeviceListState,
-    #[cfg(any(unix, windows))] activity: StreamActivity,
-    owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>,
-) -> Div {
-    let view = cx.weak_entity();
-    let recovery_view = view.clone();
-    let model = crate::desktop::device_list::DeviceListModel { devices, role };
-    let content = div().flex().flex_col().gap_3().when_some(local_name, |content, name| {
-        content.child(div().flex().items_center().justify_between().gap_2()
-            .child(div().min_w_0().flex_1().truncate().text_size(px(11.0))
-                .child(format!("This device: {name}")))
-            .child(command_button("edit-this-device-name", ActionVariantKind::Neutral, cx)
-                .h(px(26.0)).px_2().text_size(px(10.0)).child("Edit name")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.cancel_device_name_edit(cx);
-                    this.active_tab = DrawerTab::DeviceGroup;
-                    cx.notify();
-                }))))
-    });
-    #[cfg(any(unix, windows))]
-    let content = content.when(activity.sharing > 0 || activity.receiving > 0, |content| {
-        content.child(div().flex().items_center().gap_2()
-            .when(activity.sharing > 0, |row| {
-                let stop = cx.weak_entity();
-                row.child(stream_activity_badge(IconName::Sharing, format!("Sharing · {}", activity.sharing))
-                    .when(activity.can_stop_sending, |badge| badge.child(
-                        command_button("stop_directed_send", ActionVariantKind::Neutral, cx)
-                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop all sends started here").build()).child("×")
-                            .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
-                                this.stop_all_sending(cx);
-                            }); })
-                    )))
-            })
-            .when(activity.receiving > 0, |row| {
-                let stop = cx.weak_entity();
-                row.child(stream_activity_badge(IconName::Receiving, format!("Receiving · {}", activity.receiving))
-                    .when(activity.can_stop_receiving, |badge| badge.child(
-                        command_button("stop_directed_receive", ActionVariantKind::Neutral, cx)
-                            .size(px(18.)).rounded_full().tooltip(tooltip("Stop all directed receives").build()).child("×")
-                            .on_click(move |_,_,cx| { let _=stop.update(cx,|this,cx| {
-                                this.stop_directed_receive();cx.notify();
-                            }); })
-                    )))
-            }))
-    });
-    let permissions = cx.weak_entity();
-    content.child(command_button("sharing-permissions", ActionVariantKind::Neutral, cx)
-        .h(px(28.0)).text_size(px(11.0)).child("Sharing & permissions")
-        .on_click(move |_,_,cx| { let _ = permissions.update(cx, |this,cx| {
-            this.active_tab=DrawerTab::Security;
-            this.refresh_local_permissions(cx);
-            cx.notify();
-        }); }))
-    .child(crate::desktop::session_recovery::ConnectionRecoveryControls::new(
-        owner.session_tabs(), move |action, cx| {
-            let _ = recovery_view.update(cx, |this, cx| this.dispatch_session_action(action, cx));
-        },
-    ))
-    .child(crate::desktop::device_drawer::DeviceDrawer::new(
-        model.project(state.filter), state.clone(),
-        move |action, cx| {
-            if let Err(error) = view.update(cx, |this, cx| this.dispatch_device_action(action.clone(), cx)) {
-                eprintln!("Device drawer action target closed: {error}");
-            }
-        },
-    ))
+    devices:&[AppDevice], role:&RoleState, local_name:Option<String>, state:&DeviceListState,
+    permissions:Option<Result<crate::sharing_permissions::Status,String>>,
+    #[cfg(any(unix, windows))] activity:StreamActivity,
+    _owner:Arc<OriginalOwner>, cx:&mut Context<RestoredDashboard>,
+)->Div {
+    use crate::sharing_permissions::Access;
+    let name=local_name.unwrap_or_else(||"This device".into());
+    let permission_hint=match permissions {
+        Some(Ok(status)) if [status.screen,status.control,status.microphone,status.camera].contains(&Access::NeedsReview)=>"Review sharing permissions",
+        Some(Ok(status)) if status.screen==Access::SelectSource=>"Choose a screen or window",
+        Some(Err(_))=>"Permission status unavailable",
+        _=>"This device",
+    };
+    let local=div().flex().items_center().gap_2().px_2().py_2().rounded(px(10.))
+        .bg(cx.theme().surface.sunken)
+        .child(icon(IconName::Display).size(px(18.)))
+        .child(div().min_w_0().flex_1().flex().flex_col()
+            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(name))
+            .child(div().text_size(px(10.)).text_color(cx.theme().content.secondary).child(permission_hint))
+            .when(activity.unattributed_sharing>0,|card|card.child(div().text_size(px(10.)).text_color(color_accent_emerald())
+                .child(format!("Sharing · {} direct streams",activity.unattributed_sharing)))))
+        .child(command_button("edit-this-device-name",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
+            .icon(ely_gpui_component::primitives::IconName::Ellipsis).tooltip(tooltip("Device name & pairing").build())
+            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
+        .child(command_button("sharing-permissions",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
+            .icon(ely_gpui_component::primitives::IconName::Settings).tooltip(tooltip("Sharing & permissions").build())
+            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::Security;this.refresh_local_permissions(cx);cx.notify();})));
+    let view=cx.weak_entity();
+    div().flex().flex_col().gap_2().child(local)
+        .child(crate::desktop::device_drawer::DeviceDrawer::new(
+            crate::desktop::device_list::DeviceListModel {devices,role}.project(state.filter),state.clone(),
+            move|action,cx| {let _=view.update(cx,|this,cx|this.dispatch_device_action(action.clone(),cx));},
+        ).with_activity(activity.devices))
 }
 
 impl RestoredDashboard {
@@ -3761,7 +3747,11 @@ impl RestoredDashboard {
         if capture.zip(self.stream_source).is_some_and(|(requested,current)|requested!=current) {
             self.status="Open the other source in a new stream window".into();cx.notify();return;
         }
-        let capture=capture.or(self.stream_source).or(Some(protocol::session::CaptureSource::MainDisplay));
+        let capture=capture.or(self.stream_source);
+        if receive.is_none() && capture.is_none() {
+            self.start_source_browser(device_id,cx);
+            return;
+        }
         self.stream_device=Some(device_id.clone());
         self.stream_source=capture;
                 self.invalidate_source_commands();
@@ -3821,6 +3811,8 @@ impl RestoredDashboard {
         if routes.is_empty(){return Err("Target is not currently available".into());}
         let mut senders=self.directed_send.lock().unwrap();
         if senders.contains_key(&request_id) {return Err("This sending request already exists".into());}
+        let ended=senders.iter().filter(|(_,sender)|sender.target==device_id&&sender.is_finished()).map(|(id,_)|id.clone()).collect::<Vec<_>>();
+        for id in ended {senders.remove(&id);self.exit_group.send_labels.lock().unwrap().remove(&id);}
         // Keep a small recent result set without limiting independent live sends.
         let finished:Vec<_>=senders.iter().filter(|(_,sender)|sender.is_finished()).map(|(id,_)|id.clone()).collect();
         for id in finished.iter().take(finished.len().saturating_sub(protocol::session::MAX_SUBSCRIPTIONS)) {
@@ -3833,6 +3825,23 @@ impl RestoredDashboard {
         if self.exit_group.stopping.load(Ordering::Acquire) { return; }
         let Some(effect) = self.device_list_state.reduce(action) else { cx.notify(); return; };
         match effect {
+            DeviceListEffect::EndStreams(device) => {
+                for view in self.menu_streams(cx) {
+                    if view.read(cx).stream_device.as_deref()==Some(device.as_str()) {
+                        view.update(cx,|this,cx|this.end_stream_window(cx));
+                    }
+                }
+            },
+            DeviceListEffect::ShowStreams(device) => {
+                if let Some(view)=self.menu_streams(cx).into_iter().find(|view|view.read(cx).stream_device.as_deref()==Some(device.as_str())) {
+                    let handle=view.read(cx).window_handle;
+                    let _=handle.update(cx,|_,window,_|window.activate_window());
+                }
+            },
+            DeviceListEffect::StopSending(device) => {
+                let requests=self.send_activity().into_iter().filter(|send|send.target==device&&!send.finished).map(|send|send.request_id).collect::<Vec<_>>();
+                self.stop_sending_requests(&requests,cx);
+            },
             DeviceListEffect::ConnectStream(device_id) => self.open_device_window(&device_id, cx),
             DeviceListEffect::ConnectFiles(device_id) => self.open_device_files(device_id, cx),
             DeviceListEffect::SendScreen(device_id) => {

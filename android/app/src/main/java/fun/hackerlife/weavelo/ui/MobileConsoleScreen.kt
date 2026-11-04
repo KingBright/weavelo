@@ -108,73 +108,18 @@ fun MobileConsoleScreen(
             .fillMaxSize()
             .background(ColorBaseBg)
             .safeDrawingPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            // 1. 顶部状态栏
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Weavelo",
-                    color = ColorTextPrimary,
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                // The network capsule is also the pairing entry point.
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9999.dp))
-                        .clickable { activeTab = "Mesh P2P" }
-                        .heightIn(min = 44.dp)
-                        .background(ColorSurfaceCard)
-                        .border(1.dp, ColorBorderFine, RoundedCornerShape(9999.dp))
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .background(ColorAccentEmerald, CircleShape)
-                    )
-                    Text(
-                        text = when {
-                            joiningNetwork -> "Joining network..."
-                            !nativeAvailable -> "Native unavailable"
-                            else -> "${devices.size} devices"
-                        },
-                        color = ColorAccentCyan,
-                        fontSize = 11.sp,
-
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                MobileAction(MobileSymbol.Network, "Pair devices", nativeAvailable,
+                    modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
             }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            if (sessionState == SessionState.CONNECTING) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Waiting for host video…", color = ColorTextSecondary,
-                        modifier = Modifier.weight(1f))
-                    Text("Cancel", color = ColorAccentCyan,
-                        modifier = Modifier.clickable(onClick = onCancelConnect).padding(8.dp))
-                }
-            } else if (sessionState == SessionState.ERROR) {
-                Text(
-                    sessionError.takeIf { it.isNotBlank() }
-                        ?: "Connection failed. Check the host address and pairing settings.",
-                    color = Color(0xFFFF8A80)
-                )
-            }
+            Spacer(Modifier.height(8.dp))
 
             if (activeTab == "Mesh P2P" || devices.isEmpty()) {
             // 2. 快捷动作按钮栏
@@ -235,6 +180,16 @@ fun MobileConsoleScreen(
                         onConnectHost = onConnectHost,
                         onConnectWorkspace = onConnectWorkspace,
                         onSendFiles = onSendFiles,
+                        localStatus = when {
+                            !nativeAvailable -> "Connection service unavailable"
+                            joiningNetwork -> "Joining network…"
+                            outgoing.unattributedSharing > 0 -> "Sharing · ${outgoing.unattributedSharing} direct streams"
+                            publishing && !controlReady -> "Sharing ready · review control permission"
+                            publishing -> "Sharing ready"
+                            else -> "Sharing & permissions"
+                        },
+                        onLocalSettings = { activeTab = "Sharing" },
+                        onLocalDetails = { activeTab = "Mesh P2P" },
                         outgoing = outgoing, onSendScreen = onSendScreen, onSendCamera = onSendCamera, onStopSending = onStopSending
                     )
                     "Mesh P2P" -> MeshP2pTabContent(
@@ -313,30 +268,30 @@ fun QuickActionButton(text: String, modifier: Modifier = Modifier, enabled: Bool
 fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true,
     canSendFiles: Boolean = false, onSendFiles: () -> Unit = {},
     canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {},
-    canSendCamera: Boolean = false, onSendCamera: () -> Unit = {}, onConnect: () -> Unit) {
+    canSendCamera: Boolean = false, onSendCamera: () -> Unit = {},
+    details: String = "", onEnd: (() -> Unit)? = null, onConnect: () -> Unit) {
     var sendMenu by remember(name) { mutableStateOf(false) }
-    Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
-        .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(20.dp))
-        .clickable(enabled = enabled, onClick = onConnect).padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(ColorAccentEmerald.copy(alpha = .09f)),
-            contentAlignment = Alignment.Center) {
+    var expanded by remember(name) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
+        .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 10.dp, vertical = 6.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             androidx.compose.material3.Icon(MobileSymbol.Devices.image, contentDescription = null,
-                tint = ColorAccentEmerald, modifier = Modifier.size(22.dp))
+                tint = ColorAccentEmerald, modifier = Modifier.size(20.dp))
+            Text(name, modifier = Modifier.weight(1f), color = ColorTextPrimary, fontSize = 15.sp,
+                lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(name, color = ColorTextPrimary, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(tag, color = ColorAccentEmerald, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1)
-            Text(subtext, color = ColorTextSecondary, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1,
-                overflow = TextOverflow.Ellipsis)
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(tag, color = ColorAccentEmerald, fontSize = 10.sp, lineHeight = 14.sp)
+                Text(subtext, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis)
+            }
             Box {
                 MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
                     if (sending) "Stop sending to $name" else "Send to $name", canSendScreen || canSendCamera,
-                    modifier = Modifier.size(44.dp), onClick = { if (sending) onSendScreen() else sendMenu = true })
+                    modifier = Modifier.size(48.dp), onClick = { if (sending) onSendScreen() else sendMenu = true })
                 androidx.compose.material3.DropdownMenu(expanded = sendMenu && !sending,
                     onDismissRequest = { sendMenu = false }) {
                     androidx.compose.material3.DropdownMenuItem(text = { Text("Screen or app") },
@@ -349,8 +304,14 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                         }, onClick = { sendMenu = false; onSendCamera() })
                 }
             }
-            MobileAction(MobileSymbol.Open, "Open device $name", enabled, modifier = Modifier.size(44.dp), onClick = onConnect)
-            MobileAction(MobileSymbol.Files, "Send files to $name", canSendFiles, modifier = Modifier.size(44.dp), onClick = onSendFiles)
+            MobileAction(MobileSymbol.Open, "Open device $name", enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
+            MobileAction(MobileSymbol.Files, "Send files to $name", canSendFiles, modifier = Modifier.size(48.dp), onClick = onSendFiles)
+            MobileAction(MobileSymbol.More, "Device details $name", true, modifier = Modifier.size(48.dp), onClick = { expanded = !expanded })
+        }
+        if (expanded) {
+            Text(details.ifBlank { subtext }, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
+                modifier = Modifier.padding(vertical = 4.dp))
+            onEnd?.let { end -> TextButton(onClick = end) { Text("End streams") } }
         }
     }
 }
@@ -375,10 +336,10 @@ fun NavTab(text: String, active: Boolean, onClick: () -> Unit = {}) {
         "Sharing" -> MobileSymbol.Share
         else -> MobileSymbol.Settings
     }
-    Column(modifier = Modifier.width(74.dp).heightIn(min = 56.dp)
+    Column(modifier = Modifier.width(72.dp).heightIn(min = 48.dp)
         .clip(RoundedCornerShape(18.dp))
         .background(if (active) ColorAccentEmerald.copy(alpha = .1f) else Color.Transparent)
-        .clickable(onClick = onClick).padding(vertical = 8.dp),
+        .clickable(onClick = onClick).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
         androidx.compose.material3.Icon(symbol.image, contentDescription = null,
@@ -402,23 +363,29 @@ private fun DevicesTabContent(
     onConnectHost: (String, String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit,
     onSendFiles: (String, String) -> Unit,
+    localStatus: String,
+    onLocalSettings: () -> Unit,
+    onLocalDetails: () -> Unit,
     outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState,
     onSendScreen: (String) -> Unit,
     onSendCamera: (String) -> Unit,
     onStopSending: (Long) -> Unit
 ) {
-    var detailsOpen by remember { mutableStateOf(false) }
+    val workspace by `fun`.hackerlife.weavelo.WorkspaceClient.state.collectAsState()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            Text(
-                text = "Your devices",
-                color = ColorTextSecondary,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold
-            )
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(ColorSurfaceCard)
+                .padding(start = 10.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                    Text(android.os.Build.MODEL, color = ColorTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(localStatus, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+                }
+                MobileAction(MobileSymbol.Share, "Sharing & permissions", true, modifier = Modifier.size(48.dp), onClick = onLocalSettings)
+                MobileAction(MobileSymbol.More, "This device & pairing", true, modifier = Modifier.size(48.dp), onClick = onLocalDetails)
+            }
         }
 
         if (devices.isEmpty()) {
@@ -441,10 +408,25 @@ private fun DevicesTabContent(
         } else {
             items(devices.size) { index ->
                 val device = devices[index]
+                val receiving = workspace.deviceId == device.id
+                val streams = if (receiving) workspace.panes.count { it.accepted && it.videoError == null } else 0
+                val sharing = outgoing.peers[device.id] ?: 0
+                val streamError = if (receiving) workspace.panes.firstNotNullOfOrNull { it.videoError ?: it.inputError } else null
+                val state = buildList {
+                    if (sharing > 0) add("Sharing · $sharing")
+                    if (streams > 0) add("Receiving · $streams")
+                    if (outgoing.active && outgoing.target == device.id && sharing == 0) add("Connecting…")
+                    if (receiving && workspace.transferring) add("Transferring files…")
+                    if (streamError != null) add("Needs attention")
+                    if (!device.hasService) add("No shared sources")
+                }.joinToString(" · ")
                 HostCard(
                     name = device.name.ifBlank { device.id },
                     tag = device.scope,
-                    subtext = if (outgoing.target == device.id && outgoing.status.isNotBlank()) outgoing.status else device.capabilitySummary,
+                    subtext = state.ifBlank { "Available" },
+                    details = listOfNotNull(streamError, if (outgoing.target == device.id) outgoing.status.takeIf { it.isNotBlank() } else null,
+                        device.capabilitySummary, device.endpoint, device.id).joinToString("\n"),
+                    onEnd = if (receiving && workspace.panes.isNotEmpty()) ({ `fun`.hackerlife.weavelo.WorkspaceClient.disconnectSession(workspace.sessionKey) }) else null,
                     enabled = nativeAvailable && device.canOpenWorkspace && sessionState != SessionState.CONNECTING,
                     canSendFiles = nativeAvailable && device.canSendFiles,
                     canSendScreen = nativeAvailable && (outgoing.active && outgoing.target == device.id || !outgoing.active && device.canReceiveScreen),
@@ -455,14 +437,7 @@ private fun DevicesTabContent(
                     onSendFiles = { onSendFiles(device.id, device.endpoint) },
                     onConnect = { onConnectWorkspace(device.id, device.endpoint) }
                 )
-                if (!device.hasService) {
-                    Text(
-                        "This member is discoverable. Start a supported incoming service on it to receive a connection.",
-                        color = ColorTextSecondary,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                    )
-                }
+
             }
         }
 
@@ -505,45 +480,6 @@ private fun DevicesTabContent(
             }
         }
 
-        item {
-            TextButton(onClick = { detailsOpen = !detailsOpen }) {
-                Text(if (detailsOpen) "Hide connection details" else "Connection details", color = ColorTextSecondary)
-            }
-        }
-        if (detailsOpen) {
-        item {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "NETWORK TELEMETRY",
-                color = ColorTextSecondary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 1.sp
-            )
-        }
-
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ColorSurfaceCard)
-                    .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                TelemetryLaneRow(
-                    "Realtime Video",
-                    if (sessionState == SessionState.STREAMING) "${telemetry.videoBitrateKbps / 1000f} Mbps" else "Unavailable",
-                    ColorAccentCyan
-                )
-                TelemetryLaneRow("Realtime Audio (Opus)", if (telemetry.audioBitrateKbps > 0) "${telemetry.audioBitrateKbps} kbps" else "Idle", ColorAccentEmerald)
-                TelemetryLaneRow("Interactive Control", if (telemetry.controlBitrateKbps > 0) "${telemetry.controlBitrateKbps} kbps" else "Idle", Color(0xFFFFB300))
-                TelemetryLaneRow("Reliable File Transfer", if (telemetry.fileBitrateKbps > 0) "${telemetry.fileBitrateKbps} kbps" else "Idle", Color(0xFFB388FF))
-            }
-        }
-        }
     }
 }
 

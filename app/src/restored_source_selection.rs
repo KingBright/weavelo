@@ -29,16 +29,16 @@ pub(super) struct Selection {
     scope: ShareScope,
     title: String,
     sources: Vec<CaptureSourceInfo>,
-    selected: Vec<CaptureSource>,
+    pub(super) selected: Vec<CaptureSource>,
     artwork: SourceArtwork,
-    loading: bool,
+    pub(super) loading: bool,
     error: Option<String>,
     catalog: Option<CatalogState>,
 }
 impl Selection {
     pub(super) fn is_delivery(&self) -> bool { matches!(self.target, Target::Send(_)) }
     pub(super) fn local_delivery_is_current(&self) -> bool {self.is_delivery()&&self.scope==current_share_scope()}
-    fn toggle(&mut self,source:CaptureSource) {
+    pub(super) fn toggle(&mut self,source:CaptureSource) {
         if !self.catalog_ready() {return;}
         if !self.sources.iter().any(|item|item.source==source) {self.error=Some("The source list changed".into());return;}
         if self.selected.contains(&source) {self.selected.retain(|selected|*selected!=source);self.error=None;}
@@ -47,7 +47,6 @@ impl Selection {
         else {self.error=Some("Choose up to eight sources".into());}
     }
     fn replace(&mut self, mut sources: Vec<CaptureSourceInfo>, artwork: SourceArtwork) {
-        let initial=self.sources.is_empty();
         let had_selection=!self.selected.is_empty();
         sources.retain(|source|source.validate_camera().is_ok());
         // MainDisplay is an alias; don't offer it beside the concrete displays.
@@ -57,7 +56,6 @@ impl Selection {
         let mut seen=std::collections::HashSet::new();
         sources.retain(|source|seen.insert(source.source));
         self.selected.retain(|id| sources.iter().any(|source| source.source == *id));
-        if initial && self.selected.is_empty() && !matches!(self.target,Target::Replace(_)) {self.selected=sources.first().map(|source|vec![source.source]).unwrap_or_default();}
         self.sources=sources;self.artwork=artwork;self.loading=false;
         self.error=self.sources.is_empty().then(||if self.is_delivery() {"Choose a local source in Sharing & permissions."}else{"No shared sources are available on the remote device."}.into());
         if self.error.is_none() && had_selection && self.selected.is_empty() {
@@ -127,7 +125,9 @@ impl RestoredDashboard {
             sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,error:None,catalog:None};
         let artwork=self.artwork_cache.borrow_mut().update(snapshot.source_icons);
         selection.replace((*snapshot.sources).clone(),artwork);
-        if selection.sources.iter().any(|source|source.source==snapshot.active_source) {selection.selected=vec![snapshot.active_source];}
+        // Opening an additional source must not silently include the desktop
+        // or the stream already being viewed. Only replacement has a default.
+        if replace && selection.sources.iter().any(|source|source.source==snapshot.active_source) {selection.selected=vec![snapshot.active_source];}
         selection.catalog=Some(CatalogState {revision:snapshot.source_catalog_revision,ready:false});
         selection.loading=true;selection.error=None;
         self.source_selection=Some(selection);
@@ -327,7 +327,7 @@ mod tests {
         let mut selection=selection();
         selection.replace(vec![source(CaptureSource::MainDisplay),source(CaptureSource::Display(1)),
             source(CaptureSource::Window(2)),source(CaptureSource::Window(2))],Arc::new(Default::default()));
-        assert_eq!(selection.sources.len(),2);assert_eq!(selection.selected,vec![CaptureSource::Display(1)]);
+        assert_eq!(selection.sources.len(),2);assert!(selection.selected.is_empty());
         assert!(!selection.loading);assert!(selection.error.is_none());
     }
     #[test]
@@ -335,6 +335,7 @@ mod tests {
         let mut selection=selection();
         let sources=|| (1..=3).map(|id|source(CaptureSource::Window(id))).collect();
         selection.replace(sources(),Arc::new(Default::default()));
+        selection.toggle(CaptureSource::Window(1));
         selection.toggle(CaptureSource::Window(2));
         selection.replace(sources(),Arc::new(Default::default()));
         assert_eq!(selection.selected,vec![CaptureSource::Window(1),CaptureSource::Window(2)]);
@@ -345,6 +346,7 @@ mod tests {
     fn a_disappearing_window_never_silently_selects_the_desktop() {
         let mut selection=selection();
         selection.replace(vec![source(CaptureSource::Window(7))],Arc::new(Default::default()));
+        selection.toggle(CaptureSource::Window(7));
         selection.replace(vec![source(CaptureSource::Display(1))],Arc::new(Default::default()));
         assert!(selection.selected.is_empty());
         assert!(selection.error.as_ref().unwrap().contains("ended"));
@@ -357,7 +359,8 @@ mod tests {
     fn stale_buttons_cannot_select_absent_sources_and_selection_stays_bounded() {
         let mut selection=selection();
         selection.replace((1..=9).map(|id|source(CaptureSource::Window(id))).collect(),Arc::new(Default::default()));
-        selection.toggle(CaptureSource::Window(99));assert_eq!(selection.selected.len(),1);
+        selection.toggle(CaptureSource::Window(99));assert!(selection.selected.is_empty());
+        selection.toggle(CaptureSource::Window(1));
         for id in 2..=9 {selection.toggle(CaptureSource::Window(id));}
         assert_eq!(selection.selected.len(),8);assert!(!selection.selected.contains(&CaptureSource::Window(9)));
         selection.toggle(CaptureSource::Window(1));selection.toggle(CaptureSource::Window(9));

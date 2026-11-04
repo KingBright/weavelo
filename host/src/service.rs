@@ -917,6 +917,7 @@ impl Connection {
             },
         ));
         let resources = Arc::new(crate::lifecycle::Resources::default());
+        if let Some(peer)=remote_core::routed_relay::incoming_device(addr) {let _=resources.peer_device.set(peer);}
         crate::lifecycle::publish(id, &resources, "open");
         Self {
             source_catalog: crate::source_catalog::SourceCatalog::default(),

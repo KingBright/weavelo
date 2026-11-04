@@ -41,6 +41,8 @@ pub(super) fn reopen_restored_window(view: Entity<RestoredDashboard>, cx: &mut A
         view.update(cx, |this, cx| {
             this.window_handle = window.window_handle();
             this.native_window_title.clear();
+            this.native_window_artwork=Default::default();
+            if this.purpose!=WindowPurpose::Management {window_icon::apply(window,cx);}
             RestoredDashboard::observe_window(window, cx);
             this.window_active = window.is_window_active();
             this.window_visible = window.is_window_visible();
@@ -151,112 +153,4 @@ impl RestoredDashboard {
             })
             .into_any_element()
     }
-}
-
-pub(super) fn management_activity_panel(
-    current_window: AnyWindowHandle,
-    #[cfg(any(unix, windows))] activity: StreamActivity,
-    cx: &mut Context<RestoredDashboard>,
-) -> Div {
-    let streams: Vec<_> = cx
-        .windows()
-        .into_iter()
-        .filter_map(|handle| {
-            if handle == current_window {
-                return None;
-            }
-            let handle = handle.downcast::<RestoredDashboard>()?;
-            let view = handle.read(cx).ok()?;
-            if view.purpose == WindowPurpose::Sending { return None; }
-            let snapshot = view.owner.snapshot();
-            let title = if !view.native_window_title.is_empty() && view.native_window_title != "Weavelo" {
-                view.native_window_title.clone()
-            } else { remote_window_title(
-                snapshot
-                    .role
-                    .session()
-                    .map(|s| s.peer.display_name.as_str()),
-                confirmed_source(&snapshot.sources, snapshot.active_source),
-            ) };
-            Some((handle, title, view.status.clone()))
-        })
-        .collect();
-    let mut panel = div().flex().flex_col().gap_3().child(
-        div()
-            .text_size(px(14.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child("Activity"),
-    );
-    #[cfg(any(unix, windows))]
-    let has_sends = !activity.sends.is_empty();
-    #[cfg(not(any(unix, windows)))]
-    let has_sends = false;
-    if streams.is_empty() && !has_sends {
-        panel = panel.child(
-            div()
-                .text_size(px(12.))
-                .text_color(cx.theme().content.secondary)
-                .child("Open a device screen or send a source to get started."),
-        );
-    }
-    for (index, (handle, title, status)) in streams.into_iter().enumerate() {
-        panel = panel.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .p_3()
-                .rounded_lg()
-                .bg(color_glass_card())
-                .border_1()
-                .border_color(color_border_fine())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().truncate().text_size(px(12.)).child(title))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(px(10.))
-                                .text_color(cx.theme().content.secondary)
-                                .child(status),
-                        ),
-                )
-                .child(
-                    command_button(
-                        format!("activity-open-{index}"),
-                        ActionVariantKind::Neutral,
-                        cx,
-                    )
-                    .child("Open")
-                    .on_click(move |_, _, cx| {
-                        let _ = handle.update(cx, |_, window, _| window.activate_window());
-                    }),
-                ),
-        );
-    }
-    #[cfg(any(unix, windows))]
-    for send in activity.sends {
-        let request=send.request_id.clone();
-        let open_request=request.clone();
-        panel=panel.child(div().flex().items_center().gap_3().p_3().rounded_lg()
-            .bg(color_glass_card()).border_1().border_color(color_border_fine())
-            .child(icon(IconName::Sharing).size(px(16.)))
-            .child(div().min_w_0().flex_1()
-                .child(div().truncate().text_size(px(12.)).child(format!("{} → {}",send.source,send.target_name)))
-                .child(div().truncate().text_size(px(10.)).text_color(cx.theme().content.secondary).child(send.status)))
-            .child(command_button(format!("sending-open-{request}"),ActionVariantKind::Neutral,cx).child("Open")
-                .on_click(cx.listener(move|this,_,_,cx| {this.open_sending_window(&open_request,Vec::new(),Arc::new(Default::default()),cx);})))
-            .child(command_button(format!("sending-stop-{request}"),ActionVariantKind::Neutral,cx).disabled(send.finished).child("Stop this send")
-                .on_click(cx.listener(move|this,_,_,cx| {this.stop_sending_requests(&[request.clone()],cx);}))));
-    }
-    #[cfg(any(unix, windows))]
-    if activity.sharing > 0 {
-        panel = panel.child(stream_activity_badge(
-            IconName::Sharing,
-            format!("Sending · {}", activity.sharing),
-        ));
-    }
-    panel
 }

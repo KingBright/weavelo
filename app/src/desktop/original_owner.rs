@@ -535,6 +535,29 @@ impl OriginalOwner {
             has_media: e.session.media.is_some(),
         }))
     }
+    pub(crate) fn device_activity(&self)->std::collections::BTreeMap<String,super::device_list::DeviceActivity> {
+        use super::device_list::DeviceActivity;
+        let p=self.pool.lock().unwrap();
+        let mut result=std::collections::BTreeMap::<String,DeviceActivity>::new();
+        for entry in &p.sessions {
+            let s=&entry.session;
+            let activity=result.entry(s.key.clone()).or_default();
+            if s.connected && s.media.is_some() && s.video_error.is_none() {
+                if s.confirmed {activity.receiving+=1;} else {activity.connecting=true;}
+            }
+            if let Some(error)=&s.video_error {activity.error=Some(error.clone());}
+            let transfers=s.transfers.lock().unwrap().snapshots();
+            for file in transfers.iter().filter(|file|file.is_running()) {
+                let progress=activity.transfer.get_or_insert((0u64,0u64));
+                progress.0=progress.0.saturating_add(file.transferred_bytes);
+                progress.1=progress.1.saturating_add(file.total_bytes);
+            }
+        }
+        if let Some(connecting)=p.tabs.connecting() {result.entry(connecting.peer.device_id.clone()).or_default().connecting=true;}
+        if let Some(failed)=p.tabs.failed() {result.entry(failed.device_id.clone()).or_default().error=Some(p.message.clone());}
+        result
+    }
+
     pub(crate) fn receiving_streams(&self) -> usize {
         self.pool.lock().unwrap().sessions.iter()
             .filter(|entry| entry.session.connected && entry.session.media.is_some() && entry.session.video_error.is_none())

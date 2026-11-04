@@ -12,6 +12,7 @@ static ACTIVE_VIDEO_STREAMS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
 pub(crate) struct Resources {
+    pub peer_device:OnceLock<String>,
     pub workers: AtomicUsize,
     pub video_streams: AtomicUsize,
     pub native_streams: AtomicUsize,
@@ -192,6 +193,19 @@ pub fn active_video_streams() -> usize {
     ACTIVE_VIDEO_STREAMS.load(SeqCst)
 }
 
+/// Active subscriptions grouped by their routed device identity. A direct
+/// connection with no device binding remains explicitly unattributed.
+pub fn peer_video_streams()->Vec<(Option<String>,usize)> {
+    let mut peers=std::collections::BTreeMap::new();
+    for record in registry().lock().unwrap().values().flatten() {
+        let streams=record.resources.video_streams.load(SeqCst);
+        if record.state=="open" && streams>0 {
+            *peers.entry(record.resources.peer_device.get().cloned()).or_insert(0)+=streams;
+        }
+    }
+    peers.into_iter().collect()
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ConnectionLifecycleSnapshot {
     pub connection_id: u32,
@@ -300,6 +314,8 @@ mod tests {
     #[tokio::test]
     async fn video_activity_clears_cancelled_streams_independently_of_other_channels() {
         let resources = Arc::new(Resources::default());
+        resources.peer_device.set("activity-owner-fixture".into()).unwrap();
+        publish(0xfed10001,&resources,"open");
         let file_worker = WorkerGuard::new(resources.clone());
         let other_stream = VideoStreamGuard::new(resources.clone());
         let (ready, started) = tokio::sync::oneshot::channel();
@@ -310,11 +326,15 @@ mod tests {
             std::future::pending::<()>().await;
         });
         started.await.unwrap();
+        let count=||peer_video_streams().into_iter().find(|(peer,_)|peer.as_deref()==Some("activity-owner-fixture")).map_or(0,|(_,count)|count);
+        assert_eq!(count(),2);
         assert_eq!(resources.video_streams.load(SeqCst), 2);
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(resources.video_streams.load(SeqCst), 1);
         drop(other_stream);
+        assert_eq!(count(),0,"file-only connections cannot leave a sharing badge");
+        publish(0xfed10001,&resources,"closed");
         assert_eq!(resources.video_streams.load(SeqCst), 0);
         assert_eq!(resources.workers.load(SeqCst), 1);
         drop(file_worker);
