@@ -557,3 +557,12 @@ Linux 的只读系统状态为屏幕 / 控制 Allowed，Display 1 为已记住�
 
 
 上述普通退出修复的最终一轮已完成：7 项原生检查均通过，验证工具退出 0 并保存短文件名证据；1,045 项签名发布回归通过、19 项跳过。正常 GUI 关闭将回报 `cleanup_scope=frontend-local` 与单独的 `remote_cleanup_confirmed`，实际退出仍由原生进程观察确认；缺少远端回执不会被标成远端已清理。Android versionCode 已升至 77，以在下一次正式包中同步公共 Close 的满队列截止时间。最终证据 `native107-bounded-gui-exit-final-native-tests.log`、`test-result-3f0a5c4505c4bbf230157938.json`、`native107-bounded-exit-final-release-regression.log`；安装与离线实机退出继续单独验收。
+
+
+## 2026-11-04 普通退出的实机反例与连接保留修正
+
+Studio 107 / `da7c985` 已按原签名安装，用 Book 自有 Weavelo 窗口普通拉流实际出帧后，暂时暂停唯一来源后台，并以独立守护进程定时恢复。来源端同一 PID / 原可执行字节均已恢复，未留下暂停进程。本地 GUI 实际在 210.1 ms 退出，后台 61594 保持运行；但结果错误返回 `remote_cleanup_confirmed=true`，该验收明确失败，未据此批量安装或发布 107 桌面包。原因是租约清理先移除了接收窗口和连接，后续才收集退出所有者，空列表被误判为全部已确认。证据 `native107-real-silent-source-gui-close-proof.json`、Book 的 `native107-book-independent-resume-proof2.json`；早先一次仅暂停来源、未执行本地关闭的试验不计作退出验收。
+
+源码现改为在取消接收租约与发送句柄之前，保留所有原窗口所有者及连接，再执行有界关闭；GUI 整体退出入口共用同一准备逻辑。回归模拟先准备退出、所有界面引用全部释放，仍要求两个真实 UDP 连接收到 Close；缺回执仍不能被严格路径判为成功，普通本地退出另行返回未确认。相关 5 项原生检查及 1,045 项签名发布回归（19 项跳过）通过，证据 `native108-retain-before-receive-retirement-native-tests.log`、`native108-retention-release-regression.log`。108 尚需正式安装后重跑该实机反例。
+
+Book 的 107 macOS 构建与 Android 77 正式构建均已完成；APK 77 大小 18,823,646 字节、SHA `79fd7d2b27f77d29cecb175c9121b67bbf65199c0cfb6872bd1c4816a2bff5b1`，沿用原 Android 签名，包含公共 Close 的队列截止时间修复。108 仅修桌面退出连接保留，未更改 Android 77 的该公共实现或网络协议；不为无关桌面改动额外增加 APK 版本。各电脑原生构建读取各自已固定提交的主检出，之后修改另一台电脑的主检出不会改变正在编译的源码；仅冻结真正被该生产者读取的检出。

@@ -433,6 +433,10 @@ impl FrontendExitGroup {
             retained.clone()
         }
     }
+    fn prepare_gui_exit(&self) -> Result<(), String> {
+        for owner in self.exit_owners() { owner.prepare_gui_exit()?; }
+        Ok(())
+    }
     async fn close_for_gui_exit(&self) -> Result<bool, String> {
         let mut tasks=tokio::task::JoinSet::new();
         for owner in self.exit_owners() { tasks.spawn(async move {owner.close_all_for_gui_exit().await}); }
@@ -1973,13 +1977,14 @@ impl RestoredDashboard {
         }
         // Re-observe retained owners in close_verified below. A previous
         // connecting/cleanup failure must not permanently disable normal Quit.
-        let refusal = if self.background.is_none() {
+        let refusal = (if self.background.is_none() {
             Err("GUI-only exit requires an attached background service")
         } else if idle_only {
             let adapter=self.directed_receive.as_ref().unwrap();
             let states=self.exit_group.owners().iter().map(|o|o.diagnostic_snapshot()).collect::<Vec<_>>();
             upgrade_quit::idle(&states,!adapter.leases.is_empty(),adapter.active_operations.load(Ordering::Acquire))
-        } else {Ok(())};
+        } else {Ok(())}).map_err(str::to_owned)
+            .and_then(|()|self.exit_group.prepare_gui_exit());
         if let Err(error)=refusal {
             self.exit_group.stopping.store(false,Ordering::Release);
             if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":error}).into());}
@@ -2015,6 +2020,10 @@ impl RestoredDashboard {
 
     fn begin_full_exit(&mut self, cx: &mut Context<Self>) {
         if self.exit_group.stopping.swap(true, Ordering::AcqRel) { return; }
+        if let Err(error)=self.exit_group.prepare_gui_exit() {
+            self.exit_group.stopping.store(false,Ordering::Release);
+            self.status=error;cx.notify();return;
+        }
         self.full_exit_pending = true;
         for owner in self.exit_group.owners() { owner.set_input_locked(true); owner.release_input(); }
         self.set_input_locked(true);
@@ -5791,13 +5800,15 @@ mod input_tests {
                 owner.attach_recorder_session(crate::desktop::OriginalGuiSession::new(format!("fixture-{index}"),"Fixture".into(),"Loopback".into(),connection,events));
                 group.owners.lock().unwrap().push(Arc::downgrade(&owner));owners.push(owner);
             }
+            // Normal GUI exit retires receive windows before awaiting cleanup.
+            // Keep the original connection actors even after every view drops.
+            group.prepare_gui_exit().unwrap();
+            owners.clear();
             let result=group.close_verified().await;
             assert_eq!(result.is_ok(),confirm_second);
             assert_eq!(seen.load(Ordering::SeqCst),2,"both actual connection actors must receive Close");
             if !confirm_second {
-                // Even if that failed window is closed, the original unknown
-                // connection must survive. Empty UI lists are not a receipt.
-                owners.pop();
+                // Empty UI lists are still not a remote cleanup receipt.
                 assert!(group.close_verified().await.is_err(),"a repeated whole-exit request must not erase missing cleanup proof");
                 assert!(!group.close_for_gui_exit().await.unwrap(),
                     "local GUI exit must report the missing remote cleanup receipt");

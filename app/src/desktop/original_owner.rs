@@ -1737,6 +1737,10 @@ impl OriginalOwner {
         Ok(connections)
     }
 
+    pub fn prepare_gui_exit(&self) -> Result<(), String> {
+        self.exit_connections(true).map(|_| ())
+    }
+
     /// Normal GUI exit releases local input and waits only a bounded time for
     /// the peer. Missing remote receipts remain explicit, not a permanent Quit gate.
     pub async fn close_all_for_gui_exit(&self) -> Result<bool, String> {
