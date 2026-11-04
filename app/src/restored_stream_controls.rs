@@ -437,6 +437,7 @@ impl RestoredDashboard {
                 .flex_col()
                 .gap_3()
                 .child(scale_mode_control(self.scale_mode, cx))
+                .when_some(self.viewport_controls(cx),|panel,controls|panel.child(controls))
                 .child(
                     command_button("island_popout_pip", ActionVariantKind::Neutral, cx)
                         .child("Open picture in picture")

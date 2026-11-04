@@ -29,6 +29,8 @@ mod remote_text_input;
 mod sequence_acceptance;
 #[path="restored_source_selection.rs"]
 mod source_selection;
+#[path="restored_viewport.rs"]
+mod viewer_viewport;
 #[cfg(target_os = "macos")]
 use client::decoded_video_frame_surface_with_fit;
 // Original product visual tree rebound to the current authenticated workspace sessions.
@@ -228,6 +230,7 @@ fn open_restored_window_for(
         let weak = view.downgrade();
         let mut frame_updates = view.read(cx).owner.subscribe_updates();
         let command_ready = view.read(cx).directed_receive.as_ref().map(|adapter| adapter.command_ready.clone());
+        let viewport_ready=view.read(cx).viewport.lock().unwrap().ready.clone();
         cx.spawn(async move |cx| {
             loop {
                 let Ok(interval) = weak.update(cx, |view, cx| {
@@ -275,6 +278,7 @@ fn open_restored_window_for(
                         Ok(visible)=>{view.pip_visible|=visible.unwrap_or(true);true},Err(_)=>false,
                     });
                     view.sync_media_pause();
+                    view.poll_viewport();
                     view.owner.poll();
                     if view.purpose == WindowPurpose::Management { view.poll_device_files(); }
                     view.poll_source_browser(cx);
@@ -298,6 +302,7 @@ fn open_restored_window_for(
                 owned_gui_stage(4);
                 tokio::select! {
                     changed=frame_updates.changed()=>{if changed.is_err(){break;}},
+                    _=viewport_ready.notified()=>{},
                     _=async {
                         match &command_ready {
                             Some(ready)=>ready.notified().await,
@@ -565,6 +570,7 @@ struct RestoredDashboard {
     ime_anchor: Option<Point<Pixels>>,
     root_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    viewport:Arc<Mutex<viewer_viewport::State>>,
     input_session_id: Option<u32>,
     status: String,
 
@@ -750,6 +756,7 @@ impl RestoredDashboard {
             ime_anchor: None,
             root_focus,
             video_surface_bounds: Arc::new(Mutex::new(None)),
+            viewport:Default::default(),
             input_session_id: None,
             status: "Ready".into(),
             drawer_open: purpose == WindowPurpose::Management,
@@ -909,6 +916,7 @@ impl RestoredDashboard {
         }
         // Submission, GPU completion, and actual display are distinct. Do not manufacture
         // render_done from decoder timestamps; the paint hook below records eligibility only.
+        self.viewport.lock().unwrap().target(self.bound_source,self.owner.viewport_target());
     }
 
     fn host_stats_snapshot(&self, role: &RoleState) -> Option<UiHostStats> {
@@ -1122,6 +1130,7 @@ impl RestoredDashboard {
     }
 
     fn refresh_interval(&self) -> Duration {
+        if let Some(wait)=self.viewport.lock().unwrap().retry_in(Instant::now()){return wait;}
         if self.manual_media_paused || !self.window_active {
             return Duration::from_millis(150);
         }
@@ -1448,7 +1457,7 @@ impl RestoredDashboard {
         if from_press && self.owner.retry_viewing_input() {
             self.pointer_input = PointerInputTracker::default();
         }
-        self.owner.queue_viewing_input(event)
+        self.queue_view_pointer(event)
     }
 
     fn pointer_event_at(&self, position: Point<Pixels>) -> Option<protocol::InputEvent> {
@@ -1456,12 +1465,22 @@ impl RestoredDashboard {
             || !self.capture_supports_input
             || self.drawer_open
             || self.show_apps_menu
+            || self.viewport.lock().unwrap().navigation()
         {
             return None;
         }
         let Some(frame) = self.current_frame.as_ref() else {
             return None;
         };
+        if let Some(current)=frame.frame_geometry {
+            let painted=self.viewport.lock().unwrap().painted()?;
+            if current.source_revision!=painted.geometry.source_revision
+                || [current.source_width,current.source_height]!=[painted.geometry.source_width,painted.geometry.source_height]
+                || !self.owner.viewport_target_is_current(&painted.target){return None;}
+            let point=[f64::from(f32::from(position.x-painted.bounds.origin.x)),f64::from(f32::from(position.y-painted.bounds.origin.y))];
+            let [x,y]=painted.view.input_point(point,painted.geometry)?;
+            return Some(protocol::InputEvent::MouseMoveAbsolute{x,y});
+        }
         if frame.frame_geometry.is_some_and(|g|!self.owner.accepts_frame_source_revision(g.source_revision)) {return None;}
         let Some(bounds) = *self
             .video_surface_bounds
@@ -1503,6 +1522,7 @@ impl RestoredDashboard {
             || !self.capture_supports_input
             || self.drawer_open
             || self.show_apps_menu
+            || self.viewport.lock().unwrap().navigation()
         {
             return;
         }
@@ -1517,7 +1537,7 @@ impl RestoredDashboard {
         } else {
             protocol::InputEvent::MouseUp(button)
         };
-        if self.owner.queue_viewing_input(event) {
+        if self.queue_view_pointer(event) {
             self.pointer_input.button_changed(button, pressed);
         }
     }
@@ -1536,7 +1556,7 @@ impl RestoredDashboard {
             .pointer_input
             .scrolled((f32::from(delta.x), f32::from(delta.y)))
         {
-            self.owner.queue_viewing_input(event);
+            self.queue_view_pointer(event);
         }
     }
 
@@ -2004,9 +2024,11 @@ impl RestoredDashboard {
         }
         let frame=self.current_frame.clone();
         let owner=self.owner.clone();
+        let viewport=self.viewport.clone();
         let connection=self.bound_source.map(|(id,_)|id);
         canvas(|_,_,_|(),move |_,(),_,_| {
             if let (Some(id),Some(frame))=(connection,frame.as_ref()) {
+                if frame.frame_geometry.is_some()&&!viewport.lock().unwrap().acknowledges(frame){return;}
                 owned_gui_stage(10);
                 owner.acknowledge_paint(id,frame);
                 owned_gui_stage(11);
@@ -2527,9 +2549,10 @@ impl Render for RestoredDashboard {
             .child(div().absolute().top_0().left_0().w_full().h_full().child(
                 full_canvas_stream_viewport(
                     &role,
-                    self.current_frame.as_deref(),
+                    self.current_frame.clone(),
                     self.input_focus.clone(),
                     self.video_surface_bounds.clone(),
+                    self.viewport.clone(),
                     self.scale_mode,
                     self.remote_text.clone(),
                     matches!(role, RoleState::Idle).then(||self.idle_stream_stage(cx)),
@@ -2597,9 +2620,10 @@ impl Render for RestoredDashboard {
 
 fn full_canvas_stream_viewport(
     role: &RoleState,
-    frame: Option<&MacDecodedVideoFrame>,
+    frame: Option<Arc<MacDecodedVideoFrame>>,
     input_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    viewport:Arc<Mutex<viewer_viewport::State>>,
     scale_mode: ViewportScaleMode,
     text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
     idle_stage: Option<AnyElement>,
@@ -2615,6 +2639,7 @@ fn full_canvas_stream_viewport(
             },
             input_focus,
             video_surface_bounds,
+            viewport,
             scale_mode,
             text_input,
             cx,
@@ -2627,22 +2652,27 @@ fn full_canvas_stream_viewport(
 }
 
 fn full_video_surface(
-    frame: Option<&MacDecodedVideoFrame>,
+    frame: Option<Arc<MacDecodedVideoFrame>>,
     fallback: &'static str,
     input_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    viewport:Arc<Mutex<viewer_viewport::State>>,
     scale_mode: ViewportScaleMode,
     text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
     cx: &mut Context<RestoredDashboard>,
 ) -> AnyElement {
     let theme = cx.theme().clone();
-    let content = stream_video_canvas_surface(
-        frame,
+    let content = if let Some(frame)=frame.as_ref().filter(|frame|frame.frame_geometry.is_some()) {
+        viewer_viewport::surface(frame.clone(),viewport.clone(),scale_mode)
+    }else{stream_video_canvas_surface(
+        frame.as_deref(),
         fallback,
         "Waiting for the first decoded video frame",
         scale_mode,
         &theme,
-    );
+    )};
+    let navigation=viewport.lock().unwrap().navigation();
+    let pan_epoch=viewport.lock().unwrap().epoch();
 
     let text_focus=input_focus.clone();
     let input_bounds_probe = canvas(
@@ -2668,6 +2698,9 @@ fn full_video_surface(
         .w_full()
         .h_full()
         .bg(rgb(0x050706))
+        .when(navigation,|element|element.cursor(CursorStyle::OpenHand)
+            .on_drag(viewer_viewport::PanDrag{owner:cx.entity_id(),epoch:pan_epoch},|_,_,_,cx|cx.new(|_|viewer_viewport::PanImage))
+            .on_drag_move(cx.listener(|this,event:&DragMoveEvent<viewer_viewport::PanDrag>,_,cx|this.move_view_pan(event,cx))))
         .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
             if !hovered {
                 this.pointer_input.reset_pointer();
@@ -2691,6 +2724,10 @@ fn full_video_surface(
                 cx.notify();
                 return; // dismissing a local menu is not a remote click
             }
+            if this.viewport.lock().unwrap().navigation() {
+                if event.button==MouseButton::Left{this.begin_view_pan(event.position);}
+                return;
+            }
             this.ime_anchor=Some(event.position);
             if let Some(input)=&this.remote_text {input.update(cx,|input,_|input.anchor=Some(event.position));}
             window.focus(&this.input_focus);
@@ -2700,6 +2737,7 @@ fn full_video_surface(
             cx.stop_propagation();
         }))
         .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
+            if event.button==MouseButton::Left{this.end_view_pan();}
             if protocol_mouse_button(event.button)
                 .is_some_and(|button| this.pointer_input.pressed_buttons.contains(&button))
             {
@@ -2710,6 +2748,7 @@ fn full_video_surface(
         .on_mouse_up_out(
             MouseButton::Left,
             cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
+                this.end_view_pan();
                 this.queue_pointer_button(MouseButton::Left, false);
                 this.pointer_input.reset_pointer();
             }),
@@ -2729,7 +2768,7 @@ fn full_video_surface(
             }),
         )
         .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-            this.queue_pointer_scroll(event.position,event.delta);
+            if !this.view_scroll(event.position,event.delta,cx){this.queue_pointer_scroll(event.position,event.delta);}
             cx.stop_propagation();
         }))
         .child(content)

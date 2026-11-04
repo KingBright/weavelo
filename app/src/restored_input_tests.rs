@@ -23,6 +23,16 @@ use std::{
 #[gpui::test]
 #[ignore = "local protocol recorder; run explicitly without any real user session key"]
 fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut TestAppContext) {
+    run_input_case(cx,false);
+}
+
+#[gpui::test]
+#[ignore = "local native decoder and protocol recorder; no real user session key"]
+fn viewport_frames_preserve_remote_input_and_keep_local_navigation_local(cx:&mut TestAppContext) {
+    run_input_case(cx,true);
+}
+
+fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
     assert!(
         remote_core::session_crypto::load_session_psk().is_none(),
         "Do not inherit a user's network key"
@@ -134,10 +144,16 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
         let media = session.media.as_ref().unwrap();
         #[cfg(target_os = "macos")]
         media.set_video_payload_active(true);
+        let mut payload=Vec::new();
+        if viewport_frame {
+            protocol::viewport::FrameGeometry{source_revision:0,demand_revision:0,revision:1,source_width:2304,source_height:1296,
+                crop:protocol::viewport::PixelRect{x:0,y:0,width:2304,height:1296},width:128,height:72}.write_header(&mut payload);
+        }
+        payload.extend_from_slice(include_bytes!("../tests/fixtures/input-first-frame.h265"));
         media.decode_tx.try_send((protocol::RtpPacket {
             header: protocol::RtpHeader { version: 2, payload_type: 96,
                 sequence_number: 1, timestamp: 100, ssrc: 7 },
-            payload: include_bytes!("../tests/fixtures/input-first-frame.h265").to_vec(),
+            payload,
         }, Default::default(), recovery.video_recovery.snapshot().epoch.source)).unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while media.shared_frame().lock().unwrap().is_none() {
@@ -164,6 +180,9 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
     cx.simulate_resize(size(px(1000.), px(700.)));
     view.update(cx, |v, cx| { v.window_handle.update(cx, |_, window, _| window.activate_window()).unwrap(); });
     cx.run_until_parked();
+    if viewport_frame {
+        view.update(cx,|view,cx|{view.poll_viewport();cx.notify();});cx.run_until_parked();
+    }
     // Initial setup can issue source discovery; clear that before the event trace.
     std::thread::sleep(Duration::from_millis(60));
     output.lock().unwrap().clear();
@@ -341,6 +360,28 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
     });
     cx.run_until_parked();
     std::thread::sleep(Duration::from_millis(60));
+    if viewport_frame {
+        let off_center=point(px(750.),px(350.));
+        let before=view.read_with(cx,|view,_|view.pointer_event_at(off_center)).unwrap();
+        view.update(cx,|view,cx|view.change_view_zoom(2.,None,cx));cx.run_until_parked();
+        let after=view.read_with(cx,|view,_|view.pointer_event_at(off_center)).unwrap();
+        assert_ne!(before,after,"Local zoom did not change the inverse source coordinates");
+        view.update(cx,|view,cx|{view.viewport.lock().unwrap().toggle_navigation();view.poll_viewport();cx.notify();});cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(60));output.lock().unwrap().clear();
+        cx.simulate_event(gpui::ScrollWheelEvent{position:pos,delta:gpui::ScrollDelta::Pixels(point(px(0.),px(42.))),
+            modifiers:Modifiers::none(),touch_phase:gpui::TouchPhase::Moved});
+        cx.simulate_mouse_down(pos,MouseButton::Left,Modifiers::none());
+        cx.simulate_mouse_move(point(px(575.),px(350.)),Some(MouseButton::Left),Modifiers::none());
+        cx.simulate_mouse_move(point(px(650.),px(350.)),Some(MouseButton::Left),Modifiers::none());
+        cx.simulate_mouse_up(point(px(650.),px(350.)),MouseButton::Left,Modifiers::none());cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!output.lock().unwrap().iter().any(|command|matches!(command,SessionCommand::Input{..}|SessionCommand::SourceInput{..})),
+            "Local view navigation injected input into the remote app");
+        view.update(cx,|view,cx|{view.viewport.lock().unwrap().toggle_navigation();view.poll_viewport();cx.notify();});cx.run_until_parked();
+        assert!(matches!(view.read_with(cx,|view,_|view.pointer_event_at(pos)),Some(InputEvent::MouseMoveAbsolute{x,..}) if x<32000),
+            "Local drag did not pan the painted source");
+        view.update(cx,|view,cx|{view.viewport.lock().unwrap().reset();view.poll_viewport();cx.notify();});cx.run_until_parked();
+    }
     output.lock().unwrap().clear();
     cx.simulate_mouse_down(pos, MouseButton::Left, Modifiers::none());
     std::thread::sleep(Duration::from_millis(60));

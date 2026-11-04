@@ -47,6 +47,9 @@ impl<T, Scope: Copy + PartialEq> ViewConnectionBinding<T, Scope> {
                 .upgrade()
                 .is_some_and(|previous| Arc::ptr_eq(&previous, active))
     }
+    pub fn same_connection(&self, other:&Self)->bool {
+        self.scope==other.scope && Weak::ptr_eq(&self.connection,&other.connection)
+    }
     /// The adapter must keep its session lock across this check and mutation.
     /// A rejected binding does not call the supplied action.
     pub fn apply<R>(&self, active: &Arc<T>, scope: Scope, action: impl FnOnce() -> R) -> Option<R> {

@@ -62,7 +62,9 @@
 
 ## 实施进度（2026-11-05）
 
-第一轮已实现公共需求/几何协议、Mac 原生 GPU 裁剪与 Android 接收展示代码，并通过相关原生、GPU 像素和 JVM 检查。尚未做新功能实机升级；Linux、Windows、Android 作为来源的动态裁剪、采集共享及完整连续手势验收仍待完成。详细事实见 [GUI 进展](../testing/2026-11-02-GUI-PROGRESS.md)。
+公共需求／逐帧几何、四个平台的原生来源裁剪、共享采集与接收端代码已接入。Mac、Windows、Linux 和两部 Android 的 GPU 部件检查通过；桌面查看端共用视图几何，支持立即本地缩放／平移、最新区域合并，以及与实际绘制帧一致的输入坐标。桌面普通滚动继续发给远端；“Move view”显式切换为本地导航。GPUI 当前未提供原生捏合事件，桌面通过会话显示面板与本地导航滚轮缩放。详细事实见 [GUI 进展](../testing/2026-11-02-GUI-PROGRESS.md)。
+
+新功能尚未统一打包／升级，不能将原生部件与测试界面验收当作所有设备的真实显示验收。仍需各平台产品构建、已签名 SCK 共享采集、普通手机系统屏幕授权、连续手势／输入／旋转与完整设备矩阵。Linux 小区域冷启动曾测得 41.748 ms，仍未达到用户不超过 20 ms 的目标；满分辨率性能继续实测。
 
 ## 局域网延迟验收（2026-11-05 补充）
 
@@ -71,4 +73,4 @@
 优先消除排队、原始像素读回和额外同步等待，保留正确颜色、参考帧链、图像质量和输入。不同设备是否稳定达到目标仍需实机验证，不承诺所有 WiFi 环境均为 25 ms。可参考 [Moonlight 统计口径](https://github.com/moonlight-stream/moonlight-docs/wiki/Frequently-Asked-Questions) 对呈现等待和网络波动的区分，以及 [NVIDIA 官方低延迟编码建议](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.1/ffmpeg-with-nvidia-gpu/index.html)。
 
 
-Linux VAAPI 和 Windows WGC/D3D11 已补齐原生逐帧裁剪并在真实 GPU 上验证。Windows 还通过静止窗口、双观看者共享采集、独立区域与独立结束测试。Android 作为来源、Mac 共享采集、桌面可视区域手势及全设备当前协议升级仍未完成，不能将这些部件测试表述为全产品交付。
+Windows 已验证静止窗口、双观看者共享采集、独立区域与独立结束。两部 Android 已验证独立 GPU 区域编码；这些结果仍是部件检查，当前协议的全产品交付与实机矩阵尚未完成。

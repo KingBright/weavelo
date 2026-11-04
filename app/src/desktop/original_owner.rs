@@ -57,6 +57,13 @@ pub(crate) type FrameSlot = Arc<Mutex<Option<Arc<MacDecodedVideoFrame>>>>;
 pub(crate) type SourceViewBinding = remote_core::view_commands::ViewConnectionBinding<WorkspaceConnection, ShareScope>;
 
 #[derive(Clone)]
+pub(crate) struct ViewportTarget {
+    pub binding:SourceViewBinding,
+    pub id:u32,
+    pub source_revision:u32,
+}
+
+#[derive(Clone)]
 pub(crate) struct FileViewBinding {
     connection: Weak<WorkspaceConnection>,
     scope: ShareScope,
@@ -1023,6 +1030,27 @@ impl OriginalOwner {
         let p = self.pool.lock().unwrap();
         p.active().map(|e| SourceViewBinding::new(&e.session.conn, remote_core::shared_files::current_share_scope()))
     }
+    pub(crate) fn viewport_target(&self)->Option<ViewportTarget> {
+        let pool=self.pool.lock().unwrap();let session=&pool.active()?.session;
+        (session.connected&&!matches!(session.source,CaptureSource::Camera(_))).then(||ViewportTarget{
+            binding:SourceViewBinding::new(&session.conn,remote_core::shared_files::current_share_scope()),
+            id:session.video_id,source_revision:session.source_revision(),
+        })
+    }
+    /// None retires a stale target; false leaves the latest demand queued for retry.
+    pub(crate) fn queue_viewport(&self,target:&ViewportTarget,demand:protocol::viewport::ViewportDemand)->Option<bool> {
+        if demand.validate().is_err()||demand.id!=target.id||demand.source_revision!=target.source_revision{return None;}
+        let mut pool=self.pool.lock().unwrap();let session=&mut pool.active_mut()?.session;
+        Self::viewport_matches(session,target).then(||session.control(SessionCommand::Viewport(demand)))
+    }
+    fn viewport_matches(session:&OriginalGuiSession,target:&ViewportTarget)->bool {
+        session.connected&&session.video_id==target.id&&session.source_revision()==target.source_revision
+            &&!matches!(session.source,CaptureSource::Camera(_))
+            &&target.binding.matches(&session.conn,remote_core::shared_files::current_share_scope())
+    }
+    pub(crate) fn viewport_target_is_current(&self,target:&ViewportTarget)->bool {
+        self.pool.lock().unwrap().active().is_some_and(|entry|Self::viewport_matches(&entry.session,target))
+    }
     pub(crate) fn source_view_binding_for_device(&self,key:&str)->Option<SourceViewBinding> {
         let pool=self.pool.lock().unwrap();let entry=pool.active()?;
         (entry.session.key==key && entry.session.connected)
@@ -1337,7 +1365,14 @@ impl OriginalOwner {
         entry.session.retry_input()
     }
     pub fn queue_viewing_input(&self, event: InputEvent) -> bool {
+        self.queue_input_for(None,event)
+    }
+    pub(crate) fn queue_viewport_input(&self,target:&ViewportTarget,event:InputEvent)->bool {
+        self.queue_input_for(Some(target),event)
+    }
+    fn queue_input_for(&self,target:Option<&ViewportTarget>,event:InputEvent)->bool {
         let mut p = self.pool.lock().unwrap();
+        if target.is_some_and(|target|p.active().is_none_or(|entry|!Self::viewport_matches(&entry.session,target))){return false;}
         self.revoke_computer_use();
         let Some(e) = p.active_mut() else {
             return false;
