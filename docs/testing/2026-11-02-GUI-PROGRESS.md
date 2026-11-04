@@ -599,3 +599,15 @@ Android 77 的公网 APK 已在 Studio 独立下载核对完整 SHA，两部手�
 用户反馈电脑仅见两路手机摄像头。两机当前系统 MediaProjection 状态均无 Weavelo 屏幕会话，相机 Ready 与屏幕共享是独立状态；普通手机入口为 Sharing → Screen or app → Share，再由机主完成 Android 系统选屏。已启动的屏幕共享持续运行期间可由电脑直接拉取，新的屏幕采集会话仍遵循系统确认。桌面来源选择和会话来源菜单现增加简短的“Screen not shared”提示，指出在远端开始共享；本地投送则指向 Sharing & permissions。提示仅依据新鲜的纯摄像头来源目录，不伪造一个可拉取的屏幕来源。
 
 这次提示改动的原生来源浏览器 1 项、选择控制器 4 项检查均通过；1,045 项签名发布回归通过（19 项跳过）。首个验证过滤词使用了文件名而非模块名，匹配 0 项，只证明编译；最终验证已改为实际模块过滤词并执行以上 5 项，未将零测试计为功能通过。证据 `native110-source-sharing-notice-final-native-tests.log`、`native110-source-sharing-notice-release-regression.log`。新提示尚需正式 110 实机界面核对。
+
+## 2026-11-04 桌面 110 正式交付与键盘对照结果
+
+四台电脑均已正式安装 `7193fdb` / 110，实际 GUI / 后台为 Studio 18002 / 17998、Book 35888 / 35767、HO5 201398 / 201325、cube 13612 / 22244，原 GPUI 入口、配对和各机签名保持。Linux / Windows 成品通过 Weavelo 传到 Studio，接收端独立 SHA 匹配后使用原安装入口，证据 `native110-independent-received-package-provenance.json` 与各机实际所有者记录。
+
+新提示已作实际运行验收：努比亚仅拉取 Studio 的自有来源选择窗口 18043，画面显示“Screen not shared. Start sharing on the remote device.”及两路真实摄像头，未订阅红米摄像头、未采集 Studio 桌面。截图经 Weavelo 传回 Studio 并独立核对 SHA `aa750f3e15dc1b4b6ffe54cef9680879c84610352cbb803eea661676954cac42`，实际图片已审阅，随后正常断开。证据 `native110-source-notice-actual-receiver-proof.json`、`native110-desktop-source-notice-camera-only-actual.png`。手机完成系统选屏后，已打开的电脑来源窗口可使用 Refresh sources 更新目录。
+
+110 包和公网清单已发布。首次上传全部完成，随后 HTTP 下载核对阶段发生一次连接超时；已确认公网清单与预期完全一致，并使用正式发布入口的 `--verify-only` 继续读取核对，未重新上传或改写已发布包。三个公网包完整 SHA 均通过，清单 SHA `0940414d02c1554333fdc69eca709d1f9a306cf5e6895554804ac618defee303`，证据 `native110-nas-verified.json`、`native110-nas-resumed-public-verification.log`。
+
+键盘对照缩小了范围：按既有授权临时切换至已启用的百度 OEM 输入法，手机普通搜索框收到 `WIN109`，真实远控窗口的 Windows 端也独立记录点击 1 次、文字精确为 `WIN109`，实际手机图片一致。远控结束后已恢复原微信输入法，另有独立定时恢复保护；没有修改输入所有权、时限或传输顺序逻辑。远控图片 SHA `1a9779fb64d61c77153002d7262c385a807ff5cd5a6e2445bf3fd967bc0a7e93`，证据 `native109-baidu-real-remote-input-independent-host-proof.json`、`android77-nubia-baidu-remote-keyboard-restored.json`。
+
+为控制焦点等待这个变量，又在微信输入法下按同样 1 秒等待测试普通搜索框；硬件注入 `WIN109` 后仍先为空，Enter 后得到 `N10I9`。该现象也出现在未经过远控传输的普通输入框，不能归因于远控文本队列；这只验证了指定硬件注入路径与两种输入法的差异，微信实际软键盘候选选择、红米完整 IME 及全部电脑输入仍待继续。证据 `android77-nubia-wetype-equal-wait-standard-search-comparison.json`。普通手机屏幕投屏仍缺机主完成本次系统选屏，未代为确认或绕过。
