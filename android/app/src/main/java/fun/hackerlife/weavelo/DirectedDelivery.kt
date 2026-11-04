@@ -82,10 +82,30 @@ object DirectedDelivery {
         return JSONObject(incoming!!.getJSONObject("claim").toString())
     }
 
+    @Synchronized fun requestId(id: String): Long? =
+        if (alive(id)) incoming?.optJSONObject("claim")?.optLong("request_id")?.takeIf { it != 0L } else null
+
     @Synchronized fun sources(id: String): List<String> {
         if (!alive(id)) return emptyList()
         val sources = incoming!!.getJSONArray("sources")
         return (0 until sources.length()).map { sources.get(it).toString() }
+    }
+
+    @Synchronized fun replaceSource(id: String, from: String, target: Any) {
+        if (!alive(id)) return
+        val sources = incoming!!.getJSONArray("sources")
+        for (index in 0 until sources.length()) {
+            if (sources.get(index).toString() == from) {
+                sources.put(index, target)
+            }
+        }
+        incoming?.optJSONObject("claim")?.optJSONArray("sources")?.let { claimed ->
+            for (index in 0 until claimed.length()) {
+                if (claimed.get(index).toString() == from) {
+                    claimed.put(index, target)
+                }
+            }
+        }
     }
 
     @Synchronized fun rendered(id: String, generation: Long, pane: Int, panes: List<WorkspacePane>) {

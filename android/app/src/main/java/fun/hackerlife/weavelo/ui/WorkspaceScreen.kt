@@ -187,7 +187,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                             .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
-                                                MobileAction(MobileSymbol.Refresh, "Switch camera", state.connected) {
+                                                MobileAction(MobileSymbol.CameraSwitch, "Switch camera", state.connected) {
                                                     WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
                                                 }
                                             }

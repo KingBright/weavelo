@@ -292,7 +292,7 @@ impl RestoredDashboard {
                 ),
         );
         for (panel, label, symbol) in [
-            (StreamPanel::Control, "Control", IconName::User),
+            (StreamPanel::Control, "Control", IconName::Control),
             (StreamPanel::Files, "Files", IconName::Files),
             (StreamPanel::Sound, "Sound", IconName::Sound),
             (StreamPanel::Display, "Display", IconName::Display),
@@ -335,13 +335,43 @@ impl RestoredDashboard {
                         .gap_1()
                         .disabled(binding.is_none())
                         .tooltip(tooltip("Open another screen or app window").build())
-                        .child(icon(IconName::Window).size(px(14.)))
+                        .child(icon(IconName::NewView).size(px(14.)))
                         .when(!compact, |button| button.child("New view"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.drawer_open = false;
                             this.begin_remote_source_selection(binding.clone(), cx);
                         })),
                 );
+                if let Some(target) = snapshot
+                    .capture_sources
+                    .iter()
+                    .find(|item| item.source == snapshot.active_capture_source)
+                    .and_then(|item| {
+                        snapshot
+                            .capture_sources
+                            .iter()
+                            .find(|candidate| item.camera_switch_target(candidate))
+                    })
+                    .cloned()
+                {
+                    let binding = snapshot.source_binding.clone();
+                    row = row.child(
+                        command_button("stream-switch-camera", ActionVariantKind::Neutral, cx)
+                            .size(px(28.))
+                            .p_0()
+                            .disabled(snapshot.pending_capture_source.is_some())
+                            .tooltip(tooltip("Switch camera").build())
+                            .child(icon(IconName::CameraSwitch).size(px(14.)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.start_capture_source_switch(
+                                    binding.clone(),
+                                    target.clone(),
+                                    target.title.clone(),
+                                    cx,
+                                );
+                            })),
+                    );
+                }
             }
         }
         row = row.child(

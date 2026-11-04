@@ -379,6 +379,9 @@ impl OriginalOwner {
                 *entry.frame.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 entry.source_seen = s.source;
             }
+            if let Some(binding) = pool.directed_receive.as_mut().filter(|b| b.connection == Some(s.conn.id)) {
+                binding.capture = s.source;
+            }
             // Observe the exact prior native frame's submission before replacing
             // it with a newer frame. Continuous video must not starve the input
             // gate, nor may stream-wide counters unlock an unpainted new source.
@@ -662,6 +665,15 @@ impl OriginalOwner {
     pub(crate) fn directed_receive_current(&self, request: &str) -> bool {
         self.pool.lock().unwrap().receive_current(request)
     }
+    pub(crate) fn directed_receive_source(&self, request: &str) -> Option<CaptureSource> {
+        self.pool
+            .lock()
+            .unwrap()
+            .directed_receive
+            .as_ref()
+            .filter(|b| b.request_id == request)
+            .map(|b| b.capture)
+    }
     pub(crate) async fn connect_received_device(&self, key: &str, options: StreamStartOptions, request: &str) -> Result<(), Error> {
         self.connect_mode(key, options, ConnectionPurpose::View, true, None, Some(request), true, None).await
     }
@@ -905,6 +917,7 @@ impl OriginalOwner {
         if let Some(proof) = &receive_claim {
             session.source = *proof.sources.first().ok_or("Delivery has no selected source")?;
             session.request.source = session.source;
+            session.delivery_request_id = Some(proof.request_id);
         } else if let Some(binding) = p.directed_receive.as_ref().filter(|binding| Some(binding.request_id.as_str()) == receive) {
             session.source = binding.capture;
             session.request.source = binding.capture;

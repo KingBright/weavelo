@@ -11,6 +11,10 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     if std::env::args().skip(1).eq(["--native-clipboard-worker"]) {
         return remote_platform::run_windows_clipboard_worker().await;
     }
+    #[cfg(all(target_os = "macos", feature = "gpui-restoration"))]
+    if std::env::args().skip(1).eq(["--macos-dock-tile"]) {
+        return weavelo_app::restored_ui::run_macos_dock_tile();
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     #[cfg(target_os = "windows")]
     set_windows_application_identity()?;

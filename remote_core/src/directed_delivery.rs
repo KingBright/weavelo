@@ -229,6 +229,7 @@ struct Ticket {
     expires: Instant,
     sources: Vec<CaptureSource>,
     claimed: HashMap<Peer, Vec<CaptureSource>>,
+    claimed_requests: HashMap<Peer, u64>,
     cancel: tokio::sync::watch::Sender<bool>,
 }
 impl Drop for Ticket {
@@ -530,11 +531,13 @@ impl Broker {
                     || Instant::now() >= t.expires
                     || sources.iter().any(|source|!t.sources.contains(source))
                     || t.claimed.get(&peer).is_some_and(|selected| *selected != sources)
+                    || t.claimed_requests.get(&peer).is_some_and(|claimed_request| *claimed_request != request)
                     || t.claimed.iter().any(|(p, selected)| *p != peer && selected.iter().any(|source|sources.contains(source)))
                 {
                     return false;
                 }
                 t.claimed.insert(peer, sources);
+                t.claimed_requests.insert(peer, request);
                 true
             });
         receipt(
@@ -587,6 +590,80 @@ impl Broker {
     }
     pub fn allows_source(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource) -> bool {
         self.allows_source_in_scope(peer, ticket, source, crate::shared_files::current_share_scope())
+    }
+    pub fn claimed_request_id(&self, peer: Peer, ticket: [u8; 32]) -> Option<u64> {
+        self.claimed_request_id_in_scope(peer, ticket, crate::shared_files::current_share_scope())
+    }
+    fn claimed_request_id_in_scope(&self, peer: Peer, ticket: [u8; 32], scope: ShareScope) -> Option<u64> {
+        self.state.lock().unwrap().tickets.get(&ticket).and_then(|t| {
+            (t.scope == scope && Instant::now() < t.expires)
+                .then(|| t.claimed_requests.get(&peer).copied())
+                .flatten()
+        })
+    }
+    pub fn switch_camera_source(
+        &self,
+        peer: Peer,
+        ticket: [u8; 32],
+        request_id: u64,
+        from: CaptureSource,
+        target: CaptureSource,
+    ) -> Result<(), &'static str> {
+        self.switch_camera_source_in_scope(
+            peer,
+            ticket,
+            request_id,
+            from,
+            target,
+            crate::shared_files::current_share_scope(),
+        )
+    }
+    fn switch_camera_source_in_scope(
+        &self,
+        peer: Peer,
+        ticket: [u8; 32],
+        request_id: u64,
+        from: CaptureSource,
+        target: CaptureSource,
+        scope: ShareScope,
+    ) -> Result<(), &'static str> {
+        if !matches!((from, target), (CaptureSource::Camera(_), CaptureSource::Camera(_))) {
+            return Err("Only camera sources can switch in place");
+        }
+        let mut s = self.state.lock().unwrap();
+        let t = s.tickets.get_mut(&ticket).ok_or("Sending intent ended")?;
+        let now = Instant::now();
+        if t.scope != scope || peer.scope != scope || now >= t.expires {
+            return Err("Sending intent ended");
+        }
+        if t.claimed_requests.get(&peer).copied() != Some(request_id) {
+            return Err("Camera switch does not match this sending intention");
+        }
+        if t.claimed
+            .iter()
+            .any(|(other, selected)| *other != peer && selected.contains(&target))
+        {
+            return Err("Another viewer is using this camera");
+        }
+        let Some(selected) = t.claimed.get_mut(&peer) else {
+            return Err("Sending intent ended");
+        };
+        let Some(claimed_idx) = selected.iter().position(|source| *source == from) else {
+            return Err("Camera view changed before switching");
+        };
+        if selected.iter().enumerate().any(|(idx, source)| idx != claimed_idx && *source == target) {
+            return Err("Target camera is already selected in this sending intention");
+        }
+        if let Some(ticket_idx) = t.sources.iter().position(|source| *source == from) {
+            if !t.sources.contains(&target) {
+                t.sources[ticket_idx] = target;
+            }
+        } else if !t.sources.contains(&target) {
+            t.sources.push(target);
+        }
+        selected[claimed_idx] = target;
+        t.expires = now + LEASE;
+        Ok(())
     }
     fn allows_source_in_scope(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource, scope: ShareScope) -> bool {
         self.state.lock().unwrap().tickets.get(&ticket).is_some_and(|t| {
@@ -668,6 +745,7 @@ fn register(
             expires: now + LEASE,
             sources,
             claimed: HashMap::new(),
+            claimed_requests: HashMap::new(),
             cancel: tokio::sync::watch::channel(false).0,
         },
     );
@@ -827,6 +905,7 @@ mod tests {
             expires: Instant::now() + LEASE,
             sources: vec![CaptureSource::MainDisplay],
             claimed: HashMap::new(),
+            claimed_requests: HashMap::new(),
             cancel: tokio::sync::watch::channel(false).0,
         }
     }
@@ -1116,5 +1195,30 @@ mod tests {
             Instant::now(),
         )
         .unwrap();
+    }
+    #[test]
+    fn directed_camera_switch_replaces_claimed_camera_without_widening_ticket() {
+        let (broker, _rx) = Broker::new();
+        let token = [8; 32];
+        let first = peer();
+        let mut item = ticket();
+        item.sources = vec![CaptureSource::Camera(1)];
+        broker.state.lock().unwrap().tickets.insert(token, item);
+        assert!(matches!(
+            broker.claim_in_scope(first, 42, "receiver", token, vec![CaptureSource::Camera(1)], first.scope),
+            SessionCommand::DeliveryReceipt { state: DeliveryState::Claimed, .. }
+        ));
+        assert_eq!(broker.claimed_request_id_in_scope(first, token, first.scope), Some(42));
+        assert!(broker.switch_camera_source_in_scope(
+            first, token, 99, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
+        ).is_err());
+        assert!(broker.switch_camera_source_in_scope(
+            first, token, 42, CaptureSource::Camera(1), CaptureSource::MainDisplay, first.scope
+        ).is_err());
+        broker.switch_camera_source_in_scope(
+            first, token, 42, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
+        ).unwrap();
+        assert!(!broker.allows_source_in_scope(first, token, CaptureSource::Camera(1), first.scope));
+        assert!(broker.allows_source_in_scope(first, token, CaptureSource::Camera(2), first.scope));
     }
 }

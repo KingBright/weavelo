@@ -181,7 +181,8 @@ impl Lease {
             "remaining_ms":self.expires.saturating_duration_since(Instant::now()).as_millis(),
             "windows":self.windows.iter().map(|window| {
                 let owner=window.owner.upgrade();
-                serde_json::json!({"source":window.source,"open":owner.is_some(),
+                let current_source=owner.as_ref().and_then(|owner|owner.directed_receive_source(&self.request_id)).unwrap_or(window.source);
+                serde_json::json!({"source":current_source,"open":owner.is_some(),
                     "active":owner.as_ref().is_some_and(|owner|owner.directed_receive_current(&self.request_id)),
                     "sessions":owner.map(|owner|owner.receive_snapshot(&self.request_id))})
             }).collect::<Vec<_>>()})

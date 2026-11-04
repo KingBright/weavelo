@@ -41,11 +41,15 @@ static DWORD CALLBACK devices_changed(HCMNOTIFICATION,void*,CM_NOTIFY_ACTION,PCM
     ++device_epoch;return ERROR_SUCCESS;
 }
 extern "C" unsigned long long weavelo_windows_camera_epoch() {
-    static std::once_flag once;static HCMNOTIFICATION notification=nullptr;
-    std::call_once(once,[]{CM_NOTIFY_FILTER filter{};filter.cbSize=sizeof(filter);
+    static std::once_flag once;static HCMNOTIFICATION notification=nullptr;static HCMNOTIFICATION capture_notification=nullptr;
+    std::call_once(once,[]{
+        CM_NOTIFY_FILTER filter{};filter.cbSize=sizeof(filter);
         filter.FilterType=CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;filter.u.DeviceInterface.ClassGuid=KSCATEGORY_VIDEO_CAMERA;
-        if(CM_Register_Notification(&filter,nullptr,devices_changed,&notification)!=CR_SUCCESS)device_epoch=0;
-    });return notification?device_epoch.load():0;
+        bool ok=CM_Register_Notification(&filter,nullptr,devices_changed,&notification)==CR_SUCCESS;
+        filter.u.DeviceInterface.ClassGuid=KSCATEGORY_CAPTURE;
+        ok|=CM_Register_Notification(&filter,nullptr,devices_changed,&capture_notification)==CR_SUCCESS;
+        if(!ok)device_epoch=0;
+    });return (notification||capture_notification)?device_epoch.load():0;
 }
 struct Failure {HRESULT hr;const char* stage;};
 static void check(HRESULT hr,const char* stage) {if(FAILED(hr))throw Failure{hr,stage};}
@@ -86,12 +90,21 @@ static void report(Error error,void* context,Failure f) {
     error(context,message);
 }
 extern "C" int weavelo_windows_camera_catalog(void* context,void(*item)(void*,const char*,const char*),Error error) {
-    try {Apartment apartment;MediaFoundation mf;Activations list;enumerate(list);
-        for(UINT32 i=0;i<list.count;++i) {
-            auto key=text(list.items[i],MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
-            auto name=text(list.items[i],MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);item(context,key.c_str(),name.c_str());
-        }return 1;
-    } catch(Failure f){report(error,context,f);}catch(...){error(context,"Windows camera enumeration failed");}return 0;
+    int status=0;
+    try {
+        std::thread([&]{
+            try {
+                Apartment apartment;MediaFoundation mf;Activations list;enumerate(list);
+                for(UINT32 i=0;i<list.count;++i) {
+                    auto key=text(list.items[i],MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
+                    auto name=text(list.items[i],MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
+                    item(context,key.c_str(),name.c_str());
+                }
+                status=1;
+            } catch(Failure f){report(error,context,f);}catch(...){error(context,"Windows camera enumeration failed");}
+        }).join();
+    } catch(...){error(context,"Windows camera enumeration worker failed");}
+    return status;
 }
 
 struct Raw {ComPtr<IMFSample> sample;unsigned long long captured=0;};

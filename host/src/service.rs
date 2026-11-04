@@ -2325,11 +2325,23 @@ async fn run_host_service_inner(
                                     let peer=&peers[&addr];
                                     let ready=(|| -> Result<(),String> {
                                         let sub=peer.subscriptions.get(&request.id).ok_or("The camera subscription ended")?;
-                                        if peer.delivery_owner.is_some() {return Err("Camera switching requires a replacement sending intention".into());}
+                                        let delivery_request = match peer.delivery_owner {
+                                            Some((owner, ticket)) => Some(
+                                                delivery
+                                                    .as_ref()
+                                                    .and_then(|broker| broker.claimed_request_id(owner, ticket))
+                                                    .ok_or("Sending intent ended")?,
+                                            ),
+                                            None => None,
+                                        };
                                         let catalog=peer.source_catalog.sources().ok_or("Refresh camera sources before switching")?;
                                         remote_core::camera_switch::validate(&request,remote_core::camera_switch::CameraView {
-                                            source:sub.request.source,revision:sub.source_revision,delivery_request:None,
-                                        },catalog).map_err(str::to_owned)
+                                            source:sub.request.source,revision:sub.source_revision,delivery_request,
+                                        },catalog).map_err(str::to_owned)?;
+                                        if let (Some((owner, ticket)), Some(request_id), Some(broker)) = (peer.delivery_owner, delivery_request, delivery.as_ref()) {
+                                            broker.switch_camera_source(owner, ticket, request_id, request.from, request.target).map_err(str::to_owned)?;
+                                        }
+                                        Ok(())
                                     })();
                                     input_owner.during_control(&injector,send_session(&udp_sender,addr,
                                         SessionCommand::CameraSwitchResult {request,ready})).await;

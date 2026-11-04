@@ -12,6 +12,10 @@ use sending::{SendActivity, SendingContext};
 mod native_menu;
 #[path="restored_window_icon.rs"]
 mod window_icon;
+#[cfg(target_os = "macos")]
+pub fn run_macos_dock_tile() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    window_icon::macos_dock::run()
+}
 #[cfg(test)]
 #[path="restored_source_browser_tests.rs"]
 mod source_browser_tests;
@@ -236,9 +240,25 @@ fn open_restored_window_for(
                             cx.defer(move |cx| { reopen_restored_window(retained, cx); });
                         }
                     }
+                    if view.purpose == WindowPurpose::Stream
+                        && let Some(action) = view.native_window_artwork.poll_dock_action()
+                    {
+                        match action {
+                            window_icon::DockAction::Activate => {
+                                cx.activate(true);
+                                let handle = view.window_handle;
+                                let _ = handle.update(cx, |_, window, _| window.activate_window());
+                            }
+                            window_icon::DockAction::End => {
+                                view.end_stream_window(cx);
+                                return Duration::from_secs(1);
+                            }
+                        }
+                    }
                     #[cfg(any(unix, windows))]
                     view.poll_directed_receive(cx);
                     if view.delivery_closed.as_ref().is_some_and(|closed|closed.load(Ordering::Acquire)) {
+                        view.native_window_artwork.close();
                         let handle=view.window_handle;
                         let pips=view.pip_windows.clone();
                         cx.defer(move |cx| {
@@ -2441,7 +2461,11 @@ impl Render for RestoredDashboard {
         }
         let bitmap=matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
             .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten();
-        self.native_window_artwork.sync(window,cx,bitmap.as_deref());
+        if self.purpose == WindowPurpose::Stream {
+            self.native_window_artwork.sync_stream(window,cx,bitmap.as_deref(),&self.native_window_title);
+        } else {
+            self.native_window_artwork.sync(window,cx,bitmap.as_deref());
+        }
         let theme = cx.theme().clone();
         let show_drawer = self.drawer_open;
         let input_hint = matches!(role, RoleState::Viewing(_)).then(|| {
@@ -3521,12 +3545,12 @@ fn drawer_devices_tab(
             .child(div().text_size(px(10.)).text_color(cx.theme().content.secondary).child(permission_hint))
             .when(activity.unattributed_sharing>0,|card|card.child(div().text_size(px(10.)).text_color(color_accent_emerald())
                 .child(format!("Sharing · {} direct streams",activity.unattributed_sharing)))))
-        .child(command_button("edit-this-device-name",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
-            .icon(ely_gpui_component::primitives::IconName::Ellipsis).tooltip(tooltip("Device name & pairing").build())
-            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
         .child(command_button("sharing-permissions",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
-            .icon(ely_gpui_component::primitives::IconName::Settings).tooltip(tooltip("Sharing & permissions").build())
-            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::Security;this.refresh_local_permissions(cx);cx.notify();})));
+            .child(icon(IconName::Permissions).size(px(16.))).tooltip(tooltip("Sharing & permissions").build())
+            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::Security;this.refresh_local_permissions(cx);cx.notify();})))
+        .child(command_button("edit-this-device-name",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
+            .child(icon(IconName::More).size(px(16.))).tooltip(tooltip("Device name & pairing").build())
+            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})));
     let view=cx.weak_entity();
     div().flex().flex_col().gap_2().child(local)
         .child(crate::desktop::device_drawer::DeviceDrawer::new(

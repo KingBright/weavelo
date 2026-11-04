@@ -2,8 +2,22 @@ use gpui::{App,Window,WindowIcon};
 use std::sync::OnceLock;
 use remote_core::application_icons::IconBitmap;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DockAction {
+    Activate,
+    End,
+}
+
 #[derive(Default)]
-pub(super) struct Artwork { current:Option<[u8;32]> }
+pub(super) struct Artwork {
+    current: Option<[u8; 32]>,
+    #[cfg(target_os = "macos")]
+    dock_icon: Option<[u8; 32]>,
+    #[cfg(target_os = "macos")]
+    dock_title: String,
+    #[cfg(target_os = "macos")]
+    dock_proxy: Option<macos_dock::Proxy>,
+}
 impl Artwork {
     pub fn sync(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>) {
         let next=bitmap.map(|bitmap|bitmap.id);
@@ -21,12 +35,90 @@ impl Artwork {
             Err(error)=>eprintln!("Weavelo application window icon: {error}"),
         }
     }
+
+    pub fn sync_stream(&mut self, window: &mut Window, cx: &App, bitmap: Option<&IconBitmap>, title: &str) {
+        self.sync(window, cx, bitmap);
+        #[cfg(target_os = "macos")]
+        {
+            if cfg!(test)
+                || std::env::var_os("WEAVELO_RESTORED_TEST_OUTPUT").is_some()
+                || std::env::var_os("WEAVELO_DISABLE_DOCK_TILES").is_some()
+            {
+                return;
+            }
+            let next_icon = Some(bitmap.map_or([0u8; 32], |b| b.id));
+            let icon_changed = self.dock_icon != next_icon || self.dock_proxy.is_none();
+            let title_changed = self.dock_title != title || self.dock_proxy.is_none();
+            if !icon_changed && !title_changed {
+                return;
+            }
+            let pixels = if icon_changed {
+                let raw = if let Some(bitmap) = bitmap {
+                    remote_application_pixels(bitmap).map(|(_, rgba)| rgba)
+                } else {
+                    default_remote_dock_pixels(cx)
+                };
+                match raw {
+                    Ok(rgba) => Some(rgba),
+                    Err(error) => {
+                        eprintln!("Weavelo stream Dock icon pixels: {error}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if self.dock_proxy.is_none() {
+                match macos_dock::Proxy::spawn() {
+                    Ok(proxy) => self.dock_proxy = Some(proxy),
+                    Err(error) => {
+                        eprintln!("Weavelo stream Dock proxy: {error}");
+                        return;
+                    }
+                }
+            }
+            if let Some(proxy) = &mut self.dock_proxy {
+                if proxy.send(title, pixels.as_deref()).is_ok() {
+                    self.dock_icon = next_icon;
+                    self.dock_title = title.to_owned();
+                } else {
+                    self.dock_proxy = None;
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = title;
+    }
+
+    pub fn poll_dock_action(&mut self) -> Option<DockAction> {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(proxy) = &mut self.dock_proxy {
+                return proxy.poll();
+            }
+        }
+        None
+    }
+
+    pub fn close(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.dock_proxy = None;
+            self.dock_icon = None;
+            self.dock_title.clear();
+        }
+    }
 }
 
 fn remote_application_pixels(bitmap:&IconBitmap)->Result<(u32,Vec<u8>),String> {
     let (edge,pixels)=native_pixels(bitmap);
     let image=image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid application icon")?;
     let mut image=image::imageops::resize(&image,64,64,image::imageops::FilterType::Triangle);
+    composite_weavelo_badge(&mut image)?;
+    Ok((64,image.into_raw()))
+}
+
+fn composite_weavelo_badge(image: &mut image::RgbaImage) -> Result<(), String> {
     static BADGE:OnceLock<image::RgbaImage>=OnceLock::new();
     let badge=if let Some(badge)=BADGE.get() {badge}else {
         let mut badge=image::load_from_memory(include_bytes!("../../assets/brand/weavelo/icon-24.png"))
@@ -45,7 +137,30 @@ fn remote_application_pixels(bitmap:&IconBitmap)->Result<(u32,Vec<u8>),String> {
             background[channel]=(u16::from(foreground[channel])+(u16::from(background[channel])*remaining+127)/255).min(255) as u8;
         }
     }
-    Ok((64,image.into_raw()))
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn default_remote_dock_pixels(cx: &App) -> Result<Vec<u8>, String> {
+    static DOCK_FALLBACK: OnceLock<Vec<u8>> = OnceLock::new();
+    if let Some(pixels) = DOCK_FALLBACK.get() {
+        return Ok(pixels.clone());
+    }
+    let image = cx
+        .svg_renderer()
+        .render_single_frame(include_bytes!("product_components/icons/remote-window.svg"), 1., false)
+        .map_err(|e| e.to_string())?;
+    let size = image.size(0);
+    let rgba = image::RgbaImage::from_raw(
+        size.width.0 as u32,
+        size.height.0 as u32,
+        image.as_bytes(0).ok_or("Missing native window icon pixels")?.to_vec(),
+    )
+    .ok_or("Invalid window icon dimensions")?;
+    let mut resized = image::imageops::resize(&rgba, 64, 64, image::imageops::FilterType::Triangle);
+    composite_weavelo_badge(&mut resized)?;
+    let raw = resized.into_raw();
+    Ok(DOCK_FALLBACK.get_or_init(|| raw).clone())
 }
 
 fn native_pixels(bitmap:&IconBitmap)->(u32,Vec<u8>) {
@@ -85,6 +200,334 @@ pub(super) fn apply(window:&mut Window,cx:&App) {
     if let Err(error)=result {eprintln!("Weavelo native window icon: {error}");}
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_dock {
+    use super::DockAction;
+    use cocoa::{
+        appkit::{NSApplication, NSApplicationActivationPolicy},
+        base::{BOOL, NO, YES, id, nil},
+        foundation::{NSAutoreleasePool, NSSize, NSString},
+    };
+    use objc::{
+        class,
+        declare::ClassDecl,
+        msg_send,
+        runtime::{Object, Sel},
+        sel, sel_impl,
+    };
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        process::{Child, ChildStdin, Command, Stdio},
+        sync::mpsc::{self, Receiver},
+    };
+
+    const ICON_BYTES: usize = 64 * 64 * 4;
+    const MAX_TITLE_BYTES: usize = 512;
+
+    pub(super) struct Proxy {
+        child: Child,
+        stdin: Option<ChildStdin>,
+        actions: Receiver<DockAction>,
+    }
+
+    impl Proxy {
+        pub fn spawn() -> Result<Self, String> {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let mut child = Command::new(exe)
+                .arg("--macos-dock-tile")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            let stdin = child.stdin.take().ok_or("Missing Dock proxy stdin")?;
+            let stdout = child.stdout.take().ok_or("Missing Dock proxy stdout")?;
+            let (tx, actions) = mpsc::channel();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    let action = match line.trim() {
+                        "activate" => Some(DockAction::Activate),
+                        "end" => Some(DockAction::End),
+                        _ => None,
+                    };
+                    if let Some(action) = action && tx.send(action).is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(Self {
+                child,
+                stdin: Some(stdin),
+                actions,
+            })
+        }
+
+        pub fn send(&mut self, title: &str, rgba: Option<&[u8]>) -> Result<(), String> {
+            let stdin = self.stdin.as_mut().ok_or("Dock proxy closed")?;
+            let frame = encode_frame(title, rgba)?;
+            stdin.write_all(&frame).map_err(|e| e.to_string())?;
+            stdin.flush().map_err(|e| e.to_string())
+        }
+
+        pub fn poll(&mut self) -> Option<DockAction> {
+            let mut latest = None;
+            while let Ok(action) = self.actions.try_recv() {
+                latest = Some(action);
+                if action == DockAction::End {
+                    break;
+                }
+            }
+            latest
+        }
+    }
+
+    impl Drop for Proxy {
+        fn drop(&mut self) {
+            self.stdin.take();
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    pub(super) fn encode_frame(title: &str, rgba: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        let title_bytes = title.as_bytes();
+        let bounded_title = if title_bytes.len() > MAX_TITLE_BYTES {
+            &title_bytes[..MAX_TITLE_BYTES]
+        } else {
+            title_bytes
+        };
+        let pixels = match rgba {
+            Some(bytes) if bytes.len() == ICON_BYTES => bytes,
+            Some(_) => return Err("Dock icon frame must be 64x64 RGBA".into()),
+            None => &[][..],
+        };
+        let mut out = Vec::with_capacity(8 + bounded_title.len() + pixels.len());
+        out.extend_from_slice(&(bounded_title.len() as u32).to_be_bytes());
+        out.extend_from_slice(bounded_title);
+        out.extend_from_slice(&(pixels.len() as u32).to_be_bytes());
+        out.extend_from_slice(pixels);
+        Ok(out)
+    }
+
+    pub(super) fn decode_frame(mut reader: impl Read) -> std::io::Result<(String, Option<Vec<u8>>)> {
+        let mut header = [0u8; 4];
+        reader.read_exact(&mut header)?;
+        let title_len = u32::from_be_bytes(header) as usize;
+        if title_len > MAX_TITLE_BYTES {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Dock title too long"));
+        }
+        let mut title_bytes = vec![0u8; title_len];
+        reader.read_exact(&mut title_bytes)?;
+        let title = String::from_utf8_lossy(&title_bytes).into_owned();
+        reader.read_exact(&mut header)?;
+        let pixels_len = u32::from_be_bytes(header) as usize;
+        let pixels = if pixels_len == 0 {
+            None
+        } else if pixels_len == ICON_BYTES {
+            let mut buf = vec![0u8; ICON_BYTES];
+            reader.read_exact(&mut buf)?;
+            Some(buf)
+        } else {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid Dock icon length"));
+        };
+        Ok((title, pixels))
+    }
+
+    fn ns_string(value: &str) -> id {
+        unsafe {
+            let s = NSString::alloc(nil).init_str(value);
+            let _: id = msg_send![s, autorelease];
+            s
+        }
+    }
+
+    fn emit_action(command: &str) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, "{command}");
+        let _ = stdout.flush();
+    }
+
+    extern "C" fn did_become_active(_: &Object, _: Sel, _: id) {
+        emit_action("activate");
+        unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            let _: () = msg_send![app, deactivate];
+        }
+    }
+
+    extern "C" fn should_reopen(_: &Object, _: Sel, _: id, _: BOOL) -> BOOL {
+        emit_action("activate");
+        YES
+    }
+
+    extern "C" fn activate_menu(_: &Object, _: Sel, _: id) {
+        emit_action("activate");
+    }
+
+    extern "C" fn end_menu(_: &Object, _: Sel, _: id) {
+        emit_action("end");
+    }
+
+    extern "C" fn should_terminate(_: &Object, _: Sel, _: id) -> usize {
+        emit_action("end");
+        0
+    }
+
+    extern "C" fn dock_menu(this: &Object, _: Sel, _: id) -> id {
+        unsafe {
+            let menu: id = msg_send![class!(NSMenu), new];
+            let _: id = msg_send![menu, autorelease];
+            let _: () = msg_send![menu, setAutoenablesItems: NO];
+            let show: id = msg_send![class!(NSMenuItem), alloc];
+            let show: id = msg_send![
+                show,
+                initWithTitle: ns_string("Bring Remote Window to Front")
+                action: sel!(activateWeaveloStream:)
+                keyEquivalent: ns_string("")
+            ];
+            let _: () = msg_send![show, setTarget: this as *const Object as id];
+            let _: () = msg_send![show, setEnabled: YES];
+            let _: () = msg_send![menu, addItem: show];
+            let _: () = msg_send![show, release];
+
+            let end: id = msg_send![class!(NSMenuItem), alloc];
+            let end: id = msg_send![
+                end,
+                initWithTitle: ns_string("Close Remote Window")
+                action: sel!(endWeaveloStream:)
+                keyEquivalent: ns_string("")
+            ];
+            let _: () = msg_send![end, setTarget: this as *const Object as id];
+            let _: () = msg_send![end, setEnabled: YES];
+            let _: () = msg_send![menu, addItem: end];
+            let _: () = msg_send![end, release];
+            menu
+        }
+    }
+
+    unsafe fn set_dock_display_name(title: &str) {
+        type GetCurrentAsn = unsafe extern "C" fn() -> *const std::ffi::c_void;
+        type SetAppInfoItem = unsafe extern "C" fn(
+            i32,
+            *const std::ffi::c_void,
+            *const std::ffi::c_void,
+            *const std::ffi::c_void,
+            *mut *const std::ffi::c_void,
+        ) -> i32;
+        unsafe {
+            let get_asn = libc::dlsym(libc::RTLD_DEFAULT, c"_LSGetCurrentApplicationASN".as_ptr());
+            let set_info = libc::dlsym(libc::RTLD_DEFAULT, c"_LSSetApplicationInformationItem".as_ptr());
+            if !get_asn.is_null() && !set_info.is_null() {
+                let get_asn: GetCurrentAsn = std::mem::transmute(get_asn);
+                let set_info: SetAppInfoItem = std::mem::transmute(set_info);
+                let asn = get_asn();
+                if !asn.is_null() {
+                    let key = ns_string("_kLSDisplayNameKey") as *const std::ffi::c_void;
+                    let value = ns_string(title) as *const std::ffi::c_void;
+                    let _ = set_info(-2, asn, key, value, std::ptr::null_mut());
+                }
+            }
+        }
+    }
+
+    unsafe fn set_dock_icon_rgba(rgba: &[u8]) {
+        if rgba.len() != ICON_BYTES {
+            return;
+        }
+        unsafe {
+            let rep: id = msg_send![class!(NSBitmapImageRep), alloc];
+            let rep: id = msg_send![
+                rep,
+                initWithBitmapDataPlanes: std::ptr::null_mut::<*mut u8>()
+                pixelsWide: 64isize
+                pixelsHigh: 64isize
+                bitsPerSample: 8isize
+                samplesPerPixel: 4isize
+                hasAlpha: YES
+                isPlanar: NO
+                colorSpaceName: ns_string("NSCalibratedRGBColorSpace")
+                bitmapFormat: 0usize
+                bytesPerRow: 256isize
+                bitsPerPixel: 32isize
+            ];
+            if rep == nil {
+                return;
+            }
+            let data: *mut u8 = msg_send![rep, bitmapData];
+            if !data.is_null() {
+                std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, ICON_BYTES);
+                let image: id = msg_send![class!(NSImage), alloc];
+                let image: id = msg_send![image, initWithSize: NSSize::new(64.0, 64.0)];
+                let _: () = msg_send![image, addRepresentation: rep];
+                let app = NSApplication::sharedApplication(nil);
+                let _: () = msg_send![app, setApplicationIconImage: image];
+                let tile: id = msg_send![app, dockTile];
+                if tile != nil {
+                    let _: () = msg_send![tile, display];
+                }
+                let _: () = msg_send![image, release];
+            }
+            let _: () = msg_send![rep, release];
+        }
+    }
+
+    pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        crate::desktop::foreground_runtime::run(|| unsafe {
+            let pool = NSAutoreleasePool::new(nil);
+            let app = NSApplication::sharedApplication(nil);
+            app.setActivationPolicy_(
+                NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular,
+            );
+            if let Some(mut decl) = ClassDecl::new("WeaveloDockTileDelegate", class!(NSObject)) {
+                decl.add_method(
+                    sel!(applicationDidBecomeActive:),
+                    did_become_active as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+                    should_reopen as extern "C" fn(&Object, Sel, id, BOOL) -> BOOL,
+                );
+                decl.add_method(
+                    sel!(activateWeaveloStream:),
+                    activate_menu as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(endWeaveloStream:),
+                    end_menu as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(applicationShouldTerminate:),
+                    should_terminate as extern "C" fn(&Object, Sel, id) -> usize,
+                );
+                decl.add_method(
+                    sel!(applicationDockMenu:),
+                    dock_menu as extern "C" fn(&Object, Sel, id) -> id,
+                );
+                let delegate: id = msg_send![decl.register(), new];
+                let _: () = msg_send![app, setDelegate: delegate];
+            }
+            std::thread::spawn(|| {
+                let mut stdin = std::io::stdin().lock();
+                while let Ok((title, pixels)) = decode_frame(&mut stdin) {
+                    dispatch::Queue::main().exec_async(move || unsafe {
+                        if !title.is_empty() {
+                            set_dock_display_name(&title);
+                        }
+                        if let Some(rgba) = pixels {
+                            set_dock_icon_rgba(&rgba);
+                        }
+                    });
+                }
+                std::process::exit(0);
+            });
+            app.run();
+            let _: () = msg_send![pool, drain];
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        })?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +549,19 @@ mod tests {
         assert_eq!(&pixels[..4],&[240,80,20,255]);
         assert_ne!(&pixels[(54*64+54)*4..(54*64+54)*4+4],&[240,80,20,255]);
         assert!(pixels.chunks_exact(4).all(|pixel|pixel[..3].iter().all(|channel|*channel<=pixel[3])));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_dock_frame_round_trips_title_and_optional_icon() {
+        let pixels = vec![42u8; 64 * 64 * 4];
+        let encoded = macos_dock::encode_frame("Safari · MacStudio", Some(&pixels)).unwrap();
+        let (title, decoded_pixels) = macos_dock::decode_frame(&encoded[..]).unwrap();
+        assert_eq!(title, "Safari · MacStudio");
+        assert_eq!(decoded_pixels.as_deref(), Some(pixels.as_slice()));
+
+        let title_only = macos_dock::encode_frame("Terminal · Mini", None).unwrap();
+        let (title2, decoded_none) = macos_dock::decode_frame(&title_only[..]).unwrap();
+        assert_eq!(title2, "Terminal · Mini");
+        assert!(decoded_none.is_none());
     }
 }

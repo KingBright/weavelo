@@ -68,7 +68,7 @@ impl RenderOnce for DeviceDrawer {
             let send=self.send.clone();let detail_id=id.clone();
             let mut actions=div().flex().flex_none().items_center().gap_1();
             for (key,symbol,label,enabled,action) in [
-                ("connect",IconName::Display,"View screens, apps or cameras",row.can_connect,DeviceListAction::Connect(id.clone())),
+                ("connect",IconName::Receiving,"View screens, apps or cameras",row.can_connect,DeviceListAction::Connect(id.clone())),
                 ("send",IconName::Sharing,"Send screens, apps or cameras",row.online,DeviceListAction::SendScreen(id.clone())),
                 ("files",IconName::Files,"Files",row.can_open_files,DeviceListAction::OpenFiles(id.clone())),
                 ("more",IconName::More,"More device actions",true,DeviceListAction::More(id.clone())),

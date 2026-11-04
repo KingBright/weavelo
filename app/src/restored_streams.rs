@@ -6,6 +6,7 @@ use protocol::session::{CaptureSource, CaptureSourceInfo};
 impl RestoredDashboard {
     pub(super) fn prepare_stream_close(&mut self, cx: &mut Context<Self>) {
         if self.purpose != WindowPurpose::Stream { return; }
+        self.native_window_artwork.close();
         self.session_commands.begin();
         self.invalidate_source_commands();
         self.source_selection=None;

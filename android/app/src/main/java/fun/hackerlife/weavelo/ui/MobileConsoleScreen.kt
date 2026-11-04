@@ -288,6 +288,7 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                 Text(subtext, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2,
                     overflow = TextOverflow.Ellipsis)
             }
+            MobileAction(MobileSymbol.View, "Open device $name", enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
             Box {
                 MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
                     if (sending) "Stop sending to $name" else "Send to $name", canSendScreen || canSendCamera,
@@ -304,7 +305,6 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                         }, onClick = { sendMenu = false; onSendCamera() })
                 }
             }
-            MobileAction(MobileSymbol.Open, "Open device $name", enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
             MobileAction(MobileSymbol.Files, "Send files to $name", canSendFiles, modifier = Modifier.size(48.dp), onClick = onSendFiles)
             MobileAction(MobileSymbol.More, "Device details $name", true, modifier = Modifier.size(48.dp), onClick = { expanded = !expanded })
         }
@@ -333,7 +333,7 @@ fun NavTab(text: String, active: Boolean, onClick: () -> Unit = {}) {
     val symbol = when (text) {
         "Devices" -> MobileSymbol.Devices
         "Network" -> MobileSymbol.Network
-        "Sharing" -> MobileSymbol.Share
+        "Sharing" -> MobileSymbol.Permissions
         else -> MobileSymbol.Settings
     }
     Column(modifier = Modifier.width(72.dp).heightIn(min = 48.dp)
@@ -383,7 +383,7 @@ private fun DevicesTabContent(
                     Text(android.os.Build.MODEL, color = ColorTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Text(localStatus, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp)
                 }
-                MobileAction(MobileSymbol.Share, "Sharing & permissions", true, modifier = Modifier.size(48.dp), onClick = onLocalSettings)
+                MobileAction(MobileSymbol.Permissions, "Sharing & permissions", true, modifier = Modifier.size(48.dp), onClick = onLocalSettings)
                 MobileAction(MobileSymbol.More, "This device & pairing", true, modifier = Modifier.size(48.dp), onClick = onLocalDetails)
             }
         }

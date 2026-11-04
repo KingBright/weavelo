@@ -497,16 +497,31 @@ impl MobilePublisher {
                                             let peer=&peers[&addr];
                                             let ready=(|| -> Result<(),String> {
                                                 let sub=peer.subscriptions.get(&request.id).ok_or("The camera subscription ended")?;
-                                                if peer.delivery_owner.is_some() {return Err("Camera switching requires a replacement sending intention".into());}
+                                                let delivery_request = match peer.delivery_owner {
+                                                    Some((owner, ticket)) => {
+                                                        if authenticated.get(&addr).is_none_or(|(_, nonce, _)| *nonce != owner.nonce) {
+                                                            return Err("Sending intent ended or source changed".into());
+                                                        }
+                                                        Some(
+                                                            peer_delivery
+                                                                .claimed_request_id(owner, ticket)
+                                                                .ok_or("Sending intent ended")?,
+                                                        )
+                                                    }
+                                                    None => None,
+                                                };
                                                 let catalog=shared.lock().unwrap().catalog(false);
                                                 remote_core::camera_switch::validate(&request,remote_core::camera_switch::CameraView {
-                                                    source:sub.request.source,revision:0,delivery_request:None,
+                                                    source:sub.request.source,revision:0,delivery_request,
                                                 },&catalog).map_err(str::to_owned)?;
                                                 let others=peers.values().flat_map(|other|other.subscriptions.values()
                                                     .filter(move |sub|other.addr!=addr||sub.request.id!=request.id))
                                                     .filter(|sub|sub.video).map(|sub|sub.request.source);
                                                 if remote_core::camera_switch::exclusive_camera_busy(request.target,others) {
                                                     return Err("Another viewer is using this camera".into());
+                                                }
+                                                if let (Some((owner, ticket)), Some(request_id)) = (peer.delivery_owner, delivery_request) {
+                                                    peer_delivery.switch_camera_source(owner, ticket, request_id, request.from, request.target).map_err(str::to_owned)?;
                                                 }
                                                 Ok(())
                                             })();

@@ -258,7 +258,8 @@ object WorkspaceClient {
         }
     }
     fun cameraSwitchTarget(pane: WorkspacePane): WorkspaceSource? {
-        if (ownership.request()?.incomingId != null || !pane.source.isCamera || !pane.accepted) return null
+        if (!pane.source.isCamera || !pane.accepted) return null
+        if (ownership.request()?.incomingId?.let { DirectedDelivery.requestId(it) == null } == true) return null
         val group = pane.source.camera?.optLong("switch_group") ?: 0
         if (group == 0L) return null
         val wanted = if (pane.source.camera?.optString("facing") == "Front") "Back" else "Front"
@@ -269,10 +270,11 @@ object WorkspaceClient {
         if (!currentView(id, sessionKey, generation, false) || cameraSwitches.values.any { it.pane == id }) return@guarded
         val pane = mutable.value.panes.firstOrNull { it.id == id } ?: return@guarded
         val target = cameraSwitchTarget(pane) ?: return@guarded
+        val deliveryRequestId = ownership.request()?.incomingId?.let { DirectedDelivery.requestId(it) ?: return@guarded }
         val request = ++revision
         command("RequestCameraSwitch", JSONObject().put("id", id).put("request_id", request)
             .put("source_revision", 0).put("from", pane.source.source).put("target", target.source)
-            .put("delivery_request_id", JSONObject.NULL))
+            .put("delivery_request_id", deliveryRequestId ?: JSONObject.NULL))
         cameraSwitches[request] = CameraSwitch(id, target, SystemClock.elapsedRealtime() + 10_000)
     }
     private fun replaceCameraView(pane: WorkspacePane, source: WorkspaceSource) {
@@ -499,12 +501,18 @@ object WorkspaceClient {
                 val request = reply.getJSONObject("request")
                 cameraSwitches.remove(request.getLong("request_id"))?.let { pending ->
                     val pane = mutable.value.panes.firstOrNull { it.id == pending.pane }
+                    val incomingId = ownership.request()?.incomingId
+                    val expectedDeliveryRequest = incomingId?.let { DirectedDelivery.requestId(it) }
+                    val deliveryMatches = if (expectedDeliveryRequest == null) request.isNull("delivery_request_id")
+                    else !request.isNull("delivery_request_id") && request.getLong("delivery_request_id") == expectedDeliveryRequest
                     if (pane != null && request.getInt("id") == pane.id && request.getInt("source_revision") == 0 &&
-                        request.isNull("delivery_request_id") && request.get("from").toString() == pane.source.source.toString() &&
+                        deliveryMatches && request.get("from").toString() == pane.source.source.toString() &&
                         request.get("target").toString() == pending.source.source.toString()) {
                         val ready = reply.getJSONObject("ready")
-                        if (ready.has("Ok")) replaceCameraView(pane, pending.source)
-                        else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"))
+                        if (ready.has("Ok")) {
+                            if (incomingId != null) DirectedDelivery.replaceSource(incomingId, pane.source.source.toString(), pending.source.source)
+                            replaceCameraView(pane, pending.source)
+                        } else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"))
                     }
                 }
             }
@@ -550,7 +558,11 @@ object WorkspaceClient {
                 }
                 val incoming = ownership.request()?.incomingId
                 val expected = incoming?.let { DirectedDelivery.sources(it) }
-                val visible = if (expected == null) directory else directory.filter { it.source.toString() in expected }
+                val initialVisible = if (expected == null) directory else directory.filter { it.source.toString() in expected }
+                val switchGroups = initialVisible.mapNotNull { it.camera?.optLong("switch_group")?.takeIf { g -> g != 0L } }.toSet()
+                val visible = if (expected == null) directory else directory.filter {
+                    it.source.toString() in expected || (it.isCamera && (it.camera?.optLong("switch_group") ?: 0L) in switchGroups)
+                }
                 val rotated=mutable.value.panes.mapNotNull { pane ->
                     directory.firstOrNull { it.source.toString()==pane.source.source.toString() }
                         ?.takeIf { pane.accepted && it.isCamera && it.rotation!=pane.source.rotation }?.let { pane to it }
@@ -561,9 +573,9 @@ object WorkspaceClient {
                 rotated.forEach { (pane,source)->replaceCameraView(pane,source) }
                 if (incoming != null && !incomingInitialized && !incomingEnded) {
                     incomingInitialized = true
-                    if (expected.isNullOrEmpty() || expected.size > minOf(4, mutable.value.maxSubscriptions) || visible.size != expected.size) {
+                    if (expected.isNullOrEmpty() || expected.size > minOf(4, mutable.value.maxSubscriptions) || initialVisible.size != expected.size) {
                         endIncoming("An offered source is no longer available", rejected = true)
-                    } else visible.forEach { addNative(it) }
+                    } else initialVisible.forEach { addNative(it) }
                 }
             }
             control?.optJSONObject("Unsubscribed")?.let { ended ->

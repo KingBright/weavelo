@@ -712,3 +712,20 @@ MacBook 生产菜单打开来源选择后的实际状态为 receiving 0、无解
 - macOS 仍共用一个主 Dock 应用入口，远程应用标记已用于原生标题栏与最小化窗口；不宣称每个会话已拥有独立 Dock 应用。未按来源 IP 或名字推断无设备绑定的直连身份，此类订阅明确显示在本机卡片。
 
 本轮汇总证据 `native113-android78-final-acceptance-summary.json` 与约 40 行 `CHECKPOINT.md` 保留当前状态和上述接续点，避免后续把历史失败或旧安装状态当成现状。
+
+## 2026-11-04：双端图标统一、macOS 每会话独立 Dock 图标与摄像头余项源码实现（待 114 / Android 79 打包验收）
+
+已在 `main` 完成以下四项源码改造（Android `versionCode` 升为 `79`），交由后续流程执行跨平台编译、正式签名打包与六机升级实测：
+
+1. **桌面端与移动端操作图标重设计及统一**：
+   - 重绘并统一双端图标视觉语义：`receiving.svg` / `MobileSymbol.View`（显示器＋入向拉取箭头）、`sharing.svg` / `MobileSymbol.Share`（屏幕无线投射弧＋外发箭头）、`files.svg` / `MobileSymbol.Files`（双向传输文件夹）、`more.svg` / `MobileSymbol.More`（三圆点）、`control.svg` / `MobileSymbol.Control`（指针光标替代原人形图标）、`new-view.svg` / `MobileSymbol.Sources`（带加号叠加窗口）、`permissions.svg` / `MobileSymbol.Permissions`（盾牌勾号）、`maximize-off.svg` / `maximize-on.svg`（四角外扩 / 内收全屏箭头）。
+   - 统一桌面端与 Android 设备卡片快捷动作顺序为 `View`、`Send`、`Files`、`More`，以及本机卡片 `Permissions`、`More`；桌面端远端摄像头工具栏新增直接切摄按钮 `stream-switch-camera`（`IconName::CameraSwitch`），Android 远端切摄按钮统一使用 `MobileSymbol.CameraSwitch`。
+2. **macOS 每会话独立 Dock 图标（`--macos-dock-tile`）**：
+   - 在 `app/src/restored_window_icon.rs`、`app/src/entrypoint.rs`、`app/src/restored_ui.rs`、`app/src/restored_streams.rs` 中为每个活动 `WindowPurpose::Stream` 窗口绑定独立 `--macos-dock-tile` 子进程（测试与 headless 模式自动禁用），通过管道同步 64×64 预乘 RGBA「远端应用图标＋Weavelo 角标」与 `应用 · 设备` 标题（`_LSSetApplicationInformationItem` + `setApplicationIconImage:`）。
+   - 点击对应会话 Dock 图标或 Dock 菜单项可精确激活对应远端窗口或关闭该流；流窗口关闭或主进程退出时管道断开，Dock 代理进程立即退出。
+3. **Android 摄像头画面偏暗与被动投送远端切摄**：
+   - `CameraCapture.kt`：修正 `CONTROL_AE_TARGET_FPS_RANGE` 选择策略，优先选择 `upper <= 30` 且具备较低帧率下界（如 `[15, 30]` / `[7, 30]`）的动态曝光范围，避免死锁 `[30, 30]` / `[60, 60]` 快门上限导致室内欠曝，并显式设置 `CONTROL_MODE_AUTO` 与 `CONTROL_AE_MODE_ON`。
+   - `directed_delivery.rs`、`host/src/service.rs`、`publisher_bridge.rs`、`model.rs`、`original_owner.rs`、`directed_receive.rs`、`DirectedDelivery.kt`、`WorkspaceClient.kt`：在 `Broker` 中记录 `claimed_requests` 并提供 `switch_camera_source`，支持被动接收（Send/投送）会话携带匹配的 `delivery_request_id` 原地替换已认领的同组摄像头来源，不扩大 ticket 为非摄像头或未认领来源。
+4. **Windows 摄像头枚举 STA/MTA 线程模式修复**：
+   - `host/native/windows_camera.cpp`：`weavelo_windows_camera_catalog` 放入独立 `std::thread`（`COINIT_MULTITHREADED`）执行，避免在 GUI/STA 线程触发 `0x80010106 (RPC_E_CHANGED_MODE)` 导致枚举返回 0；`weavelo_windows_camera_epoch` 同时注册 `KSCATEGORY_VIDEO_CAMERA` 与 `KSCATEGORY_CAPTURE`。
+

@@ -52,7 +52,10 @@ internal data class CameraDescription(val id: String, val name: String, val faci
             val maximum = if (duration > 0) (1_000_000_000L / duration).toInt().coerceAtLeast(1) else fps
             val requested = minOf(fps, maximum)
             val rate = rates.filter { it.upper <= requested }.maxWithOrNull(
-                compareBy<Range<Int>> { it.upper }.thenBy { it.lower }) ?: continue
+                compareBy<Range<Int>> { if (it.upper <= minOf(requested, 30)) 1 else 0 }
+                    .thenBy { minOf(it.upper, 30) }
+                    .thenByDescending { it.lower }
+                    .thenBy { it.upper }) ?: continue
             val actual = rate.upper
             val encoder = SurfaceHevcEncoder.exact(size.width, size.height, actual, demand.getInt("bitrate_kbps")) ?: continue
             return Configuration(encoder.copy(srgb = srgb), rate)
@@ -159,6 +162,8 @@ internal class CameraCapture(private val description: CameraDescription, val con
             check(!closing.get()) { "Camera start cancelled" }
             val capture = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(encoder.surface)
+                set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, configuration.range)
                 val focus = description.manager.getCameraCharacteristics(description.id).get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
                 if (focus?.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) == true)

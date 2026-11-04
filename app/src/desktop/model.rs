@@ -44,6 +44,7 @@ pub struct SessionState<Texture, Pan: Default> {
     pub pending: Option<(u32, Instant)>,
     camera_replacement: Option<CaptureSource>,
     camera_switch: Option<protocol::session::CameraSwitchRequest>,
+    pub delivery_request_id: Option<u64>,
     pub activity_revision: u64,
     pub status: String,
     pub error: String,
@@ -163,6 +164,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             pending: None,
             camera_replacement: None,
             camera_switch: None,
+            delivery_request_id: None,
             activity_revision: 0,
             status: "Authenticated device connection".into(),
             error: String::new(),
@@ -329,7 +331,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                 .is_some_and(|(from,target)|from.camera_switch_target(target)) {
                 self.next_request=self.next_request.wrapping_add(1).max(1000);
                 let request=protocol::session::CameraSwitchRequest {id:self.video_id,request_id:u64::from(self.next_request),
-                    source_revision:self.source_revision,from:self.source,target:source,delivery_request_id:None};
+                    source_revision:self.source_revision,from:self.source,target:source,delivery_request_id:self.delivery_request_id};
                 if self.control(SessionCommand::RequestCameraSwitch(request.clone())) {
                     self.pending=Some((self.next_request,Instant::now()));self.camera_switch=Some(request);
                     self.status="Checking camera availability".into();
@@ -740,6 +742,12 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.status = "Video accepted; waiting for its first decoded frame".into();
                     self.last_activity = Some(remote_core::media_demand::MediaDemand { video: true, audio: self.request.audio });
                     self.send_activity();
+                    if matches!(self.source, CaptureSource::Camera(_)) && self.sources.is_empty() {
+                        let _ = self.conn.try_control_checked(SessionCommand::ListSources {
+                            request_id: 900_001,
+                            known_icons: Vec::new(),
+                        });
+                    }
                 }
                 SessionCommand::SourceSwitched {
                     id,
