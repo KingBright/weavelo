@@ -3005,9 +3005,13 @@ fn capture_source_menu(
                 .text_size(px(11.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(theme.content.primary)
-                .child("Displays & Apps"),
+                .child("Sources"),
         )
-        .child(div().w_full().h(px(1.0)).bg(theme.border.divider));
+        .child(div().w_full().h(px(1.0)).bg(theme.border.divider))
+        .when(error.is_none() && !sources.is_empty()
+            && sources.iter().all(|source|matches!(source.source,protocol::session::CaptureSource::Camera(_))),|menu|
+            menu.child(div().text_size(px(11.0)).text_color(theme.content.secondary)
+                .child("Screen not shared. Start sharing on the remote device.")));
 
     let multiple_view=view.clone();let multiple_binding=source_binding.cloned();
     menu=menu.child(command_button("island_menu_multiple",ActionVariantKind::Neutral,cx)

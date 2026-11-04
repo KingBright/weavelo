@@ -587,3 +587,15 @@ Book 的 107 macOS 构建与 Android 77 正式构建均已完成；APK 77 大小
 相关 13 项原生检查通过，其中真实保持打开的 TCP 管道只发送一张图片，读取端即收到完整关键帧；1,045 项签名发布回归通过（19 项跳过）。证据 `native109-framed-static-window-native-tests.log`、`native109-static-first-packet-release-regression.log`，cube 的 `native109-static-first-packet-codec-low-delay.json` 与 `native109-static-framed-first-packet-proof.json`。正式 109 安装后的手机真实画面与输入仍待验收。
 
 Android 77 的公网 APK 已在 Studio 独立下载核对完整 SHA，两部手机实际安装 base.apk 的 SHA 也一致；已有相机、麦克风授权先独立检查，再由普通 Sharing → Camera Share 恢复 Camera Ready，未代为点击系统授权。红米设备页实机图片为 720 × 1,640 竖屏；证据 `android77-independent-public-download-proof.json`、两机 `android77-*-actual-install-camera-ready-proof.json`、`android77-redmi-portrait-device-manager-actual.png`。
+
+## 2026-11-04 桌面 109 实机画面、输入与手机屏幕状态
+
+四台电脑已正式兼容安装 `7e9d052` / 109，实际 GUI / 后台分别为 Studio 97307 / 97300、Book 86954 / 86839、HO5 163062 / 162995、cube 33172 / 17828，运行可执行字节和来源逐机核对。Linux / Windows 成品仍经真实 Weavelo 发送到 Studio，由接收端独立 SHA 核对；各平台已正式发布，公网清单 SHA `3b207fa09755df052cf8129f49d5066e965e8e263dec7e8feb811415bfff54bf`，证据 `native109-independent-received-package-provenance.json`、各机 `native109-actual-installed-owner-proof.json`、`native109-nas-verified.json`。
+
+努比亚 77 普通拉取 Windows 109 的静止自有应用窗口，实际手机图片已显示完整测试窗口；首帧图片接收端 SHA `b09e99b971d93ae9bd1f0b7b31e0bfb9617aef8fa7cbd3d552467169ad483766`。下一次有序实测先核对手机实际呈现的自有蓝色圆点和白色编辑框，再触摸按钮；Windows 端独立记录点击数 0 → 1，150% DPI 下的客户区 640 × 420 与手机逆变换一致。所有本轮手机会话均已正常 Disconnect；早先窗口按 180 秒自动结束后，触摸保护拒绝输入的那次不计输入验收。证据 `native109-real-nubia-input-independent-host-proof.json`、`native109-nubia-windows-after-input-receiver-proof.json`。
+
+键盘仍有未通过项：ADB 普通按键输入 `WIN109` 后隐藏键盘，主机文字为空；添加正常 Enter 提交后，主机实际收到 `IWN109`，手机画面也与主机相符。不能把按键注入动作、一次提交或显示字符当成输入顺序通过。已正常断开，正在与同机 Weavelo 的普通搜索框作对照，定位 IME 与提交路径。证据 `native109-normal-ime-enter-commit-independent-host-proof.json`、`native109-nubia-windows-after-commit-receiver-proof.json`；后者图片 SHA `5b223a33b02554952ca83332c32f1209222001e0f73a3c379a09be1f50ad9c8e`。
+
+用户反馈电脑仅见两路手机摄像头。两机当前系统 MediaProjection 状态均无 Weavelo 屏幕会话，相机 Ready 与屏幕共享是独立状态；普通手机入口为 Sharing → Screen or app → Share，再由机主完成 Android 系统选屏。已启动的屏幕共享持续运行期间可由电脑直接拉取，新的屏幕采集会话仍遵循系统确认。桌面来源选择和会话来源菜单现增加简短的“Screen not shared”提示，指出在远端开始共享；本地投送则指向 Sharing & permissions。提示仅依据新鲜的纯摄像头来源目录，不伪造一个可拉取的屏幕来源。
+
+这次提示改动的原生来源浏览器 1 项、选择控制器 4 项检查均通过；1,045 项签名发布回归通过（19 项跳过）。首个验证过滤词使用了文件名而非模块名，匹配 0 项，只证明编译；最终验证已改为实际模块过滤词并执行以上 5 项，未将零测试计为功能通过。证据 `native110-source-sharing-notice-final-native-tests.log`、`native110-source-sharing-notice-release-regression.log`。新提示尚需正式 110 实机界面核对。

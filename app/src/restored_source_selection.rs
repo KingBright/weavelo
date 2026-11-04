@@ -288,6 +288,11 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         .child(div().text_size(px(11.)).text_color(theme.content.secondary).child(if matches!(selection.target,Target::Replace(_)) {"Choose one source for this stream."}else if selection.is_delivery(){"Select screens, app windows or cameras to send."}else{"Select screens, app windows or cameras to open separately."}))
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child("Loading sources…")))
+        .when(!selection.loading && selection.catalog_ready() && !selection.sources.is_empty()
+            && selection.sources.iter().all(|source|source.source.category()==SourceCategory::Camera),|panel|
+            panel.child(div().text_size(px(11.)).text_color(theme.content.secondary)
+                .child(if selection.is_delivery() {"Screen not shared. Open Sharing & permissions."}
+                    else {"Screen not shared. Start sharing on the remote device."})))
         .child(rows)
         .when_some(selection.error.as_ref(),|panel,error|panel.child(div().text_size(px(11.)).text_color(theme.status.error.bg).child(error.clone())))
         .child(div().flex().items_center().justify_end().gap_2()
