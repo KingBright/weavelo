@@ -10,18 +10,24 @@ cursors/annotations are tracked in [the cross-device plan](ACTIVE-PUSH-WHITEBOAR
 ## Window identity and controls
 
 Show the confirmed application/window and device in the OS window title and
-the compact toolbar. Use a display/window mark and the application's initial
-in source menus and the active toolbar. PiP follows the current confirmed
-source too. Fullscreen/restore and minimize operate on the local viewer;
+the compact toolbar. Use the real application icon from the confirmed source
+in the native receiving window and PiP; update it when the source or artwork
+changes and retain the distinct remote-window mark for other sources.
+Fullscreen/restore and the system titlebar controls operate on the local viewer;
 minimizing the controlling viewer releases remote input. Local window shortcuts
 are handled above the focus scope, including idle and drawer focus; remote keys
 still require the confirmed video input focus.
 
-The current source catalog has application and title but no application image.
-These marks are identifiers, not the remote application's real icon. A later
-catalog extension should transmit a bounded small PNG once per application
-change, cache it outside the frame path and use native host icon APIs. Do not
+The approved source catalog carries application names, titles and bounded
+64 × 64 / 16 KiB PNG icons. Cache these outside the frame path; native titlebar
+artwork updates only when the selected asset changes. Do not
 fetch icons from external URLs or place image work in the video loop.
+
+On macOS, custom titlebars may expose a separate native traffic-light window
+at a non-default inset. Verify its exact owning key window through Accessibility;
+do not infer keyboard ownership from WindowServer order alone. Ordinary dialogs,
+menus, cross-process occlusion and pointer hit checks remain enforced. Scroll
+events carry their own inverse-transformed pointer location through to the OS.
 
 ## A single geometry model
 
@@ -50,12 +56,12 @@ Keyboard visibility changes available layout, not remote coordinates. A drag
 in progress must be cancelled during the resize; after the animation, taps map
 against the newly measured video rectangle.
 
-The existing single-view keyboard uses physical keys. The workspace keyboard
-entry and arbitrary Unicode commits remain gaps. Add the workspace entry using
-the existing bound-input route first. Full Unicode needs a committed-text wire
-event and native host injection; do not emulate it by silently changing the
-user's clipboard or silently dropping unsupported characters. Protocol changes
-remain outside the previously approved GUI-only contract.
+The approved committed-text channel carries up to 1 KiB UTF-8 per event through
+the current authenticated source/input owner and native host injection. Physical
+keys retain shortcuts and releases; IME composition stays local. Do not emulate
+text by silently changing the user's clipboard. Actual soft-keyboard candidates,
+OEM input methods and each platform's application focus still need physical
+acceptance; a synthetic commit alone does not cover all IME behavior.
 
 Android targets SDK35: handle edge-to-edge and IME insets through Compose's
 inset-aware layout, without subtracting keyboard height again in input code.

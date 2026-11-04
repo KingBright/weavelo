@@ -231,12 +231,24 @@ fn focused_window_id(windows: &[WindowDescription], pid: i32, bounds: CGRect) ->
     let id=matches.next()?.id;
     matches.next().is_none().then_some(id)
 }
-fn keyboard_focus(windows: &[WindowDescription], id:u32, pid:i32, focused_editor:impl FnOnce()->Option<u32>)->bool {
+fn keyboard_focus(windows: &[WindowDescription], id:u32, pid:i32, focused_window:impl FnOnce(bool)->Option<u32>)->bool {
     let Some(front)=front_of_app(windows,pid) else {return false;};
     if front==id {return true;}
-    // NSFloatingWindowLevel UI is not necessarily a key window. Other layers,
-    // menus and ordinary same-process dialogs retain their existing guard.
-    windows.iter().any(|w|w.id==front && w.layer==3) && focused_editor()==Some(id)
+    let Some(surface)=windows.iter().find(|w|w.id==front) else {return false;};
+    let Some(selected)=windows.iter().find(|w|w.id==id && w.pid==pid) else {return false;};
+    // Custom titlebars can move the native traffic-light surface away from
+    // AppKit's default inset. Its position alone must not change key ownership:
+    // require AXFocusedWindow to identify the exact selected live window.
+    let caption=surface.layer==0 && surface.generic_frame_caption
+        && (surface.bounds.size.width-66.).abs()<=1.
+        && (surface.bounds.size.height-20.).abs()<=1.
+        && surface.bounds.origin.x>=selected.bounds.origin.x
+        && surface.bounds.origin.y>=selected.bounds.origin.y
+        && surface.bounds.origin.x+surface.bounds.size.width<=selected.bounds.origin.x+120.
+        && surface.bounds.origin.y+surface.bounds.size.height<=selected.bounds.origin.y+40.;
+    if caption {return focused_window(false)==Some(id);}
+    // Non-key floating UI still requires an editor in that exact window.
+    surface.layer==3 && focused_window(true)==Some(id)
 }
 // The callbacks are the existing WindowServer/AX operations. Keep the deadline
 // check adjacent to the focus write, after every potentially blocking read.
@@ -378,12 +390,14 @@ impl WindowTarget {
     }
     pub fn focused(&self) -> bool {
         self.app_frontmost() && windows(1 | 16, 0).is_ok_and(|list|
-            keyboard_focus(&list,self.id,self.pid,||self.focused_editor_window(&list)))
+            keyboard_focus(&list,self.id,self.pid,|require_editor|self.focused_ax_window(&list,require_editor)))
     }
-    fn focused_editor_window(&self, list:&[WindowDescription])->Option<u32> {
+    fn focused_ax_window(&self, list:&[WindowDescription], require_editor:bool)->Option<u32> {
         let window=attr(&self.application,"AXFocusedWindow")?;
-        let editor=attr(&self.application,"AXFocusedUIElement")?;
-        if attr(&editor,"AXWindow")? != window {return None;}
+        if require_editor {
+            let editor=attr(&self.application,"AXFocusedUIElement")?;
+            if attr(&editor,"AXWindow")? != window {return None;}
+        }
         let mut pid=0;
         if unsafe {AXUIElementGetPid(window.as_CFTypeRef(),&mut pid)}!=0 || pid!=self.pid {return None;}
         let position=attr(&window,"AXPosition")?;
@@ -698,9 +712,9 @@ mod tests {
         let parent=w(1,10,0.);
         let mut floating=w(2,10,20.);floating.layer=3;
         let list=[floating,parent];
-        assert!(keyboard_focus(&list,1,10,||focused_window_id(&list,10,parent.bounds)));
-        assert!(!keyboard_focus(&list,1,10,||None));
-        assert!(!keyboard_focus(&list,1,10,||Some(2)));
+        assert!(keyboard_focus(&list,1,10,|require_editor|{assert!(require_editor);focused_window_id(&list,10,parent.bounds)}));
+        assert!(!keyboard_focus(&list,1,10,|_|None));
+        assert!(!keyboard_focus(&list,1,10,|_|Some(2)));
         // The pointer path still sees the actual overlapping floating window.
         assert_eq!(top_at(&list,CGPoint::new(50.,60.)),Some(2));
         let mut duplicate=parent;duplicate.id=3;
@@ -710,11 +724,39 @@ mod tests {
     #[test]
     fn keyboard_focus_keeps_dialog_menu_and_fast_path_guards() {
         let parent=w(1,10,0.);
-        assert!(keyboard_focus(&[parent],1,10,||panic!("normal input must not add AX queries")));
+        assert!(keyboard_focus(&[parent],1,10,|_|panic!("normal input must not add AX queries")));
         for layer in [0,8,101] {
             let mut dialog=w(2,10,0.);dialog.layer=layer;
-            assert!(!keyboard_focus(&[dialog,parent],1,10,||panic!("not a non-key floating surface")));
+            assert!(!keyboard_focus(&[dialog,parent],1,10,|_|panic!("not a non-key floating surface")));
         }
+    }
+    #[test]
+    fn custom_titlebar_caption_uses_exact_key_window_without_requiring_an_editor() {
+        // Measured DeepSeek Harness window and native caption after activation.
+        let mut parent=w(18029,11682,594.);
+        parent.bounds=CGRect::new(&CGPoint::new(594.,64.),&CGSize::new(1280.,820.));
+        let mut caption=w(18079,11682,607.);
+        caption.generic_frame_caption=true;
+        caption.bounds=CGRect::new(&CGPoint::new(607.,79.),&CGSize::new(66.,20.));
+        let list=[caption,parent];
+        assert_eq!(front_of_app(&list,11682),Some(18079));
+        assert!(keyboard_focus(&list,18029,11682,|require_editor| {
+            assert!(!require_editor,"custom native windows need not export AXFocusedUIElement");
+            focused_window_id(&list,11682,parent.bounds)
+        }));
+        assert!(!keyboard_focus(&list,18029,11682,|_|None));
+        assert!(!keyboard_focus(&list,18029,11682,|_|Some(18079)));
+        for variation in 0..4 {
+            let mut other=caption;
+            match variation {
+                0=>other.bounds.size.width=100.,
+                1=>other.bounds.origin.y+=50.,
+                2=>other.generic_frame_caption=false,
+                _=>other.layer=8,
+            }
+            assert!(!keyboard_focus(&[other,parent],18029,11682,|_|panic!("an ordinary overlay must still block input")));
+        }
+        assert_eq!(top_at(&list,CGPoint::new(620.,85.)),Some(18079),"pointer hit guards are unchanged");
     }
     #[test]
     fn same_process_filter_still_requires_separate_cross_process_hit_test() {

@@ -249,6 +249,20 @@ fn restored_gpui_preserves_press_release_keyboard_and_overlay_isolation(cx: &mut
             .any(|c| matches!(c, SessionCommand::ReleaseInput { .. })),
         "Render cycle released held input before the up event"
     );
+    // Trackpad scrolling has its own position, even without a preceding move.
+    output.lock().unwrap().clear();
+    let scroll_pos=point(px(620.),px(430.));
+    let scroll_pointer=view.read_with(cx,|v,_|v.pointer_event_at(scroll_pos)).unwrap();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position:scroll_pos,delta:gpui::ScrollDelta::Pixels(point(px(0.),px(42.))),
+        modifiers:Modifiers::none(),touch_phase:gpui::TouchPhase::Moved,
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let scroll_trace=output.lock().unwrap().iter().filter_map(|command|match command {
+        SessionCommand::Input{event,..}|SessionCommand::SourceInput{event,..}=>Some(event.clone()),_=>None,
+    }).collect::<Vec<_>>();
+    let scroll=scroll_trace.iter().position(|event|matches!(event,InputEvent::MouseScroll{delta_x:0,delta_y:42})).expect("trackpad scroll must reach the host");
+    assert!(scroll>0 && scroll_trace[scroll-1]==scroll_pointer,"scroll must follow its own inverse-transformed position");
     // The current stream's local panel owns clicks and keyboard input.
     view.update(cx, |v, cx| {
         v.open_stream_panel(StreamPanel::Control, cx);

@@ -333,6 +333,12 @@ impl MacInputInjector {
                     delta_x,
                     0,
                 ) {
+                    // Posting the preceding move is asynchronous. Bind this
+                    // scroll to the same source coordinates, not the cursor
+                    // location observed while constructing the native event.
+                    // CGEvent dereferences to the borrowed native event. The
+                    // existing binding does not wrap CGEventSetLocation.
+                    unsafe { CGEventSetLocation(std::ptr::from_ref(&*cg_event).cast_mut().cast(),self.pointer_position()); }
                     self.post(&cg_event, deadline);
                 }
             }
@@ -590,6 +596,7 @@ fn pointer_coordinates(point: CGPoint, bounds: core_graphics::geometry::CGRect) 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightPostEventAccess() -> bool;
+    fn CGEventSetLocation(event:core_graphics::sys::CGEventRef,location:CGPoint);
 }
 
 fn current_pointer_location(source: &CGEventSource) -> CGPoint {
@@ -887,6 +894,27 @@ mod deadline_tests {
             })),
         };
         (Arc::new(input), calls)
+    }
+    #[test]
+    fn native_scroll_uses_source_coordinates_before_any_cursor_motion_is_posted() {
+        let (mut input,_)=fixture(None);
+        let id=CGDisplay::main().id;
+        let bounds=display_bounds(id).unwrap();
+        let point=(u16::MAX/3,u16::MAX/4);
+        let expected=normalized_pointer_location(point.0,point.1,bounds);
+        let seen=Arc::new(Mutex::new(Vec::new()));
+        let sink=seen.clone();
+        let native=Arc::get_mut(&mut input).unwrap();
+        native.display_id=Some(id);
+        *native.target_pointer.lock().unwrap()=Some(point);
+        native.post_observer=Some(Arc::new(move|event| {
+            if event.get_type() as u32==CGEventType::ScrollWheel as u32 {
+                let position=event.location();sink.lock().unwrap().push((position.x,position.y));
+            }
+        }));
+        // The observer records the real CGEvent and prevents every OS post.
+        input.inject(InputEvent::MouseScroll{delta_x:7,delta_y:42},None);
+        assert_eq!(*seen.lock().unwrap(),vec![(expected.x,expected.y)]);
     }
     #[test]
     fn fresh_deadline_posts_and_cleans_only_the_accepted_key() {

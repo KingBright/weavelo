@@ -611,3 +611,13 @@ Android 77 的公网 APK 已在 Studio 独立下载核对完整 SHA，两部手�
 键盘对照缩小了范围：按既有授权临时切换至已启用的百度 OEM 输入法，手机普通搜索框收到 `WIN109`，真实远控窗口的 Windows 端也独立记录点击 1 次、文字精确为 `WIN109`，实际手机图片一致。远控结束后已恢复原微信输入法，另有独立定时恢复保护；没有修改输入所有权、时限或传输顺序逻辑。远控图片 SHA `1a9779fb64d61c77153002d7262c385a807ff5cd5a6e2445bf3fd967bc0a7e93`，证据 `native109-baidu-real-remote-input-independent-host-proof.json`、`android77-nubia-baidu-remote-keyboard-restored.json`。
 
 为控制焦点等待这个变量，又在微信输入法下按同样 1 秒等待测试普通搜索框；硬件注入 `WIN109` 后仍先为空，Enter 后得到 `N10I9`。该现象也出现在未经过远控传输的普通输入框，不能归因于远控文本队列；这只验证了指定硬件注入路径与两种输入法的差异，微信实际软键盘候选选择、红米完整 IME 及全部电脑输入仍待继续。证据 `android77-nubia-wetype-equal-wait-standard-search-comparison.json`。普通手机屏幕投屏仍缺机主完成本次系统选屏，未代为确认或绕过。
+
+## 2026-11-04 自绘标题栏焦点与原生应用图标
+
+用户在 MacBook 拉取 Studio 的 DeepSeek Harness 单应用窗口时反馈双指滚动和输入失效，而整屏正常。来源窗口 18029 / PID 11682 的目录明确支持输入，实际后台屏幕与控制权限均为 Allowed。仅做应用激活和元数据读取后抓到具体差异：66 × 20 的独立标题栏按钮窗口位于主窗口内偏移 (13, 15)，激活时排在主窗口之前；原默认 (6, 6) 的装饰识别不匹配，键盘焦点检查因此拒绝输入。这个应用提供精确 AXFocusedWindow，但 AXFocusedUIElement 为无值；未读取聊天内容或写入该聊天。
+
+现对这种小型系统标题栏表面核对 AXFocusedWindow 的进程和唯一实时几何；不要求应用额外导出编辑器节点。普通弹窗、菜单、遮挡、指针命中及过期输入检查保留。滚动先发送本次手势的实际逆变换位置，macOS 原生滚动事件也显式使用该位置，不依赖异步鼠标移动先完成。来源目录已有的真实图标同步到接收和 PiP 原生窗口，换源／图标变化才更新；正确转为预乘透明度、保留图标比例，不增加逐视频帧处理。
+
+31 项相关原生检查通过：25 项窗口焦点、4 项原生输入时限／坐标、1 项图标透明度及 1 项生产 GPUI 事件路由；后者包含没有先行鼠标移动的触控板滚动坐标校验。1,045 项签名发布回归通过，19 项跳过。证据 `native111-window-input-artwork-focused-tests.log`、`native111-window-input-artwork-release-regression.log`、`native111-deepseek-window-after-activation.json` 与元数据记录。正式 111 安装、真实滚动／文字和标题栏图标仍需独立验收，不能将这些检查计为已完成。
+
+用户要求当前修复完成后比较 UI 交互精修方案，并在确认方案后再实施；尚未开展重设计。当前工具与插件目录未找到 Stitch 接口，不声称已使用它。手机屏幕共享状态在 11:39 再次独立核对，两机均未有 Weavelo MediaProjection 会话；仍需要机主完成 Android 系统选屏。

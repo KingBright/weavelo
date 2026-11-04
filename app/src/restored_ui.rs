@@ -502,6 +502,7 @@ struct RestoredDashboard {
     source_query_inflight: bool,
     artwork_cache: std::cell::RefCell<ApplicationArtwork>,
     native_window_title: String,
+    native_window_artwork: window_icon::Artwork,
     runtime: Arc<UnifiedRuntimeHandle>,
     owner: Arc<OriginalOwner>,
     _instance: Option<Instance>,
@@ -657,6 +658,7 @@ impl RestoredDashboard {
             stream_source: None,
             sending_context: None,
             native_window_title: "Weavelo".into(),
+            native_window_artwork: Default::default(),
             runtime,
             owner,
             _instance: instance,
@@ -1250,6 +1252,7 @@ impl RestoredDashboard {
                 owner,
                 _primary: primary,
                 native_window_title: String::new(),
+                native_window_artwork: Default::default(),
                 presentation_frame,
                 host_stats,
                 scale_mode,
@@ -1468,7 +1471,7 @@ impl RestoredDashboard {
         }
     }
 
-    fn queue_pointer_scroll(&mut self, delta: ScrollDelta) {
+    fn queue_pointer_scroll(&mut self, position:Point<Pixels>, delta: ScrollDelta) {
         if self.input_locked
             || !self.capture_supports_input
             || self.drawer_open
@@ -1476,6 +1479,7 @@ impl RestoredDashboard {
         {
             return;
         }
+        if !self.queue_pointer_move(position, false) { return; }
         let delta = delta.pixel_delta(px(40.0));
         if let Some(event) = self
             .pointer_input
@@ -2150,6 +2154,7 @@ struct PopoutStreamView {
     owner: Arc<OriginalOwner>,
     _primary: Entity<RestoredDashboard>,
     native_window_title: String,
+    native_window_artwork: window_icon::Artwork,
     presentation_frame: FrameSlot,
     host_stats: Option<Arc<SharedHostStats>>,
     scale_mode: ViewportScaleMode,
@@ -2161,6 +2166,9 @@ impl Render for PopoutStreamView {
         let theme = cx.theme().clone();
         let view = cx.weak_entity();
         let snapshot = self.owner.snapshot();
+        let bitmap=matches!(snapshot.active_source,protocol::session::CaptureSource::Window(_))
+            .then(||snapshot.source_icons.get(&snapshot.active_source)).flatten();
+        self.native_window_artwork.sync(window,cx,bitmap.map(AsRef::as_ref));
         if let Some((_, frame)) = self.owner.frame_binding() { self.presentation_frame = frame; }
         else { self.presentation_frame.lock().unwrap().take(); }
         self.host_stats = self.owner.stats();
@@ -2401,6 +2409,9 @@ impl Render for RestoredDashboard {
             window.set_window_title(&title);
             self.native_window_title = title;
         }
+        let bitmap=matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
+            .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten();
+        self.native_window_artwork.sync(window,cx,bitmap.as_deref());
         let theme = cx.theme().clone();
         let show_drawer = self.drawer_open;
         let input_hint = matches!(role, RoleState::Viewing(_)).then(|| {
@@ -2662,7 +2673,7 @@ fn full_video_surface(
             }),
         )
         .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-            this.queue_pointer_scroll(event.delta);
+            this.queue_pointer_scroll(event.position,event.delta);
             cx.stop_propagation();
         }))
         .child(content)
