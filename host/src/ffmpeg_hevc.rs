@@ -4,7 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
-/// Long-running ffmpeg capture → HEVC Annex-B pipeline used by Linux and Windows hosts.
+/// Long-running native capture → HEVC pipeline used by Linux and Windows hosts.
 /// Stdout is drained on a dedicated bounded reader so cancellation never waits on a
 /// blocking pipe read and an overloaded viewer cannot grow memory without bound.
 pub struct FfmpegHevcSource {
@@ -49,6 +49,10 @@ impl FfmpegHevcSource {
 
     fn spawn(mut command:Command,width:u32,height:u32,fps:u32,bitrate_kbps:u32)->Result<Self,Box<dyn Error+Send+Sync>> {
         let backend = crate::capture_backend::ffmpeg_input_format(&command);
+        // A static WGC source may produce only one picture. Length-framed packets
+        // let us submit that picture immediately, without waiting for the next AUD
+        // or guessing that an arbitrary stdout read ended at a frame boundary.
+        command.args(["-flush_packets", "1", "-f", "avi", "pipe:1"]);
         // Keep startup/codec failures in the host's existing diagnostic log.
         command
             .stdin(Stdio::null())
@@ -101,30 +105,75 @@ fn drain_hevc_reader<R: Read>(
     mut stdout: R,
     access_tx: mpsc::Sender<Result<(Vec<u8>, bool), String>>,
 ) {
-    let mut leftover = Vec::new();
-    let mut buf = [0u8; 32_768];
+    if let Err(error) = read_avi_header(&mut stdout) {
+        let _ = access_tx.try_send(Err(format!("Native HEVC packet header: {error}")));
+        return;
+    }
     loop {
-        while let Some(au) = take_access_unit(&mut leftover) {
-            let is_keyframe = is_hevc_keyframe(&au);
-            // These are already encoded references. Apply bounded backpressure
-            // on this dedicated reader instead of silently corrupting the GOP.
-            if access_tx.blocking_send(Ok((au, is_keyframe))).is_err() {
-                return;
+        match read_avi_packet(&mut stdout) {
+            Ok(packet) => {
+                let is_keyframe = is_hevc_keyframe(&packet);
+                // Compressed references must remain ordered and complete.
+                if access_tx.blocking_send(Ok((packet, is_keyframe))).is_err() { return; }
             }
-        }
-
-        match stdout.read(&mut buf) {
-            Ok(0) => {
-                let _ = access_tx.try_send(Err("ffmpeg HEVC pipeline ended".into()));
-                return;
-            }
-            Ok(read) => leftover.extend_from_slice(&buf[..read]),
             Err(error) => {
-                let _ = access_tx.try_send(Err(format!("ffmpeg HEVC read failed: {error}")));
+                let _ = access_tx.try_send(Err(format!("Native HEVC packet stream: {error}")));
                 return;
             }
         }
     }
+}
+
+const MAX_PACKET_BYTES: usize = 8 * 1024 * 1024;
+
+fn invalid_packet(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+fn read_avi_header(reader: &mut impl Read) -> std::io::Result<()> {
+    let mut header = [0; 12];
+    reader.read_exact(&mut header)?;
+    if &header[..4] != b"RIFF" || &header[8..] != b"AVI " {
+        return Err(invalid_packet("Expected the local encoder's AVI packet framing"));
+    }
+    Ok(())
+}
+
+fn read_avi_packet(reader: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    loop {
+        let mut header = [0; 8];
+        reader.read_exact(&mut header)?;
+        let size = u32::from_le_bytes(header[4..].try_into().unwrap()) as usize;
+        let tag = &header[..4];
+        if tag == b"LIST" || tag == b"RIFF" {
+            if size < 4 { return Err(invalid_packet("Truncated AVI list")); }
+            let mut kind = [0; 4];
+            reader.read_exact(&mut kind)?;
+            if (tag == b"LIST" && matches!(&kind, b"movi" | b"rec "))
+                || (tag == b"RIFF" && &kind == b"AVIX") {
+                continue;
+            }
+            skip_avi_bytes(reader, size - 4 + (size & 1))?;
+        } else if tag == b"00dc" {
+            // AVI may represent an idle timestamp gap with an empty chunk.
+            if size == 0 { continue; }
+            if size > MAX_PACKET_BYTES { return Err(invalid_packet("HEVC packet exceeds the local read budget")); }
+            let mut packet = vec![0; size];
+            reader.read_exact(&mut packet)?;
+            if size & 1 != 0 { reader.read_exact(&mut [0])?; }
+            if start_code_len(&packet) == 0 { return Err(invalid_packet("HEVC packet is not Annex-B")); }
+            return Ok(packet);
+        } else {
+            skip_avi_bytes(reader, size + (size & 1))?;
+        }
+    }
+}
+
+fn skip_avi_bytes(reader: &mut impl Read, size: usize) -> std::io::Result<()> {
+    if size > MAX_PACKET_BYTES { return Err(invalid_packet("AVI metadata exceeds the local read budget")); }
+    let copied = std::io::copy(&mut reader.take(size as u64), &mut std::io::sink())?;
+    if copied != size as u64 { return Err(std::io::ErrorKind::UnexpectedEof.into()); }
+    Ok(())
 }
 
 impl Drop for FfmpegHevcSource {
@@ -241,9 +290,6 @@ fn capture_command_using(
         &bitrate,
         "-bufsize",
         &bitrate,
-        "-f",
-        "hevc",
-        "pipe:1",
     ]);
     Ok(cmd)
 }
@@ -269,10 +315,6 @@ fn hevc_nal_type(nal: &[u8]) -> Option<u8> {
     nal.get(prefix).map(|byte| (byte >> 1) & 0x3f)
 }
 
-fn is_hevc_vcl(nal_type: u8) -> bool {
-    nal_type <= 31
-}
-
 pub(crate) fn is_hevc_keyframe(au: &[u8]) -> bool {
     let mut offset = 0;
     while offset < au.len() {
@@ -285,42 +327,6 @@ pub(crate) fn is_hevc_keyframe(au: &[u8]) -> bool {
         offset = next;
     }
     false
-}
-
-fn take_access_unit(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let first = find_start(buffer, 0)?;
-    if first > 0 {
-        buffer.drain(..first);
-    }
-    let mut offset = 0;
-    let mut saw_vcl = false;
-    loop {
-        let Some(start) = find_start(buffer, offset) else {
-            return None;
-        };
-        let Some(next) = find_start(buffer, start + 3) else {
-            return None;
-        };
-        let nal_type = hevc_nal_type(&buffer[start..next]).unwrap_or(0);
-        // HEVC prefix parameter sets/AUD/prefix-SEI belong to the next
-        // picture, not the preceding VCL. Keeping them on a delta frame
-        // strands a receiver that skipped that frame while awaiting an IDR.
-        if saw_vcl && matches!(nal_type, 32..=35 | 39) {
-            return Some(buffer.drain(..start).collect());
-        }
-        if is_hevc_vcl(nal_type) {
-            if saw_vcl {
-                let au = buffer.drain(..start).collect();
-                return Some(au);
-            }
-            saw_vcl = true;
-        }
-        offset = next;
-        if offset > 2 * 1024 * 1024 {
-            let au = buffer.drain(..next).collect();
-            return Some(au);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -407,35 +413,39 @@ mod tests {
 
 
 
+    fn packet_stream(packets: &[Vec<u8>]) -> Vec<u8> {
+        let mut input = b"RIFF".to_vec();
+        input.extend(u32::MAX.to_le_bytes());
+        input.extend(b"AVI LIST");
+        input.extend(8u32.to_le_bytes());
+        input.extend(b"hdrltestLIST");
+        input.extend(u32::MAX.to_le_bytes());
+        input.extend(b"movi");
+        for packet in packets {
+            input.extend(b"00dc");
+            input.extend((packet.len() as u32).to_le_bytes());
+            input.extend(packet);
+            if packet.len() & 1 != 0 { input.push(0); }
+        }
+        input
+    }
+
     #[tokio::test]
     async fn bounded_reader_preserves_encoded_references_under_backpressure() {
-        let mut input = Vec::new();
-        for byte in 0u8..20 {
-            input.extend_from_slice(&[0, 0, 0, 1, 0x02, byte]);
-        }
-        input.extend_from_slice(&[0, 0, 0, 1, 0x02, 0xff]);
-        input.extend_from_slice(&[0, 0, 0, 1, 0x02, 0xfe]);
+        let packets = (0u8..20).map(|byte| vec![0, 0, 0, 1, 0x02, byte]).collect::<Vec<_>>();
+        let input = packet_stream(&packets);
         let (tx, mut rx) = mpsc::channel(2);
-        let reader = std::thread::spawn(move || {
-            drain_hevc_reader(std::io::Cursor::new(input), tx);
-        });
+        let reader = std::thread::spawn(move || drain_hevc_reader(std::io::Cursor::new(input), tx));
         let mut delivered = Vec::new();
-        while let Some(packet) = rx.recv().await {
-            let Ok((bytes, _)) = packet else {
-                break;
-            };
-            delivered.push(*bytes.last().unwrap());
-        }
+        while let Some(Ok((bytes, _))) = rx.recv().await { delivered.push(bytes); }
         reader.join().unwrap();
-        assert_eq!(delivered, (0u8..20).collect::<Vec<_>>());
+        assert_eq!(delivered, packets);
     }
 
     #[test]
     fn closing_receiver_releases_a_backpressured_reader() {
-        let mut input = Vec::new();
-        for byte in 0u8..20 {
-            input.extend_from_slice(&[0, 0, 0, 1, 0x02, byte]);
-        }
+        let packets = (0u8..20).map(|byte| vec![0, 0, 0, 1, 0x02, byte]).collect::<Vec<_>>();
+        let input = packet_stream(&packets);
         let (tx, mut rx) = mpsc::channel(1);
         let (finished, observed) = std::sync::mpsc::channel();
         let reader = std::thread::spawn(move || {
@@ -443,65 +453,80 @@ mod tests {
             finished.send(()).unwrap();
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while rx.is_empty() && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
+        while rx.is_empty() && std::time::Instant::now() < deadline { std::thread::yield_now(); }
         assert!(!rx.is_empty(), "reader did not fill its bounded output");
         rx.close();
-        observed
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+        observed.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         reader.join().unwrap();
     }
 
-    #[test]
-    fn splits_two_vcl_nals_into_access_units() {
-        let mut buffer = vec![
-            0, 0, 0, 1, 0x02, 0xAA, // trail VCL
-            0, 0, 0, 1, 0x02, 0xBB, // next picture VCL
-            0, 0, 0, 1, 0x02, // incomplete
-        ];
-        let first = take_access_unit(&mut buffer).expect("first AU");
-        assert_eq!(first, vec![0, 0, 0, 1, 0x02, 0xAA]);
-        assert!(take_access_unit(&mut buffer).is_none());
+    #[tokio::test]
+    async fn static_first_picture_is_delivered_while_the_pipe_stays_open() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut producer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (consumer, _) = listener.accept().unwrap();
+        let packet = vec![0, 0, 0, 1, 40, 1, 0x80];
+        let (tx, mut rx) = mpsc::channel(1);
+        let reader = std::thread::spawn(move || drain_hevc_reader(consumer, tx));
+        producer.write_all(&packet_stream(&[packet.clone()])).unwrap();
+        // No second picture, delimiter or producer EOF is provided.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await;
+        rx.close();
+        drop(producer);
+        reader.join().unwrap();
+        let (actual, keyframe) = first.expect("static first picture stalled").unwrap().unwrap();
+        assert_eq!(actual, packet);
+        assert!(keyframe);
     }
 
     #[test]
-    fn repeated_parameter_sets_stay_with_following_keyframe() {
-        fn nal(kind: u8) -> Vec<u8> {
-            vec![0, 0, 0, 1, kind << 1, 1, 0x80]
+    fn short_reads_keep_idr_parameter_sets_and_suffixes_on_their_own_packets() {
+        struct Short(std::io::Cursor<Vec<u8>>);
+        impl Read for Short {
+            fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+                let length = into.len().min(1);
+                self.0.read(&mut into[..length])
+            }
         }
-        let mut buffer = Vec::new();
-        for kind in [1, 32, 33, 34, 39, 21, 1, 1] {
-            buffer.extend(nal(kind));
-        }
-        assert_eq!(take_access_unit(&mut buffer).unwrap(), nal(1));
-        let mut expected = Vec::new();
-        for kind in [32, 33, 34, 39, 21] {
-            expected.extend(nal(kind));
-        }
-        let keyframe = take_access_unit(&mut buffer).unwrap();
-        assert_eq!(keyframe, expected);
-        assert!(is_hevc_keyframe(&keyframe));
+        fn nal(kind: u8) -> Vec<u8> { vec![0, 0, 0, 1, kind << 1, 1, 0x80] }
+        let first = [nal(1), nal(40)].concat();
+        let idr = [nal(35), nal(32), nal(33), nal(34), nal(39), nal(20)].concat();
+        let mut input = Short(std::io::Cursor::new(packet_stream(&[first.clone(), idr.clone()])));
+        read_avi_header(&mut input).unwrap();
+        assert_eq!(read_avi_packet(&mut input).unwrap(), first);
+        let actual = read_avi_packet(&mut input).unwrap();
+        assert_eq!(actual, idr);
+        assert!(is_hevc_keyframe(&actual));
     }
 
     #[test]
-    fn suffix_sei_remains_on_previous_picture_and_aud_starts_next() {
-        fn nal(kind: u8) -> Vec<u8> {
-            vec![0, 0, 1, kind << 1, 1, 0x80]
+    fn idle_chunks_and_open_dml_segments_do_not_drop_compressed_pictures() {
+        let packet = vec![0, 0, 0, 1, 40, 1, 0x80];
+        let mut input = packet_stream(&[Vec::new()]);
+        input.extend(b"RIFF"); input.extend(u32::MAX.to_le_bytes()); input.extend(b"AVIXLIST");
+        input.extend(u32::MAX.to_le_bytes()); input.extend(b"movi00dc");
+        input.extend((packet.len() as u32).to_le_bytes()); input.extend(&packet); input.push(0);
+        let mut input = std::io::Cursor::new(input);
+        read_avi_header(&mut input).unwrap();
+        assert_eq!(read_avi_packet(&mut input).unwrap(), packet);
+    }
+
+    #[test]
+    fn malformed_oversized_and_truncated_packets_fail_before_delivery() {
+        assert!(read_avi_header(&mut std::io::Cursor::new([0u8; 12])).is_err());
+        for tag in [b"00dc", b"JUNK"] {
+            let mut bytes = tag.to_vec();
+            bytes.extend((MAX_PACKET_BYTES as u32 + 1).to_le_bytes());
+            assert_eq!(read_avi_packet(&mut std::io::Cursor::new(bytes)).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
         }
-        let mut buffer = Vec::new();
-        for kind in [1, 40, 35, 32, 33, 34, 20, 1, 1] {
-            buffer.extend(nal(kind));
-        }
-        let mut first = nal(1);
-        first.extend(nal(40));
-        assert_eq!(take_access_unit(&mut buffer).unwrap(), first);
-        let mut next = Vec::new();
-        for kind in [35, 32, 33, 34, 20] {
-            next.extend(nal(kind));
-        }
-        assert_eq!(take_access_unit(&mut buffer).unwrap(), next);
+        let packet = vec![0, 0, 0, 1, 40, 1, 0x80];
+        let mut bytes = packet_stream(&[packet]); bytes.truncate(bytes.len()-2);
+        let mut input = std::io::Cursor::new(bytes); read_avi_header(&mut input).unwrap();
+        assert_eq!(read_avi_packet(&mut input).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        let mut input = std::io::Cursor::new(packet_stream(&[vec![1, 2, 3, 4]]));
+        read_avi_header(&mut input).unwrap();
+        assert_eq!(read_avi_packet(&mut input).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]

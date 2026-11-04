@@ -137,6 +137,8 @@ pub(crate) fn command(
         "-an",
         "-c:v",
         encoder.name(),
+        "-flags",
+        "+low_delay",
     ]);
     match encoder {
         Encoder::Amd => {
@@ -200,9 +202,6 @@ pub(crate) fn command(
         "bt709",
         "-color_trc",
         "iec61966-2-1",
-        "-f",
-        "hevc",
-        "pipe:1",
     ]);
     command
 }
@@ -229,6 +228,7 @@ mod tests {
         assert!(args.contains("hwnd=5124095577148911"));
         assert!(args.contains("hevc_amf"));
         assert!(args.contains("-color_range pc"));
+        assert!(args.contains("-flags +low_delay"));
         assert!(!args.contains("hevc_metadata"));
         for forbidden in ["hwdownload", "gdigrab", "libx265", "format=yuv420p"] {
             assert!(!args.contains(forbidden));

@@ -577,3 +577,13 @@ Book 的 107 macOS 构建与 Android 77 正式构建均已完成；APK 77 大小
 108 三平台包均已正式发布，发布入口逐包验证公网完整 SHA；清单 SHA `59f155f04b3c1a18e0842f64c8a64af9027334671fd5e165533b4aeb314216a1`，证据 `native108-nas-verified.json`。Android 77 也已正式发布并兼容安装到型号 NX741J 与 2409BRN2CC；Studio 接收原 APK 后独立核对 SHA `79fd7d2b27f77d29cecb175c9121b67bbf65199c0cfb6872bd1c4816a2bff5b1`。未新增 APK 版本、签名、系统权限或配对身份。
 
 仍未通过：努比亚 77 拉取 Windows 106 的自有 Win32 应用窗口时，真实截图仍显示等待视频，夹具点击计数为 0、文字为空；不能把辅助工具的触摸动作日志当成输入已送达。已正常断开。独立 WGC + AMF 原命令对同一静态夹具在 18 秒内没有输出；当前 Windows 处于同一交互会话、Default 输入桌面，夹具可见、未最小化且未被 DWM cloak。继续用自有动态画面对照区分静态来源、采集与编码输出边界，不归咎于系统权限。截图 `native108-nubia-own-windows-input-actual.png`，接收端 SHA `501bfad42f24db575fa8c6b097deb469c1605ebfaa4b35c43d3bdf77c74b230a`；未知项继续保留。
+
+## 2026-11-04 Windows 静止应用窗口的首帧修复
+
+独立对照已定位两个等待点。自有动态窗口的 WGC + AMF 八帧在 567.3 ms 内完成；静止窗口虽已由硬件编码出 2,532 字节，默认 AMF 接口仍额外等待下一帧。单独设置输出 flush 或 AMF 的 latency 属性都没有解决；依据实际编码器选项与 [FFmpeg AMF 实现](https://raw.githubusercontent.com/FFmpeg/FFmpeg/master/libavcodec/amfenc.c)，设置 codec 的 `+low_delay` 后，静止画面原始码流在 204.7 ms 出现。但原 Annex-B 读取器仍需下一帧才能确认上一帧结束，静止来源仍会被卡住。
+
+现保留原 WGC、D3D11、GPU 编码及网络 HEVC 包，只将 FFmpeg 与本地读取线程之间的私有管道改为有长度的 AVI 压缩包；[RIFF 格式](https://learn.microsoft.com/en-us/windows/win32/directshow/avi-riff-file-reference)不参与网络协议，也不增加原始像素转换。实机原生对照在 216.9 ms 收到唯一完整首帧，2,532 字节及 NAL 35 / 32 / 33 / 34 / 20 完整保留，无需下一帧或生产者 EOF。公共读取器共用有界顺序队列，不丢压缩参考帧；短读、奇数填充、空闲空包、OpenDML 分段、畸形长度及截断均有检查。
+
+相关 13 项原生检查通过，其中真实保持打开的 TCP 管道只发送一张图片，读取端即收到完整关键帧；1,045 项签名发布回归通过（19 项跳过）。证据 `native109-framed-static-window-native-tests.log`、`native109-static-first-packet-release-regression.log`，cube 的 `native109-static-first-packet-codec-low-delay.json` 与 `native109-static-framed-first-packet-proof.json`。正式 109 安装后的手机真实画面与输入仍待验收。
+
+Android 77 的公网 APK 已在 Studio 独立下载核对完整 SHA，两部手机实际安装 base.apk 的 SHA 也一致；已有相机、麦克风授权先独立检查，再由普通 Sharing → Camera Share 恢复 Camera Ready，未代为点击系统授权。红米设备页实机图片为 720 × 1,640 竖屏；证据 `android77-independent-public-download-proof.json`、两机 `android77-*-actual-install-camera-ready-proof.json`、`android77-redmi-portrait-device-manager-actual.png`。
