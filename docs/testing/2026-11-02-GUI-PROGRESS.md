@@ -621,3 +621,15 @@ Android 77 的公网 APK 已在 Studio 独立下载核对完整 SHA，两部手�
 31 项相关原生检查通过：25 项窗口焦点、4 项原生输入时限／坐标、1 项图标透明度及 1 项生产 GPUI 事件路由；后者包含没有先行鼠标移动的触控板滚动坐标校验。1,045 项签名发布回归通过，19 项跳过。证据 `native111-window-input-artwork-focused-tests.log`、`native111-window-input-artwork-release-regression.log`、`native111-deepseek-window-after-activation.json` 与元数据记录。正式 111 安装、真实滚动／文字和标题栏图标仍需独立验收，不能将这些检查计为已完成。
 
 用户要求当前修复完成后比较 UI 交互精修方案，并在确认方案后再实施；尚未开展重设计。当前工具与插件目录未找到 Stitch 接口，不声称已使用它。手机屏幕共享状态在 11:39 再次独立核对，两机均未有 Weavelo MediaProjection 会话；仍需要机主完成 Android 系统选屏。
+
+## 2026-11-04 桌面 111 正式交付与实机验收
+
+四台电脑均已正式安装 `fbaa71e` / 111，实际 GUI / 后台分别为 Studio 65190 / 65185、Book 92413 / 92302、HO5 276237 / 276164、cube 19856 / 19748；可执行字节、编译来源和原 GPUI 入口逐机核对，原签名与配对保持。Linux / Windows 成品通过真实 Weavelo 传回 Studio，接收端独立 SHA 及包内来源身份匹配，证据 `native111-independent-received-package-provenance.json` 与各机实际所有者记录。公网三包完整下载 SHA 均通过，清单 SHA `0ebc344c3c71a2ca986c1a6c13a8c24be8a51a2c714c56c5d6a3208d5ba4cf7f`，证据 `native111-nas-verified.json`。
+
+努比亚 77 普通拉取 Studio 111 的专用单应用窗口时，人工构造的同进程非 key 标题栏表面持续位于主窗口前，偏移与实际故障相同为 (13, 15)。接收端独立记录点击 0 → 1、滚动 6 次 / 合计 24、文字精确为 `MAC111`；实际手机图像也显示点击 1 和 `MAC111`。证据 `native111-real-phone-input-independent-host-proof.json`、`native111-owned-verified-caption-fixture-native-focus.json`、`native111-real-phone-input-actual-receiver-proof.json`；图片接收端 SHA `8315e15c2b2eaf45ffcd77d455d7b7a5e869077deb91eee4fe6a419271b57f23`，已实际审阅。测试沿用此前授权临时使用百度 OEM 输入法，之后验证恢复微信输入法；正常 Disconnect 后精确停止自有夹具，无系统授权变化。
+
+前几次辅助验收没有触发输入：新辅助类被设备终止，另一次同名旧夹具导致选择不唯一；这些不计功能通过。最后使用既有稳定辅助类、唯一来源名称及实际蓝色夹具像素检查完成上述操作。不能将此结果说成 MacBook 实体触控板或用户聊天输入已验收。
+
+MacBook 111 单独拉取用户指定的 Studio DeepSeek Harness 窗口，随后仅通过努比亚观察 Book 自有 Weavelo 接收窗口；实际原生标题栏已显示 DeepSeek Harness 原图标及应用名。未向该聊天写入文字，未采集 Studio 整屏或 Codex 窗口。图片经 Weavelo 返回并独立 SHA `cf29f2a5ba287580fcac818ea0b8e3a86fb6e4e2a435518da4148001348448df`，已实际审阅；证据 `native111-native-titlebar-actual-receiver-proof.json`。手机正常断开，Book 自有验收租约已结束，清理记录 `native111-book-native-titlebar-own-lease-cleanup.json`。
+
+[UI 精修提案](../plans/UI-INTERACTION-POLISH-20261104.md)与三种方向对比已落盘；建议紧凑列表与手机两行轻卡片。整体界面调整等待用户选择，尚未实施。原有完整输入／IME、音频、深色摄像头图像、Android 屏幕系统确认及入站投送切摄等未验收／未完成项继续保持独立记录，不以这次交付概括为全部互通完成。

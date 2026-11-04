@@ -1,0 +1,271 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1220" viewBox="0 0 1560 1220"><style>text{font-family:"PingFang SC","Helvetica Neue",sans-serif}</style>
+<rect x="0" y="0" width="1560" height="1220" rx="0" fill="#eef2f0" stroke="none"/>
+<text x="36" y="47" font-size="30" fill="#162b26" font-weight="650">Weavelo · UI 交互精修方向</text>
+<text x="36" y="78" font-size="15" fill="#536660" font-weight="400">设计提案，待确认。保留现有品牌、原生 GPUI / Compose 与全部功能；以下不是产品实机截图。</text>
+<text x="28" y="119" font-size="23" fill="#17483b" font-weight="650">紧凑列表 · 推荐</text>
+<rect x="28" y="140" width="480" height="408" rx="14" fill="#0f1318" stroke="#27323b"/>
+<path d="M28 173H508" stroke="#323943"/>
+<circle cx="45" cy="156" r="4.6" fill="#ed6b66"/>
+<circle cx="62" cy="156" r="4.6" fill="#e9bd55"/>
+<circle cx="79" cy="156" r="4.6" fill="#64bd82"/>
+<text x="238.0" y="162" font-size="13" fill="#b7c2cc" font-weight="500">Weavelo</text>
+<rect x="46" y="185" width="444" height="33" rx="9" fill="#181e25" stroke="#2b343d"/>
+<rect x="49" y="188" width="65" height="27" rx="7" fill="#253c3c" stroke="none"/>
+<text x="64" y="207" font-size="12" fill="#9ae5cc" font-weight="500">设备</text>
+<text x="144" y="207" font-size="12" fill="#97a4b1" font-weight="500">传输</text>
+<text x="214" y="207" font-size="12" fill="#97a4b1" font-weight="500">共享与权限</text>
+<text x="352" y="207" font-size="12" fill="#97a4b1" font-weight="500">设置</text>
+<rect x="46" y="230" width="405" height="30" rx="8" fill="#171d24" stroke="#303a43"/>
+<text x="58" y="250" font-size="12" fill="#80909e" font-weight="400">搜索设备</text>
+<g transform="translate(466 235) scale(0.8)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2V20M2 11H20"/></g>
+<g transform="translate(50 278) scale(0.85)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="87" y="286" font-size="14" fill="#e8eef2" font-weight="500">MBPM2MAX.local</text>
+<text x="87" y="302" font-size="10" fill="#99aab7" font-weight="400">LAN · 正在接收</text>
+<g transform="translate(365 280) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(397 280) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(429 280) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(461 280) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<path d="M86 312H489" stroke="#232c34"/>
+<rect x="38" y="312" width="460" height="43" rx="8" fill="#19252a" stroke="none"/>
+<g transform="translate(50 322) scale(0.85)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="87" y="330" font-size="14" fill="#e8eef2" font-weight="500">bazzite</text>
+<text x="87" y="346" font-size="10" fill="#99aab7" font-weight="400">Relay · 共享中</text>
+<g transform="translate(365 324) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(397 324) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(429 324) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(461 324) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<path d="M86 356H489" stroke="#232c34"/>
+<g transform="translate(50 366) scale(0.85)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="87" y="374" font-size="14" fill="#e8eef2" font-weight="500">CUBEX</text>
+<text x="87" y="390" font-size="10" fill="#99aab7" font-weight="400">Relay · 就绪</text>
+<g transform="translate(365 368) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(397 368) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(429 368) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(461 368) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<path d="M86 400H489" stroke="#232c34"/>
+<g transform="translate(50 410) scale(0.85)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="87" y="418" font-size="14" fill="#e8eef2" font-weight="500">nubia NX741J</text>
+<text x="87" y="434" font-size="10" fill="#99aab7" font-weight="400">Relay · 摄像头已就绪</text>
+<g transform="translate(365 412) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(397 412) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(429 412) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(461 412) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<path d="M86 444H489" stroke="#232c34"/>
+<g transform="translate(50 454) scale(0.85)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="87" y="462" font-size="14" fill="#e8eef2" font-weight="500">Redmi 2409BRN2CC</text>
+<text x="87" y="478" font-size="10" fill="#99aab7" font-weight="400">LAN · 屏幕未共享</text>
+<g transform="translate(365 456) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(397 456) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(429 456) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(461 456) scale(0.73)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<path d="M46 516H490" stroke="#323943"/>
+<text x="49" y="536" font-size="10" fill="#99aab7" font-weight="400">MacStudio.local · 本机共享已就绪</text>
+<g transform="translate(467 523) scale(0.65)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5H20M3 11H20M3 17H20M8 2V8M15 8V14M10 14V20"/></g>
+<text x="28" y="581" font-size="15" fill="#40584e" font-weight="400">默认 580 × 500，桌面操作目标 32 px。</text>
+<text x="28" y="608" font-size="14" fill="#63766d" font-weight="400">移动端用两行轻卡片，留足点击区域。</text>
+<text x="540" y="119" font-size="23" fill="#253a34" font-weight="650">轻卡片</text>
+<rect x="540" y="140" width="480" height="408" rx="14" fill="#0f1318" stroke="#27323b"/>
+<path d="M540 173H1020" stroke="#323943"/>
+<circle cx="557" cy="156" r="4.6" fill="#ed6b66"/>
+<circle cx="574" cy="156" r="4.6" fill="#e9bd55"/>
+<circle cx="591" cy="156" r="4.6" fill="#64bd82"/>
+<text x="750.0" y="162" font-size="13" fill="#b7c2cc" font-weight="500">Weavelo</text>
+<rect x="558" y="185" width="444" height="33" rx="9" fill="#181e25" stroke="#2b343d"/>
+<rect x="561" y="188" width="65" height="27" rx="7" fill="#253c3c" stroke="none"/>
+<text x="576" y="207" font-size="12" fill="#9ae5cc" font-weight="500">设备</text>
+<text x="656" y="207" font-size="12" fill="#97a4b1" font-weight="500">传输</text>
+<text x="726" y="207" font-size="12" fill="#97a4b1" font-weight="500">共享与权限</text>
+<text x="864" y="207" font-size="12" fill="#97a4b1" font-weight="500">设置</text>
+<rect x="558" y="230" width="405" height="30" rx="8" fill="#171d24" stroke="#303a43"/>
+<text x="570" y="250" font-size="12" fill="#80909e" font-weight="400">搜索设备</text>
+<g transform="translate(978 235) scale(0.8)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2V20M2 11H20"/></g>
+<rect x="558" y="272" width="214" height="70" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(570 284) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="594" y="292" font-size="12" fill="#e8eef2" font-weight="500">MBPM2MAX.local</text>
+<text x="594" y="307" font-size="9" fill="#99aab7" font-weight="400">LAN · 正在接收</text>
+<g transform="translate(596 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(639 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(682 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(725 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="783" y="272" width="214" height="70" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(795 284) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="819" y="292" font-size="12" fill="#e8eef2" font-weight="500">bazzite</text>
+<text x="819" y="307" font-size="9" fill="#99aab7" font-weight="400">Relay · 共享中</text>
+<g transform="translate(821 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(864 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(907 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(950 316) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="558" y="351" width="214" height="70" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(570 363) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="594" y="371" font-size="12" fill="#e8eef2" font-weight="500">CUBEX</text>
+<text x="594" y="386" font-size="9" fill="#99aab7" font-weight="400">Relay · 就绪</text>
+<g transform="translate(596 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(639 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(682 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(725 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="783" y="351" width="214" height="70" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(795 363) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="819" y="371" font-size="12" fill="#e8eef2" font-weight="500">nubia NX741J</text>
+<text x="819" y="386" font-size="9" fill="#99aab7" font-weight="400">Relay · 摄像头已就绪</text>
+<g transform="translate(821 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(864 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(907 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(950 395) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="558" y="430" width="214" height="70" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(570 442) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="594" y="450" font-size="12" fill="#e8eef2" font-weight="500">Redmi 2409BRN2CC</text>
+<text x="594" y="465" font-size="9" fill="#99aab7" font-weight="400">LAN · 屏幕未共享</text>
+<g transform="translate(596 474) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<g transform="translate(639 474) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<g transform="translate(682 474) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<g transform="translate(725 474) scale(0.64)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<path d="M558 516H1002" stroke="#323943"/>
+<text x="561" y="536" font-size="10" fill="#99aab7" font-weight="400">MacStudio.local · 本机共享已就绪</text>
+<g transform="translate(979 523) scale(0.65)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5H20M3 11H20M3 17H20M8 2V8M15 8V14M10 14V20"/></g>
+<text x="540" y="581" font-size="15" fill="#40584e" font-weight="400">默认 600 × 520，保留熟悉的卡片。</text>
+<text x="540" y="608" font-size="14" fill="#63766d" font-weight="400">空间占用较多，五台远端仍能直接访问。</text>
+<text x="1052" y="119" font-size="23" fill="#253a34" font-weight="650">设备网格</text>
+<rect x="1052" y="140" width="480" height="408" rx="14" fill="#0f1318" stroke="#27323b"/>
+<path d="M1052 173H1532" stroke="#323943"/>
+<circle cx="1069" cy="156" r="4.6" fill="#ed6b66"/>
+<circle cx="1086" cy="156" r="4.6" fill="#e9bd55"/>
+<circle cx="1103" cy="156" r="4.6" fill="#64bd82"/>
+<text x="1262.0" y="162" font-size="13" fill="#b7c2cc" font-weight="500">Weavelo</text>
+<rect x="1070" y="185" width="444" height="33" rx="9" fill="#181e25" stroke="#2b343d"/>
+<rect x="1073" y="188" width="65" height="27" rx="7" fill="#253c3c" stroke="none"/>
+<text x="1088" y="207" font-size="12" fill="#9ae5cc" font-weight="500">设备</text>
+<text x="1168" y="207" font-size="12" fill="#97a4b1" font-weight="500">传输</text>
+<text x="1238" y="207" font-size="12" fill="#97a4b1" font-weight="500">共享与权限</text>
+<text x="1376" y="207" font-size="12" fill="#97a4b1" font-weight="500">设置</text>
+<rect x="1070" y="230" width="405" height="30" rx="8" fill="#171d24" stroke="#303a43"/>
+<text x="1082" y="250" font-size="12" fill="#80909e" font-weight="400">搜索设备</text>
+<g transform="translate(1490 235) scale(0.8)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2V20M2 11H20"/></g>
+<rect x="1070" y="272" width="139" height="104" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(1126 289) scale(1.05)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="1080" y="333" font-size="11" fill="#e8eef2" font-weight="500">MBPM2MAX.local</text>
+<text x="1081" y="352" font-size="10" fill="#99aab7" font-weight="400">正在接收</text>
+<g transform="translate(1180 349) scale(0.6)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="1220" y="272" width="139" height="104" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(1276 289) scale(1.05)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="1230" y="333" font-size="11" fill="#e8eef2" font-weight="500">bazzite</text>
+<text x="1231" y="352" font-size="10" fill="#99aab7" font-weight="400">共享中</text>
+<g transform="translate(1330 349) scale(0.6)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="1370" y="272" width="139" height="104" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(1426 289) scale(1.05)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="1380" y="333" font-size="11" fill="#e8eef2" font-weight="500">CUBEX</text>
+<text x="1381" y="352" font-size="10" fill="#99aab7" font-weight="400">就绪</text>
+<g transform="translate(1480 349) scale(0.6)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="1070" y="386" width="139" height="104" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(1126 403) scale(1.05)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="1080" y="447" font-size="11" fill="#e8eef2" font-weight="500">nubia NX741J</text>
+<text x="1081" y="466" font-size="10" fill="#99aab7" font-weight="400">摄像头已就绪</text>
+<g transform="translate(1180 463) scale(0.6)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="1220" y="386" width="139" height="104" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(1276 403) scale(1.05)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="1230" y="447" font-size="11" fill="#e8eef2" font-weight="500">Redmi 2409BRN2CC</text>
+<text x="1231" y="466" font-size="10" fill="#99aab7" font-weight="400">屏幕未共享</text>
+<g transform="translate(1330 463) scale(0.6)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<rect x="1370" y="386" width="139" height="104" rx="10" fill="#191f27" stroke="#303b44"/>
+<g transform="translate(1428 410) scale(1)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2V20M2 11H20"/></g>
+<text x="1416" y="463" font-size="12" fill="#aab9c4" font-weight="400">添加设备</text>
+<path d="M1070 516H1514" stroke="#323943"/>
+<text x="1073" y="536" font-size="10" fill="#99aab7" font-weight="400">MacStudio.local · 本机共享已就绪</text>
+<g transform="translate(1491 523) scale(0.65)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5H20M3 11H20M3 17H20M8 2V8M15 8V14M10 14V20"/></g>
+<text x="1052" y="581" font-size="15" fill="#40584e" font-weight="400">默认 580 × 500，适合按设备图形定位。</text>
+<text x="1052" y="608" font-size="14" fill="#63766d" font-weight="400">主操作可直达，其余操作多一步展开。</text>
+<text x="36" y="657" font-size="23" fill="#253a34" font-weight="650">共同的会话界面：只服务当前画面</text>
+<rect x="42" y="682" width="320" height="500" rx="24" fill="#0f1318" stroke="#27323b"/>
+<text x="60" y="708" font-size="12" fill="#cbd5de" font-weight="500">9:41</text>
+<g transform="translate(309 692) scale(0.6)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V17M8 21V12M13 21V7M18 21V2"/></g>
+<rect x="335" y="696" width="15" height="7" rx="2" fill="none" stroke="#9baab6"/>
+<text x="60" y="747" font-size="22" fill="#e8eef2" font-weight="650">设备</text>
+<text x="127" y="747" font-size="12" fill="#92a6ae" font-weight="400">5 台</text>
+<g transform="translate(312 731) scale(0.85)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2V20M2 11H20"/></g>
+<rect x="56" y="764" width="292" height="63" rx="10" fill="#191f27" stroke="#2c363f"/>
+<g transform="translate(68 774) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="96" y="783" font-size="13" fill="#e8eef2" font-weight="500">MBPM2MAX.local</text>
+<text x="96" y="798" font-size="9" fill="#99aab7" font-weight="400">LAN · 正在接收</text>
+<g transform="translate(99 807) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<text x="116" y="818" font-size="10" fill="#b6c5cd" font-weight="400">查看</text>
+<g transform="translate(179 807) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<text x="196" y="818" font-size="10" fill="#b6c5cd" font-weight="400">投送</text>
+<g transform="translate(259 807) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<text x="276" y="818" font-size="10" fill="#b6c5cd" font-weight="400">文件</text>
+<rect x="56" y="834" width="292" height="63" rx="10" fill="#191f27" stroke="#2c363f"/>
+<g transform="translate(68 844) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="96" y="853" font-size="13" fill="#e8eef2" font-weight="500">bazzite</text>
+<text x="96" y="868" font-size="9" fill="#99aab7" font-weight="400">Relay · 共享中</text>
+<g transform="translate(99 877) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<text x="116" y="888" font-size="10" fill="#b6c5cd" font-weight="400">查看</text>
+<g transform="translate(179 877) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<text x="196" y="888" font-size="10" fill="#b6c5cd" font-weight="400">投送</text>
+<g transform="translate(259 877) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<text x="276" y="888" font-size="10" fill="#b6c5cd" font-weight="400">文件</text>
+<rect x="56" y="904" width="292" height="63" rx="10" fill="#191f27" stroke="#2c363f"/>
+<g transform="translate(68 914) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3H20V16H2ZM11 16V21M6 21H16"/></g>
+<text x="96" y="923" font-size="13" fill="#e8eef2" font-weight="500">CUBEX</text>
+<text x="96" y="938" font-size="9" fill="#99aab7" font-weight="400">Relay · 就绪</text>
+<g transform="translate(99 947) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<text x="116" y="958" font-size="10" fill="#b6c5cd" font-weight="400">查看</text>
+<g transform="translate(179 947) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<text x="196" y="958" font-size="10" fill="#b6c5cd" font-weight="400">投送</text>
+<g transform="translate(259 947) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<text x="276" y="958" font-size="10" fill="#b6c5cd" font-weight="400">文件</text>
+<rect x="56" y="974" width="292" height="63" rx="10" fill="#191f27" stroke="#2c363f"/>
+<g transform="translate(68 984) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="96" y="993" font-size="13" fill="#e8eef2" font-weight="500">nubia NX741J</text>
+<text x="96" y="1008" font-size="9" fill="#99aab7" font-weight="400">Relay · 摄像头已就绪</text>
+<g transform="translate(99 1017) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<text x="116" y="1028" font-size="10" fill="#b6c5cd" font-weight="400">查看</text>
+<g transform="translate(179 1017) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<text x="196" y="1028" font-size="10" fill="#b6c5cd" font-weight="400">投送</text>
+<g transform="translate(259 1017) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<text x="276" y="1028" font-size="10" fill="#b6c5cd" font-weight="400">文件</text>
+<rect x="56" y="1044" width="292" height="63" rx="10" fill="#191f27" stroke="#2c363f"/>
+<g transform="translate(68 1054) scale(0.7)" fill="none" stroke="#98e7cd" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1H17V22H6ZM10 19H13"/></g>
+<text x="96" y="1063" font-size="13" fill="#e8eef2" font-weight="500">Redmi 2409BRN2CC</text>
+<text x="96" y="1078" font-size="9" fill="#99aab7" font-weight="400">LAN · 屏幕未共享</text>
+<g transform="translate(99 1087) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18L19 2M7 2H19V14"/></g>
+<text x="116" y="1098" font-size="10" fill="#b6c5cd" font-weight="400">查看</text>
+<g transform="translate(179 1087) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M11 15V1M6 6L11 1L16 6M2 12V21H20V12"/></g>
+<text x="196" y="1098" font-size="10" fill="#b6c5cd" font-weight="400">投送</text>
+<g transform="translate(259 1087) scale(0.55)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5H9L12 8H21V21H2Z"/></g>
+<text x="276" y="1098" font-size="10" fill="#b6c5cd" font-weight="400">文件</text>
+<rect x="56" y="1127" width="292" height="42" rx="12" fill="#1c252c" stroke="#303b44"/>
+<text x="75" y="1153" font-size="11" fill="#98e7cd" font-weight="500">设备</text>
+<text x="148" y="1153" font-size="11" fill="#9baab6" font-weight="500">传输</text>
+<text x="221" y="1153" font-size="11" fill="#9baab6" font-weight="500">共享</text>
+<text x="294" y="1153" font-size="11" fill="#9baab6" font-weight="500">设置</text>
+<text x="42" y="1206" font-size="14" fill="#52685c" font-weight="400">设备页保持竖屏，型号不挤进图标之间。</text>
+<rect x="400" y="682" width="1118" height="404" rx="14" fill="#0f1318" stroke="#27323b"/>
+<path d="M400 715H1518" stroke="#323943"/>
+<circle cx="417" cy="698" r="4.6" fill="#ed6b66"/>
+<circle cx="434" cy="698" r="4.6" fill="#e9bd55"/>
+<circle cx="451" cy="698" r="4.6" fill="#64bd82"/>
+<text x="929.0" y="704" font-size="13" fill="#b7c2cc" font-weight="500">DeepSeek Harness · MacStudio.local</text>
+<rect x="476" y="691" width="18" height="18" rx="4" fill="#a7b9be" stroke="none"/>
+<text x="480" y="705" font-size="12" fill="#17232b" font-weight="650">D</text>
+<rect x="943" y="800" width="526" height="58" rx="14" fill="#25373d" stroke="none"/>
+<text x="965" y="834" font-size="17" fill="#cfdfdf" font-weight="400">可以看到完整的应用内容。</text>
+<rect x="429" y="883" width="518" height="58" rx="14" fill="#202b32" stroke="none"/>
+<text x="451" y="918" font-size="17" fill="#c7d5dc" font-weight="400">收到，继续。</text>
+<rect x="628" y="728" width="664" height="43" rx="20" fill="#1c252b" stroke="#38434b"/>
+<text x="649" y="754" font-size="12" fill="#9ce8cf" font-weight="400">↓ 正在接收</text>
+<path d="M737 740L737 760" stroke="#3a454b"/>
+<g transform="translate(764 738) scale(0.78)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2V19L9 14L13 21L16 19L12 12H20Z"/></g>
+<text x="788" y="755" font-size="12" fill="#c7d3d9" font-weight="400">控制</text>
+<g transform="translate(892 738) scale(0.78)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4H22V19H1ZM5 8H6M10 8H11M15 8H16M5 12H6M10 12H11M15 12H16M6 16H17"/></g>
+<text x="916" y="755" font-size="12" fill="#c7d3d9" font-weight="400">键盘</text>
+<g transform="translate(1020 738) scale(0.78)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8V2H8M15 2H21V8M21 15V21H15M8 21H2V15"/></g>
+<text x="1044" y="755" font-size="12" fill="#c7d3d9" font-weight="400">全屏</text>
+<g transform="translate(1148 738) scale(0.78)" fill="none" stroke="#a6b2bf" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11H5M10 11H11M16 11H17"/></g>
+<text x="1172" y="755" font-size="12" fill="#c7d3d9" font-weight="400">更多</text>
+<rect x="427" y="986" width="1058" height="65" rx="14" fill="#171d23" stroke="#303a43"/>
+<text x="445" y="1025" font-size="16" fill="#7e909c" font-weight="400">输入消息…</text>
+<rect x="1334" y="1032" width="156" height="34" rx="16" fill="#1b2929" stroke="#36534b"/>
+<g transform="translate(1347 1038) scale(0.7)" fill="none" stroke="#96e7c8" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V17M8 21V12M13 21V7M18 21V2"/></g>
+<text x="1371" y="1054" font-size="12" fill="#a6e7ce" font-weight="400">网络良好</text>
+<text x="408" y="1120" font-size="16" fill="#40584e" font-weight="400">桌面：应用原图标 + 名称；全屏时收起系统标题栏。</text>
+<text x="408" y="1149" font-size="16" fill="#40584e" font-weight="400">手机：横屏沉浸画面 + 浮动 HUD；直触 / 触控板、键盘随手可达。</text>
+<text x="408" y="1178" font-size="16" fill="#40584e" font-weight="400">键盘、旋转、缩放均沿用同一可见几何；状态由真实会话自动结束。</text>
+</svg>
