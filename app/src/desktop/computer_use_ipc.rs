@@ -73,6 +73,7 @@ pub(crate) enum Call {
 struct Lease {
     caller: super::computer_use_authority::Caller,
     watchdog: tokio::task::JoinHandle<()>,
+    owner: Arc<OriginalOwner>,
     scope: super::original_owner::ComputerUseObservation,
     actor: Actor,
     target: Target,
@@ -214,7 +215,16 @@ impl Dispatcher {
     }
     pub fn dispatch(
         self: &Arc<Self>,
-        owner: &OriginalOwner,
+        owner: &Arc<OriginalOwner>,
+        call: Call,
+        peer: Option<i32>,
+        cancelled: impl Fn() -> bool,
+    ) -> Output {
+        self.dispatch_owners(std::slice::from_ref(owner), call, peer, cancelled)
+    }
+    pub fn dispatch_owners(
+        self: &Arc<Self>,
+        owners: &[Arc<OriginalOwner>],
         call: Call,
         peer: Option<i32>,
         cancelled: impl Fn() -> bool,
@@ -240,7 +250,7 @@ impl Dispatcher {
                         }
                     }
                 })?;
-            let output = self.run(owner, call.clone(), caller.clone(), &cancelled)?;
+            let output = self.run(owners, call.clone(), caller.clone(), &cancelled)?;
             if output.pixels.is_some() {
                 self.1.verify(&call, peer, Some(&caller)).inspect_err(|_| {
                     // A failed post-readback authorization check also retires
@@ -263,7 +273,7 @@ impl Dispatcher {
     }
     fn run(
         self: &Arc<Self>,
-        owner: &OriginalOwner,
+        owners: &[Arc<OriginalOwner>],
         call: Call,
         caller: super::computer_use_authority::Caller,
         cancelled: &impl Fn() -> bool,
@@ -287,13 +297,19 @@ impl Dispatcher {
                 if state.is_some() {
                     return Err("observer_busy");
                 }
-                let binding = owner
-                    .computer_use_target_binding(
-                        &target.peer_device_id,
-                        target.source,
-                        target.connection_id,
-                    )
-                    .ok_or("target_not_selected")?;
+                let mut matched = owners.iter().filter_map(|candidate| {
+                    candidate
+                        .computer_use_target_binding(
+                            &target.peer_device_id,
+                            target.source,
+                            target.connection_id,
+                        )
+                        .map(|binding| (candidate.clone(), binding))
+                });
+                let (owner, binding) = matched.next().ok_or("target_not_selected")?;
+                if matched.next().is_some() {
+                    return Err("target_not_selected");
+                }
                 let mut scope = owner
                     .observe_bound_computer_use(
                         &binding,
@@ -324,6 +340,7 @@ impl Dispatcher {
                 *state = Some(Lease {
                     caller,
                     watchdog,
+                    owner,
                     scope,
                     actor,
                     target,
@@ -365,6 +382,7 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id && l.control)
                     .ok_or("control_lease_mismatch")?;
+                let owner = lease.owner.clone();
                 owner
                     .validate_bound_computer_use(&mut lease.scope)
                     .map_err(|_| "source_changed")?;
@@ -394,6 +412,7 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id)
                     .ok_or("lease_mismatch")?;
+                let owner = lease.owner.clone();
                 owner
                     .validate_bound_computer_use(&mut lease.scope)
                     .map_err(|_| "source_changed")?;
@@ -407,6 +426,7 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id)
                     .ok_or("lease_mismatch")?;
+                let owner = lease.owner.clone();
                 owner
                     .validate_bound_computer_use(&mut lease.scope)
                     .map_err(|_| "source_changed")?;
@@ -439,6 +459,9 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id && Instant::now() < l.expires)
                     .ok_or("lease_expired")?;
+                if !Arc::ptr_eq(&lease.owner, &owner) {
+                    return Err("source_changed");
+                }
                 owner
                     .validate_bound_computer_use(&mut lease.scope)
                     .map_err(|_| "source_changed")?;

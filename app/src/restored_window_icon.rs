@@ -469,7 +469,10 @@ pub(crate) mod macos_dock {
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        crate::desktop::foreground_runtime::run(|| unsafe {
+        // This helper starts directly on main, before Tokio initialization. It
+        // owns no async media/network tasks and must not enter the GUI runtime
+        // adapter, which intentionally requires a multi-thread Tokio executor.
+        unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let app = NSApplication::sharedApplication(nil);
             app.setActivationPolicy_(
@@ -520,7 +523,7 @@ pub(crate) mod macos_dock {
             app.run();
             let _: () = msg_send![pool, drain];
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        })?
+        }
     }
 }
 

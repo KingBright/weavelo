@@ -728,6 +728,8 @@ MacBook 生产菜单打开来源选择后的实际状态为 receiving 0、无解
    - `directed_delivery.rs`、`host/src/service.rs`、`publisher_bridge.rs`、`model.rs`、`original_owner.rs`、`directed_receive.rs`、`DirectedDelivery.kt`、`WorkspaceClient.kt`：在 `Broker` 中记录 `claimed_requests` 并提供 `switch_camera_source`，支持被动接收（Send/投送）会话携带匹配的 `delivery_request_id` 原地替换已认领的同组摄像头来源，不扩大 ticket 为非摄像头或未认领来源。
 4. **Windows 摄像头枚举 STA/MTA 线程模式修复**：
    - `host/native/windows_camera.cpp`：`weavelo_windows_camera_catalog` 放入独立 `std::thread`（`COINIT_MULTITHREADED`）执行，避免在 GUI/STA 线程触发 `0x80010106 (RPC_E_CHANGED_MODE)` 导致枚举返回 0；`weavelo_windows_camera_epoch` 同时注册 `KSCATEGORY_VIDEO_CAMERA` 与 `KSCATEGORY_CAPTURE`。
+5. **Computer Use 多窗口流所有者路由修复**：
+   - `app/src/desktop/computer_use_ipc.rs`、`app/src/restored_ui.rs`：单流独立窗口重构后，管理窗口自身的 `self.owner` 不再持有视频会话，导致 `Request::ComputerUse` 恒报 `target_not_selected`。现改为在 `Call::Open` 时遍历 `exit_group.owners()` 唯一定位匹配 `(peer_device_id, source, connection_id)` 的流窗口 `OriginalOwner` 并将其绑定到 `Lease`，使独立流窗口下的 Octendra Computer Use 观察与动作闭环恢复可用。
 
 ### Gemini `c72752a` 拉取后的验证与修复
 
@@ -740,4 +742,12 @@ Android 投送 ID 原本跨 org.json 使用 Long，随机 u64 超过 i64 上限�
 修复后原生定向检查 48 次执行、47 项不同检查全部通过（来源所有者、投送、摄像头、JSON 精度、图标及设备行）；Android Kotlin 编译与 76 项 JVM 测试通过；签名发布回归 1,045 项通过、19 项跳过。证据 `gemini114-focused-tests.log`、`gemini114-camera-owner-tests.log`、`gemini114-android-kotlin-check.log`、`gemini114-final-release-regression.log`。这一步尚无 114 / 79 的正式安装、Dock 实际点击或相机画质改善结论，后续分别记录。
 
 用户随后提出窗口原生清晰度与放大局部串流，并强调持续缩放和拖动。具体实现方案见 [自适应窗口清晰度与可视区域串流](../plans/ADAPTIVE-VIEWPORT-STREAMING.md)，新原生媒体/协议范围等待一次方案确认，既有 Gemini 交付继续执行。
+
+### MacBook 本地 Gemini 提交与 Dock 运行入口的补充修复
+
+114 在 Studio 原身份正式安装，实际管理窗口渲染及图标已查看；Linux / Windows 正式构建成功，尚未安装。MacBook 当时另有未推送提交 `cdb6ff8`（基于 `54f6bc3`），与远端 `c72752a` / 后续修复分叉。逐项核对后，将它相对 `c72752a` 的三个文件差异完整纳入 primary main：CUA 在全部独立流所有者中唯一匹配目标，并将确切所有者绑定到租约；不启用原先关闭的观察/输入开关，不伪造 actor 授权。原提交及差异保留，后续同步仍保持单 main 的线性提交，不通过强推改写远端。
+
+实际运行 `--macos-dock-tile` 预检发现先前精简 Tokio 后，Dock 路径仍调用要求多线程 Tokio 的 GUI 适配器，退出码 1，错误为“Start the native GUI from the application's multi-thread Tokio runtime”。这是本轮修复引入的问题；现改为直接运行自己的 AppKit 循环，仍不创建媒体/网络执行器。预检证据 `native114-dock-preflight-failure.json`。待正式 115 构建后重测真实入口、图标和退出清理，不将编码格式单测当作进程可用证明。
+
+补充 CUA IPC / 授权、Dock 图标及 GUI 执行器检查 20 次通过；签名发布回归仍为 1,045 项通过、19 项跳过。日志 `native115-dock-cua-tests.log`、`native115-release-regression.log`。测试未开启系统权限，也未采集第三方私有窗口。正式 115 / Android 79 的安装与实机结果随后单独记录。
 

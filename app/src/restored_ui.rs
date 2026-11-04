@@ -1015,12 +1015,12 @@ impl RestoredDashboard {
             }
             if let Request::ComputerUse {call,..}=command.request {
                 let dispatcher=adapter.computer_use.clone();
-                let owner=self.owner.clone();
+                let owners=self.exit_group.owners();
                 let operation=crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
                 tokio::task::spawn_blocking(move || {
                     let _operation=operation;
                     if !command.reply.is_closed() {
-                        let result=dispatcher.dispatch(&owner,call,command.peer_pid,|| command.reply.is_closed());
+                        let result=dispatcher.dispatch_owners(&owners,call,command.peer_pid,|| command.reply.is_closed());
                         let _=command.reply.send(crate::desktop::directed_receive::Reply::observation(result));
                     }
                 });
