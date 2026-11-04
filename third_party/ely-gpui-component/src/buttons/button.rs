@@ -138,6 +138,7 @@ pub struct Button {
     disabled: bool,
     loading: bool,
     full_width: bool,
+    stretch_content: bool,
     focus: Option<FocusHandle>,
     pub(crate) slot: Option<Slot>,
     on_click: Option<ClickHandler>,
@@ -158,6 +159,7 @@ impl Button {
             disabled: false,
             loading: false,
             full_width: false,
+            stretch_content: false,
             focus: None,
             slot: None,
             on_click: None,
@@ -217,6 +219,12 @@ impl Button {
         self
     }
 
+    /// Give custom row content the available width instead of its text width.
+    pub fn stretch_content(mut self) -> Self {
+        self.stretch_content = true;
+        self
+    }
+
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -240,6 +248,7 @@ impl RenderOnce for Button {
         let spinner = (self.id.clone(), "spinner");
         let parts = div()
             .flex()
+            .when(self.stretch_content, |el| el.flex_1().min_w_0())
             .items_center()
             .gap_1p5()
             .when_some(self.icon, |el, name| el.child(icon(name)))

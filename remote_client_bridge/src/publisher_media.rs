@@ -83,7 +83,7 @@ impl MediaSources {
         let mut sources=self.sources.values().filter(|source|source.enabled).map(|source| {
             let mut info=source.info.clone();info.supports_input=info.source==CaptureSource::MainDisplay&&input_ready;info
         }).collect::<Vec<_>>();
-        sources.sort_by_key(|info|match info.source{CaptureSource::MainDisplay=>0,CaptureSource::Camera(id)=>id,_=>u64::MAX});sources
+        remote_core::source_picker::sort(&mut sources);sources
     }
     pub fn enabled(&self,source:CaptureSource)->bool {self.sources.get(&source).is_some_and(|source|source.enabled)}
     pub fn demand(&self,source:CaptureSource)->CaptureDemand {self.sources.get(&source).map(|source|source.demand.clone()).unwrap_or_default()}

@@ -41,7 +41,8 @@ impl Directory {
         }
         directory
     }
-    pub fn reply(mut self, request_id: u32, sources: Vec<CaptureSourceInfo>) -> SessionCommand {
+    pub fn reply(mut self, request_id: u32, mut sources: Vec<CaptureSourceInfo>) -> SessionCommand {
+        remote_core::source_picker::sort(&mut sources);
         let advertised: HashSet<_> = sources.iter().map(|s| s.source).collect();
         self.bindings.retain(|b| advertised.contains(&b.source));
         let referenced: HashSet<_> = self.bindings.iter().map(|b| b.icon_id).collect();

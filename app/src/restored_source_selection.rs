@@ -29,6 +29,7 @@ pub(super) struct Selection {
     scope: ShareScope,
     title: String,
     sources: Vec<CaptureSourceInfo>,
+    query: String,
     pub(super) selected: Vec<CaptureSource>,
     artwork: SourceArtwork,
     pub(super) loading: bool,
@@ -55,6 +56,7 @@ impl Selection {
         }
         let mut seen=std::collections::HashSet::new();
         sources.retain(|source|seen.insert(source.source));
+        remote_core::source_picker::sort(&mut sources);
         self.selected.retain(|id| sources.iter().any(|source| source.source == *id));
         self.sources=sources;self.artwork=artwork;self.loading=false;
         self.error=self.sources.is_empty().then(||if self.is_delivery() {"Choose a local source in Sharing & permissions."}else{"No shared sources are available on the remote device."}.into());
@@ -63,6 +65,10 @@ impl Selection {
         }
     }
     fn catalog_ready(&self)->bool {self.catalog.as_ref().is_none_or(|catalog|catalog.ready)}
+    fn visible_sources(&self)->impl Iterator<Item=&CaptureSourceInfo> {
+        let query=self.query.trim().to_lowercase();
+        self.sources.iter().filter(move|source|remote_core::source_picker::matches_name(source,&query))
+    }
     pub(super) fn fail_remote_query(&mut self,error:String) {
         if let Some(catalog)=self.catalog.as_mut() {catalog.ready=false;self.loading=false;self.error=Some(error);}
     }
@@ -76,7 +82,7 @@ impl RestoredDashboard {
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
         let scope=current_share_scope();
         self.source_selection=Some(Selection {target:Target::Send(device),scope,title:format!("Send to {name}"),
-            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None,catalog:None});
+            sources:Vec::new(),query:String::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None,catalog:None});
         self.refresh_delivery_sources(cx);
         cx.notify();
     }
@@ -122,7 +128,7 @@ impl RestoredDashboard {
         let query=binding.clone();
         self.owner.release_input();self.pointer_input=PointerInputTracker::default();self.show_apps_menu=false;
         let mut selection=Selection {target:if replace {Target::Replace(binding)}else{Target::Open(binding)},scope:current_share_scope(),title:if replace {"Replace current source"}else{"Open screens & app windows"}.into(),
-            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,error:None,catalog:None};
+            sources:Vec::new(),query:String::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:false,error:None,catalog:None};
         let artwork=self.artwork_cache.borrow_mut().update(snapshot.source_icons);
         selection.replace((*snapshot.sources).clone(),artwork);
         // Opening an additional source must not silently include the desktop
@@ -239,29 +245,47 @@ impl RestoredDashboard {
 
 pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pending:bool,cx:&mut Context<RestoredDashboard>)->Div {
     let theme=cx.theme().clone();let view=cx.weak_entity();
-    let mut rows=div().id("source_selection_rows").max_h(px(340.)).overflow_y_scroll().flex().flex_col().gap_1();
+    let visible=selection.visible_sources().collect::<Vec<_>>();
+    let mut rows=div().id("source_selection_rows").min_h(px(64.)).max_h(px(280.)).flex_1().overflow_y_scroll().flex().flex_col().gap_1();
     for category in [SourceCategory::Screen,SourceCategory::Window,SourceCategory::Camera] {
       let windows=category==SourceCategory::Window;
       let mut heading=false;
-      for source in selection.sources.iter().filter(|source|source.source.category()==category) {
+      let mut application=None;
+      for source in visible.iter().copied().filter(|source|source.source.category()==category) {
         if !heading {
             rows=rows.child(div().mt_2().text_size(px(10.)).text_color(theme.content.secondary)
                 .child(match category {SourceCategory::Screen=>"Entire screens",SourceCategory::Window=>"App windows",SourceCategory::Camera=>"Cameras"}));heading=true;
         }
+        if windows {
+            let name=remote_core::source_picker::application_group(source);
+            let key=name.to_lowercase();
+            if application.as_ref()!=Some(&key) {
+                rows=rows.child(div().pl_2().pt_2().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.content.secondary).child(name.to_owned()));application=Some(key);
+            }
+        }
         let selected=selection.selected.contains(&source.source);let id=source.source;let view=view.clone();
+        let full_title=if windows&&!source.application.trim().is_empty() {format!("{} · {}",source.application.trim(),source.title)}else{source.title.clone()};
         rows=rows.child(command_button(format!("source_selection_{id:?}"),if selected {ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx)
-            .w_full().min_h(px(34.)).px_2().gap_2().disabled(!selection.catalog_ready())
+            .w_full().min_w(px(0.)).min_h(px(34.)).px_2().justify_start().stretch_content()
+            .when(windows,|row|row.pl_4()).disabled(!selection.catalog_ready())
+            .tooltip(tooltip(full_title).build())
             .on_click(move|_,_,cx| {let _=view.update(cx,|this,cx| {
                 if let Some(selection)=this.source_selection.as_mut() {
                     selection.toggle(id);
                 }cx.notify();
             });})
-            .child(if selected {"✓"}else{"○"})
-            .child(capture_source_badge(source,&selection.artwork,&theme))
-            .child(div().flex_1().flex().flex_col().text_size(px(11.)).child(source.title.clone())
-                .when(windows&&!source.application.is_empty(),|label|label.child(div().text_size(px(10.))
-                    .text_color(theme.content.secondary).child(source.application.clone())))));
+            .child(div().debug_selector(||"source-picker-row".into()).w_full().min_w(px(0.)).flex().items_center().gap_2()
+                .child(div().w(px(14.)).flex_none().child(if selected {"✓"}else{"○"}))
+                .child(capture_source_badge(source,&selection.artwork,&theme))
+                .child(div().debug_selector(||"source-picker-title".into()).flex_1().min_w(px(0.)).truncate().text_size(px(11.)).child(source.title.clone()))));
       }
+    }
+    if visible.is_empty()&&!selection.query.trim().is_empty()&&!selection.loading {
+        rows=rows.child(div().flex().items_center().justify_between().text_size(px(11.)).text_color(theme.content.secondary)
+            .child("No matching sources")
+            .child(command_button("clear_source_filter",ActionVariantKind::Neutral,cx).child("Clear search")
+                .on_click(cx.listener(|this,_,_,cx|{if let Some(selection)=this.source_selection.as_mut(){selection.query.clear();}cx.notify();}))));
     }
     let view=cx.weak_entity();let confirm=cx.weak_entity();
     #[cfg(target_os="linux")]
@@ -282,10 +306,14 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         choices
     };
     let panel=div().id("source_selection_panel").occlude().w(px(460.)).max_w(relative(0.95))
+        .max_h(relative(0.94))
         .p_4().flex().flex_col().gap_3().bg(color_glass_card()).border_1().border_color(color_border_fine()).rounded_xl().shadow_2xl()
         .on_any_mouse_down(cx.listener(|_,_,_,cx|cx.stop_propagation()))
         .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(selection.title.clone()))
-        .child(div().text_size(px(11.)).text_color(theme.content.secondary).child(if matches!(selection.target,Target::Replace(_)) {"Choose one source for this stream."}else if selection.is_delivery(){"Select screens, app windows or cameras to send."}else{"Select screens, app windows or cameras to open separately."}))
+        .child(component::text_input("source-search").placeholder("Search apps and windows").height(px(32.).into()).content(selection.query.clone())
+            .on_change({let view=cx.weak_entity();move|text,_,cx|{let _=view.update(cx,|this,cx|{
+                if let Some(selection)=this.source_selection.as_mut(){selection.query=text.to_string();}cx.notify();
+            });}}))
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child("Loading sources…")))
         .when(!selection.loading && selection.catalog_ready() && !selection.sources.is_empty()
@@ -316,11 +344,44 @@ mod tests {
     use std::sync::Arc;
     fn selection()->Selection {
         Selection {target:Target::Send("receiver".into()),scope:Some([3;32]),title:"Send".into(),
-            sources:Vec::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None,catalog:None}
+            sources:Vec::new(),query:String::new(),selected:Vec::new(),artwork:Arc::new(Default::default()),loading:true,error:None,catalog:None}
     }
     fn source(source:CaptureSource)->CaptureSourceInfo {
         CaptureSourceInfo {source,title:format!("{source:?}"),application:String::new(),process_id:None,
             width:1280,height:720,supports_input:false, camera: None, }
+    }
+    #[gpui::test]
+    fn short_and_long_titles_share_a_left_edge_and_fit_compact_windows(cx:&mut gpui::TestAppContext) {
+        use super::super::{component,open_restored_window,product_window_appearance,weavelo_themes,UnifiedRuntimeHandle};
+        let executor=tokio::runtime::Runtime::new().unwrap();let _entered=executor.enter();
+        let backend=executor.block_on(crate::UnifiedServiceOwner::start(crate::UnifiedServiceOwnerConfig::default())).unwrap();
+        let runtime=Arc::new(UnifiedRuntimeHandle::from_workspace_owner(Arc::new(backend)));
+        let window=cx.update(|cx|{
+            component::init(cx).unwrap();
+            crate::product_components::theme::install(product_window_appearance(),weavelo_themes(),cx);
+            open_restored_window(runtime,None,Default::default(),None,None,Default::default(),cx).unwrap()
+        });
+        let view=window.root(cx).unwrap();
+        let mut picker=selection();picker.scope=remote_core::shared_files::current_share_scope();
+        let mut short=source(CaptureSource::Window(7));short.application="Fixture".into();short.title="Short".into();
+        let mut long=source(CaptureSource::Window(8));long.application="Fixture".into();long.title=format!("Long {}","title and details ".repeat(24));
+        picker.replace(vec![long,short],Arc::new(Default::default()));
+        view.update(cx,|this,cx|{this.source_selection=Some(picker);cx.notify();});
+        let mut visual=gpui::VisualTestContext::from_window(window.into(),cx);
+        for width in [520.,580.] {
+            visual.simulate_resize(gpui::size(gpui::px(width),gpui::px(440.)));
+            let mut left=None;
+            for query in ["Short","Long"] {
+                visual.update(|_,cx|view.update(cx,|this,cx|{this.source_selection.as_mut().unwrap().query=query.into();cx.notify();}));
+                visual.run_until_parked();
+                let title=visual.debug_bounds("source-picker-title").expect("Visible source title");
+                let row=visual.debug_bounds("source-picker-row").expect("Visible source row");
+                assert_eq!(*left.get_or_insert(title.origin.x),title.origin.x,"Title length moved its column");
+                assert!(title.right()<=row.right(),"Long title escaped its row: {title:?}, {row:?}");
+                assert!(row.right()<=gpui::px(width),"The row exceeded the compact window: {row:?}");
+            }
+        }
+        window.update(&mut visual,|_,window,_|window.remove_window()).unwrap();
     }
     #[test]
     fn concrete_display_replaces_its_alias_and_duplicate_catalog_entries() {
@@ -354,6 +415,22 @@ mod tests {
         selection.toggle(CaptureSource::Display(1));
         selection.replace(vec![source(CaptureSource::Display(1))],Arc::new(Default::default()));
         assert!(selection.selected.is_empty(),"refresh preserves an explicit empty selection");
+    }
+    #[test]
+    fn filtering_by_app_or_title_keeps_hidden_selections_and_refreshes_names() {
+        let mut selection=selection();
+        let mut editor=source(CaptureSource::Window(7));editor.application="Editor".into();editor.title="中文 Notes".into();
+        let mut terminal=source(CaptureSource::Window(8));terminal.application="Terminal".into();terminal.title="Shell".into();
+        selection.replace(vec![terminal.clone(),editor.clone()],Arc::new(Default::default()));
+        selection.toggle(editor.source);selection.query="  SHELL ".into();
+        assert_eq!(selection.visible_sources().map(|s|s.source).collect::<Vec<_>>(),vec![terminal.source]);
+        assert_eq!(selection.selected,vec![editor.source]);
+        selection.query="EDITOR".into();assert_eq!(selection.visible_sources().count(),1);
+        editor.title="Updated 中文".into();selection.replace(vec![editor.clone()],Arc::new(Default::default()));
+        selection.query="中文".into();assert_eq!(selection.visible_sources().next().unwrap().title,"Updated 中文");
+        selection.query="missing".into();assert_eq!(selection.visible_sources().count(),0);
+        assert_eq!(selection.selected,vec![editor.source]);
+        selection.query.clear();assert_eq!(selection.visible_sources().count(),1);
     }
     #[test]
     fn stale_buttons_cannot_select_absent_sources_and_selection_stays_bounded() {

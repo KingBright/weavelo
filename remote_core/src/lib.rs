@@ -3,6 +3,7 @@ pub mod cameras;
 pub mod camera_switch;
 pub mod audio;
 pub mod application_icons;
+pub mod source_picker;
 pub mod desktop_identity;
 pub mod device_name;
 pub mod desktop_storage;

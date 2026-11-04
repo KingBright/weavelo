@@ -651,10 +651,13 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
 
 @Composable
 private fun SourceIcon(source: WorkspaceSource) {
-    source.icon?.let { bitmap ->
-        Image(bitmap = remember(bitmap) { bitmap.asImageBitmap() }, contentDescription = source.application.ifBlank { source.title }, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(4.dp))
+    Box(Modifier.size(24.dp),contentAlignment=Alignment.Center) {
+        val bitmap=source.icon
+        if (bitmap!=null) Image(bitmap = remember(bitmap) { bitmap.asImageBitmap() }, contentDescription = source.application.ifBlank { source.title }, modifier = Modifier.size(20.dp))
+        else Icon((if (source.isCamera) MobileSymbol.Camera else if (source.isWindow) MobileSymbol.Sources else MobileSymbol.Devices).image,
+            contentDescription=null,modifier=Modifier.size(20.dp))
     }
+    Spacer(Modifier.width(4.dp))
 }
 
 @Composable
@@ -663,7 +666,7 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
     val matches = remember(sources, query) {
         val hasDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
         sources.filter { !(hasDisplay && it.source == "MainDisplay") }
-            .filter { it.title.contains(query, true) || it.application.contains(query, true) }
+            .filter { it.title.contains(query.trim(), true) || it.application.contains(query.trim(), true) }
             .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
     }
     AlertDialog(onDismissRequest = onClose,
@@ -681,16 +684,29 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
                             style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
                     }
-                    TextButton(onClick = { onSelect(source) }, modifier = Modifier.fillMaxWidth()) {
-                        SourceIcon(source)
-                        Column(Modifier.weight(1f)) {
-                            Text(source.title, maxLines = 2)
-                            if (source.isWindow && source.application.isNotBlank()) Text(source.application, style = MaterialTheme.typography.labelMedium)
+                    val app=source.application.trim().ifBlank { "Other applications" }
+                    if (source.isWindow && (index==0 || !matches[index-1].isWindow ||
+                            !matches[index-1].application.trim().ifBlank { "Other applications" }.equals(app,true))) {
+                        Text(app,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier=Modifier.padding(start=8.dp,top=8.dp,bottom=2.dp))
+                    }
+                    TextButton(onClick = { onSelect(source) }, modifier = Modifier.fillMaxWidth(),
+                        contentPadding=PaddingValues(start=if (source.isWindow) 16.dp else 8.dp,end=8.dp,top=6.dp,bottom=6.dp)) {
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                            SourceIcon(source)
+                            Text(source.title,modifier=Modifier.weight(1f),maxLines=2,
+                                textAlign=androidx.compose.ui.text.style.TextAlign.Start,
+                                overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         }
                     }
                   }
                 }
-                if (matches.isEmpty()) item { Text("No matching screen or app window") }
+                if (matches.isEmpty()) item {
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                        Text("No matching sources",style=MaterialTheme.typography.bodySmall)
+                        TextButton(onClick={query=""}) { Text("Clear search") }
+                    }
+                }
             }
         }
     }, confirmButton = { TextButton(onClick = onClose) { Text("Close") } })
