@@ -1,5 +1,6 @@
 pub mod publisher_bridge;
 mod publisher_media;
+mod publisher_viewport;
 mod publisher_input;
 mod delivery_claim_json;
 pub mod touch_mapper;

@@ -12,6 +12,8 @@ object PublisherClient {
     external fun nativeAction(operation: Int, payload: String): String
     const val SCREEN_SOURCE = "\"MainDisplay\""
     external fun nativeFrame(source: String, epoch: Long, bytes: ByteArray, ptsUs: Long): Boolean
+    external fun nativeScreenFrame(metadata: String, bytes: ByteArray): Boolean
+    external fun nativeClockMicros(): Long
     external fun nativePcm(grant: Long, samples: ShortArray): Boolean
     @Volatile var controlSize: Pair<Int,Int>? = null
         internal set

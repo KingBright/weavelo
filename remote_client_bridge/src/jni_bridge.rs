@@ -234,6 +234,13 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 if failure.reason.len()>1024{return Err("Camera failure detail is too long".into());}
                 publisher.fail_source(failure.source,failure.epoch,failure.reason);Ok(String::new())
             }
+            36 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Failure {stream:u64,grant:u64,reason:String}
+                let failure:Failure=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                client().runtime().block_on(publisher.fail_screen_view(failure.stream,failure.grant,failure.reason))?;
+                Ok(String::new())
+            }
             11 => {
                 let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
                 Ok(publisher.input_execution_valid(value["generation"].as_u64().ok_or("missing input generation")?,
@@ -280,6 +287,26 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeFrame(
             return client().runtime().block_on(publisher.frame_from(source,epoch as u64,bytes,pts,false)) as jboolean;
         }
     }0
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeClockMicros(
+    _env:JNIEnv,_class:JClass,
+)->jni::sys::jlong { remote_core::timing::quanta_now_us() as jni::sys::jlong }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeScreenFrame(
+    mut env:JNIEnv,_class:JClass,metadata:JString,bytes:jni::objects::JByteArray,
+)->jboolean {
+    if !env.get_array_length(&bytes).is_ok_and(|n|n>0&&n<=8*1024*1024){return 0;}
+    let metadata=env.get_string(&metadata).ok().and_then(|text|
+        serde_json::from_str::<crate::publisher_bridge::ScreenFrameMetadata>(&String::from(text)).ok());
+    let Some(metadata)=metadata else{return 0;};
+    let publisher=PUBLISHER.lock().unwrap().clone();
+    if let Some(publisher)=publisher && let Ok(bytes)=env.convert_byte_array(&bytes) {
+        return client().runtime().block_on(publisher.screen_frame(metadata,bytes)) as jboolean;
+    }
+    0
 }
 
 #[cfg(target_os = "android")]
