@@ -32,7 +32,8 @@ class LivePublisherTouchTest {
         val root = checkNotNull(context.getExternalFilesDir(null))
         val ready = File(root, "native-touch-ready.json")
         val report = File(root, "native-touch-result.json")
-        ready.delete(); report.delete()
+        val senderFinished = File(root, "native-touch-sender-finished.txt")
+        ready.delete(); report.delete(); senderFinished.delete()
         val records = CopyOnWriteArrayList<JSONObject>()
         val nonce = UUID.randomUUID().toString()
         val armed = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -93,11 +94,11 @@ class LivePublisherTouchTest {
                 }) SystemClock.sleep(25)
                 val proof = JSONObject().put("nonce", nonce).put("events", JSONArray(records.toList()))
                 report.writeText(proof.toString())
-                // Let the real sender unsubscribe before fixture teardown closes
-                // the publisher; otherwise the test itself races close_verified.
+                // The harness writes this nonce after close_verified returns.
+                // A cleared peer list alone can race the final close receipt.
                 val cleanupDeadline = SystemClock.uptimeMillis() + 5_000
                 while (SystemClock.uptimeMillis() < cleanupDeadline &&
-                    JSONObject(PublisherClient.action(23)).optJSONArray("peers")?.length() != 0
+                    runCatching { senderFinished.readText().trim() }.getOrNull() != nonce
                 ) SystemClock.sleep(25)
                 val down = records.firstOrNull { it.getInt("action") == MotionEvent.ACTION_DOWN }
                 assertNotNull("Native DOWN was not observed", down)
@@ -116,6 +117,7 @@ class LivePublisherTouchTest {
                 assertEquals((metrics.heightPixels - 1) * .4, first.getDouble("y"), 3.0)
             } finally {
                 ready.delete()
+                senderFinished.delete()
                 if (armed.get()) {
                     PublisherClient.controlSize = null
                     PublisherClient.action(1)

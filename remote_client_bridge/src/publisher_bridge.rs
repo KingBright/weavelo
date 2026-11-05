@@ -681,7 +681,14 @@ impl MobilePublisher {
                                         }
                                         SessionCommand::Close { connection_id } if peers.get(&addr).is_some_and(|p| p.id==connection_id) => {
                                             shared_input.lock().unwrap().revoke_peer(addr);
-                                            peers.remove(&addr);recompute(&peers,&shared);
+                                            let peer=peers.remove(&addr).unwrap();
+                                            recompute(&peers,&shared);
+                                            let response=match peer.shutdown().await {
+                                                Ok(())=>SessionCommand::Closed {connection_id,reason:"Subscriptions ended, input lease revoked and connection workers stopped".into()},
+                                                Err(reason)=>SessionCommand::Error {request_id:connection_id,reason},
+                                            };
+                                            // Send the authenticated receipt before retiring its key.
+                                            reply(&sender,addr,response).await;
                                             authenticated.remove(&addr);
                                             sender.remove_peer_crypto(addr);
                                             handshakes.forget(addr);
@@ -820,6 +827,15 @@ async fn reply(sender: &UdpSender, addr: SocketAddr, command: SessionCommand) {
         .await;
 }
 impl Peer {
+    async fn shutdown(self)->Result<(),String> {
+        let tasks=self.tasks.clone();
+        drop(self); // Revoke the file channel and abort the owned transport tasks.
+        tokio::time::timeout(Duration::from_secs(2),async {
+            while tasks.iter().any(|task|!task.is_finished()) {
+                tokio::task::yield_now().await;
+            }
+        }).await.map_err(|_|"Android connection workers did not stop in time".to_owned())
+    }
     /// End media and input without dropping authenticated file workers. The
     /// delivery_owner tombstone still prevents resubscription after revocation.
     fn retire_media(&mut self,input:&Mutex<crate::publisher_input::PublisherInput>)->Vec<u32> {
@@ -872,6 +888,25 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn authenticated_close_confirms_cleanup_and_does_not_close_another_id() {
+        let key=b"mobile-close-receipt".to_vec();
+        let publisher=MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),
+            std::env::temp_dir(),key.clone(),true,false,false).await.unwrap();
+        let (sender,receiver)=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap().split();
+        remote_core::session_auth::authenticate_with_key(&sender,&receiver,publisher.address,&key).await.unwrap();
+        command(&sender,publisher.address,SessionCommand::Open {connection_id:77,version:SESSION_VERSION}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::Opened {..}));
+        command(&sender,publisher.address,SessionCommand::Close {connection_id:78}).await;
+        command(&sender,publisher.address,SessionCommand::Subscribe(SubscriptionRequest {id:256,
+            source:CaptureSource::MainDisplay,width:720,height:1280,fps:30,bitrate_kbps:4000,audio:false})).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::Subscribed {id:256,..}));
+        assert!(publisher.demand().active);
+        command(&sender,publisher.address,SessionCommand::Close {connection_id:77}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::Closed {connection_id:77,..}));
+        assert!(!publisher.demand().active);
+        assert!(publisher.outgoing_status()["peers"].as_array().unwrap().is_empty());
+    }
     #[tokio::test]
     async fn selected_mobile_source_reports_its_phone_or_custom_badge() {
         use protocol::appearance::{DeviceBadge,DeviceBadgePreset};
