@@ -49,7 +49,15 @@ internal class ManagedShellContext private constructor(base: Context) : ContextW
             // UserService 进程通常已有 ActivityThread;没有时按 app_process 的方式自建一个
             val thread = at.getMethod("currentActivityThread").invoke(null) ?: newActivityThread(at)
             val system = at.getDeclaredMethod("getSystemContext").invoke(thread) as Context
-            val ctx = ManagedShellContext(system)
+            // createPackageContext inherits SystemContext's operation package
+            // (android). Build a fresh context for the real shell LoadedApk so
+            // its resolver and attribution both belong to our actual UID 2000.
+            val packageContext = system.createPackageContext(SHELL_PACKAGE, 0)
+            val impl = Class.forName("android.app.ContextImpl")
+            val loaded = impl.getDeclaredField("mPackageInfo").apply { isAccessible = true }.get(packageContext)
+            val shell = impl.getDeclaredMethod("createAppContext", at, Class.forName("android.app.LoadedApk"))
+                .apply { isAccessible = true }.invoke(null, thread, loaded) as Context
+            val ctx = ManagedShellContext(shell)
             if (at.getDeclaredField("mInitialApplication").apply { isAccessible = true }.get(thread) == null) {
                 runCatching {
                     val app = Instrumentation.newApplication(Application::class.java, ctx)

@@ -9,6 +9,12 @@ import `fun`.hackerlife.weavelo.BuildConfig
 /** Launched from this installed APK by an already authorized local ADB shell. */
 object ManagedScreenMain {
     @JvmStatic fun main(args: Array<String>) {
+        try { run(args) } catch (error: Throwable) {
+            error.printStackTrace()
+            kotlin.system.exitProcess(1)
+        }
+    }
+    private fun run(args: Array<String>) {
         check(args.isEmpty() && Process.myUid() == 2000) { "Authorized local shell required" }
         check(android.os.Build.VERSION.SDK_INT >= 34) { "Automatic capture requires Android 14 or later" }
         Looper.prepareMainLooper()
