@@ -170,10 +170,13 @@ impl RestoredDashboard {
         }
     }
     pub(super) fn queue_view_pointer(&self,event:protocol::InputEvent)->bool {
-        if self.current_frame.as_ref().is_some_and(|frame|frame.frame_geometry.is_some()) {
+        let counter=match &event {protocol::InputEvent::MouseMoveAbsolute{..}=>Some(0),protocol::InputEvent::MouseDown(_)=>Some(1),protocol::InputEvent::MouseUp(_)=>Some(2),_=>None};
+        let queued=if self.current_frame.as_ref().is_some_and(|frame|frame.frame_geometry.is_some()) {
             let target=self.viewport.lock().unwrap().painted().map(|painted|painted.target);
             target.is_some_and(|target|self.owner.queue_viewport_input(&target,event))
-        }else{self.owner.queue_viewing_input(event)}
+        }else{self.owner.queue_viewing_input(event)};
+        if queued && let Some(index)=counter {let mut counts=self.pointer_dispatch_counts.get();counts[index]=counts[index].saturating_add(1);self.pointer_dispatch_counts.set(counts);}
+        queued
     }
     pub(super) fn change_view_zoom(&mut self,factor:f64,anchor:Option<Point<Pixels>>,cx:&mut Context<Self>) {
         if self.viewport.lock().unwrap().zoom(factor,anchor){cx.notify();}

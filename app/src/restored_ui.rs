@@ -575,6 +575,8 @@ struct RestoredDashboard {
     device_badge_editor: device_badges::Editor,
     pairing_image_import: remote_core::pairing_image::PairingImageImport,
     pointer_input: PointerInputTracker,
+    pointer_event_counts: [u64; 3],
+    pointer_dispatch_counts: std::cell::Cell<[u64; 3]>,
     input_focus: FocusHandle,
     remote_text: Option<Entity<remote_text_input::RemoteTextInput>>,
     text_mode: bool,
@@ -768,6 +770,8 @@ impl RestoredDashboard {
             device_badge_editor,
             pairing_image_import: Default::default(),
             pointer_input: PointerInputTracker::default(),
+            pointer_event_counts: [0; 3],
+            pointer_dispatch_counts: Default::default(),
             input_focus: cx.focus_handle(),
             remote_text: None,
             text_mode: true,
@@ -1547,6 +1551,9 @@ impl RestoredDashboard {
         let viewport = self.viewport.lock().unwrap();
         let painted = viewport.painted();
         serde_json::json!({
+            "received_move_down_up":self.pointer_event_counts,
+            "queued_move_down_up":self.pointer_dispatch_counts.get(),
+            "held_buttons":self.pointer_input.pressed_buttons,
             "pointer_maps_to_source":mapped,"locked":self.input_locked,
             "supports_input":self.capture_supports_input,"navigation":viewport.navigation(),
             "drawer_open":self.drawer_open,"source_menu_open":self.show_apps_menu,
@@ -2824,6 +2831,7 @@ fn full_video_surface(
             }
         }))
         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+            this.pointer_event_counts[0]=this.pointer_event_counts[0].saturating_add(1);
             let was_revealed = this.toolbar_revealed;
             this.queue_pointer_move(event.position, false);
             if !was_revealed && this.toolbar_revealed {
@@ -2831,6 +2839,7 @@ fn full_video_surface(
             }
         }))
         .on_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+            this.pointer_event_counts[1]=this.pointer_event_counts[1].saturating_add(1);
             if this.show_apps_menu {
                 this.show_apps_menu = false;
                 this.owner.release_input();
@@ -2854,6 +2863,7 @@ fn full_video_surface(
             cx.stop_propagation();
         }))
         .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
+            this.pointer_event_counts[2]=this.pointer_event_counts[2].saturating_add(1);
             if event.button==MouseButton::Left{this.end_view_pan();}
             if protocol_mouse_button(event.button)
                 .is_some_and(|button| this.pointer_input.pressed_buttons.contains(&button))
