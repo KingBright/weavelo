@@ -751,7 +751,10 @@ impl MobilePublisher {
     }
     pub fn application_demands(&self)->serde_json::Value {
         let mut media=self.media.lock().unwrap();
-        let ids=media.sources.keys().filter(|id|matches!(id,CaptureSource::Window(_))).copied().collect::<Vec<_>>();
+        // The catalog can contain hundreds of installed apps. Only subscribed
+        // apps belong in the 20 Hz JNI demand poll; retain paused subscriptions.
+        let ids=media.sources.iter().filter(|(id,entry)|matches!(id,CaptureSource::Window(_))
+            && entry.enabled && entry.demand.subscriptions>0).map(|(id,_)|*id).collect::<Vec<_>>();
         serde_json::Value::Array(ids.into_iter().map(|source| {
             serde_json::json!({"source":source,"demand":media.screen_source_demand(source)})
         }).collect())
@@ -947,6 +950,29 @@ mod tests {
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:4,id:256,source:CaptureSource::Camera(9)}).await;
         assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance,..} if appearance.is_err()));
         assert!(publisher.demand().active,"Optional artwork must not end media");
+    }
+    #[tokio::test]
+    async fn idle_app_catalog_does_not_enter_the_native_demand_poll() {
+        let publisher=MobilePublisher::start_with_permissions("127.0.0.1:0".parse().unwrap(),
+            std::env::temp_dir(),b"app-demand-test".to_vec(),true,false).await.unwrap();
+        publisher.set_applications((1..=256).map(|id|CaptureSourceInfo {
+            source:CaptureSource::Window(id),title:format!("App {id}"),application:format!("app.{id}"),
+            process_id:None,width:720,height:1280,supports_input:false,camera:None,
+        }).collect()).unwrap();
+        assert_eq!(publisher.application_demands(),serde_json::json!([]));
+        let request=SubscriptionRequest {id:256,source:CaptureSource::Window(7),width:720,height:1280,
+            fps:30,bitrate_kbps:4000,audio:false};
+        {
+            let mut media=publisher.media.lock().unwrap();let grant=media.sources[&request.source].grant;
+            media.recompute([crate::publisher_media::ActiveRequest {stream:1,grant,request:&request,video:false,audio:false}]);
+        }
+        let paused=publisher.application_demands();
+        assert_eq!(paused.as_array().unwrap().len(),1);
+        assert_eq!(paused[0]["source"],serde_json::json!({"Window":7}));
+        assert_eq!(paused[0]["demand"]["subscriptions"],1);
+        assert_eq!(paused[0]["demand"]["active"],false);
+        publisher.media.lock().unwrap().recompute([]);
+        assert_eq!(publisher.application_demands(),serde_json::json!([]));
     }
     #[tokio::test]
     async fn sending_requires_capture_and_stop_cannot_cancel_a_replacement_intent() {

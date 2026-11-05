@@ -747,6 +747,14 @@ impl OriginalOwner {
     pub(crate) fn directed_receive_current(&self, request: &str) -> bool {
         self.pool.lock().unwrap().receive_current(request)
     }
+    pub(crate) fn directed_receive_error(&self, request: &str) -> Option<String> {
+        let pool=self.pool.lock().unwrap();
+        let binding=pool.directed_receive.as_ref().filter(|binding|binding.request_id==request
+            && binding.scope==remote_core::shared_files::current_share_scope())?;
+        if pool.receive_failed() { return Some(pool.message.clone()); }
+        let session=&pool.sessions.iter().find(|entry|Some(entry.session.conn.id)==binding.connection)?.session;
+        session.video_error.clone().or_else(||(!session.connected && !session.error.is_empty()).then(||session.error.clone()))
+    }
     pub(crate) fn directed_receive_source(&self, request: &str) -> Option<CaptureSource> {
         self.pool
             .lock()
@@ -2061,7 +2069,7 @@ impl OriginalOwner {
     }
     pub fn diagnostic_snapshot(&self) -> serde_json::Value {
         let p = self.pool.lock().unwrap();
-        serde_json::json!({"pending":p.tabs.pending_count(),"directed_receive_failed":p.receive_failed(),"sessions":p.sessions.iter().map(|e|{
+        serde_json::json!({"pending":p.tabs.pending_count(),"message":p.message,"directed_receive_failed":p.receive_failed(),"sessions":p.sessions.iter().map(|e|{
             let s=&e.session;
             let recovery=s.stats.video_recovery.snapshot();
             let video_diagnostics=serde_json::json!({
@@ -2302,6 +2310,8 @@ mod restoration_regression_tests {
         assert!(owner.directed_receive_current("live-media"));
         owner.pool.lock().unwrap().active_mut().unwrap().session.video_error=Some("Screen sharing ended".into());
         assert!(!owner.directed_receive_current("live-media"));
+        assert_eq!(owner.directed_receive_error("live-media").as_deref(),Some("Screen sharing ended"));
+        assert_eq!(owner.directed_receive_error("other-request"),None);
         owner.pool.lock().unwrap().active_mut().unwrap().session.video_error=None;
         owner.pool.lock().unwrap().active_mut().unwrap().session.connected=false;
         assert!(!owner.directed_receive_current("live-media"));

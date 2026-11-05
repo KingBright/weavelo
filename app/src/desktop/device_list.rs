@@ -66,6 +66,28 @@ pub(crate) struct DeviceActivity {
     pub transfer:Option<(u64,u64)>,
     pub can_stop_sending:bool,
 }
+
+/// Small, frontend-only history: closing a failed receive must not erase its reason.
+#[derive(Default)]
+pub(crate) struct StreamFailures {
+    scope: remote_core::shared_files::ShareScope,
+    entries: Vec<(String, protocol::session::CaptureSource, String)>,
+}
+impl StreamFailures {
+    pub fn remember(&mut self, scope:remote_core::shared_files::ShareScope, device:String,
+        source:protocol::session::CaptureSource, reason:String) {
+        if self.scope!=scope {self.entries.clear();self.scope=scope;}
+        self.clear(&device,source);
+        if self.entries.len()==32 {self.entries.remove(0);}
+        self.entries.push((device,source,reason));
+    }
+    pub fn clear(&mut self, device:&str, source:protocol::session::CaptureSource) {
+        self.entries.retain(|(old,capture,_)|old!=device || *capture!=source);
+    }
+    pub fn current(&self, scope:remote_core::shared_files::ShareScope) -> impl Iterator<Item=&(String,protocol::session::CaptureSource,String)> {
+        self.entries.iter().filter(move |_|self.scope==scope)
+    }
+}
 impl DeviceActivity {
     pub fn label(&self)->String {
         let mut parts=Vec::new();
@@ -246,6 +268,21 @@ fn matches_filter(filter: DeviceFilterKind, scope: DiscoveryScope) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_receives_survive_close_until_the_same_source_is_retried() {
+        use protocol::session::CaptureSource::{MainDisplay,Window};
+        let mut history=super::StreamFailures::default();
+        let scope=Some([7;32]);
+        history.remember(scope,"phone".into(),Window(1),"App launch refused".into());
+        history.remember(scope,"phone".into(),MainDisplay,"Capture ended".into());
+        history.clear("other-phone",Window(1));
+        assert_eq!(history.current(scope).count(),2);
+        history.clear("phone",Window(1));
+        assert_eq!(history.current(scope).map(|(_,source,_)|*source).collect::<Vec<_>>(),vec![MainDisplay]);
+        assert_eq!(history.current(Some([8;32])).count(),0,"another paired network must not inherit errors");
+        history.remember(Some([8;32]),"phone".into(),Window(2),"New network".into());
+        assert_eq!(history.current(scope).count(),0);
+    }
     use super::*;
     use remote_core::{discovery::DiscoveryScope, role::RoleSession};
 

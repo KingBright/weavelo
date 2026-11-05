@@ -443,6 +443,7 @@ struct FrontendExitGroup {
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
     pending: Mutex<Vec<Arc<OriginalOwner>>>,
     file_contexts: Mutex<std::collections::BTreeMap<String, Arc<DeviceFiles>>>,
+    receive_failures: Mutex<crate::desktop::device_list::StreamFailures>,
 }
 impl FrontendExitGroup {
     fn can_change_network(&self) -> bool {
@@ -623,6 +624,9 @@ impl RestoredDashboard {
     #[cfg(any(unix, windows))]
     fn stream_activity(&self) -> StreamActivity {
         let mut devices=std::collections::BTreeMap::<String,crate::desktop::device_list::DeviceActivity>::new();
+        for (device,_,reason) in self.exit_group.receive_failures.lock().unwrap().current(remote_core::shared_files::current_share_scope()) {
+            devices.entry(device.clone()).or_default().error=Some(reason.clone());
+        }
         for owner in self.exit_group.owners() {
             for (device,current) in owner.device_activity() {
                 let activity=devices.entry(device).or_default();
@@ -1007,7 +1011,16 @@ impl RestoredDashboard {
         self.poll_sending_context();
         use crate::desktop::directed_receive::{Request, Lease};
         if let Some(adapter) = self.directed_receive.as_mut() {
-            adapter.leases.retain(|_, lease| lease.current());
+            adapter.leases.retain(|_, lease| {
+                if lease.current() {return true;}
+                for member in &lease.windows {
+                    if let Some(reason)=member.owner.upgrade().and_then(|owner|owner.directed_receive_error(&lease.request_id)) {
+                        self.exit_group.receive_failures.lock().unwrap().remember(
+                            remote_core::shared_files::current_share_scope(),lease.source.clone(),member.source,reason);
+                    }
+                }
+                false
+            });
         }
         loop {
             let Some(command) = self.directed_receive.as_mut().and_then(|a| a.commands.try_recv().ok()) else { break; };
@@ -3946,6 +3959,9 @@ impl RestoredDashboard {
         if receive.is_none() && capture.is_none() {
             self.start_source_browser(device_id,cx);
             return;
+        }
+        if let Some(source)=capture {
+            self.exit_group.receive_failures.lock().unwrap().clear(&device_id,source);
         }
         self.stream_device=Some(device_id.clone());
         self.stream_source=capture;
