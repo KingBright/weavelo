@@ -2503,9 +2503,21 @@ impl Render for RestoredDashboard {
         }
         let bitmap=matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
             .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten();
-        if self.purpose == WindowPurpose::Stream {
-            self.native_window_artwork.sync_stream(window,cx,bitmap.as_deref(),&self.native_window_title);
+        let app_source = matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_));
+        if self.purpose == WindowPurpose::Stream && matches!(role, RoleState::Viewing(_))
+            && (!app_source || source.is_some()) {
+            let app_name = source.map(|source| source.application.trim())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(match snapshot.active_capture_source.category() {
+                    protocol::session::SourceCategory::Window => "Remote window",
+                    protocol::session::SourceCategory::Camera => "Camera",
+                    protocol::session::SourceCategory::Screen => "Display",
+                });
+            self.native_window_artwork.sync_stream(
+                window, cx, bitmap.as_deref(), app_name, peer.unwrap_or("Device"),
+            );
         } else {
+            self.native_window_artwork.close();
             self.native_window_artwork.sync(window,cx,bitmap.as_deref());
         }
         let theme = cx.theme().clone();

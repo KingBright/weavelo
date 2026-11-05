@@ -4,7 +4,7 @@ use super::{
 };
 use cocoa::{
     appkit::{NSApp, NSApplication, NSApplicationActivationPolicy, NSEventType},
-    base::{BOOL, YES, id, nil},
+    base::{BOOL, NO, YES, id, nil},
     foundation::{NSAutoreleasePool, NSPoint, NSSize, NSString},
 };
 use objc::{
@@ -31,9 +31,16 @@ extern "C" fn open(this: &Object, _: Sel, _: id) {
 extern "C" fn quit(this: &Object, _: Sel, _: id) {
     send(this, Action::Quit);
 }
-extern "C" fn reopen(this: &Object, _: Sel, _: id, _: BOOL) -> BOOL {
+extern "C" fn reopen(this: &Object, _: Sel, app: id, _: BOOL) -> BOOL {
+    // Launch Services can promote the tray owner when opening the bundle.
+    // Return it to the menu bar before forwarding the request to the frontend.
+    unsafe {
+        app.setActivationPolicy_(
+            NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
+        );
+    }
     send(this, Action::Open);
-    YES
+    NO
 }
 extern "C" fn terminate(this: &Object, _: Sel, _: id) -> usize {
     send(this, Action::Quit);
