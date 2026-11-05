@@ -52,3 +52,15 @@ Book 正式 124 实际接收该聊天窗口，63 个解码帧、零错误，有�
 完整证据保存在任务目录的 `chatgpt123-*`、`bug124-*` 和 `native124-nas-verified.json`；Windows 复测原生记录位于 cube 的 `title123-windows-native-and-desktop-inspection.json` 与 `bug124-reuse-receiver-current.json`。临时跨机包在公开发布字节核对后按精确 SHA 清理。
 
 构建效率接续：Book 的远程命令达到工具默认 600 秒时限，原生编译子进程仍在运行。确认它完成后，以更长命令时限恢复正式打包与安装，未并行启动另一编译器。恢复过程重新生成了 `build_identity_gate.py::BuildInputs` 的固定临时身份文件，同一源码身份又触发应用编译；这条重复编译路径仍需优化，不能把本次打包成功当作迭代效率问题已解决。
+
+## macOS 128 的单例与 Dock
+
+MacBook 的重复主图标来自菜单栏后台。旧版只有一份界面和一份后台，但 macOS 重新打开应用时把后台也设为普通应用。修复后，后台收到打开请求时恢复菜单栏模式并唤醒原有前端。
+
+两台 Mac 已各用原签名安装 `20261105.128`，实际运行源码为 `0c56213`。连续两次通过系统入口打开均复用同一个前端。空闲时通过前端退出请求关闭界面，后台进程及其会话标识保持一致，Studio 和 MacBook 分别仍能列出 42 和 56 个共享来源。重新打开只创建一份新前端。
+
+两台 Mac 分别拉取对方的 ChatGPT 独立窗口，Studio 收到 44 帧，MacBook 收到 26 帧，解码错误均为零，均已提交画面。测试结束后对应 Dock 辅助进程退出。Studio 的实际 Dock 截图显示底部名称 ChatGPT、设备角标 MBPM2MAX。MacBook 启用了 Dock 自动隐藏，未把隐藏窗口的缓存图当作实时画面。
+
+独立验证发现，系统在注册会话 Dock 项时会异步载入签名包图标。200 毫秒内更新仍可能被覆盖，600 毫秒后更新成功。正式版用单次 750 毫秒的原生补绘应用当前图标。Studio 正式包在仅送入一次图标数据时已验证正确显示。这项调度只涉及 Dock。macOS 报告的系统名称仍为 Weavelo。
+
+签名发布回归运行 1,046 项，跳过 19 项。macOS 128 已通过 NAS 正式发布并独立下载校验。实机证据位于任务目录的 `dock128-lifecycle-acceptance.json`、`dock128-stream-acceptance.json`、`dock128-native-chatgpt-dock-detail.png` 和 `dock128-nas-verified.json`。
