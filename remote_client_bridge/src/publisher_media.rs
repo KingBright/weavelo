@@ -87,7 +87,7 @@ impl MediaSources {
     pub fn set_applications(&mut self, infos: Vec<CaptureSourceInfo>) -> Result<(),String> {
         let mut ids=std::collections::HashSet::new();
         if infos.len()>256 || infos.iter().any(|info| !matches!(info.source,CaptureSource::Window(id) if id>0)
-            || !ids.insert(info.source) || info.application.is_empty() || info.application.len()>255
+            || !ids.insert(info.source) || info.application.is_empty() || info.application.len()>1024
             || info.title.is_empty() || info.title.len()>1024 || info.camera.is_some()
             || !(2..=8192).contains(&info.width) || !(2..=8192).contains(&info.height)
             || u64::from(info.width)*u64::from(info.height)>33_554_432) {
@@ -209,6 +209,7 @@ mod tests {
         let app=|id,package:&str,width,height|CaptureSourceInfo {source:CaptureSource::Window(id),
             title:package.into(),application:package.into(),process_id:None,width,height,supports_input:false,camera:None};
         let a=app(10,"app.a",720,1280);let b=app(20,"app.b",1080,1920);
+        assert!(media.set_applications(vec![app(30,&"应用".repeat(80),720,1280)]).is_ok(),"Native application labels are UTF-8 names, not package identifiers");
         media.set_applications(vec![a.clone(),b.clone()]).unwrap();
         let mut first=request(a.source);first.id=4;
         let mut second=request(b.source);second.id=5;

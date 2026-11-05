@@ -598,7 +598,7 @@ impl MobilePublisher {
                                             }
                                             let source=shared.lock().unwrap().sources.get(&request.source).filter(|source|source.enabled).cloned();
                                             let Some(source)=source else {
-                                                reply(&sender,addr,SessionCommand::Error{request_id:request.id,reason:"Enable the selected camera or screen on this phone; files remain available".into()}).await;continue;
+                                                reply(&sender,addr,SessionCommand::Error{request_id:request.id,reason:"Selected source is unavailable; refresh this phone's sources".into()}).await;continue;
                                             };
                                             let existing=peer.subscriptions.get(&request.id);
                                             let invalid=!valid(&request)||peer.retired.contains(&request.id)

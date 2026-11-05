@@ -3960,9 +3960,7 @@ impl RestoredDashboard {
             self.start_source_browser(device_id,cx);
             return;
         }
-        if let Some(source)=capture {
-            self.exit_group.receive_failures.lock().unwrap().clear(&device_id,source);
-        }
+        self.exit_group.receive_failures.lock().unwrap().retry_device(&device_id);
         self.stream_device=Some(device_id.clone());
         self.stream_source=capture;
                 self.invalidate_source_commands();

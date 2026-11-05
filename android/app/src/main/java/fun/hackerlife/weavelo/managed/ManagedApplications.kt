@@ -2,6 +2,10 @@ package `fun`.hackerlife.weavelo.managed
 
 import `fun`.hackerlife.weavelo.GpuScreenPublisher
 import `fun`.hackerlife.weavelo.PublisherClient
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -9,7 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.CRC32
 
 /** App identity, display ownership and capture live in Weavelo on this phone. */
-internal class ManagedApplications(private val host: IManagedScreen) : AutoCloseable {
+@android.annotation.TargetApi(34)
+internal class ManagedApplications(private val host: IManagedScreen, private val context: Context) : AutoCloseable {
     internal data class Target(val host: IManagedScreen, val displayId: Int,
         val packageName: String, val width: Int, val height: Int)
     companion object {
@@ -21,26 +26,40 @@ internal class ManagedApplications(private val host: IManagedScreen) : AutoClose
     private val width = minOf(dimensions.getInt("width"), dimensions.getInt("height"))
     private val height = maxOf(dimensions.getInt("width"), dimensions.getInt("height"))
     private val density = dimensions.getInt("density")
-    private val apps: Map<Long, App>
+    private var apps: Map<Long, App> = emptyMap()
+    private val catalogChanged=AtomicBoolean(false)
+    private val packageUpdates=object: BroadcastReceiver() {
+        override fun onReceive(context:Context,intent:Intent) {catalogChanged.set(true)}
+    }
     private val workers = mutableMapOf<Long, Capture>()
     private val failed = mutableSetOf<Long>()
     init {
+        refreshCatalog()
+        context.registerReceiver(packageUpdates,IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED);addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED);addDataScheme("package")
+        },Context.RECEIVER_NOT_EXPORTED)
+    }
+    private fun refreshCatalog() {
         val list = JSONArray(host.applications())
         require(list.length() <= 256) { "Too many launchable apps" }
-        apps = (0 until list.length()).map { index ->
+        val latest = (0 until list.length()).map { index ->
             val item = list.getJSONObject(index)
             val packageName = item.getString("package")
             val id = CRC32().apply { update(packageName.toByteArray(Charsets.UTF_8)) }.value.coerceAtLeast(1)
             App(id, packageName, item.getString("name"))
         }.associateBy { it.id }
-        require(apps.size == list.length()) { "Independent app identity collision" }
+        require(latest.size == list.length()) { "Independent app identity collision" }
+        if(latest==apps) return
         val catalog = JSONArray()
-        apps.values.forEach { app -> catalog.put(JSONObject().put("source", JSONObject().put("Window", app.id))
-            .put("title", app.name).put("application", app.packageName).put("process_id", JSONObject.NULL)
+        latest.values.forEach { app -> catalog.put(JSONObject().put("source", JSONObject().put("Window", app.id))
+            .put("title", app.name).put("application", app.name).put("process_id", JSONObject.NULL)
             .put("width", width).put("height", height).put("supports_input", false).put("camera", JSONObject.NULL)) }
         PublisherClient.action(43, catalog.toString())
+        apps=latest
     }
     fun update() {
+        if(catalogChanged.getAndSet(false)) refreshCatalog()
         val list = JSONArray(PublisherClient.action(44))
         val subscribed = mutableSetOf<Long>()
         val streams = mutableSetOf<Long>()
@@ -124,6 +143,7 @@ internal class ManagedApplications(private val host: IManagedScreen) : AutoClose
         }
     }
     override fun close() {
+        context.unregisterReceiver(packageUpdates)
         workers.values.forEach { it.stop() }
         workers.values.forEach { runCatching { it.close() } };workers.clear()
         runCatching { PublisherClient.action(43,"[]") }

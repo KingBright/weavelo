@@ -272,9 +272,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onShareScreen = { audio ->
                             pendingSendTarget = null
-                            publishControl = false
+                            publishControl = RemoteControlService.connected.value
                             if (audio && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
-                            else requestProjection(audio)
+                            else requestProjection(audio,publishControl)
                         },
                         onStopSharing = { PublisherClient.stop(this) },
                         onShareCamera = { requestCamera() },

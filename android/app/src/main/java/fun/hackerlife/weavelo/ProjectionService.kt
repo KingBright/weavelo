@@ -110,7 +110,7 @@ class ProjectionService : Service() {
             // rotation replace its Surface, never create another with this token.
             display = if (managed != null) CaptureDisplay.managed(managed, initialSize.first, initialSize.second, captureDensity)
                 else CaptureDisplay.projection(checkNotNull(capture), initialSize.first, initialSize.second, captureDensity)
-            if (managed != null) apps = ManagedApplications(managed)
+            if (managed != null) apps = ManagedApplications(managed, applicationContext)
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
             PublisherClient.status("Sharing enabled · $addresses", true)

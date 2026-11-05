@@ -84,6 +84,9 @@ impl StreamFailures {
     pub fn clear(&mut self, device:&str, source:protocol::session::CaptureSource) {
         self.entries.retain(|(old,capture,_)|old!=device || *capture!=source);
     }
+    pub fn retry_device(&mut self, device:&str) {
+        self.entries.retain(|(old,_,_)|old!=device);
+    }
     pub fn current(&self, scope:remote_core::shared_files::ShareScope) -> impl Iterator<Item=&(String,protocol::session::CaptureSource,String)> {
         self.entries.iter().filter(move |_|self.scope==scope)
     }
@@ -279,6 +282,9 @@ mod tests {
         assert_eq!(history.current(scope).count(),2);
         history.clear("phone",Window(1));
         assert_eq!(history.current(scope).map(|(_,source,_)|*source).collect::<Vec<_>>(),vec![MainDisplay]);
+        history.remember(scope,"other-phone".into(),Window(2),"Other device failed".into());
+        history.retry_device("phone");
+        assert_eq!(history.current(scope).map(|(device,_,_)|device.as_str()).collect::<Vec<_>>(),vec!["other-phone"]);
         assert_eq!(history.current(Some([8;32])).count(),0,"another paired network must not inherit errors");
         history.remember(Some([8;32]),"phone".into(),Window(2),"New network".into());
         assert_eq!(history.current(scope).count(),0);
