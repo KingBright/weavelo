@@ -302,7 +302,20 @@ class NativeControl:
             pids.add(gui['pid'])
         else:
             gui = None
-        require(self.owners() == pids, 'Unidentified independent process; no process was stopped')
+        actual = self.owners()
+        unidentified = 'Unidentified independent process; no process was stopped'
+        require(pids.issubset(actual), unidentified)
+        for pid in actual - pids:
+            process = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'ppid=,args='],
+                                     capture_output=True, text=True, timeout=10)
+            if process.returncode == 1 and not process.stdout.strip() and not process.stderr.strip():
+                continue  # The child exited after the process snapshot.
+            parent_and_args = process.stdout.strip().split(None, 1)
+            # This exact entry owns only AppKit and its parent's pipe. Normal GUI
+            # quit releases that pipe; stop() still requires every process to exit.
+            require(gui is not None and process.returncode == 0 and len(parent_and_args) == 2
+                    and parent_and_args[0] == str(gui['pid'])
+                    and parent_and_args[1] == str(self.exe) + ' --macos-dock-tile', unidentified)
         return {'background': background, 'gui': gui, 'loaded': self.loaded()}
 
     def stop(self, before):

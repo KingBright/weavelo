@@ -306,6 +306,30 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(record['retired_staged'], result['retired_staged'])
         self.assertEqual((upgrade.retirement_root(self.selected) / 'original-upgrade.json').read_bytes(), raw)
 
+    def test_gui_owned_dock_tile_does_not_block_normal_quit(self):
+        control = NativeControlOriginal(self.selected)
+        digest = self.current()['executable']
+        replies = {'--background-status-json': {'role':'background-service', 'pid':101,
+                    'profile':str(self.selected['profile']), 'executable_sha256':digest},
+                   '--gui-network-diagnostics-json': {'ok':True, 'pid':102,
+                    'executable_sha256':digest}}
+        def query(flag, required=True): return replies[flag]
+        with patch.object(control,'query',side_effect=query), \
+             patch.object(control,'owners',return_value={101,102,103}), \
+             patch.object(control,'loaded',return_value=True), \
+             patch.object(upgrade.subprocess,'run') as process:
+            process.return_value = subprocess.CompletedProcess([],0,
+                '102 '+str(control.exe)+' --macos-dock-tile\n','')
+            self.assertEqual(control.before(digest)['gui']['pid'],102)
+            for args in ('999 '+str(control.exe)+' --macos-dock-tile',
+                         '102 '+str(control.exe)+' --mcp-server',
+                         '102 '+str(control.exe)+' --macos-dock-tile --gui'):
+                process.return_value = subprocess.CompletedProcess([],0,args+'\n','')
+                with self.assertRaisesRegex(guard.ReleaseRejected,'Unidentified independent process'):
+                    control.before(digest)
+            process.return_value = subprocess.CompletedProcess([],1,'','')
+            self.assertEqual(control.before(digest)['gui']['pid'],102)
+
     @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
     def test_native_exchange_upgrade_preserves_membership_plist_history_and_retained_client(self):
         before=(self.selected['plist'].read_bytes(),upgrade.membership_metadata(self.selected['profile']))
