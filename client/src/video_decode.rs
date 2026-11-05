@@ -454,6 +454,13 @@ impl VideoDecoder for MacVideoDecoder {
                 if let Some(g)=frame_geometry {
                     if (g.width,g.height)!=(frame.width,frame.height) {return Err("Decoded viewport dimensions differ from its frame geometry".into());}
                 }
+                // Reject unsupported native output before it is acknowledged
+                // as painted or enables input. The renderer must not be the
+                // first place a validly decoded frame silently disappears.
+                let buffer = unsafe {
+                    core_video::pixel_buffer::CVPixelBuffer::wrap_under_get_rule(frame.cv_pixel_buffer as _)
+                };
+                gpui::native_video::VideoColor::from_macos_pixel_buffer(&buffer)?;
                 frame.frame_geometry=frame_geometry;
                 frame.decode_cost_ms = start_time.elapsed().as_secs_f32() * 1000.0;
                 Ok(frame)
@@ -529,5 +536,20 @@ mod native_surface_color_tests {
         assert!(VideoColor::from_macos_pixel_buffer(&buffer).is_err());
         let bgra = CVPixelBuffer::new(kCVPixelFormatType_32BGRA, 4, 4, None).unwrap();
         assert!(VideoColor::from_macos_pixel_buffer(&bgra).is_err());
+    }
+
+    #[test]
+    fn android_bt601_cicp_attachment_is_recognized_without_guessing_unknown_values() {
+        let buffer = CVPixelBuffer::new(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, 4, 4, None).unwrap();
+        let key = unsafe { CFString::wrap_under_get_rule(kCVImageBufferYCbCrMatrixKey) };
+        for value in ["YCbCrMatrix#5", "YCbCrMatrix#6"] {
+            buffer.as_buffer().set_attachment(&key, &CFString::new(value).as_CFType(), kCVAttachmentMode_ShouldPropagate);
+            let color = VideoColor::from_macos_pixel_buffer(&buffer).unwrap();
+            assert_eq!((color.matrix, color.range), (Matrix::Bt601, Range::Full));
+        }
+        for value in ["YCbCrMatrix#2", "YCbCrMatrix#4", "YCbCrMatrix#9", "YCbCrMatrix#50"] {
+            buffer.as_buffer().set_attachment(&key, &CFString::new(value).as_CFType(), kCVAttachmentMode_ShouldPropagate);
+            assert!(VideoColor::from_macos_pixel_buffer(&buffer).is_err(), "{value}");
+        }
     }
 }

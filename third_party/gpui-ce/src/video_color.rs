@@ -63,7 +63,12 @@ impl VideoColor {
         let matrix = unsafe {
             if matrix == CFString::wrap_under_get_rule(kCVImageBufferYCbCrMatrix_ITU_R_709_2) {
                 Matrix::Bt709
-            } else if matrix == CFString::wrap_under_get_rule(kCVImageBufferYCbCrMatrix_ITU_R_601_4) {
+            } else if matrix == CFString::wrap_under_get_rule(kCVImageBufferYCbCrMatrix_ITU_R_601_4)
+                // VideoToolbox preserves CICP 5 from Android HEVC as this
+                // numeric attachment. H.273 table 4 gives 5 and 6 the same
+                // explicit BT.601 coefficients; neither is unspecified.
+                || matrix == CFString::from_static_string("YCbCrMatrix#5")
+                || matrix == CFString::from_static_string("YCbCrMatrix#6") {
                 Matrix::Bt601
             } else {
                 return Err("Native video surface has an unsupported YCbCr matrix");
