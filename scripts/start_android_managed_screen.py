@@ -55,7 +55,9 @@ def main():
     # Opening the user-visible app permits its normal foreground-service start.
     run('shell', 'am', 'start', '-W', '-n', PACKAGE + '/.MainActivity')
     log = '/data/local/tmp/weavelo-managed-screen.log'
-    command = ('test ! -L ' + shlex.quote(log) + ' && CLASSPATH=' + shlex.quote(apk)
+    # Keep the guard in the foreground. Backgrounding an AND-list leaves an
+    # intermediate shell holding ADB's output pipe until the helper exits.
+    command = ('test ! -L ' + shlex.quote(log) + ' || exit 1\nCLASSPATH=' + shlex.quote(apk)
                + ' nohup setsid app_process /system/bin ' + PACKAGE + '.managed.ManagedScreenMain'
                + ' >' + shlex.quote(log) + ' 2>&1 </dev/null &')
     run('shell', command)
