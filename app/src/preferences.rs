@@ -86,6 +86,27 @@ pub struct UiPreferences {
     pub scale_mode: String,
     #[serde(default = "default_false")]
     pub telemetry_hud_collapsed: bool,
+    #[serde(default)]
+    pub(crate) device_badge: DeviceBadge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeviceBadgePreset {
+    Computer,
+    MacBook,
+    MacStudio,
+    Windows,
+    Linux,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeviceBadge {
+    #[default]
+    Automatic,
+    Preset(DeviceBadgePreset),
+    Custom(protocol::interaction::ApplicationIcon),
 }
 
 impl Default for UiPreferences {
@@ -94,6 +115,7 @@ impl Default for UiPreferences {
             pause_when_inactive: true,
             scale_mode: default_scale_mode(),
             telemetry_hud_collapsed: default_false(),
+            device_badge: DeviceBadge::Automatic,
         }
     }
 }

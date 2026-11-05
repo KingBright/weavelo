@@ -123,6 +123,7 @@ impl RestoredDashboard {
                 &snapshot.role,
                 self.mesh_pairing_snapshot.clone(),
                 &self.device_name_editor,
+                &self.device_badge_editor,
                 self.pairing_image_import.is_pending(),
                 self.active_tab,
                 &self.device_list_state,

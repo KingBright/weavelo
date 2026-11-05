@@ -12,6 +12,8 @@ use sending::{SendActivity, SendingContext};
 mod native_menu;
 #[path="restored_window_icon.rs"]
 mod window_icon;
+#[path="restored_device_badge.rs"]
+mod device_badges;
 #[cfg(target_os = "macos")]
 pub fn run_macos_dock_tile() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     window_icon::macos_dock::run()
@@ -490,6 +492,17 @@ impl FrontendExitGroup {
 }
 
 type SourceArtwork = Arc<std::collections::HashMap<protocol::session::CaptureSource, Arc<gpui::RenderImage>>>;
+
+fn render_artwork(bitmap: &remote_core::application_icons::IconBitmap) -> Arc<gpui::RenderImage> {
+    let mut bgra = bitmap.rgba.to_vec();
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(bitmap.width, bitmap.height, bgra)
+        .expect("validated artwork pixels");
+    Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)]))
+}
+
 #[derive(Default)]
 struct ApplicationArtwork {
     assets: remote_core::application_icons::SourceIconAssets,
@@ -501,12 +514,9 @@ impl ApplicationArtwork {
         if !Arc::ptr_eq(&self.assets,&assets) {
             let mut images=std::collections::HashMap::new();
             let sources=assets.iter().map(|(source,bitmap)| {
-                let image=images.entry(bitmap.id).or_insert_with(||self.images.get(&bitmap.id).cloned().unwrap_or_else(|| {
-                    let mut bgra=bitmap.rgba.to_vec();
-                    for pixel in bgra.chunks_exact_mut(4) {pixel.swap(0,2);}
-                    let buffer=image::RgbaImage::from_raw(bitmap.width,bitmap.height,bgra).expect("validated artwork pixels");
-                    Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)]))
-                })).clone();
+                let image = images.entry(bitmap.id).or_insert_with(|| {
+                    self.images.get(&bitmap.id).cloned().unwrap_or_else(|| render_artwork(bitmap))
+                }).clone();
                 (*source,image)
             }).collect();
             self.images=images;
@@ -562,6 +572,7 @@ struct RestoredDashboard {
     mesh_pairing: Option<MeshPairingControl>,
     mesh_pairing_snapshot: Option<MeshPairingSnapshot>,
     device_name_editor: remote_core::device_name::NameEditor,
+    device_badge_editor: device_badges::Editor,
     pairing_image_import: remote_core::pairing_image::PairingImageImport,
     pointer_input: PointerInputTracker,
     input_focus: FocusHandle,
@@ -683,6 +694,12 @@ impl RestoredDashboard {
         let device_name_editor = remote_core::device_name::NameEditor::new(
             mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()).unwrap_or_default());
         let prefs = crate::preferences::UserPreferences::load_or_default();
+        let device_badge_editor = device_badges::Editor::new(if purpose == WindowPurpose::Management {
+            device_badges::Editor::detect_hardware(cx);
+            prefs.ui.device_badge.clone()
+        } else {
+            Default::default()
+        });
         owner.set_clipboard_sync_enabled(prefs.side_services.clipboard_sync);
         let viewer_media_status = runtime.viewer_media_status.clone();
         let scale_mode = if prefs.ui.scale_mode == "fill" {
@@ -748,6 +765,7 @@ impl RestoredDashboard {
             mesh_pairing,
             mesh_pairing_snapshot,
             device_name_editor,
+            device_badge_editor,
             pairing_image_import: Default::default(),
             pointer_input: PointerInputTracker::default(),
             input_focus: cx.focus_handle(),
@@ -2486,8 +2504,7 @@ impl Render for RestoredDashboard {
         let bitmap=matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
             .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten();
         if self.purpose == WindowPurpose::Stream {
-            self.native_window_artwork.sync_stream(window,cx,bitmap.as_deref(),&self.native_window_title,
-                peer.or(self.stream_device.as_deref()).unwrap_or("Device"));
+            self.native_window_artwork.sync_stream(window,cx,bitmap.as_deref(),&self.native_window_title);
         } else {
             self.native_window_artwork.sync(window,cx,bitmap.as_deref());
         }
@@ -3457,6 +3474,7 @@ fn slide_over_management_drawer(
     role: &RoleState,
     mesh_pairing_snapshot: Option<MeshPairingSnapshot>,
     device_name_editor: &remote_core::device_name::NameEditor,
+    device_badge_editor: &device_badges::Editor,
     pairing_image_pending: bool,
     active_tab: DrawerTab,
     device_list_state: &DeviceListState,
@@ -3576,7 +3594,7 @@ fn slide_over_management_drawer(
                     )
                     .into_any_element(),
                     DrawerTab::DeviceGroup => {
-                        drawer_device_group_tab(mesh_pairing_snapshot, pairing_image_pending, device_name_editor, cx).into_any_element()
+                        drawer_device_group_tab(mesh_pairing_snapshot, pairing_image_pending, device_name_editor, device_badge_editor, cx).into_any_element()
                     }
                     DrawerTab::Files => transfers.into_any_element(),
                     DrawerTab::Security => {
@@ -4011,12 +4029,14 @@ fn drawer_device_group_tab(
     mesh_pairing_snapshot: Option<MeshPairingSnapshot>,
     pairing_image_pending: bool,
     device_name_editor: &remote_core::device_name::NameEditor,
+    device_badge_editor: &device_badges::Editor,
     cx: &mut Context<RestoredDashboard>,
 ) -> Div {
     let mut content = div().flex().flex_col().gap_3();
 
     if let Some(snapshot) = mesh_pairing_snapshot {
         content = content.child(device_name_controls(device_name_editor.clone(), cx))
+            .child(device_badges::controls(device_badge_editor, cx))
             .child(mesh_pairing_card(snapshot, pairing_image_pending, cx));
     }
 
