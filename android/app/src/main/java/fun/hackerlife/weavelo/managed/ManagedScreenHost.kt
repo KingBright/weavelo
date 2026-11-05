@@ -6,6 +6,8 @@ import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.content.Intent
 import android.os.Binder
+import android.os.Bundle
+import android.os.IBinder
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.DisplayMetrics
@@ -46,7 +48,8 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
             handler.post { clear() }
             throw IllegalStateException("Display operation timed out", error)
         } catch (error: java.util.concurrent.ExecutionException) {
-            throw IllegalStateException(error.cause?.message ?: "Display operation failed", error.cause)
+            val cause = error.cause.let { if (it is java.lang.reflect.InvocationTargetException) it.targetException else it }
+            throw IllegalStateException(cause?.message ?: "Display operation failed", cause)
         }
     }
     private fun metrics(): DisplayMetrics = DisplayMetrics().also {
@@ -117,7 +120,19 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
                 .setClassName(packageName, entry.activityInfo.name)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-            context.startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(id).toBundle())
+            // app_process has no Instrumentation or registered application thread.
+            // Use the task service as the actual shell caller, restricted here to
+            // this validated launcher, user and display owned by Weavelo.
+            val service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null)
+            val result = Class.forName("android.app.IActivityTaskManager").getMethod("startActivityAsUser",
+                Class.forName("android.app.IApplicationThread"), String::class.java, String::class.java,
+                Intent::class.java, String::class.java, IBinder::class.java, String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Class.forName("android.app.ProfilerInfo"),
+                Bundle::class.java, Int::class.javaPrimitiveType).invoke(service, null,
+                ManagedShellContext.SHELL_PACKAGE, null, intent, null, null, null, 0, 0, null,
+                ActivityOptions.makeBasic().setLaunchDisplayId(id).toBundle(), appUid / 100_000) as Int
+            check(ActivityManager::class.java.getMethod("isStartResultSuccessful", Int::class.javaPrimitiveType)
+                .invoke(null, result) as Boolean) { "Android rejected independent app launch ($result)" }
             id
         } catch (error: Exception) { releaseOwned(id); throw error }
     }

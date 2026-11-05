@@ -522,7 +522,8 @@ impl MobilePublisher {
                                         SessionCommand::Open { connection_id, version:SESSION_VERSION } => {
                                             if peers.get(&addr).is_some_and(|p| p.id != connection_id) { reply(&sender, addr, SessionCommand::Error { request_id:connection_id, reason:"close the previous connection first".into() }).await; continue; }
                                             peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone(), peer_files.load(Ordering::Relaxed)));
-                                            reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:MAX_SUBSCRIPTIONS as u32, files:peers[&addr].files.is_some(), clipboard:false, window_capture:false }).await;
+                                            let window_capture=shared.lock().unwrap().sources.values().any(|source|source.enabled&&matches!(source.info.source,CaptureSource::Window(_)));
+                                            reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:MAX_SUBSCRIPTIONS as u32, files:peers[&addr].files.is_some(), clipboard:false, window_capture }).await;
                                         }
                                         SessionCommand::DeliveryOffer {request_id,source_device_id,target_device_id,ticket,revision,sources} if peers.contains_key(&addr) => {
                                             let peer=&peers[&addr];let (_,nonce,_)=authenticated[&addr];
