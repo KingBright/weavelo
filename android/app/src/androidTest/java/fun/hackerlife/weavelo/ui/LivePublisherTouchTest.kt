@@ -22,7 +22,7 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
-/** Explicit native input fixture. No capture token, screenshot or encoded video. */
+/** Native events: isolated input-only touch fixture, or the existing real screen for mouse. */
 class LivePublisherTouchTest {
     @Test fun simultaneousContactsReachTheNativeView() = nativeFixture(false)
     @Test fun mouseContinuationReachesTheNativeView() = nativeFixture(true)
@@ -79,8 +79,8 @@ class LivePublisherTouchTest {
                 }
                 instrumentation.waitForIdleSync()
                 assertTrue("Fixture must own the visible window", fixture.hasWindowFocus())
-                // Expose an input-only fixture through the actual authenticated
-                // publisher. This deliberately does not claim a video frame.
+                // Touch uses an explicit input-only publisher. Mouse borrows
+                // the real screen publisher without replacing its lifecycle.
                 if (!mouse) {
                   PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001")
                     .put("directory", File(context.filesDir, "received").apply { mkdirs() }.absolutePath)

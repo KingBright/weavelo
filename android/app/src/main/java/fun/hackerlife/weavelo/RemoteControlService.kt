@@ -211,6 +211,12 @@ class RemoteControlService : AccessibilityService() {
         }
         val ids=(contacts.keys+changes.keys).distinct()
         if (ids.size > GestureDescription.getMaxStrokeCount()) { done(false); return }
+        // Android rejects a continuation with no MotionEvents. Retain the
+        // previous stroke IDs for the next real move/up instead of dispatching
+        // a stationary frame and revoking an otherwise healthy input lease.
+        if (changes.all { (id, change) -> change.action == "Move" &&
+            contacts[id]?.let { !nativeGestureMoved(it.x,it.y,change.x,change.y) } == true
+        }) { done(true); return }
         val previous=contacts
         val next=linkedMapOf<Long,ContactStroke>()
         val strokes=ArrayList<GestureDescription.StrokeDescription>(ids.size)
@@ -244,6 +250,7 @@ class RemoteControlService : AccessibilityService() {
     }
     private fun continueTouch(nx: Float, ny: Float, release: Boolean, done: (Boolean) -> Unit) {
         val previous = stroke ?: return done(false)
+        if (!release && !nativeGestureMoved(x,y,nx,ny)) { done(true); return }
         val path = Path().apply { moveTo(x,y); lineTo(nx,ny) }
         val next = previous.continueStroke(path,0,8,!release)
         x = nx; y = ny; stroke = if (release) null else next
