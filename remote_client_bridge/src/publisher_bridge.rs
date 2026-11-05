@@ -545,8 +545,8 @@ impl MobilePublisher {
                                         }
                                         SessionCommand::GetSourceAppearance{request_id,id,source} if peers.contains_key(&addr)=>{
                                             let response=if peers[&addr].subscriptions.get(&id).is_some_and(|sub|sub.request.source==source) {
-                                                SessionCommand::SourceAppearance{request_id,id,source,appearance:Ok(protocol::appearance::SourceAppearance{application:None,device:shared_badge.lock().unwrap().clone()})}
-                                            } else {SessionCommand::SourceAppearance{request_id,id,source,appearance:Err("Artwork source is no longer selected".into())}};
+                                                SessionCommand::SourceAppearance{request_id,id,source,appearance:Box::new(Ok(protocol::appearance::SourceAppearance{application:None,device:shared_badge.lock().unwrap().clone()}))}
+                                            } else {SessionCommand::SourceAppearance{request_id,id,source,appearance:Box::new(Err("Artwork source is no longer selected".into()))}};
                                             reply(&sender,addr,response).await;
                                         }
                                         SessionCommand::ListSources{request_id,..} if peers.contains_key(&addr)=>{
@@ -882,18 +882,19 @@ mod tests {
         command(&sender,publisher.address,SessionCommand::Open{connection_id:77,version:SESSION_VERSION}).await;
         assert!(matches!(reply(&receiver).await,SessionCommand::Opened{..}));
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:1,id:256,source:CaptureSource::MainDisplay}).await;
-        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance:Err(_),..}));
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance,..} if appearance.is_err()));
         command(&sender,publisher.address,SessionCommand::Subscribe(SubscriptionRequest{id:256,source:CaptureSource::MainDisplay,width:720,height:1280,fps:30,bitrate_kbps:4000,audio:false})).await;
         assert!(matches!(reply(&receiver).await,SessionCommand::Subscribed{id:256,..}));
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:2,id:256,source:CaptureSource::MainDisplay}).await;
-        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance:Ok(protocol::appearance::SourceAppearance{application:None,device:DeviceBadge::Preset(DeviceBadgePreset::Phone)}),..}));
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance,..} if matches!(appearance.as_ref(),Ok(protocol::appearance::SourceAppearance{application:None,device:DeviceBadge::Preset(DeviceBadgePreset::Phone)}))));
         let icon=remote_core::application_icons::encode_rgba(2,2,&[255;16]).unwrap();
         publisher.set_device_badge(DeviceBadge::Custom(icon.clone())).unwrap();
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:3,id:256,source:CaptureSource::MainDisplay}).await;
-        let SessionCommand::SourceAppearance{appearance:Ok(appearance),..}=reply(&receiver).await else {panic!("missing artwork")};
+        let SessionCommand::SourceAppearance{appearance,..}=reply(&receiver).await else {panic!("missing artwork")};
+        let appearance=appearance.unwrap();
         assert_eq!(appearance.device,DeviceBadge::Custom(icon));
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:4,id:256,source:CaptureSource::Camera(9)}).await;
-        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance:Err(_),..}));
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance,..} if appearance.is_err()));
         assert!(publisher.demand().active,"Optional artwork must not end media");
     }
     #[tokio::test]
@@ -1013,8 +1014,10 @@ mod tests {
             .await
             .unwrap();
     }
-    async fn reply(receiver: &remote_core::net::UdpReceiver) -> SessionCommand {
-        tokio::time::timeout(Duration::from_secs(2), async {
+    // Each receive future owns a 64 KiB datagram buffer. Keep repeated test
+    // exchanges off the surrounding unoptimized test coroutine's stack.
+    fn reply(receiver: &remote_core::net::UdpReceiver) -> impl std::future::Future<Output = SessionCommand> + '_ {
+        Box::pin(async move { tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let MultiplexedPacket::Control(ControlMessage::Session(message), _) =
                     receiver.recv().await.unwrap()
@@ -1024,7 +1027,7 @@ mod tests {
             }
         })
         .await
-        .unwrap()
+        .unwrap() })
     }
     #[tokio::test]
     async fn publisher_requires_pairing_and_preserves_pause_revision_and_closed_ids() {
@@ -1202,10 +1205,11 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    async fn receiver_client(
-        publisher: &MobilePublisher,
-        key: &[u8],
-    ) -> (UdpSender, remote_core::net::UdpReceiver) {
+    fn receiver_client<'a>(
+        publisher: &'a MobilePublisher,
+        key: &'a [u8],
+    ) -> impl std::future::Future<Output = (UdpSender, remote_core::net::UdpReceiver)> + 'a {
+        Box::pin(async move {
         let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
         let (sender, receiver) = mux.split();
         remote_core::session_auth::authenticate_with_key(&sender,&receiver,publisher.address,key).await.unwrap();
@@ -1227,6 +1231,7 @@ mod tests {
             }
         ));
         (sender, receiver)
+        })
     }
     fn receiver_subscription(id: u32) -> SubscriptionRequest {
         SubscriptionRequest {
@@ -1314,8 +1319,8 @@ mod tests {
         let directory=ReceiverTestDir::new(); let key=b"android-input-fixture".to_vec();
         let publisher=MobilePublisher::start_with_permissions("127.0.0.1:0".parse().unwrap(),directory.0.clone(),key.clone(),true,false).await.unwrap();
         publisher.set_input_service_available(true); publisher.set_input_capture_allowed(true);
-        let (sender,receiver)=Box::pin(receiver_client(&publisher,&key)).await;
-        let (other,_other_receiver)=Box::pin(receiver_client(&publisher,&key)).await;
+        let (sender,receiver)=receiver_client(&publisher,&key).await;
+        let (other,_other_receiver)=receiver_client(&publisher,&key).await;
         command(&sender,publisher.address,SessionCommand::Subscribe(receiver_subscription(256))).await;
         loop { if matches!(reply(&receiver).await,SessionCommand::Subscribed {supports_input:true,..}) {break;} }
         command(&sender,publisher.address,SessionCommand::RequestInputBinding {connection_id:17,id:256,source_revision:0,request:1}).await;
@@ -1420,7 +1425,7 @@ mod tests {
         let mut clients = Vec::new();
         // Identical connection, subscription and transfer IDs on different
         // authenticated transports must never alias another computer's state.
-        for _ in 0..4 { clients.push(Box::pin(receiver_client(&publisher,&key)).await); }
+        for _ in 0..4 { clients.push(receiver_client(&publisher,&key).await); }
         command(&clients[0].0,address,SessionCommand::Subscribe(receiver_subscription(256))).await;
         assert!(matches!(reply(&clients[0].1).await,SessionCommand::Subscribed {id:256,..}));
         command(&clients[1].0,address,SessionCommand::Subscribe(receiver_subscription(256))).await;

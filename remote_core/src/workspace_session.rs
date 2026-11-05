@@ -1196,15 +1196,17 @@ impl Actor {
                                     continue;
                                 }
                             }
-                            if let SessionCommand::SourceAppearance {source,appearance:Ok(appearance),..} = &command {
-                                let result={
-                                    let mut cache=self.source_icons.lock().unwrap();
-                                    cache.retain_appearances(self.subscriptions.values().map(|view|view.source));
-                                    cache.set_appearance(*source,appearance)
-                                };
-                                if let Err(reason) = result {
-                                    eprintln!("Invalid source artwork: {reason}");
-                                    continue;
+                            if let SessionCommand::SourceAppearance {source,appearance,..} = &command {
+                                if let Ok(appearance) = appearance.as_ref() {
+                                    let result={
+                                        let mut cache=self.source_icons.lock().unwrap();
+                                        cache.retain_appearances(self.subscriptions.values().map(|view|view.source));
+                                        cache.set_appearance(*source,appearance)
+                                    };
+                                    if let Err(reason) = result {
+                                        eprintln!("Invalid source artwork: {reason}");
+                                        continue;
+                                    }
                                 }
                             }
                             if let SessionCommand::Subscribed {id,..} | SessionCommand::SourceSwitched {id,..} = &command {
@@ -1385,10 +1387,10 @@ mod tests {
         let _video=source_switch_view(&mut actor,7);
         let request=SessionCommand::GetSourceAppearance {request_id:99,id:7,source:CaptureSource::MainDisplay};
         let response=SessionCommand::SourceAppearance {request_id:99,id:7,source:CaptureSource::MainDisplay,
-            appearance:Ok(protocol::appearance::SourceAppearance{application:None,device:protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone)})};
+            appearance:Box::new(Ok(protocol::appearance::SourceAppearance{application:None,device:protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone)}))};
         assert!(!actor.accept_control(&response),"unsolicited artwork");
         actor.request(request.clone()).await;
-        let wrong=SessionCommand::SourceAppearance {request_id:99,id:7,source:CaptureSource::Window(9),appearance:Err("gone".into())};
+        let wrong=SessionCommand::SourceAppearance {request_id:99,id:7,source:CaptureSource::Window(9),appearance:Box::new(Err("gone".into()))};
         assert!(!actor.accept_control(&wrong));
         assert!(actor.accept_control(&response));
         assert!(!actor.accept_control(&response),"duplicate response");

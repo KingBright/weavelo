@@ -218,7 +218,9 @@ pub enum SessionCommand {
     Viewport(crate::viewport::ViewportDemand),
     ViewportAccepted { id: u32, source_revision: u32, revision: u64 },
     GetSourceAppearance { request_id: u32, id: u32, source: CaptureSource },
-    SourceAppearance { request_id: u32, id: u32, source: CaptureSource, appearance: Result<crate::appearance::SourceAppearance, String> },
+    // Keep optional artwork off every control message's inline storage. Serde
+    // encodes Box transparently, so this changes memory layout only.
+    SourceAppearance { request_id: u32, id: u32, source: CaptureSource, appearance: Box<Result<crate::appearance::SourceAppearance, String>> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +257,26 @@ pub fn fit_capture_size(source: (u32, u32), target: (u32, u32)) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn optional_artwork_preserves_control_size_and_wire_payload() {
+        // The ordinary command footprint before optional artwork was 120 bytes
+        // on 64-bit targets. Growing it multiplies every async control buffer.
+        assert!(std::mem::size_of::<SessionCommand>() <= 120);
+        let appearance = Ok(crate::appearance::SourceAppearance {
+            application: None,
+            device: crate::appearance::DeviceBadge::Preset(crate::appearance::DeviceBadgePreset::Phone),
+        });
+        let command = SessionCommand::SourceAppearance {
+            request_id: 19, id: 7, source: CaptureSource::MainDisplay,
+            appearance: Box::new(appearance.clone()),
+        };
+        let encoded = bincode::serialize(&command).unwrap();
+        // Enum tag followed by the original unboxed struct fields, byte-for-byte.
+        let old_payload = bincode::serialize(&(19u32, 7u32, CaptureSource::MainDisplay, appearance)).unwrap();
+        assert_eq!(&encoded[4..], old_payload);
+        let decoded: SessionCommand = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(bincode::serialize(&decoded).unwrap(), encoded);
+    }
     #[test]
     fn camera_metadata_cannot_grant_desktop_input_or_attach_to_a_screen() {
         let camera=CameraInfo {facing:CameraFacing::Back,switch_group:11,rotation:90,mirrored:false};

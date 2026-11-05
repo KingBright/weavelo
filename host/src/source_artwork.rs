@@ -49,7 +49,7 @@ impl Requests {
                 query.result=Some(query.task.take().unwrap().await.unwrap_or_else(|e|Err(e.to_string())));
             }
             if query.dirty { if let Some(result)=&query.result {
-                replies.push(SessionCommand::SourceAppearance {request_id:query.request_id,id:*id,source:query.source,appearance:result.clone()});
+                replies.push(SessionCommand::SourceAppearance {request_id:query.request_id,id:*id,source:query.source,appearance:Box::new(result.clone())});
                 query.dirty=false;
             }}
         }

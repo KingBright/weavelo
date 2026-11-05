@@ -2344,7 +2344,7 @@ async fn run_host_service_inner(
                                     if peer.subscriptions.get(&id).is_some_and(|sub|sub.request.source==source) {
                                         peer.artwork.request(request_id,id,source);
                                     } else {
-                                        input_owner.during_control(&injector,send_session(&udp_sender,addr,SessionCommand::SourceAppearance {request_id,id,source,appearance:Err("Artwork source is no longer selected".into())})).await;
+                                        input_owner.during_control(&injector,send_session(&udp_sender,addr,SessionCommand::SourceAppearance {request_id,id,source,appearance:Box::new(Err("Artwork source is no longer selected".into()))})).await;
                                     }
                                 }
                                 SessionCommand::ListSources { request_id, known_icons } if peers.contains_key(&addr) => {
