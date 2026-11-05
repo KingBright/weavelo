@@ -2254,7 +2254,7 @@ impl Render for PopoutStreamView {
             self.native_window_title.clone()
         } else {remote_window_title(peer,source)};
         if title != self.native_window_title {
-            window.set_window_title(&format!("PiP · {title}"));
+            window.set_window_title(&title);
             self.native_window_title = title.clone();
         }
         let current_frame = self
@@ -2475,7 +2475,7 @@ impl Render for RestoredDashboard {
                 .map(|device|device.display_name.as_str())
         });
         let title = if self.stream_source.is_none() {
-            format!("Choose a source · {} — Weavelo", peer.or(self.stream_device.as_deref()).unwrap_or("Device"))
+            peer.or(self.stream_device.as_deref()).unwrap_or("Device").to_owned()
         } else if active_session.is_none() && self.native_window_title!="Weavelo" && !self.native_window_title.is_empty() {
             self.native_window_title.clone()
         } else {remote_window_title(peer.or(self.stream_device.as_deref()),source)};
@@ -3104,11 +3104,11 @@ fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::Ca
                     protocol::session::SourceCategory::Camera=>if source.title.trim().is_empty(){"Camera".into()}else{source.title.trim().to_owned()},
                     protocol::session::SourceCategory::Window=>if source.application.trim().is_empty(){capture_source_label(source)}else{source.application.trim().to_owned()},
                 };
-                format!("{label} · {peer} — Weavelo")
+                format!("{label} · {peer}")
             },
-            None => format!("{peer} · Remote — Weavelo"),
+            None => peer.to_owned(),
         },
-        None => "Weavelo".into(),
+        None => "Device".into(),
     }
 }
 

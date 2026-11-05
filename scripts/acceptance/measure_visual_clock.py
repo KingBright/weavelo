@@ -22,8 +22,10 @@ def main():
     parser.add_argument('--decoder', type=Path, required=True)
     parser.add_argument('--target-json', required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--samples', type=int, default=8, choices=range(3, 61))
+    parser.add_argument('--samples', type=int, default=8)
     args = parser.parse_args()
+    if args.samples < 1:
+        parser.error('--samples must be positive')
     target = json.loads(args.target_json)
     assert isinstance(target.get('source', {}).get('Window'), int), 'Explicit clock-return window required'
     assert target.get('peer_device_id') and target.get('connection_id'), 'Exact connection required'
@@ -75,6 +77,8 @@ def main():
             assert -1 <= age < 30_000, 'Clock origin or decoded-frame timestamp mismatch'
             sample = {'sample': index, 'source_draw_utc_ms': stamp,
                 'return_decoded_at_utc_us': decoded_at, 'draw_to_return_decode_ms': max(0, age),
+                'decoded_frame_age_at_request_lower_ms': max(0, start - decoded_at / 1000),
+                'decoded_frame_age_at_response_upper_ms': end - decoded_at / 1000,
                 'request_start_utc_ms': start, 'response_end_utc_ms': end,
                 'age_lower_ms': max(0, start - stamp), 'age_upper_ms': end - stamp,
                 'observer_bracket_ms': end - start}
@@ -96,6 +100,7 @@ def main():
         'media_hops': 2, 'physical_presentation_measured': False, 'one_way_latency_measured': False,
         'samples': len(samples), 'p50_ms': percentile('draw_to_return_decode_ms', .5),
         'p95_ms': percentile('draw_to_return_decode_ms', .95), 'source_marker_quantization_ms': 1,
+        'max_decoded_frame_age_at_request_lower_ms': max(row['decoded_frame_age_at_request_lower_ms'] for row in samples),
         'note': 'Includes both media paths and intermediate composition/capture; do not divide by two to claim one-way latency.'}
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report), flush=True)

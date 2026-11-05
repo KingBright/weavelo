@@ -282,7 +282,7 @@ impl RestoredDashboard {
             .map(|device| device.display_name.clone())
             .unwrap_or_else(|| context.target.clone());
         let source = context.label();
-        let title = format!("{source} → {device} · Sending — Weavelo");
+        let title = format!("{source} · {device}");
         self.native_window_title = title.clone();
         self.status = context.progress.status.clone();
         window.set_window_title(&title);

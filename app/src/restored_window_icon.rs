@@ -433,7 +433,7 @@ pub(crate) mod macos_dock {
             let delegate: id = msg_send![app, delegate];
             if delegate != nil {
                 let old: id = *(*delegate).get_ivar("streamTitle");
-                let next = ns_string(&format!("Show {}", title.trim_end_matches(" — Weavelo")));
+                let next = ns_string(&format!("Show {title}"));
                 let _: id = msg_send![next, retain];
                 (*delegate).set_ivar("streamTitle", next);
                 if old != nil { let _: () = msg_send![old, release]; }
