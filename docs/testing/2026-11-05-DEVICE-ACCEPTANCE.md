@@ -108,3 +108,13 @@ Android 82 已在努比亚 NX741J 与红米 2409BRN2CC 兼容安装，两台安�
 红米的 Android 83 正式安装通过；系统以 `INSTALL_FAILED_USER_RESTRICTED` 拒绝独立测试 APK，未修改系统安装策略。随后通过正式界面实际拉取 Studio 单应用窗口，横屏画面与 HUD 已目视核验，证据 `android83-redmi-window.png`。红米的五指 instrumentation、两手机接收端同时按住／点击以及游戏和良好同 Wi-Fi 延迟仍待验。
 
 用户明确要求模拟控制归属 Weavelo 移动端。自动整屏及独立后台应用接续 [自有显示与控制方案](../plans/ANDROID-OWNED-DISPLAYS.md)；Octendra 仅为消息触达／维护通道，不成为运行时控制依赖。
+
+## Android 84：真实多点注入与断开回执
+
+产品修复 `b592e10`、`a37c4ff` 均已提交并推送。努比亚与红米原位升级 Android 84，保留原签名；两台安装后独立读取 base.apk，SHA 均为 `55841a28bffaf5e9cc85a90f5e24245d8bdf054ce4668337f4af347e97e0190d`。NAS 发布和公开下载校验通过。四台电脑维持协议 9 的正式 131，本轮修复位于 Android 接收服务。
+
+83 的原生接收测试确实失败：第一指 DOWN 后约 53 ms 收到 CANCEL。Android 的 `MotionEventInjector.prepareToContinueOldGesture` 要求续接第一步只包含原先按住的触点；新指同在 t=0 加入会取消整组手势。84 将新增触点推迟 1 ms，保留原触点连续笔画及同一结束时刻。另修复 Android 收到 Close 后没有返回 Closed 的问题：结束订阅、撤销输入租约并等待所持有连接任务退出后，在撤销会话密钥之前发送完成回执。
+
+努比亚上的正式 84 通过实际接收端测试：8 个原生 MotionEvent，顺序为 DOWN、MOVE、POINTER_DOWN、MOVE、MOVE、POINTER_UP、MOVE、UP；同时存在两个触点，单独释放第二指后第一指继续移动，没有 CANCEL，首尾坐标正确。发送端同时获得 `cleanup_confirmed=true`。测试耗时 1.425 s，nonce 为 `e7b14038-d409-4ccb-b8a8-0742f96a92bf`；证据在 Book 的 `multitouch-nubia-native-events.json`、`multitouch-nubia-native-instrumentation.log` 和 `multitouch-native-sender.log`。此测试用既有鉴权及实际无障碍输入服务，只向专用前台触点页送输入，没有申请或模拟屏幕采集授权，不代表手机到手机视频、手游或端到端延迟已验收。
+
+Android 80 项单元测试、lint、真实宿主测试 APK 编译通过；连接清理相关 18 项测试通过，发布回归 1,047 项通过、19 项跳过。设备 instrumentation 使用 `am instrument --no-restart` 并保留无障碍服务；普通 instrumentation 强制停止应用会干扰已有系统绑定。测试夹具等待发送端写回本次 nonce 后才销毁发布器，避免测试自身抢先关闭连接。红米独立测试 APK 的安装限制仍未解除，不能以努比亚结果代替其原生多指验收。
