@@ -458,14 +458,21 @@ class BuildInputs:
                 'Unknown generated identity owner; preserving inputs')
         values = self.state.get('sha256')
         require(type(values) is list and len(values) == 2, 'Incomplete generated identity ownership')
-        for path, value in zip(self.paths, values):
+        mtimes = self.state.get('mtime_ns', [None, None])
+        if type(mtimes) is not list or len(mtimes) != 2: mtimes = [None, None]
+        for index, (path, value) in enumerate(zip(self.paths, values)):
             if path.exists() or path.is_symlink():
                 regular(path); info = path.stat()
                 require(info.st_uid == os.getuid() and info.st_nlink == 1 and hash_file(path) == sha(value),
                         'Generated identity changed; preserving it')
+                mtimes[index] = info.st_mtime_ns
         for path in self.paths:
             if path.exists(): path.unlink()
-        self.state = {}; self.save()
+        # Retain only the two observed content/mtime pairs in the existing lock.
+        # Recreating identical temporary inputs must not invalidate Cargo's cache.
+        self.state = {'schema': 1, 'project': str(self.repo), 'phase': 'cleaned',
+                      'sha256': values, 'mtime_ns': mtimes, 'pgid': None}
+        self.save()
 
     def __enter__(self):
         require(sys.platform == 'darwin' or sys.platform.startswith('linux'),
@@ -493,17 +500,24 @@ class BuildInputs:
                 pgid = previous.get('pgid')
                 require(pgid is None or (type(pgid) is int and pgid > 1 and not group_alive(pgid)),
                         'Previous compiler children remain active; preserving inputs')
-                self.state = previous; self.cleanup()
+                self.state = previous; self.cleanup(); previous = self.state
             require(not any(p.exists() or p.is_symlink() for p in self.paths),
                     'Unowned fixed identity input exists; preserving it')
             payloads = (json.dumps(self.expected, sort_keys=True, indent=2).encode() + b'\n', compiled_module(self.expected))
             self.state = {'schema': 1, 'project': str(self.repo), 'phase': 'ready',
                           'sha256': [digest(raw) for raw in payloads], 'pgid': None}
             self.save()
-            for path, raw in zip(self.paths, payloads):
+            for index, (path, raw) in enumerate(zip(self.paths, payloads)):
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, 'wb') as output:
                     output.write(raw); output.flush(); os.fsync(output.fileno())
+                stamps = previous.get('mtime_ns', [])
+                digests = previous.get('sha256', [])
+                if (type(stamps) is list and len(stamps) == 2
+                        and type(stamps[index]) is int and stamps[index] > 0
+                        and type(digests) is list and len(digests) == 2
+                        and digests[index] == digest(raw)):
+                    os.utime(path, ns=(path.stat().st_atime_ns, stamps[index]), follow_symlinks=False)
             return self
         except BaseException:
             self.__exit__(*sys.exc_info()); raise

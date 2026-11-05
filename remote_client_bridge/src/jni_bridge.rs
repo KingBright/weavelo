@@ -47,6 +47,14 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
 ) -> jstring {
     let result = (|| -> Result<String, String> {
         let value: String = env.get_string(&payload).map_err(|e| e.to_string())?.into();
+        if operation == 42 {
+            #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+            struct Pixels {width:u32,height:u32,rgba:Vec<u8>}
+            if value.len()>100_000 {return Err("Device badge pixels are oversized".into());}
+            let pixels:Pixels=serde_json::from_str(&value).map_err(|e|e.to_string())?;
+            let icon=remote_core::application_icons::encode_rgba(pixels.width,pixels.height,&pixels.rgba)?;
+            return serde_json::to_string(&icon).map_err(|e|e.to_string());
+        }
         if operation == 0 || operation == 5 || operation == 20 || operation == 30 {
             let value: serde_json::Value =
                 serde_json::from_str(&value).map_err(|e| e.to_string())?;
@@ -76,6 +84,8 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(crate::bridge_device_group_dir()).load()
                 .map_err(|error|error.to_string())?.ok_or("Missing device identity")?;
             publisher.set_device_identity(identity.node_id);
+            let badge=value.get("device_badge").cloned().map(serde_json::from_value).transpose().map_err(|e|e.to_string())?.unwrap_or_default();
+            publisher.set_device_badge(badge)?;
             if operation == 0 {
                 publisher.set_capture_available(true, value["audio"].as_bool().unwrap_or(false));
                 publisher.set_input_service_available(INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed));
@@ -182,6 +192,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             .clone()
             .ok_or("screen sharing is not running")?;
         match operation {
+            41 => {publisher.set_device_badge(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())}
             22 => {
                 #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
                 struct Send {target:String,endpoint:std::net::SocketAddr}

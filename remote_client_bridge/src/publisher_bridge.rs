@@ -47,6 +47,7 @@ enum CaptureFailure {
     ScreenView{stream:u64,grant:u64,reason:String},
 }
 pub struct MobilePublisher {
+    device_badge: Arc<Mutex<protocol::appearance::DeviceBadge>>,
     pub address: SocketAddr,
     media: Arc<Mutex<MediaSources>>,
     media_changed: watch::Sender<u64>,
@@ -169,6 +170,13 @@ impl Drop for Peer {
     }
 }
 impl MobilePublisher {
+    pub fn set_device_badge(&self, badge: protocol::appearance::DeviceBadge) -> Result<(),String> {
+        *self.device_badge.lock().unwrap()=match badge {
+            protocol::appearance::DeviceBadge::Automatic=>protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone),
+            other=>remote_core::device_artwork::resolve(other)?,
+        };
+        Ok(())
+    }
     pub fn set_device_identity(&self, identity:String) {
         self.delivery.set_identity(identity.clone());
         *self.identity.lock().unwrap()=Some(identity);
@@ -322,6 +330,8 @@ impl MobilePublisher {
         let (sender, receiver) = mux.split();
         let media=Arc::new(Mutex::new(MediaSources::new(capture_enabled,allow_audio)));
         let shared=media.clone();
+        let device_badge=Arc::new(Mutex::new(protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone)));
+        let shared_badge=device_badge.clone();
         let (media_changed,mut changed_rx)=watch::channel(1u64);
         let (frames,mut frame_rx)=mpsc::channel::<Frame>(4);
         let (errors,mut error_rx)=mpsc::channel::<CaptureFailure>(8);
@@ -340,7 +350,9 @@ impl MobilePublisher {
         let peer_delivery=delivery.clone();
         let scope=Some(remote_core::shared_files::share_scope_for_key(&key));
         let advertised_lifetime = AdvertisedPublisher(capabilities.clone(), input.clone(),alive.clone());
-        let task = tokio::spawn(async move {
+        // Allocate the large publisher future before handing it to the executor.
+        // This avoids extra stack copies on Android-sized worker/test stacks.
+        let task = tokio::spawn(Box::pin(async move {
             let _advertised_lifetime = advertised_lifetime;
             let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
             let mut authenticated: HashMap<SocketAddr, ([u8;16], [u8;16], Instant)> = HashMap::new();
@@ -531,6 +543,12 @@ impl MobilePublisher {
                                             let peer=&peers[&addr];let (_,nonce,_)=authenticated[&addr];
                                             reply(&sender,addr,peer_delivery.cancel(DeliveryPeer {addr,connection:peer.id,nonce,scope},request_id)).await;
                                         }
+                                        SessionCommand::GetSourceAppearance{request_id,id,source} if peers.contains_key(&addr)=>{
+                                            let response=if peers[&addr].subscriptions.get(&id).is_some_and(|sub|sub.request.source==source) {
+                                                SessionCommand::SourceAppearance{request_id,id,source,appearance:Ok(protocol::appearance::SourceAppearance{application:None,device:shared_badge.lock().unwrap().clone()})}
+                                            } else {SessionCommand::SourceAppearance{request_id,id,source,appearance:Err("Artwork source is no longer selected".into())}};
+                                            reply(&sender,addr,response).await;
+                                        }
                                         SessionCommand::ListSources{request_id,..} if peers.contains_key(&addr)=>{
                                             let ready=shared_input.lock().unwrap().ready();
                                             let catalog=shared.lock().unwrap().catalog(ready);
@@ -689,8 +707,9 @@ impl MobilePublisher {
                     }
                 }
             }
-        });
+        }));
         Ok(Self {
+            device_badge,
             address,
             media,
             media_changed,
@@ -853,6 +872,30 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn selected_mobile_source_reports_its_phone_or_custom_badge() {
+        use protocol::appearance::{DeviceBadge,DeviceBadgePreset};
+        let key=b"mobile-source-artwork".to_vec();
+        let publisher=MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),std::env::temp_dir(),key.clone(),true,false,false).await.unwrap();
+        let (sender,receiver)=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap().split();
+        remote_core::session_auth::authenticate_with_key(&sender,&receiver,publisher.address,&key).await.unwrap();
+        command(&sender,publisher.address,SessionCommand::Open{connection_id:77,version:SESSION_VERSION}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::Opened{..}));
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:1,id:256,source:CaptureSource::MainDisplay}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance:Err(_),..}));
+        command(&sender,publisher.address,SessionCommand::Subscribe(SubscriptionRequest{id:256,source:CaptureSource::MainDisplay,width:720,height:1280,fps:30,bitrate_kbps:4000,audio:false})).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::Subscribed{id:256,..}));
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:2,id:256,source:CaptureSource::MainDisplay}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance:Ok(protocol::appearance::SourceAppearance{application:None,device:DeviceBadge::Preset(DeviceBadgePreset::Phone)}),..}));
+        let icon=remote_core::application_icons::encode_rgba(2,2,&[255;16]).unwrap();
+        publisher.set_device_badge(DeviceBadge::Custom(icon.clone())).unwrap();
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:3,id:256,source:CaptureSource::MainDisplay}).await;
+        let SessionCommand::SourceAppearance{appearance:Ok(appearance),..}=reply(&receiver).await else {panic!("missing artwork")};
+        assert_eq!(appearance.device,DeviceBadge::Custom(icon));
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:4,id:256,source:CaptureSource::Camera(9)}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance:Err(_),..}));
+        assert!(publisher.demand().active,"Optional artwork must not end media");
+    }
     #[tokio::test]
     async fn sending_requires_capture_and_stop_cannot_cancel_a_replacement_intent() {
         let publisher = MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),

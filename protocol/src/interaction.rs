@@ -98,7 +98,11 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// Validate the bounded, normalized RGBA PNG container before any image decoder.
 /// Decoders must additionally bound pixel allocation; this does not inflate IDAT.
 pub fn validate_icon_container(png: &[u8]) -> Result<(u32, u32), &'static str> {
-    if png.len() > MAX_ICON_BYTES || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+    validate_png_container(png, MAX_ICON_EDGE, MAX_ICON_BYTES)
+}
+
+pub fn validate_png_container(png: &[u8], max_edge: u32, max_bytes: usize) -> Result<(u32, u32), &'static str> {
+    if png.len() > max_bytes || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err("invalid application PNG size or signature");
     }
     let mut offset = 8_usize;
@@ -119,11 +123,11 @@ pub fn validate_icon_container(png: &[u8]) -> Result<(u32, u32), &'static str> {
             b"IHDR" if offset == 8 && size == 13 => {
                 let width = u32::from_be_bytes(chunk[8..12].try_into().unwrap());
                 let height = u32::from_be_bytes(chunk[12..16].try_into().unwrap());
-                if !(1..=MAX_ICON_EDGE).contains(&width)
-                    || !(1..=MAX_ICON_EDGE).contains(&height)
+                if !(1..=max_edge).contains(&width)
+                    || !(1..=max_edge).contains(&height)
                     || chunk[16..21] != [8, 6, 0, 0, 0]
                 {
-                    return Err("application PNG must be at most 64 x 64 RGBA8 pixels");
+                    return Err("application PNG exceeds its RGBA8 pixel bounds");
                 }
                 dimensions = Some((width, height));
             }

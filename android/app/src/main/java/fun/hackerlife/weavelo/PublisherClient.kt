@@ -25,7 +25,10 @@ object PublisherClient {
         private set
     fun status(message: String, active: Boolean = this.active) { this.active = active; mutable.value = message }
     fun action(operation: Int, payload: String = ""): String {
-        val result = nativeAction(operation, payload)
+        val body = if (operation in listOf(0, 5, 20, 30)) {
+            org.json.JSONObject(payload).put("device_badge", DeviceArtwork.savedJson()).toString()
+        } else payload
+        val result = nativeAction(operation, body)
         if (result.startsWith("{\"error\"")) throw IllegalStateException(JSONObject(result).getString("error"))
         return result
     }

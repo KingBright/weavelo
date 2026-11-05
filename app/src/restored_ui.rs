@@ -872,6 +872,7 @@ impl RestoredDashboard {
             role: snapshot.role,
             devices: snapshot.devices,
             source_icons: self.artwork_cache.borrow_mut().update(snapshot.source_icons),
+            source_appearances: snapshot.source_appearances,
             capture_sources: snapshot.sources,
             source_binding: snapshot.source_binding,
             active_capture_source: snapshot.active_source,
@@ -2501,8 +2502,9 @@ impl Render for RestoredDashboard {
             window.set_window_title(&title);
             self.native_window_title = title;
         }
-        let bitmap=matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
-            .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten();
+        let appearance=snapshot.source_appearances.get(&snapshot.active_capture_source);
+        let bitmap=appearance.and_then(|value|value.application.clone()).or_else(||matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
+            .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten());
         let app_source = matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_));
         if self.purpose == WindowPurpose::Stream && matches!(role, RoleState::Viewing(_))
             && (!app_source || source.is_some()) {
@@ -2514,7 +2516,7 @@ impl Render for RestoredDashboard {
                     protocol::session::SourceCategory::Screen => "Display",
                 });
             self.native_window_artwork.sync_stream(
-                window, cx, bitmap.as_deref(), app_name, peer.unwrap_or("Device"),
+                window, cx, bitmap.as_deref(), appearance.map(AsRef::as_ref), app_name, peer.unwrap_or("Device"),
             );
         } else {
             self.native_window_artwork.close();
@@ -5834,6 +5836,7 @@ struct DashboardSnapshot {
     devices: Vec<AppDevice>,
     capture_sources: Arc<Vec<protocol::session::CaptureSourceInfo>>,
     source_icons: SourceArtwork,
+    source_appearances: remote_core::application_icons::SourceAppearances,
     source_binding: Option<SourceViewBinding>,
     active_capture_source: protocol::session::CaptureSource,
     pending_capture_source: Option<protocol::session::CaptureSource>,

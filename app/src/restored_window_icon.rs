@@ -1,5 +1,6 @@
 use gpui::{App,Window,WindowIcon};
 use std::sync::OnceLock;
+use remote_core::application_icons::SourceAppearance;
 use remote_core::application_icons::IconBitmap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,9 +11,9 @@ pub(super) enum DockAction {
 
 #[derive(Default)]
 pub(super) struct Artwork {
-    current: Option<[u8; 32]>,
+    current: Option<(Option<[u8; 32]>, [u8;32])>,
     #[cfg(target_os = "macos")]
-    dock_icon: Option<[u8; 32]>,
+    dock_icon: Option<(Option<[u8; 32]>, [u8;32])>,
     #[cfg(target_os = "macos")]
     dock_title: String,
     #[cfg(target_os = "macos")]
@@ -22,12 +23,19 @@ pub(super) struct Artwork {
 }
 impl Artwork {
     pub fn sync(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>) {
-        let next=bitmap.map(|bitmap|bitmap.id);
+        self.sync_badged(window,cx,bitmap,None);
+    }
+    fn sync_badged(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>,appearance:Option<&SourceAppearance>) {
+        let next=Some((bitmap.map(|bitmap|bitmap.id),badge_id(appearance)));
         if self.current==next {return;}
         let result=(||->Result<(),String> {
             if let Some(bitmap)=bitmap {
-                let (edge,pixels)=remote_application_pixels(bitmap, computer_badge(cx)?, false)?;
+                let (edge,pixels)=remote_application_pixels(bitmap, &badge_pixels(cx,appearance)?, false)?;
                 let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
+                window.set_window_icon(&icon).map_err(|e|e.to_string())?;
+            } else if appearance.is_some() {
+                let badge=badge_pixels(cx,appearance)?;
+                let icon=WindowIcon::new(badge.width(),badge.into_raw()).map_err(|e|e.to_string())?;
                 window.set_window_icon(&icon).map_err(|e|e.to_string())?;
             } else {apply(window,cx);}
             Ok(())
@@ -43,10 +51,11 @@ impl Artwork {
         window: &mut Window,
         cx: &App,
         bitmap: Option<&IconBitmap>,
+        appearance: Option<&SourceAppearance>,
         title: &str,
         device: &str,
     ) {
-        self.sync(window, cx, bitmap);
+        self.sync_badged(window, cx, bitmap, appearance);
         #[cfg(target_os = "macos")]
         {
             if cfg!(test)
@@ -55,7 +64,7 @@ impl Artwork {
             {
                 return;
             }
-            let next_icon = Some(bitmap.map_or([0u8; 32], |b| b.id));
+            let next_icon = Some((bitmap.map(|b|b.id),badge_id(appearance)));
             let icon_changed = self.dock_icon != next_icon || self.dock_proxy.is_none();
             let title_changed = self.dock_title != title || self.dock_device != device;
             if !icon_changed && !title_changed {
@@ -63,9 +72,10 @@ impl Artwork {
             }
             let pixels = if icon_changed {
                 let raw = if let Some(bitmap) = bitmap {
-                    computer_badge(cx).and_then(|badge| remote_application_pixels(bitmap, badge, true))
+                    badge_pixels(cx,appearance).and_then(|badge| remote_application_pixels(bitmap, &badge, true))
                 } else {
-                    default_remote_dock_pixels(cx)
+                    if appearance.is_some() {badge_pixels(cx,appearance).map(|badge|(badge.width(),badge.into_raw()))}
+                    else {default_remote_dock_pixels(cx)}
                 };
                 match raw {
                     Ok(rgba) => Some(rgba),
@@ -147,6 +157,22 @@ fn remote_application_pixels(
         }
     }
     Ok((edge, image.into_raw()))
+}
+
+fn badge_id(appearance:Option<&SourceAppearance>)->[u8;32] {
+    appearance.map(|value|value.custom.as_ref().map(|icon|icon.id).unwrap_or_else(|| {
+        let mut id=[0u8;32];id[0]=value.preset as u8+1;id
+    })).unwrap_or([0u8;32])
+}
+fn badge_pixels(cx:&App,appearance:Option<&SourceAppearance>)->Result<image::RgbaImage,String> {
+    let Some(appearance)=appearance else {return computer_badge(cx).cloned();};
+    if let Some(custom)=&appearance.custom {
+        let (edge,pixels)=native_pixels(custom);
+        return image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid custom device badge".into());
+    }
+    let image=cx.svg_renderer().render_single_frame(super::device_badges::preset_svg(appearance.preset),2.,false).map_err(|error|error.to_string())?;
+    let size=image.size(0);
+    image::RgbaImage::from_raw(size.width.0 as u32,size.height.0 as u32,image.as_bytes(0).ok_or("Missing device badge pixels")?.to_vec()).ok_or("Invalid device badge pixels".into())
 }
 
 fn computer_badge(cx: &App) -> Result<&'static image::RgbaImage, String> {

@@ -20,7 +20,7 @@ data class WorkspaceSource(val source: Any, val title: String, val width: Int, v
 }
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
-    val accepted: Boolean = false, val inputError: String? = null, val videoError: String? = null)
+    val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null)
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val deviceId: String = "", val transferring: Boolean = false, val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
@@ -541,6 +541,16 @@ object WorkspaceClient {
             control?.optJSONObject("ClipboardState")?.let { mutable.value = mutable.value.copy(clipboard = it.getBoolean("enabled")) }
             event.optJSONObject("clipboard")?.let { applyClipboard(it) }
             event.optJSONObject("detail")?.takeIf { it.has("clipboard_files") }?.let { applyClipboard(it) }
+            control?.optJSONObject("SourceAppearance")?.let { response ->
+                val id = response.getInt("id")
+                val source = response.get("source").toString()
+                response.getJSONObject("appearance").optJSONObject("Ok")?.let { value ->
+                    val appearance = DeviceArtwork.decode(value)
+                    mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
+                        if (pane.id == id && pane.source.source.toString() == source) pane.copy(appearance = appearance) else pane
+                    })
+                }
+            }
             control?.optJSONObject("Sources")?.let { response ->
                 val assets = response.getJSONArray("icons")
                 for (index in 0 until assets.length()) {

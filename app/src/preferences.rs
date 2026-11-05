@@ -90,24 +90,7 @@ pub struct UiPreferences {
     pub(crate) device_badge: DeviceBadge,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DeviceBadgePreset {
-    Computer,
-    MacBook,
-    MacStudio,
-    Windows,
-    Linux,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DeviceBadge {
-    #[default]
-    Automatic,
-    Preset(DeviceBadgePreset),
-    Custom(protocol::interaction::ApplicationIcon),
-}
+pub(crate) use protocol::appearance::{DeviceBadge, DeviceBadgePreset};
 
 impl Default for UiPreferences {
     fn default() -> Self {

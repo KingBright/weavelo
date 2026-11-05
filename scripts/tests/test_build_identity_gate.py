@@ -502,6 +502,19 @@ class BuildIdentityGateTests(unittest.TestCase):
                 self.assertEqual(gate.read_json(inputs.document), self.identity)
         self.assertFalse(inputs.document.exists())
 
+    def test_identical_temporary_inputs_keep_mtimes_but_changed_inputs_invalidate(self):
+        target = self.root / 'rust-target'; target.mkdir()
+        with gate.BuildInputs(self.repo, target, self.identity) as owned:
+            for path in owned.paths: os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        self.assertFalse(owned.document.exists())
+        with gate.BuildInputs(self.repo, target, self.identity) as reused:
+            self.assertEqual([path.stat().st_mtime_ns for path in reused.paths], [1_000_000_000] * 2)
+        changed = deepcopy(self.identity)
+        changed['identity_sha256'] = 'a' * 64
+        with gate.BuildInputs(self.repo, target, changed) as fresh:
+            self.assertTrue(all(path.stat().st_mtime_ns > 1_000_000_000 for path in fresh.paths))
+        self.assertFalse(fresh.document.exists())
+
     def test_shared_receipt_cannot_relabel_itself_fresh(self):
         self.receipt.update(schema=2, build_storage={'mode': 'shared-incremental',
                            'target_directory': str(self.root / 'rust-target'), 'source_directory': str(self.repo)})

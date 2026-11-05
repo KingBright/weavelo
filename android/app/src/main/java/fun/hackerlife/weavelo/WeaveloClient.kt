@@ -120,6 +120,7 @@ object WeaveloClient {
 
     fun initialize(context: Context): Boolean {
         appContext = context.applicationContext
+        DeviceArtwork.initialize(context)
         if (networkObservation == null) {
             runCatching { AppNetworkObservation(context.applicationContext).also { it.start() } }
                 .onSuccess { networkObservation = it }

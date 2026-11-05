@@ -1,3 +1,4 @@
+pub mod device_artwork;
 pub mod directed_delivery;
 pub mod cameras;
 pub mod camera_switch;

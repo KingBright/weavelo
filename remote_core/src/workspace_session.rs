@@ -13,7 +13,7 @@ use crate::media_plane::{audio_stream_config_from_envelope, realtime_data_to_rtp
 use crate::net::{MultiplexedPacket, UdpMultiplexer, UdpReceiver, UdpSender};
 use crate::scheduled_sender::{ScheduledDataSender, ScheduledDataSenderConfig};
 use crate::session_crypto::*;
-use protocol::session::{SESSION_VERSION, SessionCommand, SubscriptionRequest};
+use protocol::session::{CaptureSource, SESSION_VERSION, SessionCommand, SubscriptionRequest};
 use protocol::{ContentKind, ControlMessage, DataEnvelope, FrameTimingCheckpoints, RtpPacket};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -400,6 +400,9 @@ impl WorkspaceConnection {
     pub fn source_icons(&self) -> crate::application_icons::SourceIconAssets {
         self.source_icons.lock().unwrap().assets()
     }
+    pub fn source_appearances(&self) -> crate::application_icons::SourceAppearances {
+        self.source_icons.lock().unwrap().appearances()
+    }
     fn prepare_command(&self, mut command: SessionCommand, input: &mut InputState) -> Result<Command, String> {
         if let SessionCommand::ListSources { known_icons, .. } = &mut command {
             *known_icons = self.source_icons.lock().unwrap().known_ids();
@@ -488,6 +491,7 @@ impl WorkspaceConnection {
 }
 
 struct View {
+    source: CaptureSource,
     host_stats: Arc<SharedHostStats>,
     handler: MediaPacketHandler,
     accepted: bool,
@@ -676,6 +680,7 @@ fn request_key(command: &SessionCommand) -> Option<(u8, u32)> {
         SessionCommand::ListSources { request_id, .. } | SessionCommand::Sources { request_id, .. } => {
             Some((1, *request_id))
         }
+        SessionCommand::GetSourceAppearance {request_id,..} | SessionCommand::SourceAppearance {request_id,..} => Some((10,*request_id)),
         SessionCommand::Subscribe(request) => Some((2, request.id)),
         SessionCommand::Subscribed { id, .. } => Some((2, *id)),
         SessionCommand::Unsubscribe { id } | SessionCommand::Unsubscribed { id } => Some((3, *id)),
@@ -694,13 +699,13 @@ fn confirmation_timeout_reason(category:u8) -> &'static str {
         3=>"host video stop confirmation timed out", 4=>"host media activity confirmation timed out",
         5=>"host clipboard confirmation timed out", 6=>"host video settings confirmation timed out",
         7=>"host input release confirmation timed out", 8=>"host source switch confirmation timed out",
-        9=>"host connection close confirmation timed out", _=>"host confirmation timed out",
+        9=>"host connection close confirmation timed out", 10=>"host artwork request timed out", _=>"host confirmation timed out",
     }
 }
 /// Classify only the local, category-preserving timeout messages emitted below.
 /// Other authenticated peer errors keep their existing handling. No wire change.
 pub fn confirmation_timeout_affects_media(reason:&str) -> Option<bool> {
-    (1..=9).find(|category|confirmation_timeout_reason(*category)==reason)
+    (1..=10).find(|category|confirmation_timeout_reason(*category)==reason)
         .map(|category|matches!(category,2|4|8))
 }
 
@@ -759,6 +764,9 @@ impl Actor {
             .await;
     }
     async fn request(&mut self, command: SessionCommand) {
+        if let SessionCommand::SwitchSource {id,..} = &command {
+            self.pending.retain(|_,pending|!matches!(pending.command,SessionCommand::GetSourceAppearance {id:previous,..} if previous == *id));
+        }
         if let SessionCommand::SwitchSource { id, .. } = &command {
             // Only the latest intent for this subscription may reopen video.
             // Late acknowledgements of superseded requests are ignored.
@@ -801,7 +809,7 @@ impl Actor {
                 self.pending.remove(&(6, *id));
                 self.pending.remove(&(7, *id));
                 self.pending.retain(|_, pending|
-                    !matches!(pending.command, SessionCommand::SwitchSource { id: requested, .. } if requested == *id));
+                    !matches!(pending.command, SessionCommand::SwitchSource { id: requested, .. } | SessionCommand::GetSourceAppearance { id: requested, .. } if requested == *id));
             }
             SessionCommand::SetActivity {
                 id,
@@ -919,6 +927,9 @@ impl Actor {
                 None,
             );
             let current = match command {
+                SessionCommand::SourceAppearance {request_id,id,source,..} =>
+                    self.subscriptions.get(id).is_some_and(|view|view.source==*source)
+                    && pending.is_some_and(|pending|matches!(&pending.command,SessionCommand::GetSourceAppearance {request_id:expected,id:expected_id,source:expected_source} if expected==request_id && expected_id==id && expected_source==source)),
                 SessionCommand::Subscribed { id, .. } => self.subscriptions.contains_key(id)
                     && pending.is_some_and(|pending| matches!(&pending.command,
                         SessionCommand::Subscribe(request) if request.id == *id)),
@@ -951,10 +962,11 @@ impl Actor {
                 pending.map(|p| p.started.elapsed()),
                 None,
             );
-            if let SessionCommand::SourceSwitched { id, .. } = command {
+            if let SessionCommand::SourceSwitched { id, source, .. } = command {
                 let Some(view) = self.subscriptions.get_mut(id) else {
                     return false;
                 };
+                view.source = *source;
                 view.handler.reset_video_source();
             }
             self.pending.remove(&key);
@@ -1126,7 +1138,7 @@ impl Actor {
                             let _ = self.control_tx.send(SessionCommand::Error { request_id: request.id, reason: "decoder subscription limit reached".into() }); continue;
                         }
                         let handler = MediaPacketHandler::new(stats, Arc::new(AtomicU32::new(request.id)), host_stats.clone(), self.audio_tx.clone(), video, None);
-                        self.subscriptions.insert(request.id, View { handler, host_stats, accepted: false, active: false, audio_active: false, audio_owner: None, wanted: crate::media_demand::MediaDemand { video: true, audio: request.audio }, activity_revision: 0 });
+                        self.subscriptions.insert(request.id, View { source: request.source, handler, host_stats, accepted: false, active: false, audio_active: false, audio_owner: None, wanted: crate::media_demand::MediaDemand { video: true, audio: request.audio }, activity_revision: 0 });
                         self.refresh_audio_activity();
                         self.request(SessionCommand::Subscribe(request)).await;
                     }
@@ -1182,6 +1194,26 @@ impl Actor {
                                 if let Err(reason) = result {
                                     let _ = self.control_tx.send(SessionCommand::Error { request_id: *request_id, reason });
                                     continue;
+                                }
+                            }
+                            if let SessionCommand::SourceAppearance {source,appearance:Ok(appearance),..} = &command {
+                                let result={
+                                    let mut cache=self.source_icons.lock().unwrap();
+                                    cache.retain_appearances(self.subscriptions.values().map(|view|view.source));
+                                    cache.set_appearance(*source,appearance)
+                                };
+                                if let Err(reason) = result {
+                                    eprintln!("Invalid source artwork: {reason}");
+                                    continue;
+                                }
+                            }
+                            if let SessionCommand::Subscribed {id,..} | SessionCommand::SourceSwitched {id,..} = &command {
+                                if let Some(view) = self.subscriptions.get(id) {
+                                    static NEXT_ARTWORK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xa0000000);
+                                    if let Ok(request_id) = NEXT_ARTWORK.try_update(std::sync::atomic::Ordering::Relaxed,std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)) {
+                                        let request=SessionCommand::GetSourceAppearance {request_id,id:*id,source:view.source};
+                                        self.request(request).await;
+                                    }
                                 }
                             }
                             let closed = matches!(command, SessionCommand::Closed { connection_id, .. } if connection_id == self.id);
@@ -1348,6 +1380,28 @@ mod tests {
     use protocol::session::CaptureSource;
 
     #[tokio::test]
+    async fn artwork_replies_require_the_current_selected_source_and_request() {
+        let (mut actor,_audio)=source_switch_actor().await;
+        let _video=source_switch_view(&mut actor,7);
+        let request=SessionCommand::GetSourceAppearance {request_id:99,id:7,source:CaptureSource::MainDisplay};
+        let response=SessionCommand::SourceAppearance {request_id:99,id:7,source:CaptureSource::MainDisplay,
+            appearance:Ok(protocol::appearance::SourceAppearance{application:None,device:protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone)})};
+        assert!(!actor.accept_control(&response),"unsolicited artwork");
+        actor.request(request.clone()).await;
+        let wrong=SessionCommand::SourceAppearance {request_id:99,id:7,source:CaptureSource::Window(9),appearance:Err("gone".into())};
+        assert!(!actor.accept_control(&wrong));
+        assert!(actor.accept_control(&response));
+        assert!(!actor.accept_control(&response),"duplicate response");
+        actor.request(request.clone()).await;
+        actor.request(SessionCommand::SwitchSource {id:7,request_id:100,source:CaptureSource::Window(9)}).await;
+        assert!(!actor.accept_control(&response),"superseded source");
+        actor.request(request).await;
+        actor.prepare_control(&SessionCommand::Unsubscribe{id:7});
+        assert!(!actor.accept_control(&response),"ended subscription");
+        assert_eq!(confirmation_timeout_affects_media(confirmation_timeout_reason(10)),Some(false));
+    }
+
+    #[tokio::test]
     async fn close_revokes_held_input_before_waiting_for_a_full_command_queue() {
         let (actor, _audio) = source_switch_actor().await;
         let input = actor.input.clone();
@@ -1510,6 +1564,7 @@ mod tests {
         actor.subscriptions.insert(
             id,
             View {
+                source: CaptureSource::MainDisplay,
                 host_stats: Arc::new(SharedHostStats::default()),
                 handler,
                 accepted: true,
@@ -2259,6 +2314,7 @@ mod tests {
         let (video_tx, mut video_rx) = crate::video_queue::channel(2);
         let stats = Statistics::new();
         let view = View {
+            source: CaptureSource::MainDisplay,
             host_stats: Arc::new(SharedHostStats::default()),
             accepted: true,
             active: true,

@@ -61,6 +61,16 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     var hudInteraction by remember(sessionKey) { mutableLongStateOf(0L) }
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
+    val activePane = state.panes.firstOrNull { it.id == state.selected } ?: state.panes.firstOrNull()
+    LaunchedEffect(activePane?.id, activePane?.appearance, activePane?.source?.icon, remoteDevice?.name) {
+        (context as? android.app.Activity)?.let { activity ->
+            if (activePane == null) `fun`.hackerlife.weavelo.DeviceArtwork.restore(activity)
+            else `fun`.hackerlife.weavelo.DeviceArtwork.task(activity, activePane, remoteDevice?.name ?: "Device")
+        }
+    }
+    DisposableEffect(context) {
+        onDispose { (context as? android.app.Activity)?.let { `fun`.hackerlife.weavelo.DeviceArtwork.restore(it) } }
+    }
     var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     val disconnect: () -> Unit = {
         SessionConnectionService.closeWorkspace(context, sessionKey)
@@ -185,7 +195,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                         if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
                                             .safeDrawingPadding().padding(top = 56.dp)
                                             .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
-                                            TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                            TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
                                                 MobileAction(MobileSymbol.CameraSwitch, "Switch camera", state.connected) {
                                                     WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
@@ -299,7 +309,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 Text(it, color = Color.LightGray, maxLines = 2)
             }
             if (!typing && !state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
-                state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source); Text(pane.source.title) } }
+                state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title) } }
             }
             }
             if (!hudVisible && state.panes.isNotEmpty() && !typing) MobileAction(MobileSymbol.More, "Show stream controls",

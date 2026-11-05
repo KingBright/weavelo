@@ -6,8 +6,15 @@ use std::{
     sync::OnceLock,
 };
 
-impl Preset {
-    const CHOICES: [Self; 4] = [Self::MacBook, Self::MacStudio, Self::Windows, Self::Linux];
+trait PresetUi: Sized {
+    const CHOICES: [Self; 5];
+    fn label(self) -> &'static str;
+    fn svg(self) -> &'static [u8];
+    fn image(self, cx: &App) -> Option<Arc<RenderImage>>;
+    fn platform_default() -> Self;
+}
+impl PresetUi for Preset {
+    const CHOICES: [Self; 5] = [Self::MacBook, Self::MacStudio, Self::Windows, Self::Linux, Self::Phone];
 
     fn label(self) -> &'static str {
         match self {
@@ -16,6 +23,7 @@ impl Preset {
             Self::MacStudio => "Mac Studio",
             Self::Windows => "Windows",
             Self::Linux => "Linux",
+            Self::Phone => "Android phone",
         }
     }
 
@@ -28,11 +36,12 @@ impl Preset {
             }
             Self::Windows => include_bytes!("product_components/icons/device-badge-windows.svg"),
             Self::Linux => include_bytes!("product_components/icons/device-badge-linux.svg"),
+            Self::Phone => include_bytes!("product_components/icons/device-badge-phone.svg"),
         }
     }
 
     fn image(self, cx: &App) -> Option<Arc<RenderImage>> {
-        static IMAGES: [OnceLock<Option<Arc<RenderImage>>>; 5] = [const { OnceLock::new() }; 5];
+        static IMAGES: [OnceLock<Option<Arc<RenderImage>>>; 6] = [const { OnceLock::new() }; 6];
         IMAGES[self as usize]
             .get_or_init(|| {
                 cx.svg_renderer()
@@ -53,35 +62,7 @@ impl Preset {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn mac_hardware_badge() -> Preset {
-    static PRESET: OnceLock<Preset> = OnceLock::new();
-    *PRESET.get_or_init(|| {
-        let model = std::process::Command::new("/usr/sbin/system_profiler")
-            .args([
-                "-timeout",
-                "2",
-                "SPHardwareDataType",
-                "-detailLevel",
-                "mini",
-                "-json",
-            ])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
-            .and_then(|info| {
-                info["SPHardwareDataType"][0]["machine_name"]
-                    .as_str()
-                    .map(str::to_owned)
-            });
-        match model.as_deref() {
-            Some(name) if name.starts_with("MacBook") => Preset::MacBook,
-            Some("Mac Studio") => Preset::MacStudio,
-            _ => Preset::Computer,
-        }
-    })
-}
+pub(super) fn preset_svg(preset: Preset) -> &'static [u8] {preset.svg()}
 
 pub(super) struct Editor {
     selection: DeviceBadge,
@@ -109,7 +90,7 @@ impl Editor {
     pub(super) fn detect_hardware(cx: &mut Context<RestoredDashboard>) {
         #[cfg(target_os = "macos")]
         if !cfg!(test) {
-            let task = tokio::task::spawn_blocking(mac_hardware_badge);
+            let task = tokio::task::spawn_blocking(remote_core::device_artwork::automatic);
             cx.spawn(async move |view, cx| {
                 if let Ok(preset) = task.await {
                     let _ = view.update(cx, |this, cx| {

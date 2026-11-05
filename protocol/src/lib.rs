@@ -1,3 +1,4 @@
+pub mod appearance;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;

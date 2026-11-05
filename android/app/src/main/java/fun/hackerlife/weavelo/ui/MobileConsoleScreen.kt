@@ -797,6 +797,7 @@ private fun SettingsTabContent(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item { DeviceBadgeSettings() }
         item {
             Text(
                 text = "RUNTIME & ENGINE",

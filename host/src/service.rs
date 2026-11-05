@@ -334,6 +334,7 @@ struct InputLeaseSlot {
 
 struct Connection {
     source_catalog: crate::source_catalog::SourceCatalog,
+    artwork: crate::source_artwork::Requests,
     versioned_control: bool,
     delivery_owner: Option<(crate::directed_delivery::Peer,[u8;32])>,
     delivery_cancel: Option<watch::Receiver<bool>>,
@@ -932,6 +933,7 @@ impl Connection {
         crate::lifecycle::publish(id, &resources, "open");
         Self {
             source_catalog: crate::source_catalog::SourceCatalog::default(),
+            artwork: Default::default(),
             versioned_control: false,
             delivery_owner: None,
             delivery_cancel: None,
@@ -2168,6 +2170,12 @@ async fn run_host_service_inner(
                     *peer.resources.scheduled_data.lock().unwrap()=Some(crate::lifecycle::ScheduledDataObservation {
                         observed_at_ms:now_unix_ms(),stats:peer.sender.stats(),
                     });
+                    if peer.artwork.needs_poll() {
+                        let artwork_sources=peer.subscriptions.iter().map(|(id,sub)|(*id,sub.request.source)).collect();
+                        for reply in peer.artwork.ready(&artwork_sources).await {
+                            input_owner.during_control(&injector,send_session(&udp_sender,*addr,reply)).await;
+                        }
+                    }
                     if let Some((request_id, result)) = peer.source_catalog.take_ready().await {
                         let reply = match result.and_then(|mut directory| {
                             peer.merge_capture_sources(Ok(std::mem::take(&mut directory.sources))).map(|sources|directory.reply(request_id,sources))
@@ -2329,6 +2337,14 @@ async fn run_host_service_inner(
                                     if let (Some(broker),Some(p),Some((nonce,_,_)))=(&delivery,peers.get(&addr),authenticated.get(&addr)) {
                                         let owner=crate::directed_delivery::Peer{addr,connection:p.id,nonce:*nonce,scope:remote_core::shared_files::current_share_scope()};
                                         input_owner.during_control(&injector,send_session(&udp_sender,addr,broker.cancel(owner,request_id))).await;
+                                    }
+                                }
+                                SessionCommand::GetSourceAppearance {request_id,id,source} if peers.contains_key(&addr) => {
+                                    let peer=peers.get_mut(&addr).unwrap();
+                                    if peer.subscriptions.get(&id).is_some_and(|sub|sub.request.source==source) {
+                                        peer.artwork.request(request_id,id,source);
+                                    } else {
+                                        input_owner.during_control(&injector,send_session(&udp_sender,addr,SessionCommand::SourceAppearance {request_id,id,source,appearance:Err("Artwork source is no longer selected".into())})).await;
                                     }
                                 }
                                 SessionCommand::ListSources { request_id, known_icons } if peers.contains_key(&addr) => {
