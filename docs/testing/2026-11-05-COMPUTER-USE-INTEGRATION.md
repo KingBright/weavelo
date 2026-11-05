@@ -21,7 +21,7 @@ Mac 主 main：30 项 computer-use 检查、16 项像素检查通过，包含真
 
 真实 Studio ← MacBook 专用应用窗口已有 113 个解码帧、零解码错误，控制处于可用状态，但 120 的 CUA Observe 返回 `source_changed`，未派发操作。定位到界面刷新重复调用未改变状态的暂停设置，导致每次刷新都撤销观察权限。本轮修复只在暂停或可见／焦点实际丢失时撤销；持续来源租约可跨 ROI 更新，操作仍在开始及每个事件派发时验证自身观察帧的精确几何。快照序列每次递增，旧引用仍拒绝。订阅确认后，为尚无目录元数据的应用窗口补取名称和图标，不自动订阅桌面。
 
-修复后 29 项 computer-use 检查通过、两项外部 worker 检查跳过；12 项会话输入检查、生产 GPUI／VideoToolbox 帧几何输入检查通过。签名集成发布回归 1,045 项通过、19 项跳过（34.753s）。证据为任务目录 `cua121-final-scoped-checks.log`、`cua121-model-input-checks.log`、`cua121-window-metadata-checks.log` 和 `cua121-window-metadata-release.log`。修复尚待正式 121 升级后重验原生观察、输入、连续快照和取消；不能将 120 的正常视频视作 CUA 已通过。
+修复后 29 项 computer-use 检查通过、两项外部 worker 检查跳过；12 项会话输入检查、生产 GPUI／VideoToolbox 帧几何输入检查通过。签名集成发布回归 1,045 项通过、19 项跳过（34.753s）。证据为任务目录 `cua121-final-scoped-checks.log`、`cua121-model-input-checks.log`、`cua121-window-metadata-checks.log` 和 `cua121-window-metadata-release.log`。正式 121 的原生观察、输入、连续快照和取消已继续实测，接收端独立确认了事件和释放；详见 [设备验收与接续记录](2026-11-05-DEVICE-ACCEPTANCE.md)。本轮另补本机解码帧 UTC 诊断时间，单调时钟仍负责原有鉴权和有效期；30 项 CUA 检查通过、两项跳过，签名发布回归 1,045 项通过、19 项跳过（34.549s）。新时间戳尚待正式升级后的时钟采样。
 
 两部手机均已正式升级到同一协议的 Android 80（`7b615ba`），分别从已安装的 base.apk 独立计算 SHA-256，与正式包 `ee3b2a032908fb5d79798a5750f917ddb154e7ef308f551cffcf9e4823d7614e` 一致。手机完整观看／输入验收仍在继续。Linux／Windows 原生 GPU 帧的 CUA 观察导出仍明确返回不支持；源端真实无障碍树尚未接入。没有通过 CPU 读取全帧、查看端本机 AX 或虚构节点掩盖这些缺项。
 

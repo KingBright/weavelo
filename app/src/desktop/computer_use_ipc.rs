@@ -9,7 +9,13 @@ use super::{
 use protocol::session::CaptureSource;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// Diagnostic wall-time projection only. Authority and freshness keep using Instant.
+fn decoded_frame_utc_us(decoded: Instant, now: Instant, wall: SystemTime) -> Option<u64> {
+    let age = u64::try_from(now.checked_duration_since(decoded)?.as_micros()).ok()?;
+    u64::try_from(wall.duration_since(UNIX_EPOCH).ok()?.as_micros()).ok()?.checked_sub(age)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -573,12 +579,15 @@ impl Dispatcher {
                 let cropped = owner
                     .zoom_bound_computer_use(&mut pending.observation, region, maximum)
                     .map_err(|_| "pixels_unavailable")?;
+                let decoded_at_utc_us = decoded_frame_utc_us(
+                    pending.observation.frame().decoded_at, Instant::now(), SystemTime::now());
                 let body = serde_json::json!({
                     "ok": true,
                     "lease_id": lease_id,
                     "source_revision": source_revision,
                     "frame_sequence": frame_sequence,
                     "region": region,
+                    "decoded_at_utc_us": decoded_at_utc_us,
                     "size": [cropped.layout().width(), cropped.layout().height()],
                     "bytes": cropped.layout().bytes(),
                     "encoding": match cropped.color() {
@@ -663,6 +672,8 @@ impl Dispatcher {
                     )
                     .map_err(|_| "session_unavailable")?;
                 let revision = OriginalOwner::computer_use_source_revision(&observation);
+                let decoded_at_utc_us = decoded_frame_utc_us(
+                    observation.frame().decoded_at, Instant::now(), SystemTime::now());
                 let pixels = owner
                     .export_bound_computer_use(&mut observation, maximum)
                     .map_err(|_| "pixels_unavailable")?;
@@ -684,7 +695,8 @@ impl Dispatcher {
                     observation,
                 });
                 let body = serde_json::json!({"ok":true,"lease_id":lease_id,"source_revision":revision,
-                "frame_sequence":lease.sequence,"size":[pixels.layout().width(),pixels.layout().height()],
+                "frame_sequence":lease.sequence,"decoded_at_utc_us":decoded_at_utc_us,
+                "size":[pixels.layout().width(),pixels.layout().height()],
                 "bytes":pixels.layout().bytes(),"encoding":match pixels.color() {
                     client::observation_pixels::ColorMetadata::Srgb=>"rgba8_srgb",
                     client::observation_pixels::ColorMetadata::Unspecified=>"rgba8",
@@ -701,6 +713,15 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostic_decode_time_keeps_clock_domains_and_rejects_invalid_projections() {
+        let now = Instant::now();
+        let wall = UNIX_EPOCH + Duration::from_secs(20);
+        assert_eq!(decoded_frame_utc_us(now - Duration::from_millis(25), now, wall), Some(19_975_000));
+        assert_eq!(decoded_frame_utc_us(now + Duration::from_micros(1), now, wall), None);
+        assert_eq!(decoded_frame_utc_us(now - Duration::from_secs(21), now, wall), None);
+        assert_eq!(decoded_frame_utc_us(now, now, UNIX_EPOCH - Duration::from_secs(1)), None);
+    }
     #[test]
     fn original_frame_receipt_is_exact_and_single_use() {
         let mut pending = Some(PendingFrame {
