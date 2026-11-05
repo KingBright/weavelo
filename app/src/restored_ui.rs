@@ -1068,6 +1068,7 @@ impl RestoredDashboard {
                 let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
             }
             let mut newly_accepted = None;
+            let coordinator = cx.entity_id();
             let response = match command.request {
                 Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} | Request::Send {..} | Request::StopSend {..} | Request::MenuAction {..} => unreachable!(),
                 Request::Menu => serde_json::to_value(self.native_menu_snapshot(&generation,cx)).unwrap(),
@@ -1085,14 +1086,18 @@ impl RestoredDashboard {
                     "last_deliveries":self.last_delivery_snapshot(),
                     "stream_activity":self.stream_activity(),
                     "sessions":self.owner.diagnostic_snapshot(),
-                    "ui_windows":cx.windows().into_iter().filter_map(|handle|handle.update(cx,|_,window,_| {
+                    "ui_windows":cx.windows().into_iter().filter_map(|handle|handle.update(cx,|view,window,app| {
                         let bounds=window.bounds();
                         let viewport=window.viewport_size();
                         let pointer=window.mouse_position();
+                        // The coordinator is already borrowed by this request. Inspect
+                        // only the other windows, whose pointer path owns its own view.
+                        let input = (view.entity_id()!=coordinator).then(||view.downcast::<RestoredDashboard>().ok()
+                            .map(|view|view.read(app).pointer_diagnostics(pointer))).flatten();
                         serde_json::json!({"title":window.window_title(),"visible":window.is_window_visible(),
                             "fullscreen":window.is_fullscreen(),"viewport":[f32::from(viewport.width),f32::from(viewport.height)],
                             "pointer":[f32::from(pointer.x),f32::from(pointer.y)],
-                            "active":window.is_window_active(),"bounds":[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)]})
+                            "active":window.is_window_active(),"input":input,"bounds":[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)]})
                     }).ok()).collect::<Vec<_>>(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
@@ -1535,6 +1540,20 @@ impl RestoredDashboard {
             (frame.width(), frame.height()),
             self.scale_mode,
         ))
+    }
+
+    fn pointer_diagnostics(&self, position: Point<Pixels>) -> serde_json::Value {
+        let mapped = self.pointer_event_at(position).is_some();
+        let viewport = self.viewport.lock().unwrap();
+        let painted = viewport.painted();
+        serde_json::json!({
+            "pointer_maps_to_source":mapped,"locked":self.input_locked,
+            "supports_input":self.capture_supports_input,"navigation":viewport.navigation(),
+            "drawer_open":self.drawer_open,"source_menu_open":self.show_apps_menu,
+            "current_geometry":self.current_frame.as_ref().and_then(|frame|frame.frame_geometry),
+            "painted_geometry":painted.as_ref().map(|frame|frame.geometry),
+            "painted_target_current":painted.as_ref().is_some_and(|frame|self.owner.viewport_target_is_current(&frame.target)),
+        })
     }
 
     fn queue_pointer_button(&mut self, button: MouseButton, pressed: bool) {
