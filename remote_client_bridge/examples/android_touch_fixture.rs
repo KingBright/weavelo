@@ -11,9 +11,10 @@ use std::{sync::Arc, time::Duration};
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 2 {
-        return Err("private-phone-ip:port current-fixture-ready.json required".into());
+    if !(args.len()==2 || (args.len()==3 && args[2]=="mouse")) {
+        return Err("private-phone-ip:port current-fixture-ready.json [mouse] required".into());
     }
+    let mouse=args.get(2).is_some();
     let target: std::net::SocketAddr = args[0].parse().map_err(|_| "Invalid fixture endpoint")?;
     if !matches!(target.ip(),std::net::IpAddr::V4(ip) if ip.is_private()) {
         return Err("Owned LAN fixture only".into());
@@ -24,8 +25,8 @@ async fn main() -> Result<(), String> {
         .as_str()
         .filter(|s| s.len() == 36)
         .ok_or("Missing fixture nonce")?;
-    if ready["capture"] != false {
-        return Err("Expected explicit input-only fixture".into());
+    if ready["capture"] != mouse || (mouse && ready["mouse"] != true) {
+        return Err("Expected matching explicit native fixture".into());
     }
     let width = ready["width"]
         .as_u64()
@@ -101,9 +102,13 @@ async fn main() -> Result<(), String> {
             vec![point(7, Move, 0.45, 0.55)],
             vec![point(7, Up, 0.45, 0.55)],
         ];
-        for contacts in samples {
+        let samples:Vec<InputEvent>=if mouse {vec![
+            InputEvent::MouseMoveAbsolute{x:19661,y:26214},InputEvent::MouseDown(0),
+            InputEvent::MouseMoveAbsolute{x:19661,y:26214},InputEvent::MouseUp(0),
+        ]} else {samples.into_iter().map(InputEvent::TouchFrame).collect()};
+        for event in samples {
             if !connection.refresh_bound_input(binding)
-                || !connection.try_bound_input(binding, Some(InputEvent::TouchFrame(contacts)))
+                || !connection.try_bound_input(binding, Some(event))
             {
                 return Err("Fixture input binding ended".into());
             }

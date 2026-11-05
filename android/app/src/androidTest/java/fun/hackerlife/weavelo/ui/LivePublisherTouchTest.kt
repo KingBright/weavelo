@@ -24,9 +24,11 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /** Explicit native input fixture. No capture token, screenshot or encoded video. */
 class LivePublisherTouchTest {
-    @Test fun simultaneousContactsReachTheNativeView() {
+    @Test fun simultaneousContactsReachTheNativeView() = nativeFixture(false)
+    @Test fun mouseContinuationReachesTheNativeView() = nativeFixture(true)
+    private fun nativeFixture(mouse: Boolean) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        assumeTrue(InstrumentationRegistry.getArguments().getString("native_touch_fixture") == "true")
+        assumeTrue(InstrumentationRegistry.getArguments().getString(if (mouse) "native_mouse_fixture" else "native_touch_fixture") == "true")
         instrumentation.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         val context = instrumentation.targetContext
         val root = checkNotNull(context.getExternalFilesDir(null))
@@ -42,7 +44,8 @@ class LivePublisherTouchTest {
                 val deadline = SystemClock.uptimeMillis() + 15_000
                 while (!RemoteControlService.connected.value && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(50)
                 assertTrue("Existing user-approved accessibility service required", RemoteControlService.connected.value)
-                assertFalse("Do not interrupt an existing screen publisher", PublisherClient.active)
+                if (mouse) assertTrue("Mouse fixture observes the existing real screen publisher", PublisherClient.active)
+                else assertFalse("Do not interrupt an existing screen publisher", PublisherClient.active)
                 val metrics = DisplayMetrics()
                 lateinit var fixture: View
                 scenario.onActivity { activity ->
@@ -66,7 +69,7 @@ class LivePublisherTouchTest {
                         }
                         override fun onWindowFocusChanged(focused: Boolean) {
                             super.onWindowFocusChanged(focused)
-                            if (!focused && armed.get()) {
+                            if (!focused && armed.get() && !mouse) {
                                 PublisherClient.controlSize = null
                                 runCatching { PublisherClient.action(1) }
                             }
@@ -78,16 +81,18 @@ class LivePublisherTouchTest {
                 assertTrue("Fixture must own the visible window", fixture.hasWindowFocus())
                 // Expose an input-only fixture through the actual authenticated
                 // publisher. This deliberately does not claim a video frame.
-                PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001")
+                if (!mouse) {
+                  PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001")
                     .put("directory", File(context.filesDir, "received").apply { mkdirs() }.absolutePath)
                     .put("audio", false).put("control", true).toString())
-                armed.set(true)
                 val grant = JSONObject(PublisherClient.action(2)).getLong("grant")
                 PublisherClient.action(3, JSONObject().put("grant", grant).put("width", metrics.widthPixels)
                     .put("height", metrics.heightPixels).toString())
                 PublisherClient.controlSize = metrics.widthPixels to metrics.heightPixels
+                } else assertEquals(metrics.widthPixels to metrics.heightPixels, PublisherClient.controlSize)
+                armed.set(true)
                 ready.writeText(JSONObject().put("nonce", nonce).put("width", metrics.widthPixels)
-                    .put("height", metrics.heightPixels).put("capture", false).toString())
+                    .put("height", metrics.heightPixels).put("capture", mouse).put("mouse", mouse).toString())
                 val end = SystemClock.uptimeMillis() + 60_000
                 while (SystemClock.uptimeMillis() < end && records.none {
                     it.getInt("action") in listOf(MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL)
@@ -103,13 +108,15 @@ class LivePublisherTouchTest {
                 val down = records.firstOrNull { it.getInt("action") == MotionEvent.ACTION_DOWN }
                 assertNotNull("Native DOWN was not observed", down)
                 val held = down!!.getJSONArray("points").getJSONObject(0).getInt("id")
-                assertTrue("Two contacts must reach the OS together", records.any { it.getJSONArray("points").length() == 2 })
+                if (!mouse) {
+                  assertTrue("Two contacts must reach the OS together", records.any { it.getJSONArray("points").length() == 2 })
                 val secondUp = records.indexOfFirst { it.getInt("action") == MotionEvent.ACTION_POINTER_UP }
                 assertTrue("Second finger must release independently", secondUp >= 0)
                 assertTrue("First finger must still move after the second releases", records.drop(secondUp + 1).any {
                     it.getInt("action") == MotionEvent.ACTION_MOVE && it.getJSONArray("points").length() == 1 &&
                         it.getJSONArray("points").getJSONObject(0).getInt("id") == held
                 })
+                }
                 assertEquals("Final release required", MotionEvent.ACTION_UP, records.last().getInt("action"))
                 assertFalse("Gesture must not be cancelled between samples", records.any { it.getInt("action") == MotionEvent.ACTION_CANCEL })
                 val first = down.getJSONArray("points").getJSONObject(0)
@@ -118,7 +125,7 @@ class LivePublisherTouchTest {
             } finally {
                 ready.delete()
                 senderFinished.delete()
-                if (armed.get()) {
+                if (armed.get() && !mouse) {
                     PublisherClient.controlSize = null
                     PublisherClient.action(1)
                 }
