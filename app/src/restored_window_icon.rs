@@ -579,34 +579,30 @@ pub(crate) mod macos_dock {
             let _: () = msg_send![app, setApplicationIconImage: image];
             let tile: id = msg_send![app, dockTile];
             if tile != nil {
-                let view: id = msg_send![class!(NSImageView), imageViewWithImage: image];
-                let _: () = msg_send![view, setImageScaling: 3usize]; // Proportionally up or down
-                let size: NSSize = msg_send![tile, size];
-                let _: () = msg_send![view, setFrame: NSRect::new(NSPoint::new(0.0, 0.0), size)];
-                let _: () = msg_send![tile, setContentView: view];
                 let _: () = msg_send![tile, display];
             }
         }
     }
 
-    extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
+    extern "C" fn refresh_dock_icon(this: &Object, _: Sel, _: id) {
+        unsafe {
+            let image: id = *this.get_ivar("dockImage");
+            let refreshed: id = msg_send![image, copy];
+            display_icon(NSApplication::sharedApplication(nil), refreshed);
+            let _: () = msg_send![refreshed, release];
+        }
+    }
+
+    extern "C" fn did_finish_launching(this: &Object, _: Sel, _: id) {
         unsafe {
             let app = NSApplication::sharedApplication(nil);
-            let image: id = *this.get_ivar("startupIcon");
-            if image == nil {
-                return;
-            }
-            this.set_ivar("startupIcon", nil);
-            display_icon(app, image);
+            let image: id = *this.get_ivar("dockImage");
             app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
-            // Keep the retained image on the main thread. AppKit finishes
-            // registering the Dock tile after returning from this callback.
-            let address = image as usize;
-            dispatch::Queue::main().exec_async(move || {
-                let image = address as id;
-                display_icon(NSApplication::sharedApplication(nil), image);
-                let _: () = msg_send![image, release];
-            });
+            display_icon(app, image);
+            // Dock may asynchronously load the signed bundle icon during
+            // registration. Refresh the latest artwork once it has settled.
+            let _: () = msg_send![this, performSelector: sel!(refreshWeaveloDockIcon:)
+                withObject: nil afterDelay: 0.75f64];
         }
         std::thread::spawn(|| {
             let mut stdin = std::io::stdin().lock();
@@ -614,8 +610,12 @@ pub(crate) mod macos_dock {
                 dispatch::Queue::main().exec_async(move || unsafe {
                     update_presentation(&title);
                     if let Some(image) = dock_image(edge, &rgba, &title, &device) {
-                        display_icon(NSApplication::sharedApplication(nil), image);
-                        let _: () = msg_send![image, release];
+                        let app = NSApplication::sharedApplication(nil);
+                        let delegate: id = msg_send![app, delegate];
+                        let old: id = *(*delegate).get_ivar("dockImage");
+                        (*delegate).set_ivar("dockImage", image);
+                        display_icon(app, image);
+                        let _: () = msg_send![old, release];
                     }
                 });
             }
@@ -644,10 +644,14 @@ pub(crate) mod macos_dock {
             let startup_icon = dock_image(edge, &rgba, &title, &device)
                 .ok_or("Could not prepare the remote application Dock icon")?;
             decl.add_ivar::<id>("streamTitle");
-            decl.add_ivar::<id>("startupIcon");
+            decl.add_ivar::<id>("dockImage");
             decl.add_method(
                 sel!(applicationDidFinishLaunching:),
-                did_finish_launching as extern "C" fn(&mut Object, Sel, id),
+                did_finish_launching as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(refreshWeaveloDockIcon:),
+                refresh_dock_icon as extern "C" fn(&Object, Sel, id),
             );
             decl.add_method(
                 sel!(applicationDidBecomeActive:),
@@ -675,7 +679,7 @@ pub(crate) mod macos_dock {
             );
             let delegate: id = msg_send![decl.register(), new];
             (*delegate).set_ivar("streamTitle", nil);
-            (*delegate).set_ivar("startupIcon", startup_icon);
+            (*delegate).set_ivar("dockImage", startup_icon);
             let _: () = msg_send![app, setDelegate: delegate];
             update_presentation(&title);
             app.run();
