@@ -35,6 +35,12 @@ async fn main() -> Result<(), String> {
         .as_u64()
         .filter(|x| (200..=8192).contains(x))
         .ok_or("Invalid height")? as u32;
+    let identity = remote_core::mesh::AppPrivateMeshConfigStore::new(
+        remote_core::mesh::default_app_private_mesh_dir(),
+    ).load().map_err(|_| "Existing paired profile unavailable")?
+        .ok_or("Existing paired profile required")?;
+    remote_core::init_crypto_provider();
+    remote_core::session_crypto::use_paired_session_secret(identity.network_secret.expose_secret());
     let (connection, mut events) = WorkspaceConnection::connect_media(target).await?;
     let outcome = tokio::time::timeout(Duration::from_secs(12), async {
         let (video, _sink) = remote_core::video_queue::channel(2);
