@@ -56,7 +56,7 @@ def main():
     run('shell', 'am', 'start', '-W', '-n', PACKAGE + '/.MainActivity')
     log = '/data/local/tmp/weavelo-managed-screen.log'
     command = ('test ! -L ' + shlex.quote(log) + ' && CLASSPATH=' + shlex.quote(apk)
-               + ' nohup app_process /system/bin ' + PACKAGE + '.managed.ManagedScreenMain'
+               + ' nohup setsid app_process /system/bin ' + PACKAGE + '.managed.ManagedScreenMain'
                + ' >' + shlex.quote(log) + ' 2>&1 </dev/null &')
     run('shell', command)
     end = time.monotonic() + 15
