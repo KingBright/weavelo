@@ -478,10 +478,7 @@ pub(crate) mod macos_dock {
         }
     }
 
-    unsafe fn draw_device_name(rep: id, edge: u32, device: &str) {
-        if device.trim().is_empty() {
-            return;
-        }
+    unsafe fn draw_labels(rep: id, edge: u32, footer: u32, title: &str, device: &str) {
         unsafe extern "C" {
             static NSFontAttributeName: id;
             static NSForegroundColorAttributeName: id;
@@ -493,50 +490,60 @@ pub(crate) mod macos_dock {
                 return;
             }
             let scale = f64::from(edge) / 64.0;
-            let label = ns_string(device);
-            let font: id = msg_send![class!(NSFont), systemFontOfSize: 6.5 * scale weight: 0.3f64];
             let white: id = msg_send![class!(NSColor), whiteColor];
             let paragraph: id = msg_send![class!(NSMutableParagraphStyle), new];
             let _: () = msg_send![paragraph, setAlignment: 2isize]; // Center
             let _: () = msg_send![paragraph, setLineBreakMode: 5isize]; // Truncate in the middle
             let keys = [NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName];
-            let values = [font, white, paragraph];
-            let attributes: id = msg_send![class!(NSDictionary), dictionaryWithObjects: values.as_ptr() forKeys: keys.as_ptr() count: keys.len()];
-            let measured: NSSize = msg_send![label, sizeWithAttributes: attributes];
-            let width = (measured.width + 4.0 * scale).clamp(23.0 * scale, 42.0 * scale);
-            let left = f64::from(edge) - width - 2.0 * scale;
-            let height = 9.0 * scale;
-            let plate = NSRect::new(NSPoint::new(left, scale), NSSize::new(width, height));
-            let shape: id = msg_send![class!(NSBezierPath), bezierPathWithRoundedRect: plate xRadius: 2.4 * scale yRadius: 2.4 * scale];
             let background: id = msg_send![class!(NSColor), colorWithSRGBRed: 0.07f64 green: 0.12f64 blue: 0.2f64 alpha: 0.97f64];
             let _: () = msg_send![class!(NSGraphicsContext), saveGraphicsState];
             let _: () = msg_send![class!(NSGraphicsContext), setCurrentContext: context];
-            let _: () = msg_send![background, setFill];
-            let _: () = msg_send![shape, fill];
-            let _: () = msg_send![white, setStroke];
-            let _: () = msg_send![shape, setLineWidth: 0.5 * scale];
-            let _: () = msg_send![shape, stroke];
-            let text = NSRect::new(
-                NSPoint::new(left + 2.0 * scale, 1.3 * scale),
-                NSSize::new(width - 4.0 * scale, height),
-            );
-            let _: () = msg_send![label, drawInRect: text withAttributes: attributes];
+            for (value, font_size, height, bottom, max_width, corner) in [
+                (device, 6.5, 9.0, f64::from(footer) + scale, 42.0, true),
+                (title, 8.5, 11.0, scale, 60.0, false),
+            ] {
+                if value.trim().is_empty() {
+                    continue;
+                }
+                let label = ns_string(value);
+                let font: id = msg_send![class!(NSFont), systemFontOfSize: font_size * scale weight: 0.3f64];
+                let values = [font, white, paragraph];
+                let attributes: id = msg_send![class!(NSDictionary), dictionaryWithObjects: values.as_ptr() forKeys: keys.as_ptr() count: keys.len()];
+                let measured: NSSize = msg_send![label, sizeWithAttributes: attributes];
+                let width = (measured.width + 4.0 * scale).clamp(12.0 * scale, max_width * scale);
+                let available = f64::from(edge) - width;
+                let left = if corner { available - 2.0 * scale } else { available / 2.0 };
+                let height = height * scale;
+                let plate = NSRect::new(NSPoint::new(left, bottom), NSSize::new(width, height));
+                let shape: id = msg_send![class!(NSBezierPath), bezierPathWithRoundedRect: plate xRadius: 2.4 * scale yRadius: 2.4 * scale];
+                let _: () = msg_send![background, setFill];
+                let _: () = msg_send![shape, fill];
+                let _: () = msg_send![white, setStroke];
+                let _: () = msg_send![shape, setLineWidth: 0.5 * scale];
+                let _: () = msg_send![shape, stroke];
+                let text = NSRect::new(
+                    NSPoint::new(left + 2.0 * scale, bottom + 0.3 * scale),
+                    NSSize::new(width - 4.0 * scale, height),
+                );
+                let _: () = msg_send![label, drawInRect: text withAttributes: attributes];
+            }
             let _: () = msg_send![class!(NSGraphicsContext), restoreGraphicsState];
             let _: () = msg_send![paragraph, release];
         }
     }
 
-    unsafe fn set_dock_icon_rgba(edge: u32, rgba: &[u8], device: &str) -> bool {
+    unsafe fn dock_image(edge: u32, rgba: &[u8], title: &str, device: &str) -> Option<id> {
         if icon_bytes(edge) != Some(rgba.len()) {
-            return false;
+            return None;
         }
+        let footer = edge * 13 / 64;
         unsafe {
             let rep: id = msg_send![class!(NSBitmapImageRep), alloc];
             let rep: id = msg_send![
                 rep,
                 initWithBitmapDataPlanes: std::ptr::null_mut::<*mut u8>()
                 pixelsWide: edge as isize
-                pixelsHigh: edge as isize
+                pixelsHigh: (edge + footer) as isize
                 bitsPerSample: 8isize
                 samplesPerPixel: 4isize
                 hasAlpha: YES
@@ -547,27 +554,63 @@ pub(crate) mod macos_dock {
                 bitsPerPixel: 32isize
             ];
             if rep == nil {
-                return false;
+                return None;
             }
             let data: *mut u8 = msg_send![rep, bitmapData];
-            if !data.is_null() {
-                std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, rgba.len());
-                draw_device_name(rep, edge, device);
-                let _: () = msg_send![rep, setSize: NSSize::new(64.0, 64.0)];
-                let image: id = msg_send![class!(NSImage), alloc];
-                let image: id = msg_send![image, initWithSize: NSSize::new(64.0, 64.0)];
-                let _: () = msg_send![image, addRepresentation: rep];
-                let app = NSApplication::sharedApplication(nil);
-                let _: () = msg_send![app, setApplicationIconImage: image];
-                let tile: id = msg_send![app, dockTile];
-                if tile != nil {
-                    let _: () = msg_send![tile, display];
-                }
-                let _: () = msg_send![image, release];
+            if data.is_null() {
+                let _: () = msg_send![rep, release];
+                return None;
             }
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, rgba.len());
+            std::ptr::write_bytes(data.add(rgba.len()), 0, edge as usize * footer as usize * 4);
+            draw_labels(rep, edge, footer, title, device);
+            let size = NSSize::new(64.0, 64.0 + 64.0 * f64::from(footer) / f64::from(edge));
+            let _: () = msg_send![rep, setSize: size];
+            let image: id = msg_send![class!(NSImage), alloc];
+            let image: id = msg_send![image, initWithSize: size];
+            let _: () = msg_send![image, addRepresentation: rep];
             let _: () = msg_send![rep, release];
-            !data.is_null()
+            (image != nil).then_some(image)
         }
+    }
+
+    unsafe fn display_icon(app: id, image: id) {
+        unsafe {
+            let _: () = msg_send![app, setApplicationIconImage: image];
+            let tile: id = msg_send![app, dockTile];
+            if tile != nil {
+                let _: () = msg_send![tile, display];
+            }
+        }
+    }
+
+    extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
+        unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            let image: id = *this.get_ivar("startupIcon");
+            if image == nil {
+                return;
+            }
+            this.set_ivar("startupIcon", nil);
+            let _: () = msg_send![app, setApplicationIconImage: image];
+            app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
+            // AppKit can replace the icon as it registers the regular app.
+            display_icon(app, image);
+            let _: () = msg_send![image, release];
+        }
+        std::thread::spawn(|| {
+            let mut stdin = std::io::stdin().lock();
+            while let Ok((title, device, (edge, rgba))) = decode_frame(&mut stdin) {
+                dispatch::Queue::main().exec_async(move || unsafe {
+                    update_presentation(&title);
+                    if let Some(image) = dock_image(edge, &rgba, &title, &device) {
+                        display_icon(NSApplication::sharedApplication(nil), image);
+                        let _: () = msg_send![image, release];
+                    }
+                });
+            }
+            std::process::exit(0);
+        });
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -582,57 +625,49 @@ pub(crate) mod macos_dock {
         };
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
-            let process: id = msg_send![class!(NSProcessInfo), processInfo];
-            let _: () = msg_send![process, setProcessName: ns_string(&title)];
             let app = NSApplication::sharedApplication(nil);
             app.setActivationPolicy_(
                 NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
             );
-            if let Some(mut decl) = ClassDecl::new("WeaveloDockTileDelegate", class!(NSObject)) {
-                decl.add_ivar::<id>("streamTitle");
-                decl.add_method(
-                    sel!(applicationDidBecomeActive:),
-                    did_become_active as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(applicationShouldHandleReopen:hasVisibleWindows:),
-                    should_reopen as extern "C" fn(&Object, Sel, id, BOOL) -> BOOL,
-                );
-                decl.add_method(
-                    sel!(activateWeaveloStream:),
-                    activate_menu as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(endWeaveloStream:),
-                    end_menu as extern "C" fn(&Object, Sel, id),
-                );
-                decl.add_method(
-                    sel!(applicationShouldTerminate:),
-                    should_terminate as extern "C" fn(&Object, Sel, id) -> usize,
-                );
-                decl.add_method(
-                    sel!(applicationDockMenu:),
-                    dock_menu as extern "C" fn(&Object, Sel, id) -> id,
-                );
-                let delegate: id = msg_send![decl.register(), new];
-                (*delegate).set_ivar("streamTitle", nil);
-                let _: () = msg_send![app, setDelegate: delegate];
-            }
+            let mut decl = ClassDecl::new("WeaveloDockTileDelegate", class!(NSObject))
+                .ok_or("Could not register the remote application Dock delegate")?;
+            let startup_icon = dock_image(edge, &rgba, &title, &device)
+                .ok_or("Could not prepare the remote application Dock icon")?;
+            decl.add_ivar::<id>("streamTitle");
+            decl.add_ivar::<id>("startupIcon");
+            decl.add_method(
+                sel!(applicationDidFinishLaunching:),
+                did_finish_launching as extern "C" fn(&mut Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(applicationDidBecomeActive:),
+                did_become_active as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+                should_reopen as extern "C" fn(&Object, Sel, id, BOOL) -> BOOL,
+            );
+            decl.add_method(
+                sel!(activateWeaveloStream:),
+                activate_menu as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(endWeaveloStream:),
+                end_menu as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(applicationShouldTerminate:),
+                should_terminate as extern "C" fn(&Object, Sel, id) -> usize,
+            );
+            decl.add_method(
+                sel!(applicationDockMenu:),
+                dock_menu as extern "C" fn(&Object, Sel, id) -> id,
+            );
+            let delegate: id = msg_send![decl.register(), new];
+            (*delegate).set_ivar("streamTitle", nil);
+            (*delegate).set_ivar("startupIcon", startup_icon);
+            let _: () = msg_send![app, setDelegate: delegate];
             update_presentation(&title);
-            if !set_dock_icon_rgba(edge, &rgba, &device) {
-                return Err("Could not prepare the remote application Dock icon".into());
-            }
-            app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
-            std::thread::spawn(|| {
-                let mut stdin = std::io::stdin().lock();
-                while let Ok((title, device, (edge, rgba))) = decode_frame(&mut stdin) {
-                    dispatch::Queue::main().exec_async(move || unsafe {
-                        update_presentation(&title);
-                        set_dock_icon_rgba(edge, &rgba, &device);
-                    });
-                }
-                std::process::exit(0);
-            });
             app.run();
             let _: () = msg_send![pool, drain];
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
