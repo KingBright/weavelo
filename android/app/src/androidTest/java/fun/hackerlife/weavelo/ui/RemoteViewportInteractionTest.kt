@@ -21,7 +21,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.activity.compose.setContent
+import `fun`.hackerlife.weavelo.MainActivity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
@@ -32,9 +34,9 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 
-/** Offline Android device tests. No Weavelo connection, JNI, microphone or desktop capture. */
+/** Gesture fixtures hosted by the installed release activity; no remote stream or capture. */
 class RemoteViewportInteractionTest {
-    @get:Rule val compose = createComposeRule()
+    @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private data class Touch(val action: Int, val id: Int, val x: Float, val y: Float)
     private val touches = CopyOnWriteArrayList<Touch>()
     private val nativeSamples = CopyOnWriteArrayList<List<RemoteTouchChange>>()
@@ -49,7 +51,7 @@ class RemoteViewportInteractionTest {
     @Volatile private var surfaceDrawn = false
 
     private fun showViewport() {
-        compose.setContent {
+        compose.runOnUiThread { compose.activity.setContent {
             MaterialTheme {
                 val owner = contentRevision.value
                 RemoteViewport(
@@ -80,7 +82,7 @@ class RemoteViewportInteractionTest {
                     }
                 )
             }
-        }
+        } }
         compose.waitUntil(20_000) { size.value.width > 0 && surfaceDrawn }
         compose.waitForIdle()
     }

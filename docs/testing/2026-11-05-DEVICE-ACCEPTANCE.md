@@ -96,3 +96,15 @@ Android 82 已在努比亚 NX741J 与红米 2409BRN2CC 兼容安装，两台安�
 130 已另外验证 Studio 拉取 MacBook 已授权的 FaceTime 摄像头：102 个解码帧、零错误、有原生画面提交，窗口名为“FaceTime高清相机 · MBPM2MAX”，定向停止成功。该记录不替代实际摄像内容或多设备摄像头切换验收，证据 `native130-book-camera-proof.json`。
 
 用户于 11 月 6 日明确：20 ms、5 ms 的低延迟目标有同一 Wi-Fi、良好链路的前提，不能要求跨网或弱网达到相同数字；编码阶段与端到端指标分别记录。新增手机多点直触需求及具体方案见 [局域网低延迟与手机多点直触](../plans/MOBILE-MULTITOUCH-LATENCY.md)，当前手机控制仍会映射为鼠标，尚未交付真正多点。
+
+## 11 月 6 日：协议 9、多点触控与 131 / 83
+
+产品源码 `42c110a8859bf2129336cfcab1f3ae74fcc79c72` 已推送；四台电脑正式安装桌面 131，两部手机正式安装 Android 83，保留各机原签名。两台手机安装后独立读取 base.apk，SHA 均为 `79e0497f0174573ab83e7ed88b91e6afaeeb3bf0d7ed3290e274c9f02c5192d6`。桌面三个公开包和 Android 正式发布均通过公开下载校验。证据为 `native131-nas-verified.json`、各机升级记录、`android83-*-installed-proof.json` 和 Book 的 `android83-nas-publication.log`。
+
+本轮已接入同帧原生触点、实际能力协商、触点所有权与独立释放、过期和断线取消、相邻纯移动合并，以及手机的多点模式和本地“调整画面”。旧画面回调不能覆盖新手势的几何。协议 64、桥接 102、公共输入 12、Android 80 项单元测试及 lint 通过；签名发布回归 1,047 项通过、19 项跳过。
+
+努比亚通过正式安装应用上的全部 17 项手势 instrumentation 测试，包括五指身份、双指送往远端、本地调整、边界、取消与旧回调隔离。测试改为使用真实 MainActivity 承载临时手势夹具，不再依赖只存在于调试构建的测试 Activity。原始证据为 Book 的 `multitouch-nubia-viewport-all.log`；这验证发送端手势映射，不替代接收端原生注入或游戏体验。
+
+红米的 Android 83 正式安装通过；系统以 `INSTALL_FAILED_USER_RESTRICTED` 拒绝独立测试 APK，未修改系统安装策略。随后通过正式界面实际拉取 Studio 单应用窗口，横屏画面与 HUD 已目视核验，证据 `android83-redmi-window.png`。红米的五指 instrumentation、两手机接收端同时按住／点击以及游戏和良好同 Wi-Fi 延迟仍待验。
+
+用户明确要求模拟控制归属 Weavelo 移动端。自动整屏及独立后台应用接续 [自有显示与控制方案](../plans/ANDROID-OWNED-DISPLAYS.md)；Octendra 仅为消息触达／维护通道，不成为运行时控制依赖。
