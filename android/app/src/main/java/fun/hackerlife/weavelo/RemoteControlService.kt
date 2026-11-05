@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import `fun`.hackerlife.weavelo.managed.ManagedApplications
+import `fun`.hackerlife.weavelo.managed.ManagedApplicationInput
 
 /** Android owns the grant. The service never enables itself or records input. */
 class RemoteControlService : AccessibilityService() {
@@ -38,6 +40,8 @@ class RemoteControlService : AccessibilityService() {
     private var x = 0f
     private var y = 0f
     private var stroke: GestureDescription.StrokeDescription? = null
+    private var appInput: ManagedApplicationInput? = null
+    private var appSource: Any? = null
     private data class ContactStroke(val x: Float, val y: Float, val stroke: GestureDescription.StrokeDescription)
     private var contacts = linkedMapOf<Long, ContactStroke>()
     private var pollScheduled = false
@@ -66,6 +70,11 @@ class RemoteControlService : AccessibilityService() {
                             val token = job.getLong("token"); val gen = job.getLong("generation")
                             if (busy || gen != generation) finish(gen,token,false)
                             else {
+                                val source=job.get("source")
+                                val target=ManagedApplications.target(source)
+                                if(source is JSONObject && target==null) { finish(gen,token,false);schedulePoll(0);return }
+                                if(appInput?.target!=target) { appInput?.release();appInput=target?.let(::ManagedApplicationInput) }
+                                appSource=source
                                 busy = true
                                 execute(job.getJSONArray("events"),0,gen,token,work)
                             }
@@ -101,6 +110,8 @@ class RemoteControlService : AccessibilityService() {
         super.onDestroy()
     }
     private fun dimensions(): Pair<Int,Int>? {
+        appInput?.let { input -> return if(ManagedApplications.target(appSource)==input.target)
+            input.target.width to input.target.height else null }
         val size = PublisherClient.controlSize ?: return null
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
@@ -108,6 +119,7 @@ class RemoteControlService : AccessibilityService() {
         return size.takeIf { it.first == metrics.widthPixels && it.second == metrics.heightPixels && it.first > 1 && it.second > 1 }
     }
     private fun reset(next: Long) {
+        appInput?.release();appInput=null;appSource=null
         generation = next; val version = ++work; busy = true
         val old = stroke; stroke = null
         val oldContacts = contacts; contacts = linkedMapOf()
@@ -145,6 +157,8 @@ class RemoteControlService : AccessibilityService() {
             if (version != work) return
             if (accepted) execute(events,index+1,gen,token,version) else finish(gen,token,false)
         }
+        val native=appInput
+        if(native!=null && name!="Text") { done(native.execute(event));return }
         fun move(nx: Float, ny: Float) {
             if (stroke == null) { x = nx; y = ny; done(true) }
             else continueTouch(nx,ny,false,::done)
@@ -179,6 +193,26 @@ class RemoteControlService : AccessibilityService() {
             "Text" -> {
                 val text = value as? String
                 if (android.os.Build.VERSION.SDK_INT < 33 || text.isNullOrEmpty()) { done(false); return }
+                if(native!=null) {
+                    // The accessibility IME connection is global, so it cannot
+                    // prove which display owns a committed text event. Resolve
+                    // the editor from this exact owned display instead.
+                    val target=native.target
+                    val node=windowsOnAllDisplays[target.displayId]?.asSequence()
+                        ?.mapNotNull { it.root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }
+                        ?.firstOrNull { it.packageName?.toString()==target.packageName && it.isEditable && !it.isPassword }
+                    if(node==null) { done(false);return }
+                    val before=node.text?.toString() ?: ""
+                    val edit=RemoteTextEdit.insert(before,node.textSelectionStart,node.textSelectionEnd,text)
+                    if(edit==null || !node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
+                            Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,edit.text) })) {
+                        done(false);return
+                    }
+                    done(node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION,Bundle().apply {
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT,edit.start)
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT,edit.end)
+                    }));return
+                }
                 // The existing accessibility grant remains necessary. This is an
                 // input-method connection to the focused editor, never SET_TEXT
                 // on an inspected field or a read/replace of its contents.

@@ -21,7 +21,7 @@ internal object ManagedScreenBridge {
         check(attached() == null) { "Weavelo capture helper is already attached" }
         val service = checkNotNull(IManagedScreen.Stub.asInterface(binder))
         val info = JSONObject(service.info())
-        check(info.getInt("api") == 1) { "Unsupported Weavelo capture helper" }
+        check(info.getInt("api") == 2) { "Unsupported Weavelo capture helper" }
         clientLife = Binder()
         current = service
         binder.linkToDeath({

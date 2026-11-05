@@ -24,3 +24,11 @@
 参考现有自有代码的显示上下文与焦点处理时保留 Mika / scrcpy 的 Apache-2.0 声明。来源：[Android MediaProjection](https://developer.android.com/media/grow/media-projection)、[Android DisplayManager](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-release/core/java/android/hardware/display/DisplayManager.java)。
 
 旧的 [USB 托管来源方案](ANDROID-USB-MANAGED-CAPTURE.md)仍不实施；本方案的设备身份、传输和运行时均由手机 Weavelo 持有。
+
+## 2026-11-06 实施进展
+
+整屏自动采集已随 Android 86 和桌面 135 安装至两部手机及四台电脑。Windows 与两台 Mac 已看到两部手机的真实画面；红米→努比亚的全屏拉取和单指点击已验证。电脑键盘输入 `abc你好🙂`、鼠标点击与拖动已在红米验证。仍不等于游戏多指、同 Wi-Fi 低延迟或全部设备组合验收。
+
+Android 87 正在接入独立应用：来源使用现有 Window 标识；每个被选择的应用拥有自己的显示、GPU Surface、编码器与输入目标，暂停保留应用任务，结束订阅释放所属显示。已有运行任务会明确拒绝新开，避免迁移主屏应用；开启失败仅终止对应订阅，不撤销整个手机的屏幕共享。帮助进程的键鼠接口限定 Weavelo UID 和自己持有的应用显示，不允许全局电源等按键。普通主屏继续使用已授权无障碍通道；独立应用的 Unicode 文本只写入该显示、该应用的明确可编辑焦点，不使用全局输入法连接。
+
+当前检查包括独立来源几何与代际隔离、暂停保留订阅、输入切源撤销旧所有权、Unicode 选择区边界。87 的真机验证尚未完成；独立应用图标、应用旋转与输入法差异、全自动音频、重启后恢复仍需继续。当前独立显示尺寸变化时拒绝旧坐标输入，不能把这一点报告为旋转完整支持。

@@ -11,6 +11,17 @@ internal object RemoteTextEdit {
         0x16 to "6^",0x1A to "7&",0x1C to "8*",0x19 to "9(",0x1D to "0)",0x18 to "=+",
         0x1B to "-_",0x1E to "]}",0x21 to "[{",0x27 to "'\"",0x29 to ";:",0x2A to "\\|",
         0x2B to ",<",0x2C to "/?",0x2F to ".>",0x31 to "  ",0x32 to "`~")
+    fun baseCharacter(code: Int): Char? = letters[code] ?: symbols[code]?.first()
+    fun insert(text: String, start: Int, end: Int, committed: String): Edit? {
+        if(text.length>65536 || committed.toByteArray(Charsets.UTF_8).size !in 1..1024 ||
+            start !in 0..text.length || end !in 0..text.length) return null
+        fun boundary(index: Int)=index==0 || index==text.length ||
+            !(text[index-1].isHighSurrogate() && text[index].isLowSurrogate())
+        if(!boundary(start)||!boundary(end)) return null
+        val low=minOf(start,end);val high=maxOf(start,end)
+        val next=text.replaceRange(low,high,committed)
+        return Edit(next,low+committed.length,low+committed.length)
+    }
     fun edit(text: String, start: Int, end: Int, code: Int, modifiers: Int): Edit? {
         if (start !in 0..text.length || end !in 0..text.length) return null
         val low = minOf(start,end); val high = maxOf(start,end)

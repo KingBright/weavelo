@@ -15,6 +15,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import `fun`.hackerlife.weavelo.managed.IManagedScreen
 import `fun`.hackerlife.weavelo.managed.ManagedScreenBridge
+import `fun`.hackerlife.weavelo.managed.ManagedApplications
 
 /** Owns one OS authorization and one VirtualDisplay for its entire lifetime. */
 class ProjectionService : Service() {
@@ -95,6 +96,7 @@ class ProjectionService : Service() {
     private fun publish(capture: MediaProjection?, managed: IManagedScreen?) {
         var display: CaptureDisplay? = null
         var publisher: GpuScreenPublisher? = null
+        var apps: ManagedApplications? = null
         var sourceSize = 0 to 0
         var sourceDensity = 0
         var demand = JSONObject()
@@ -108,6 +110,7 @@ class ProjectionService : Service() {
             // rotation replace its Surface, never create another with this token.
             display = if (managed != null) CaptureDisplay.managed(managed, initialSize.first, initialSize.second, captureDensity)
                 else CaptureDisplay.projection(checkNotNull(capture), initialSize.first, initialSize.second, captureDensity)
+            if (managed != null) apps = ManagedApplications(managed)
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
             PublisherClient.status("Sharing enabled · $addresses", true)
@@ -119,6 +122,7 @@ class ProjectionService : Service() {
             while (running.get()) {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
+                    apps?.update()
                 }
                 val size=captureSize
                 val density=captureDensity
@@ -155,6 +159,7 @@ class ProjectionService : Service() {
         } finally {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
+            runCatching { apps?.close() }
             runCatching { display?.surface = null }; runCatching { display?.release() }
             publisher?.close()
             runCatching { PublisherClient.action(1) }

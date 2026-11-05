@@ -13,6 +13,7 @@ pub(super) fn now_ms() -> u64 {
 
 struct Owner {
     addr: SocketAddr,
+    source: protocol::session::CaptureSource,
     lease: InputLease,
     text: protocol::interaction::TextReceiver,
 }
@@ -31,6 +32,7 @@ pub(super) enum Dispatch {
         generation: u64,
     },
     Events {
+        source: protocol::session::CaptureSource,
         generation: u64,
         token: u64,
         events: Vec<InputEvent>,
@@ -106,12 +108,17 @@ impl PublisherInput {
         connection_id: u32,
         subscription_id: u32,
     ) -> Option<InputBinding> {
+        self.grant_source(addr, connection_id, subscription_id, protocol::session::CaptureSource::MainDisplay)
+    }
+    pub fn grant_source(&mut self, addr:SocketAddr, connection_id:u32, subscription_id:u32,
+        source:protocol::session::CaptureSource) -> Option<InputBinding> {
         if !self.ready() {
             return None;
         }
         self.tick();
         if self.owner.as_ref().is_none_or(|owner| {
             owner.addr != addr
+                || owner.source != source
                 || owner.lease.binding.connection_id != connection_id
                 || owner.lease.binding.subscription_id != subscription_id
         }) {
@@ -124,6 +131,7 @@ impl PublisherInput {
             };
             self.owner = Some(Owner {
                 addr,
+                source,
                 lease: InputLease::new(binding, now_ms()),
                 text: Default::default(),
             });
@@ -245,6 +253,7 @@ impl PublisherInput {
             return self.poll();
         }
         let dispatch = Dispatch::Events {
+            source: self.owner.as_ref()?.source,
             generation: self.generation,
             token: job.token,
             events: job.events.clone(),
@@ -290,6 +299,21 @@ impl PublisherInput {
 mod tests {
     use super::*;
     use protocol::realtime_input::InputPayload;
+    #[test]
+    fn changing_app_source_revokes_the_old_input_owner() {
+        let (mut input,addr,old)=fixture();
+        let source=protocol::session::CaptureSource::Window(42);
+        let next=input.grant_source(addr,old.connection_id,old.subscription_id,source).unwrap();
+        assert_ne!(old.epoch,next.epoch);
+        assert_eq!(input.owner.as_ref().unwrap().source,source);
+        assert!(matches!(input.poll(),Some(Dispatch::Reset{..})));
+        input.admit(addr,&RealtimeInput{binding:old,sequence:1,created_host_ms:now_ms(),
+            payload:InputPayload::Event(InputEvent::MouseMoveAbsolute{x:10,y:20})});
+        assert!(input.poll().is_none());
+        input.admit(addr,&RealtimeInput{binding:next,sequence:1,created_host_ms:now_ms(),
+            payload:InputPayload::Event(InputEvent::MouseMoveAbsolute{x:10,y:20})});
+        assert!(matches!(input.poll(),Some(Dispatch::Events{source:protocol::session::CaptureSource::Window(42),..})));
+    }
     fn fixture() -> (PublisherInput, SocketAddr, InputBinding) {
         let mut input = PublisherInput::default();
         input.set_capture(true);
@@ -311,10 +335,10 @@ mod tests {
         input.admit(addr,&packet(4,vec![point(1,Move,0.5)]));
         input.admit(addr,&packet(5,vec![point(2,Up,0.4)]));
         assert_eq!(input.queued.len(),3);
-        let Dispatch::Events{generation,token,events}=input.poll().unwrap() else{panic!()};
+        let Dispatch::Events{generation,token,events,..}=input.poll().unwrap() else{panic!()};
         assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==2 && c.iter().all(|p|p.action==Down)));
         input.complete(generation,token,true);
-        let Dispatch::Events{generation,token,events}=input.poll().unwrap() else{panic!()};
+        let Dispatch::Events{generation,token,events,..}=input.poll().unwrap() else{panic!()};
         assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c==&vec![point(1,Move,0.5),point(2,Move,0.4)]));
         input.complete(generation,token,true);
         let Dispatch::Events{events,..}=input.poll().unwrap() else{panic!()};

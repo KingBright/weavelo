@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{broadcast, mpsc, watch};
-use crate::publisher_media::{ActiveRequest, MediaSources};
+use crate::publisher_media::{ActiveRequest, MediaSources, screen_source};
 pub use crate::publisher_media::CaptureDemand;
 
 // Bound authenticated transports, including clients which have not opened a file
@@ -125,7 +125,7 @@ impl MobileSubscription {
             .expect("Screen subscription identity exhausted");
         Self{request,grant,video:true,audio,activity_revision:0,settings_revision:0,video_sequence:0,audio_sequence:0,screen_stream}
     }
-    fn input_allowed(&self)->bool {self.request.source==CaptureSource::MainDisplay&&self.video}
+    fn input_allowed(&self)->bool {screen_source(self.request.source)&&self.video}
 }
 fn recompute(peers:&HashMap<SocketAddr,Peer>,media:&Mutex<MediaSources>) {
     let mut media=media.lock().unwrap();
@@ -149,7 +149,7 @@ async fn refresh_sources(peers:&mut HashMap<SocketAddr,Peer>,media:&Mutex<MediaS
             .map(|(id,_)|*id).collect::<Vec<_>>();
         for id in ended {
             if let Some(sub)=peer.subscriptions.remove(&id) {
-                if sub.request.source==CaptureSource::MainDisplay{input.lock().unwrap().revoke_peer(peer.addr);}
+                if screen_source(sub.request.source){input.lock().unwrap().revoke_peer(peer.addr);}
                 peer.retired.insert(id);
                 reply(sender,peer.addr,SessionCommand::Unsubscribed{id}).await;
             }
@@ -611,7 +611,7 @@ impl MobilePublisher {
                                                 reply(&sender,addr,SessionCommand::Error{request_id:request.id,reason:"Another camera is in use; stop that camera before switching".into()}).await;continue;
                                             }
                                             let id=request.id;let audio=request.audio&&source.audio;
-                                            let supports_input=request.source==CaptureSource::MainDisplay&&shared_input.lock().unwrap().ready();
+                                            let supports_input=screen_source(request.source)&&shared_input.lock().unwrap().ready();
                                             peers.get_mut(&addr).unwrap().subscriptions.entry(id).or_insert_with(||MobileSubscription::new(request,source.grant,audio));
                                             recompute(&peers,&shared);
                                             reply(&sender,addr,SessionCommand::Subscribed{id,audio_owner:audio.then_some(id),supports_input, max_touch_points: if supports_input {protocol::touch::MAX_CONTACTS as u8} else {0} }).await;
@@ -634,7 +634,7 @@ impl MobilePublisher {
                                         }
                                         SessionCommand::Viewport(demand) if peers.contains_key(&addr)=>{
                                             let result=peers[&addr].subscriptions.get(&demand.id)
-                                                .filter(|sub|sub.request.source==CaptureSource::MainDisplay)
+                                                .filter(|sub|screen_source(sub.request.source))
                                                 .ok_or_else(||"Screen viewport subscription is unavailable".to_owned())
                                                 .and_then(|sub|shared.lock().unwrap().viewport(sub.screen_stream,demand));
                                             let response=match result {
@@ -658,12 +658,13 @@ impl MobilePublisher {
                                                 reply(&sender,addr,SessionCommand::Error{request_id:id,reason:"Subscription ID capacity reached; reconnect".into()}).await;continue;
                                             }
                                             peer.retired.insert(id);
-                                            if peer.subscriptions.remove(&id).is_some_and(|sub|sub.request.source==CaptureSource::MainDisplay){shared_input.lock().unwrap().revoke_peer(addr);}
+                                            if peer.subscriptions.remove(&id).is_some_and(|sub|screen_source(sub.request.source)){shared_input.lock().unwrap().revoke_peer(addr);}
                                             recompute(&peers,&shared);reply(&sender,addr,SessionCommand::Unsubscribed{id}).await;
                                         }
                                         SessionCommand::RequestInputBinding {connection_id,id,source_revision:0,request}
                                             if request != 0 && peers.get(&addr).is_some_and(|p|p.id==connection_id&&p.subscriptions.get(&id).is_some_and(MobileSubscription::input_allowed)) => {
-                                            let binding = shared_input.lock().unwrap().grant(addr,connection_id,id);
+                                            let source=peers[&addr].subscriptions[&id].request.source;
+                                            let binding = shared_input.lock().unwrap().grant_source(addr,connection_id,id,source);
                                             if let Some(binding) = binding {
                                                 reply(&sender,addr,SessionCommand::InputBinding {binding,request,host_time_ms:crate::publisher_input::now_ms()}).await;
                                             }
@@ -675,7 +676,7 @@ impl MobilePublisher {
                                         SessionCommand::RealtimeInput(packet) if peers.get(&addr).is_some_and(|p|p.id==packet.binding.connection_id&&p.subscriptions.get(&packet.binding.subscription_id).is_some_and(MobileSubscription::input_allowed)) => {
                                             shared_input.lock().unwrap().admit(addr,&packet);
                                         }
-                                        SessionCommand::ReleaseInput {id} if peers.get(&addr).is_some_and(|p|p.subscriptions.get(&id).is_some_and(|sub|sub.request.source==CaptureSource::MainDisplay)) => {
+                                        SessionCommand::ReleaseInput {id} if peers.get(&addr).is_some_and(|p|p.subscriptions.get(&id).is_some_and(|sub|screen_source(sub.request.source))) => {
                                             shared_input.lock().unwrap().revoke_peer(addr);
                                             reply(&sender,addr,SessionCommand::InputReleased {id}).await;
                                         }
@@ -699,7 +700,7 @@ impl MobilePublisher {
                                     ControlMessage::RequestKeyframe{session_id}=>{
                                         if let Some(sub)=peers.get(&addr).and_then(|peer|peer.subscriptions.get(&session_id)) {
                                             let mut media=shared.lock().unwrap();
-                                            if sub.request.source==CaptureSource::MainDisplay{media.request_view_keyframe(sub.screen_stream);}
+                                            if screen_source(sub.request.source){media.request_view_keyframe(sub.screen_stream);}
                                             else {media.request_keyframe(sub.request.source);}
                                         }
                                     }
@@ -736,10 +737,23 @@ impl MobilePublisher {
         self.capabilities.send_modify(|caps|caps.can_stream=available&&!self.is_finished());
     }
     pub fn set_capture_available(&self,enabled:bool,audio:bool) {
+        if !enabled {let _=self.media.lock().unwrap().set_applications(vec![]);}
         if self.media.lock().unwrap().set_screen(enabled,audio){
             self.input.lock().unwrap().set_capture(false);
             self.notify_sources();
         }
+    }
+    pub fn set_applications(&self,infos:Vec<CaptureSourceInfo>)->Result<(),String> {
+        self.media.lock().unwrap().set_applications(infos)?;
+        self.input.lock().unwrap().revoke();
+        self.notify_sources();Ok(())
+    }
+    pub fn application_demands(&self)->serde_json::Value {
+        let mut media=self.media.lock().unwrap();
+        let ids=media.sources.keys().filter(|id|matches!(id,CaptureSource::Window(_))).copied().collect::<Vec<_>>();
+        serde_json::Value::Array(ids.into_iter().map(|source| {
+            serde_json::json!({"source":source,"demand":media.screen_source_demand(source)})
+        }).collect())
     }
     pub fn set_cameras(&self,cameras:Vec<remote_core::cameras::NativeCamera>)->Result<Vec<(CaptureSource,String)>,String> {
         let bindings=self.media.lock().unwrap().set_cameras(cameras)?;self.notify_sources();Ok(bindings)
@@ -764,11 +778,11 @@ impl MobilePublisher {
     pub fn source_grant(&self,source:CaptureSource)->Option<u64>{self.media.lock().unwrap().sources.get(&source).filter(|source|source.enabled).map(|source|source.grant)}
     pub fn configure_geometry(&self,source:CaptureSource,epoch:u64,width:u32,height:u32,rotation:u16)->Result<u64,String> {
         let result=self.media.lock().unwrap().geometry(source,epoch,width,height,rotation)?;
-        if result!=epoch {if source==CaptureSource::MainDisplay{self.input.lock().unwrap().revoke();}self.notify_sources();}
+        if result!=epoch {if screen_source(source){self.input.lock().unwrap().revoke();}self.notify_sources();}
         Ok(result)
     }
     pub async fn frame_from(&self,source:CaptureSource,epoch:u64,bytes:Vec<u8>,_timestamp_us:i64,audio:bool)->bool {
-        if (source==CaptureSource::MainDisplay&&!audio)||bytes.len()>8*1024*1024
+        if (screen_source(source)&&!audio)||bytes.len()>8*1024*1024
             ||!self.media.lock().unwrap().accepts_frame(source,epoch,audio){return false;}
         // Backpressure the codec drain worker; never discard an encoded reference frame locally.
         self.frames.send(Frame{source,epoch,bytes,timestamp:now_unix_ms() as u32,audio,screen_stream:None,timing:None}).await.is_ok()
@@ -785,7 +799,8 @@ impl MobilePublisher {
         let mut timing=protocol::FrameTimingCheckpoints::new(metadata.capture_ts_us);
         timing.encode_queue_ts_us=metadata.admitted_at_us.saturating_sub(metadata.capture_ts_us).min(u64::from(u32::MAX)) as u32;
         timing.encode_done_ts_us=now.saturating_sub(metadata.capture_ts_us).min(u64::from(u32::MAX)) as u32;
-        self.frames.send(Frame{source:CaptureSource::MainDisplay,epoch:metadata.grant,bytes:payload,
+        let Some(source)=self.media.lock().unwrap().screen_frame_source(metadata.stream,metadata.grant) else {return false;};
+        self.frames.send(Frame{source,epoch:metadata.grant,bytes:payload,
             timestamp:(metadata.capture_ts_us/1000) as u32,audio:false,screen_stream:Some(metadata.stream),timing:Some(timing)}).await.is_ok()
     }
     pub async fn fail_screen_view(&self,stream:u64,grant:u64,reason:String)->Result<(),String> {

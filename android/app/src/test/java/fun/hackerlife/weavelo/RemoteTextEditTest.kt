@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteTextEditTest {
+    @Test fun committedTextTargetsTheSelectionWithoutSplittingEmoji() {
+        assertEquals(RemoteTextEdit.Edit("a你好🙂z",5,5),RemoteTextEdit.insert("aXXz",3,1,"你好🙂"))
+        assertNull(RemoteTextEdit.insert("a🙂z",2,2,"x"))
+        assertNull(RemoteTextEdit.insert("abc",-1,-1,"x"))
+        assertNull(RemoteTextEdit.insert("abc",0,0,"x".repeat(1025)))
+    }
     @Test fun physicalKeyZeroAndShiftProduceTheRequestedText() {
         var edit = RemoteTextEdit.edit("",0,0,0,0)!!
         edit = RemoteTextEdit.edit(edit.text,edit.start,edit.end,0,1)!!

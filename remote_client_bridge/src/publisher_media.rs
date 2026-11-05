@@ -4,8 +4,13 @@ use remote_core::cameras::{CameraRegistry, NativeCamera};
 use std::collections::HashMap;
 use crate::publisher_viewport::{ScreenView,ScreenViewDemand};
 
+pub(crate) fn screen_source(source: CaptureSource) -> bool {
+    matches!(source, CaptureSource::MainDisplay | CaptureSource::Window(_))
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct CaptureDemand {
+    pub subscriptions: usize,
     pub active: bool,
     pub audio: bool,
     pub width: u32,
@@ -18,7 +23,7 @@ pub struct CaptureDemand {
     pub views: Vec<ScreenViewDemand>,
 }
 impl Default for CaptureDemand {
-    fn default()->Self {Self{active:false,audio:false,width:1280,height:720,fps:30,bitrate_kbps:5000,keyframe:0,epoch:0,grant:0,views:Vec::new()}}
+    fn default()->Self {Self{subscriptions:0,active:false,audio:false,width:1280,height:720,fps:30,bitrate_kbps:5000,keyframe:0,epoch:0,grant:0,views:Vec::new()}}
 }
 #[derive(Clone)]
 pub(crate) struct Source {
@@ -58,7 +63,7 @@ impl MediaSources {
         let audio=enabled&&audio;
         let old=&self.sources[&CaptureSource::MainDisplay];
         if (old.enabled,old.audio)==(enabled,audio){return false;}
-        self.views.clear();
+        self.views.retain(|_,view|view.request.source!=CaptureSource::MainDisplay);
         let epoch=self.next();let screen=self.sources.get_mut(&CaptureSource::MainDisplay).unwrap();
         screen.enabled=enabled;screen.audio=audio;screen.grant=epoch;
         screen.demand=CaptureDemand{epoch,grant:epoch,..Default::default()};true
@@ -79,21 +84,48 @@ impl MediaSources {
         }Ok(bindings)
     }
     pub fn camera_key(&self,source:CaptureSource)->Option<&str> {self.cameras.resolve(source).map(|camera|camera.key.as_str())}
+    pub fn set_applications(&mut self, infos: Vec<CaptureSourceInfo>) -> Result<(),String> {
+        let mut ids=std::collections::HashSet::new();
+        if infos.len()>256 || infos.iter().any(|info| !matches!(info.source,CaptureSource::Window(id) if id>0)
+            || !ids.insert(info.source) || info.application.is_empty() || info.application.len()>255
+            || info.title.is_empty() || info.title.len()>1024 || info.camera.is_some()
+            || !(2..=8192).contains(&info.width) || !(2..=8192).contains(&info.height)
+            || u64::from(info.width)*u64::from(info.height)>33_554_432) {
+            return Err("Invalid independent app catalog".into());
+        }
+        self.sources.retain(|id,_|!matches!(id,CaptureSource::Window(_)) || ids.contains(id));
+        self.views.retain(|_,view|!matches!(view.request.source,CaptureSource::Window(_)) || ids.contains(&view.request.source));
+        for mut info in infos {
+            info.supports_input=false;
+            if let Some(old)=self.sources.get(&info.source)
+                && old.enabled && old.info.application==info.application && old.info.width==info.width && old.info.height==info.height {
+                let id=info.source;self.sources.get_mut(&id).unwrap().info=info;continue;
+            }
+            let epoch=self.next();
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,
+                demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
+        }
+        Ok(())
+    }
     pub fn catalog(&self,input_ready:bool)->Vec<CaptureSourceInfo> {
         let mut sources=self.sources.values().filter(|source|source.enabled).map(|source| {
-            let mut info=source.info.clone();info.supports_input=info.source==CaptureSource::MainDisplay&&input_ready;info
+            let mut info=source.info.clone();info.supports_input=screen_source(info.source)&&input_ready;info
         }).collect::<Vec<_>>();
         remote_core::source_picker::sort(&mut sources);sources
     }
     pub fn enabled(&self,source:CaptureSource)->bool {self.sources.get(&source).is_some_and(|source|source.enabled)}
     pub fn demand(&self,source:CaptureSource)->CaptureDemand {self.sources.get(&source).map(|source|source.demand.clone()).unwrap_or_default()}
     pub fn screen_demand(&mut self)->CaptureDemand {
-        let mut demand=self.demand(CaptureSource::MainDisplay);
-        let source=&self.sources[&CaptureSource::MainDisplay];
+        self.screen_source_demand(CaptureSource::MainDisplay)
+    }
+    pub fn screen_source_demand(&mut self, id:CaptureSource)->CaptureDemand {
+        let mut demand=self.demand(id);
+        let Some(source)=self.sources.get(&id) else {return demand;};
         if !source.enabled{return demand;}
         let info=&source.info;
         let size=[info.width,info.height];
-        demand.views=self.views.iter_mut().filter_map(|(stream,view)|view.demand(*stream,size)).collect();
+        demand.views=self.views.iter_mut().filter(|(_,view)|view.request.source==id)
+            .filter_map(|(stream,view)|view.demand(*stream,size)).collect();
         demand.views.sort_by_key(|view|view.stream);demand
     }
     pub fn viewport(&mut self,stream:u64,demand:protocol::viewport::ViewportDemand)->Result<u64,String> {
@@ -101,8 +133,12 @@ impl MediaSources {
         view.viewport(demand)
     }
     pub fn accepts_screen_frame(&self,stream:u64,grant:u64)->bool {
-        self.views.get(&stream).is_some_and(|view|view.active&&view.grant==grant)
-            &&self.sources.get(&CaptureSource::MainDisplay).is_some_and(|source|source.enabled&&source.grant==grant)
+        self.screen_frame_source(stream,grant).is_some()
+    }
+    pub fn screen_frame_source(&self,stream:u64,grant:u64)->Option<CaptureSource> {
+        let view=self.views.get(&stream).filter(|view|view.active&&view.grant==grant)?;
+        self.sources.get(&view.request.source).filter(|source|source.enabled&&source.grant==grant)?;
+        Some(view.request.source)
     }
     pub fn request_view_keyframe(&mut self,stream:u64) {
         if let Some(view)=self.views.get_mut(&stream){view.keyframe=view.keyframe.saturating_add(1);}
@@ -133,14 +169,14 @@ impl MediaSources {
         for active in requests {
             let request=active.request;
             let Some(source)=self.sources.get(&request.source).filter(|source|source.enabled&&source.grant==active.grant)else{continue;};
-            if request.source==CaptureSource::MainDisplay {
+            if screen_source(request.source) {
                 retained.insert(active.stream);
                 let view=self.views.entry(active.stream).or_insert_with(||ScreenView::new(active.grant,request.clone()));
                 if view.grant!=active.grant{*view=ScreenView::new(active.grant,request.clone());}
                 view.request=request.clone();view.active=active.video;
             }
-            if !active.video && !(active.audio&&source.audio&&request.audio){continue;}
             let demand=wanted.entry(request.source).or_insert_with(||CaptureDemand{width:0,height:0,fps:0,bitrate_kbps:0,..Default::default()});
+            demand.subscriptions+=1;
             demand.active|=active.video;demand.audio|=active.audio&&source.audio&&request.audio;
             if active.video {
                 demand.width=demand.width.max(request.width);demand.height=demand.height.max(request.height);
@@ -151,7 +187,7 @@ impl MediaSources {
         let ids=self.sources.keys().copied().collect::<Vec<_>>();
         for id in ids {
             let old=&self.sources[&id].demand;
-            let mut next=wanted.remove(&id).unwrap_or_else(||CaptureDemand{active:false,audio:false,..old.clone()});
+            let mut next=wanted.remove(&id).unwrap_or_else(||CaptureDemand{subscriptions:0,active:false,audio:false,..old.clone()});
             if !next.active {next.width=old.width;next.height=old.height;next.fps=old.fps;next.bitrate_kbps=old.bitrate_kbps;}
             let changed=(old.active,old.width,old.height,old.fps,old.bitrate_kbps)
                 !=(next.active,next.width,next.height,next.fps,next.bitrate_kbps);
@@ -167,6 +203,35 @@ impl MediaSources {
 mod tests {
     use super::*;
     use protocol::session::CameraFacing;
+    #[test]
+    fn independent_apps_keep_pixels_grants_and_paused_tasks_separate() {
+        let mut media=MediaSources::new(true,false);
+        let app=|id,package:&str,width,height|CaptureSourceInfo {source:CaptureSource::Window(id),
+            title:package.into(),application:package.into(),process_id:None,width,height,supports_input:false,camera:None};
+        let a=app(10,"app.a",720,1280);let b=app(20,"app.b",1080,1920);
+        media.set_applications(vec![a.clone(),b.clone()]).unwrap();
+        let mut first=request(a.source);first.id=4;
+        let mut second=request(b.source);second.id=5;
+        let ga=media.sources[&a.source].grant;let gb=media.sources[&b.source].grant;
+        media.recompute([
+            ActiveRequest{stream:40,grant:ga,request:&first,video:true,audio:false},
+            ActiveRequest{stream:50,grant:gb,request:&second,video:true,audio:false}]);
+        let va=media.screen_source_demand(a.source);let vb=media.screen_source_demand(b.source);
+        assert_eq!(va.views.len(),1);assert_eq!(vb.views.len(),1);
+        assert_eq!(va.views[0].geometry.source_width,720);
+        assert_eq!(vb.views[0].geometry.source_width,1080);
+        assert_eq!(media.screen_frame_source(40,ga),Some(a.source));
+        assert_eq!(media.screen_frame_source(40,gb),None);
+        assert!(media.screen_demand().views.is_empty());
+        media.recompute([ActiveRequest{stream:40,grant:ga,request:&first,video:false,audio:false}]);
+        let paused=media.screen_source_demand(a.source);
+        assert_eq!(paused.subscriptions,1);assert!(!paused.active);assert!(paused.views.is_empty());
+        media.set_applications(vec![b]).unwrap();
+        assert_eq!(media.screen_frame_source(40,ga),None);
+        media.set_applications(vec![a]).unwrap();
+        assert_ne!(media.sources[&first.source].grant,ga,"Reopened apps cannot reuse old frame or input grants");
+        assert!(media.set_applications(vec![app(20,"app.b",1080,1920),app(20,"other",720,1280)]).is_err());
+    }
     fn request(source:CaptureSource)->SubscriptionRequest {SubscriptionRequest{id:7,source,width:1280,height:720,fps:30,bitrate_kbps:5000,audio:true}}
     fn active<'a>(media:&MediaSources,request:&'a SubscriptionRequest,video:bool,audio:bool)->ActiveRequest<'a> {
         ActiveRequest{stream:u64::from(request.id),grant:media.sources[&request.source].grant,request,video,audio}

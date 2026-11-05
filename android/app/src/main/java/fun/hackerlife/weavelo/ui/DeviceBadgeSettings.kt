@@ -51,8 +51,8 @@ fun DeviceBadgeSettings() {
         Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()) {
             Image(preview,"Device badge",Modifier.size(40.dp))
             Column(Modifier.weight(1f).padding(horizontal=10.dp)) {
-                Text(android.os.Build.MODEL)
-                Text("Device badge",style=MaterialTheme.typography.labelMedium)
+                Text(android.os.Build.MODEL,color=ColorTextPrimary)
+                Text("Device badge",style=MaterialTheme.typography.labelMedium,color=ColorTextSecondary)
             }
             Box {
                 TextButton(enabled=!busy,onClick={expanded=true}) {Text("Change")}

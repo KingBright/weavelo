@@ -44,7 +44,7 @@ def main():
         if 'status=' not in result:
             raise RuntimeError('Install the current Weavelo with its capture provider before activation')
         value, _ = json.JSONDecoder().raw_decode(result.split('status=', 1)[1])
-        if value.get('api') != 1:
+        if value.get('api') != 2:
             raise RuntimeError('Unsupported capture helper API')
         return value
 

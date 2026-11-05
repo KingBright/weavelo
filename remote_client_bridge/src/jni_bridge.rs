@@ -192,6 +192,12 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             .clone()
             .ok_or("screen sharing is not running")?;
         match operation {
+            43 => {
+                if !CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed){return Err("Enable sharing before opening independent apps".into());}
+                if value.len()>256*2048{return Err("App catalog is oversized".into());}
+                publisher.set_applications(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())
+            }
+            44 => Ok(publisher.application_demands().to_string()),
             41 => {publisher.set_device_badge(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())}
             22 => {
                 #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
