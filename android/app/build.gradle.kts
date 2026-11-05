@@ -23,7 +23,7 @@ android {
         applicationId = "fun.hackerlife.weavelo"
         minSdk = 26
         targetSdk = 35
-        versionCode = 84
+        versionCode = 85
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionName = "2.0.0-alpha.9"
 
@@ -71,6 +71,8 @@ android {
         jniLibs.keepDebugSymbols.add("**/libweavelo_android.so")
     }
     buildFeatures {
+        aidl = true
+        buildConfig = true
         compose = true
     }
     testBuildType = "release"

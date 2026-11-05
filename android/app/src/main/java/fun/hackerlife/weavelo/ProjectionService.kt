@@ -3,7 +3,9 @@ package `fun`.hackerlife.weavelo
 import android.app.*
 import android.content.Intent
 import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
+import android.content.pm.ServiceInfo
+import android.util.DisplayMetrics
+import android.view.Display
 import android.media.*
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -11,12 +13,16 @@ import android.os.*
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import `fun`.hackerlife.weavelo.managed.IManagedScreen
+import `fun`.hackerlife.weavelo.managed.ManagedScreenBridge
 
 /** Owns one OS authorization and one VirtualDisplay for its entire lifetime. */
 class ProjectionService : Service() {
     private val running = AtomicBoolean(false)
     private var worker: Thread? = null
     private var projection: MediaProjection? = null
+    private var displayListener: DisplayManager.DisplayListener? = null
+    @Volatile private var captureDensity = 0
     @Volatile private var captureSize = 1080 to 1920
     @Volatile private var audioAllowed = false
     @Volatile private var controlAllowed = false
@@ -27,42 +33,70 @@ class ProjectionService : Service() {
 
     override fun onBind(intent: Intent?) = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "stop") { stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == "stop") { ManagedScreenBridge.enable(this, false); stopSelf(); return START_NOT_STICKY }
         if (running.get()) return START_NOT_STICKY
+        val managed = if (intent?.action == "managed") ManagedScreenBridge.attached() else null
         val consent = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra("consent", Intent::class.java) else @Suppress("DEPRECATION") intent?.getParcelableExtra("consent")
-        if (consent == null) { stopSelf(); return START_NOT_STICKY }
+        if (consent == null && managed == null) { stopSelf(); return START_NOT_STICKY }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("projection", "Screen sharing", NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(this, 2, Intent(this, ProjectionService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        startForeground(8124, Notification.Builder(this, "projection").setSmallIcon(android.R.drawable.stat_sys_upload)
+        val notification = Notification.Builder(this, "projection").setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle("Weavelo screen sharing").setContentText("Sharing with your devices. Tap to return.")
-            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "Stop sharing", stop).build()).build())
+            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "Stop sharing", stop).build()).build()
         try {
+            val serviceType = if (managed != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (Build.VERSION.SDK_INT >= 29) startForeground(8124, notification, serviceType)
+            else startForeground(8124, notification)
             val metrics = resources.displayMetrics
             captureSize = metrics.widthPixels to metrics.heightPixels
+            captureDensity = metrics.densityDpi
             controlAllowed = intent?.getBooleanExtra("control", false) == true
             sendTarget = intent?.getStringExtra("send-target")
-            audioAllowed = intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
-            val capture = checkNotNull(getSystemService(MediaProjectionManager::class.java).getMediaProjection(intent?.getIntExtra("result", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED, consent))
+            audioAllowed = managed == null && intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
+            val capture = if (managed != null) null else checkNotNull(getSystemService(MediaProjectionManager::class.java).getMediaProjection(intent?.getIntExtra("result", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED, checkNotNull(consent)))
             projection = capture
-            capture.registerCallback(object : MediaProjection.Callback() {
+            capture?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { PublisherClient.controlSize = null; runCatching { PublisherClient.action(1) }; running.set(false); stopSelf() }
                 override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1 && captureSize != (width to height)) {
                     PublisherClient.controlSize = null
                     captureSize = width to height
                 } }
             }, Handler(Looper.getMainLooper()))
+            if (managed != null) {
+                val info = JSONObject(managed.info())
+                captureSize = info.getInt("width") to info.getInt("height")
+                captureDensity = info.getInt("density")
+                val displays = getSystemService(DisplayManager::class.java)
+                displayListener = object : DisplayManager.DisplayListener {
+                    override fun onDisplayAdded(id: Int) = Unit
+                    override fun onDisplayRemoved(id: Int) = Unit
+                    override fun onDisplayChanged(id: Int) {
+                        if (id != Display.DEFAULT_DISPLAY) return
+                        val current = DisplayMetrics()
+                        @Suppress("DEPRECATION")
+                        displays.getDisplay(id)?.getRealMetrics(current)
+                        if (current.widthPixels > 1 && current.heightPixels > 1 &&
+                            (captureSize != (current.widthPixels to current.heightPixels) || captureDensity != current.densityDpi)) {
+                            PublisherClient.controlSize = null
+                            captureDensity = current.densityDpi
+                            captureSize = current.widthPixels to current.heightPixels
+                        }
+                    }
+                }.also { displays.registerDisplayListener(it, Handler(Looper.getMainLooper())) }
+            }
             running.set(true)
-            worker = Thread({ publish(capture, metrics.densityDpi) }, "remote-projection").apply { start() }
+            worker = Thread({ publish(capture, managed) }, "remote-projection").apply { start() }
         } catch (e: Exception) { PublisherClient.status(e.message ?: "Screen sharing failed", false); stopSelf() }
         return START_NOT_STICKY
     }
 
-    private fun publish(capture: MediaProjection, density: Int) {
-        var display: VirtualDisplay? = null
+    private fun publish(capture: MediaProjection?, managed: IManagedScreen?) {
+        var display: CaptureDisplay? = null
         var publisher: GpuScreenPublisher? = null
         var sourceSize = 0 to 0
+        var sourceDensity = 0
         var demand = JSONObject()
         var nextDemand = 0L
         try {
@@ -72,8 +106,8 @@ class ProjectionService : Service() {
             val initialSize=captureSize
             // Android 14+ authorizes exactly one VirtualDisplay. Pause and
             // rotation replace its Surface, never create another with this token.
-            display = capture.createVirtualDisplay("Weavelo", initialSize.first, initialSize.second, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, null, null, Handler(Looper.getMainLooper()))
+            display = if (managed != null) CaptureDisplay.managed(managed, initialSize.first, initialSize.second, captureDensity)
+                else CaptureDisplay.projection(checkNotNull(capture), initialSize.first, initialSize.second, captureDensity)
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
             PublisherClient.status("Sharing enabled · $addresses", true)
@@ -87,13 +121,15 @@ class ProjectionService : Service() {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
                 }
                 val size=captureSize
-                if (sourceSize != size) {
+                val density=captureDensity
+                if (sourceSize != size || sourceDensity != density) {
                     PublisherClient.controlSize = null
                     display.surface = null
                     publisher?.finish();publisher?.close();publisher=null
                     display.resize(size.first,size.second,density)
                     PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width",size.first).put("height",size.second).toString())
                     sourceSize=size
+                    sourceDensity=density
                     if (captureSize == size && controlAllowed) PublisherClient.controlSize=size
                     demand = JSONObject(PublisherClient.action(2))
                 }
@@ -108,7 +144,7 @@ class ProjectionService : Service() {
                     display.surface=null;publisher.close();publisher=null
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")
-                if (wantsAudio && !audioRunning.get()) startAudio(capture,captureGrant)
+                if (wantsAudio && !audioRunning.get() && capture != null) startAudio(capture,captureGrant)
                 if (!wantsAudio && audioRunning.get()) stopAudio()
                 val waitMs=(nextDemand-SystemClock.elapsedRealtime()).coerceIn(1,50)
                 val gpu=publisher
@@ -119,7 +155,7 @@ class ProjectionService : Service() {
         } finally {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
-            display?.surface = null; display?.release()
+            runCatching { display?.surface = null }; runCatching { display?.release() }
             publisher?.close()
             runCatching { PublisherClient.action(1) }
             if (PublisherClient.active) PublisherClient.status("Screen sharing stopped", false)
@@ -156,6 +192,8 @@ class ProjectionService : Service() {
     }
     private fun stopAudio() { audioRunning.set(false); audioWorker?.join(500); audioWorker = null }
     override fun onDestroy() {
+        displayListener?.let { getSystemService(DisplayManager::class.java).unregisterDisplayListener(it) }
+        displayListener = null
         running.set(false); worker?.interrupt(); runCatching { projection?.stop() }; projection = null
         super.onDestroy()
     }

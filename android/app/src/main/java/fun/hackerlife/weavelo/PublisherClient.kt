@@ -57,5 +57,12 @@ object PublisherClient {
             .putExtra("result", resultCode).putExtra("consent", data).putExtra("audio", audio).putExtra("control", control)
             .putExtra("send-target", sendTarget))
     }
-    fun stop(context: Context) { context.stopService(Intent(context, ProjectionService::class.java)) }
+    internal fun startManaged(context: Context, control: Boolean = true, sendTarget: String? = null) {
+        context.startForegroundService(Intent(context, ProjectionService::class.java)
+            .setAction("managed").putExtra("control", control).putExtra("send-target", sendTarget))
+    }
+    fun stop(context: Context, disableManaged: Boolean = true) {
+        if (disableManaged) `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.enable(context, false)
+        context.stopService(Intent(context, ProjectionService::class.java))
+    }
 }

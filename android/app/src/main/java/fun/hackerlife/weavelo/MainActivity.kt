@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
         WeaveloClient.setBackgrounded(false)
         WorkspaceClient.resumeOnForeground(this)
         WorkspaceClient.backgrounded(false)
+        `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.resume(this)
     }
 
     override fun onStop() {
@@ -124,6 +125,14 @@ class MainActivity : ComponentActivity() {
             }
             fun requestProjection(audio: Boolean, control: Boolean = false) {
                 publishAudio = audio; publishControl = control
+                // Playback audio retains its real MediaProjection grant. A local
+                // shell display only supplies video and the existing input path.
+                if (!audio && `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.attached() != null) {
+                    `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.enable(this, true)
+                    PublisherClient.startManaged(this, control, pendingSendTarget)
+                    pendingSendTarget = null
+                    return
+                }
                 val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
                 // A separate user action requests full-display control; existing viewing keeps the OS source choice.
                 val intent = if (control && android.os.Build.VERSION.SDK_INT >= 34)
