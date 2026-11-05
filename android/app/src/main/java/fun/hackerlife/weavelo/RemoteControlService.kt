@@ -220,8 +220,13 @@ class RemoteControlService : AccessibilityService() {
             val ny=if(change?.action=="Cancel") old!!.y else change?.y ?: old!!.y
             val keep=change?.action !in listOf("Up","Cancel")
             val path=Path().apply { moveTo(old?.x ?: nx,old?.y ?: ny); if(old!=null) lineTo(nx,ny) }
+            // Android requires the first continuation step to contain exactly
+            // the previously held strokes. Adding a new finger at t=0 cancels
+            // the entire gesture (MotionEventInjector.prepareToContinueOldGesture).
+            // Start new contacts one millisecond later, with the same end time.
+            val start=if(previous.isNotEmpty()) 1L else 0L
             val updated=old?.stroke?.continueStroke(path,0,8,keep)
-                ?: GestureDescription.StrokeDescription(path,0,8,keep)
+                ?: GestureDescription.StrokeDescription(path,start,8-start,keep)
             strokes.add(updated)
             if(keep) next[id]=ContactStroke(nx,ny,updated)
         }

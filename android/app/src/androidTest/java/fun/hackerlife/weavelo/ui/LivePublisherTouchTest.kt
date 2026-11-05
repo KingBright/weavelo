@@ -88,9 +88,17 @@ class LivePublisherTouchTest {
                 ready.writeText(JSONObject().put("nonce", nonce).put("width", metrics.widthPixels)
                     .put("height", metrics.heightPixels).put("capture", false).toString())
                 val end = SystemClock.uptimeMillis() + 60_000
-                while (SystemClock.uptimeMillis() < end && records.none { it.getInt("action") == MotionEvent.ACTION_UP }) SystemClock.sleep(25)
+                while (SystemClock.uptimeMillis() < end && records.none {
+                    it.getInt("action") in listOf(MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL)
+                }) SystemClock.sleep(25)
                 val proof = JSONObject().put("nonce", nonce).put("events", JSONArray(records.toList()))
                 report.writeText(proof.toString())
+                // Let the real sender unsubscribe before fixture teardown closes
+                // the publisher; otherwise the test itself races close_verified.
+                val cleanupDeadline = SystemClock.uptimeMillis() + 5_000
+                while (SystemClock.uptimeMillis() < cleanupDeadline &&
+                    JSONObject(PublisherClient.action(23)).optJSONArray("peers")?.length() != 0
+                ) SystemClock.sleep(25)
                 val down = records.firstOrNull { it.getInt("action") == MotionEvent.ACTION_DOWN }
                 assertNotNull("Native DOWN was not observed", down)
                 val held = down!!.getJSONArray("points").getJSONObject(0).getInt("id")
