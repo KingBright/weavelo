@@ -7,9 +7,10 @@ use std::{io::Write, sync::Arc, time::Duration};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 2 {
-        return Err("screen_frame_probe LAN_ENDPOINT NEW_OUTPUT.hevc".into());
+    if !(2..=3).contains(&args.len()) {
+        return Err("screen_frame_probe LAN_ENDPOINT NEW_OUTPUT.hevc [WINDOW_ID]".into());
     }
+    let source = args.get(2).map(|id| id.parse().map(CaptureSource::Window)).transpose()?.unwrap_or(CaptureSource::MainDisplay);
     let target: std::net::SocketAddr = args[0].parse()?;
     if !matches!(target.ip(), std::net::IpAddr::V4(ip) if ip.is_private()) {
         return Err("Use the owned device's LAN endpoint".into());
@@ -35,8 +36,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )
     .await??;
     let result = tokio::time::timeout(Duration::from_secs(15), async {
+        conn.control(SessionCommand::ListSources { request_id: 1, known_icons: vec![] }).await?;
+        loop {
+            match events.control.recv().await.ok_or("Connection ended before source catalog")? {
+                SessionCommand::Sources { sources, .. } => {
+                    eprintln!("{}", serde_json::json!({"catalog": sources}));
+                    if !sources.iter().any(|entry| entry.source == source) { return Err("Requested source absent from catalog".into()); }
+                    break;
+                }
+                SessionCommand::Error { reason, .. } | SessionCommand::Closed { reason, .. } => return Err(reason),
+                _ => {}
+            }
+        }
         let (tx, mut video) = remote_core::video_queue::channel(16);
-        conn.subscribe(SubscriptionRequest { id: 85, source: CaptureSource::MainDisplay,
+        conn.subscribe(SubscriptionRequest { id: 85, source,
             width: 1280, height: 720, fps: 30, bitrate_kbps: 4000, audio: false },
             tx, Arc::new(Statistics::default()), Arc::new(SharedHostStats::default())).await?;
         let mut frames = 0;
@@ -65,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok::<_, String>(serde_json::json!({ "frames": frames, "bytes": bytes, "geometry": first_geometry }))
     }).await;
     let closed = conn.close_verified().await;
+    eprintln!("cleanup_confirmed={}", closed.is_ok());
     let mut report = result??;
     report["cleanup_confirmed"] = closed.is_ok().into();
     println!("{report}");
