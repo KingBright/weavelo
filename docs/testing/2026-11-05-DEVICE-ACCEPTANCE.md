@@ -118,3 +118,22 @@ Android 82 已在努比亚 NX741J 与红米 2409BRN2CC 兼容安装，两台安�
 努比亚上的正式 84 通过实际接收端测试：8 个原生 MotionEvent，顺序为 DOWN、MOVE、POINTER_DOWN、MOVE、MOVE、POINTER_UP、MOVE、UP；同时存在两个触点，单独释放第二指后第一指继续移动，没有 CANCEL，首尾坐标正确。发送端同时获得 `cleanup_confirmed=true`。测试耗时 1.425 s，nonce 为 `e7b14038-d409-4ccb-b8a8-0742f96a92bf`；证据在 Book 的 `multitouch-nubia-native-events.json`、`multitouch-nubia-native-instrumentation.log` 和 `multitouch-native-sender.log`。此测试用既有鉴权及实际无障碍输入服务，只向专用前台触点页送输入，没有申请或模拟屏幕采集授权，不代表手机到手机视频、手游或端到端延迟已验收。
 
 Android 80 项单元测试、lint、真实宿主测试 APK 编译通过；连接清理相关 18 项测试通过，发布回归 1,047 项通过、19 项跳过。设备 instrumentation 使用 `am instrument --no-restart` 并保留无障碍服务；普通 instrumentation 强制停止应用会干扰已有系统绑定。测试夹具等待发送端写回本次 nonce 后才销毁发布器，避免测试自身抢先关闭连接。红米独立测试 APK 的安装限制仍未解除，不能以努比亚结果代替其原生多指验收。
+
+
+## 手机自主整屏与点击修复 · 2026-11-06（桌面135 / Android86）
+
+四台电脑已通过各自原有签名／安装入口升级到本轮源码 `18424ed`，两部手机已兼容安装 Android86。两台安装后的 `base.apk` 独立 SHA 均为 `aa8d722b7c165ed734b10f25ec13bd32d4a523647c9e67916eb8e6ba08977842`；原有设备身份、签名与无障碍授权保留。Linux 首次编译漏传既有 FFmpeg SDK 路径，补齐已存在的 SDK／Opus 环境后编译、正式打包和安装通过，没有新增依赖或修改系统设置。
+
+手机自主整屏由 Weavelo APK 内的本机辅助进程提供，使用已经授权的调试连接启动，媒体持续经手机原生 Surface、GPU 与 MediaCodec 进入现有鉴权会话。启动命令退出后辅助进程持续存活。Octendra 不参与画面或输入的运行时转发。两台 Mac 已实际显示手机画面：Studio 同时显示两部手机，Book 通过 LAN 显示努比亚；均有可见截图及零解码错误证据。这不代表重启后无条件恢复、自动音频或独立后台应用已经实现。
+
+修复了 Mac 黑屏的具体原因：Android 的 HEVC 矩阵值5在 VideoToolbox 输出中表现为 `YCbCrMatrix#5`，原渲染器拒绝该明确的 BT.601 值，界面却已确认画面提交。现在识别明确的5／6值，并在解码返回前验证颜色可呈现；未知值仍报错。原始压缩流、FFmpeg、原生 VideoToolbox 像素和实际窗口截图均已交叉核对，未通过猜测矩阵隐藏错误。
+
+点击失败也有原生前后对照：85版收到鼠标“移动、按下、原地移动、抬起”后，Android 只记录 `ACTION_DOWN`，60秒内没有抬起。原因是 Android 拒绝没有像素变化的续接手势，导致当前输入链中断。86版只跳过同一物理像素内的移动，保留原手势及所有按下／抬起；多指的全静止帧同样处理。相同实机测试在1.084秒内通过，记录 DOWN→UP，发送端确认连接清理。旧／新 nonce 分别为 `fa1754b2-04bf-4324-b92e-1286ff09db31`、`e1aed76f-2685-40fe-a901-be80a94ba8f3`。
+
+Studio135→红米86已实际验证普通鼠标点击切换页面、按住拖动滚动内容，以及键盘提交 `abc你好🙂`。手机原生输入框显示完整文本，没有重复；控制保持开启、松开后无残留按键、零解码错误。键盘弹出后的画面仍保持物理屏幕坐标，取消测试输入不会提交网络邀请。此结果不代替完整多指游戏、所有平台输入或完整手机互控矩阵。
+
+相关检查：Android81项单元测试、lint、原生测试编译通过；签名发布回归1047项通过、19项跳过；Mac颜色针对性测试3项通过。所有代码已提交并推送 main。Android86与桌面三个包已发布并核对公开下载 SHA；桌面发布最后读取元数据时发生一次连接超时，随后只重新核对原始预期元数据的精确字节，没有重发或改写版本包。
+
+证据：`android86-*-installed-proof.json`、`android86-nas-publication.log`、`native135-nas-verified.json`；Book `mouse85/86-nubia-native-events.json` 与 instrumentation 日志；Studio `gui135redmi86-settings/drag/text/cancel-*`；Mac图像 `native132-nubia-visible.png`、`native132-redmi-visible.png`、`native132-book-nubia-visible.png`。原始材料保留在对应机器 `.rust-storage/validation-logs/weavelo-gui-20261102/`。
+
+继续项：手机之间的真实串流、多点触屏与输入；独立虚拟显示中的单应用及其显示绑定输入；自动恢复与音频；HO5解锁后的实际 PipeWire 性能；完整六设备摄像头／音频／通知组合。此前白板、教学模式及剩余界面问题继续按已保存规划推进，未标记为完成。
