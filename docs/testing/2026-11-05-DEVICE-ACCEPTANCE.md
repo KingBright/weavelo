@@ -2,7 +2,7 @@
 
 ## 已交付
 
-截至 2026-11-06，四台电脑已从 `1843578` 正式打包并兼容升级为 `20261105.130`，三平台 130 正式包已发布，公开下载字节均已核对。两部原签名手机均已安装 Android 82（`1843578`），正式 APK 也已发布并重新下载核对。六台设备均使用当前 viewport 与来源外观协议。Mac Studio 与 MacBook 保留各自原有签名；没有重置系统权限或替换证书。下文保留历史验收版本，最新状态以本段及末尾接续为准。
+截至 2026-11-06，四台电脑已正式升级至 `20261106.137`，两部原签名手机均已安装 Android89；产品源码为 `3e27bc3`。三平台桌面包与 Android APK 均已发布并核对公开下载字节。测试工具后续修复 `5315231` 不改变正式产品。Mac Studio 与 MacBook 保留各自签名；设备身份未改变。努比亚在测试中被强制停止后，系统移除了 Weavelo 的无障碍启用项，正在等待本人恢复；没有自动修改系统授权。下文历史验收须按各自版本读取，最新详情见末尾。
 
 - 来源选择器：固定列、图标与左对齐，同应用分组缩进，名称筛选及稳定排序；桌面实际签名程序与两部手机界面已检查。目录没有可靠父窗口关系，未伪造进程树。预览仍按 [选择器方案](../plans/SOURCE-PICKER-POLISH-20261105.md) 等待用户选择。
 - 文件：四台电脑的全部 **12 个发送方向、12 个 Fetch 方向**通过，每个文件 262,181 字节。接收端独立读取并计算 SHA；没有用发送端完成通知代替接收内容验证。Fetch 使用实际完成记录的 `shared.received_path`。
@@ -137,3 +137,16 @@ Studio135→红米86已实际验证普通鼠标点击切换页面、按住拖动
 证据：`android86-*-installed-proof.json`、`android86-nas-publication.log`、`native135-nas-verified.json`；Book `mouse85/86-nubia-native-events.json` 与 instrumentation 日志；Studio `gui135redmi86-settings/drag/text/cancel-*`；Mac图像 `native132-nubia-visible.png`、`native132-redmi-visible.png`、`native132-book-nubia-visible.png`。原始材料保留在对应机器 `.rust-storage/validation-logs/weavelo-gui-20261102/`。
 
 继续项：手机之间的真实串流、多点触屏与输入；独立虚拟显示中的单应用及其显示绑定输入；自动恢复与音频；HO5解锁后的实际 PipeWire 性能；完整六设备摄像头／音频／通知组合。此前白板、教学模式及剩余界面问题继续按已保存规划推进，未标记为完成。
+
+## 独立应用与状态恢复 · 2026-11-06（桌面137 / Android89）
+
+四台电脑和两部手机升级、正式发布均已完成。Android89 两端安装后的 base.apk 与公开下载 SHA 均为 `7ec409cf46467f4d15aa68f1d855d66f06dd62aa60d86c6703a9fc03f16cfd23`。桌面公开包及来源身份见 `native137-nas-verified.json`，Android 见 `android89-public-download-verified.json`。所有产品包来自 `3e27bc3`；独立测试工具修复已推送为 `5315231`。
+
+- 努比亚独立应用：计算器、原生输入测试窗口均实际显示，零解码错误。系统活动记录同时确认物理屏幕为启动器、显示47为独立测试应用；两者不共用显示焦点。实际截图为 `android88-nubia-app-reject-native.png`、`android89-nubia-app-keyboard-native.png`，Book 记录为 `android89-nubia-independent-app-activities.txt`。未将辅助进程启动成功当作实际出画。
+- 失败状态：Studio137 实际选择失效来源后记录错误，再选择手机整屏时清除旧错误并进入接收状态，结束后所属租约释放；证据 `native137-retry-state-proof.json`。错误记录按设备和配对网络隔离，设备卡片不会保留上一来源的历史失败。
+- 来源目录：包安装／卸载事件触发更新，空闲的248项应用目录不再20Hz序列化；只轮询当前已订阅来源，暂停仍保留应用任务。来源使用实际应用名称。手动点共享会保留当前已获得的无障碍控制能力。
+- 输入限制：计算器拒绝了文本提交，标准编辑器尚未完成端到端输入验收。测试 APK 独立启动曾缺 Kotlin 运行库，已改为平台 Java 并真实出画。努比亚被本次测试强制停止后丢失无障碍启用项，已告知用户并等待本人重新启用；不得自动写回授权。红米原授权仍在，独立测试 APK 却被系统拒绝安装，不重复相同失败，也不以其它手机结果代替。
+
+本轮82项 Android JVM 检查、lint、测试 APK 编译通过；35项 publisher 检查、6项设备状态检查通过；签名发布回归1047项通过、19项跳过。测试工具修复另经实际 APK 编译、触点发送工具编译及同一发布回归验证。全套当前版本文件／摄像头／音频／通知矩阵、独立应用文本／多指／旋转、高清图标、重启恢复和同Wi-Fi低延迟仍未验收完成。
+
+操作接续：仅用包事件刷新目录，不强制停止手机产品；instrumentation 使用 `--no-restart` 与 `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`。对已在运行的应用不迁移主屏任务。恢复努比亚授权后，从标准测试窗口继续，先确认原生接收记录，再扩展实际应用。所有临时观看租约均已关闭。
