@@ -609,9 +609,10 @@ impl Dispatcher {
                 let ctx = owner
                     .computer_use_snapshot_context()
                     .ok_or("session_unavailable")?;
+                lease.sequence=lease.sequence.checked_add(1).ok_or("snapshot_sequence_exhausted")?;
                 let body = lease.ref_store.build_session_snapshot(
                     &ctx,
-                    lease.sequence.saturating_add(1),
+                    lease.sequence,
                     skeleton,
                     interactive_only,
                     root_ref.as_deref(),

@@ -93,7 +93,6 @@ pub(crate) struct ComputerUseFence {
     source: CaptureSource,
     source_started: Instant,
     video_epoch: remote_core::video_recovery::VideoEpoch,
-    geometry: Option<protocol::viewport::FrameGeometry>,
     input: Option<protocol::realtime_input::InputBinding>,
 }
 pub(crate) type ComputerUseObservation = super::computer_use::Observation<
@@ -1377,7 +1376,6 @@ impl OriginalOwner {
             subscription: s.video_id, source_revision: s.source_revision(),
             source: s.source, source_started: s.first_frame_after,
             video_epoch: frame.video_epoch,
-            geometry:frame.frame_geometry,
             input: s.conn.input_binding(s.video_id, s.source_revision()),
         })
     }
@@ -1480,6 +1478,12 @@ impl OriginalOwner {
         let s = &mut p.active_mut().ok_or_else(|| {
             observation.invalidate(); Rejection::NoSession
         })?.session;
+        // A lease follows the selected source across ROI updates. Effects still
+        // require the exact geometry of their own immutable observed frame.
+        let geometry=observation.frame().frame_geometry;
+        if s.texture.as_ref().is_none_or(|frame|frame.frame_geometry!=geometry) {
+            observation.invalidate();return Err(Rejection::StaleSession);
+        }
         let fence = self.computer_use_fence(s).inspect_err(|_| observation.invalidate())?;
         if !s.keys.is_empty() || !s.mouse.is_empty() || s.modifiers != 0 {
             observation.invalidate();
@@ -1492,10 +1496,10 @@ impl OriginalOwner {
         let can_input = self.computer_use_can_input(s);
         let visual_action = action.clone();
         let connection = s.conn.clone();
-        let mut port = ComputerUseInput { connection: &connection, binding, text_owner,geometry:fence.geometry,admit:None };
+        let mut port = ComputerUseInput { connection: &connection, binding, text_owner,geometry,admit:None };
         let result = observation.act(&connection, &fence, Instant::now(), can_input, action, &mut port);
         if result.is_ok() {
-            self.record_computer_use_visual_feedback(&visual_action,fence.geometry);
+            self.record_computer_use_visual_feedback(&visual_action,geometry);
         }
         if result.is_ok() || matches!(result, Err(Rejection::QueueRejected { .. })) {
             // Require a new observation after every attempted effect, including
@@ -1528,6 +1532,12 @@ impl OriginalOwner {
             observation.invalidate();
             Rejection::NoSession
         })?.session;
+        // A lease follows the selected source across ROI updates. Effects still
+        // require the exact geometry of their own immutable observed frame.
+        let geometry=observation.frame().frame_geometry;
+        if s.texture.as_ref().is_none_or(|frame|frame.frame_geometry!=geometry) {
+            observation.invalidate();return Err(Rejection::StaleSession);
+        }
         let fence = self.computer_use_fence(s).inspect_err(|_| observation.invalidate())?;
         if !s.keys.is_empty() || !s.mouse.is_empty() || s.modifiers != 0 {
             observation.invalidate();
@@ -1549,6 +1559,7 @@ impl OriginalOwner {
             let pool=self.pool.lock().unwrap();
             pool.active().is_some_and(|entry|Arc::ptr_eq(&entry.session.conn,&connection)
                 &&self.computer_use_can_input(&entry.session)
+                &&entry.session.texture.as_ref().is_some_and(|frame|frame.frame_geometry==geometry)
                 &&self.computer_use_fence(&entry.session).is_ok_and(|current|current==fence))
         };
         let admit=|effect:bool,enqueue:&mut dyn FnMut()->bool| {
@@ -1560,10 +1571,11 @@ impl OriginalOwner {
                 &&session.conn.input_binding(session.video_id,session.source_revision())==Some(binding);
             if !current{return false;}
             if effect&&(Instant::now()>=deadline||cancelled()||!self.computer_use_can_input(session)
+                ||session.texture.as_ref().is_none_or(|frame|frame.frame_geometry!=geometry)
                 ||!self.computer_use_fence(session).is_ok_and(|current|current==fence)){return false;}
             enqueue()
         };
-        let mut port=ComputerUseInput{connection:&connection,binding,text_owner,geometry:fence.geometry,admit:Some(&admit)};
+        let mut port=ComputerUseInput{connection:&connection,binding,text_owner,geometry,admit:Some(&admit)};
         let mut wait_fn=|action:&super::computer_use::Action|->bool {
             if !valid(){return false;}
             if let super::computer_use::Action::WaitForStability{timeout_ms}=action {
@@ -1590,7 +1602,7 @@ impl OriginalOwner {
         for (idx, step) in outcome.results.iter().enumerate() {
             if !step.is_error {
                 if let Some(act) = actions.get(idx) {
-                    self.record_computer_use_visual_feedback(act,fence.geometry);
+                    self.record_computer_use_visual_feedback(act,geometry);
                 }
             }
         }
@@ -1759,10 +1771,10 @@ impl OriginalOwner {
         }
     }
     pub fn set_view_demand(&self, visible: bool, focused: bool) {
-        self.presentation_visible.store(visible, std::sync::atomic::Ordering::Release);
-        self.input_focused.store(focused, std::sync::atomic::Ordering::Release);
         let mut p = self.pool.lock().unwrap();
-        if !visible || (!focused && !self.computer_use_background_allowed()) {
+        let was_visible=self.presentation_visible.swap(visible,std::sync::atomic::Ordering::AcqRel);
+        let was_focused=self.input_focused.swap(focused,std::sync::atomic::Ordering::AcqRel);
+        if (was_visible&&!visible)||(was_focused&&!focused&&!self.computer_use_background_allowed()) {
             self.revoke_computer_use();
         }
         if let Some(e) = p.active_mut() {
@@ -1772,11 +1784,8 @@ impl OriginalOwner {
     }
     pub fn set_media_paused(&self, paused: bool) {
         let mut p = self.pool.lock().unwrap();
-        self.revoke_computer_use();
-
-        if let Some(e) = p.active_mut()
-            && e.session.paused != paused
-        {
+        if let Some(e) = p.active_mut() && e.session.paused != paused {
+            self.revoke_computer_use();
             e.session.set_paused(paused);
         }
     }
