@@ -579,6 +579,11 @@ pub(crate) mod macos_dock {
             let _: () = msg_send![app, setApplicationIconImage: image];
             let tile: id = msg_send![app, dockTile];
             if tile != nil {
+                let view: id = msg_send![class!(NSImageView), imageViewWithImage: image];
+                let _: () = msg_send![view, setImageScaling: 3usize]; // Proportionally up or down
+                let size: NSSize = msg_send![tile, size];
+                let _: () = msg_send![view, setFrame: NSRect::new(NSPoint::new(0.0, 0.0), size)];
+                let _: () = msg_send![tile, setContentView: view];
                 let _: () = msg_send![tile, display];
             }
         }
@@ -592,11 +597,16 @@ pub(crate) mod macos_dock {
                 return;
             }
             this.set_ivar("startupIcon", nil);
-            let _: () = msg_send![app, setApplicationIconImage: image];
-            app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
-            // AppKit can replace the icon as it registers the regular app.
             display_icon(app, image);
-            let _: () = msg_send![image, release];
+            app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
+            // Keep the retained image on the main thread. AppKit finishes
+            // registering the Dock tile after returning from this callback.
+            let address = image as usize;
+            dispatch::Queue::main().exec_async(move || {
+                let image = address as id;
+                display_icon(NSApplication::sharedApplication(nil), image);
+                let _: () = msg_send![image, release];
+            });
         }
         std::thread::spawn(|| {
             let mut stdin = std::io::stdin().lock();
