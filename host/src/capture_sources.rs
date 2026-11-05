@@ -7,6 +7,14 @@ fn window_is_transformed(frame: (f64, f64), original: (f64, f64)) -> bool {
         && (frame.0 * 2.0 < original.0 || frame.1 * 2.0 < original.1)
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn mac_window_is_shareable(layer: i32, on_screen: bool) -> bool {
+    // Keep ordinary windows on other Spaces and visible floating panels.
+    // Hidden auxiliary panels (for example ChatGPT's layer-3 overlay) can
+    // appear in SCK's directory without ever producing a captured frame.
+    layer == 0 || on_screen
+}
+
 #[cfg(target_os = "macos")]
 fn window_pixel_size(
     window: &screencapturekit::shareable_content::SCWindow,
@@ -149,7 +157,8 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
             });
         }
         for window in content.windows() {
-            if native_captions.contains(&window.window_id()) {
+            if native_captions.contains(&window.window_id())
+                || !mac_window_is_shareable(window.window_layer(), window.is_on_screen()) {
                 continue;
             }
             let Some(app) = window.owning_application() else {
@@ -218,6 +227,9 @@ pub(crate) fn filter(
                 .into_iter()
                 .find(|window| window.window_id() == id)
                 .ok_or("selected window is no longer available")?;
+            if !mac_window_is_shareable(window.window_layer(), window.is_on_screen()) {
+                return Err("Selected window is a hidden auxiliary panel. Choose an open application window.".into());
+            }
             let filter = SCContentFilter::create().with_window(&window).build();
             let size = window_pixel_size(&window, &filter);
             let scale = f64::from(filter.point_pixel_scale()).clamp(1.0, 4.0);
@@ -251,7 +263,15 @@ pub(crate) fn filter(
 
 #[cfg(test)]
 mod transformed_window_tests {
-    use super::window_is_transformed;
+    use super::{mac_window_is_shareable, window_is_transformed};
+    #[test]
+    fn hidden_auxiliary_panels_are_not_capture_sources() {
+        assert!(!mac_window_is_shareable(3, false));
+        assert!(!mac_window_is_shareable(103, false));
+        assert!(mac_window_is_shareable(0, true));
+        assert!(mac_window_is_shareable(0, false), "Other Spaces remain available");
+        assert!(mac_window_is_shareable(3, true), "Visible floating panels remain available");
+    }
     #[test]
     fn stage_manager_thumbnail_differs_from_normal_and_retina_window_points() {
         assert!(window_is_transformed((69.0, 110.0), (640.0, 632.0)));

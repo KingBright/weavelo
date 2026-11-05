@@ -83,7 +83,7 @@ pub async fn exchange(
                             || matches!(state, DeliveryState::Cancelled | DeliveryState::Rejected)) =>
                     {
                         if state == DeliveryState::Rejected {
-                            return Err(format!("Target rejected delivery: {reason}").into());
+                            return Err(format!("Delivery failed at receiver: {reason}").into());
                         }
                         return Ok(state);
                     }

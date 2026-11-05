@@ -12,7 +12,7 @@ use std::{
 type Error = Box<dyn std::error::Error + Send + Sync>;
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 const FIRST_FRAME_TIMEOUT_REASON: &str =
-    "Receiver did not report its first submitted video frame within 30 seconds";
+    "Video did not start within 30 seconds";
 
 /// A renewable sending intent must not keep a failed startup alive forever.
 /// Once this exact receive has submitted a decoded frame, an unchanged desktop
