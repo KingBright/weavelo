@@ -185,13 +185,13 @@ mod tests {
             self.sent.push(c.clone());match c{
                 SessionCommand::SetActivity{id,revision,video,audio}=>{self.resumed=video;self.replies.push_back(SessionCommand::Activity{id,revision,video,audio});},
                 SessionCommand::ListSources { request_id, .. }=>self.replies.push_back(SessionCommand::Sources{ source_icons: Vec::new(), icons: Vec::new(), request_id,sources:self.catalog.clone()}),
-                SessionCommand::SwitchSource{id,request_id,source}=>self.replies.push_back(SessionCommand::SourceSwitched{id,request_id:request_id+u32::from(self.bad_switch),source,supports_input:true}),
+                SessionCommand::SwitchSource{id,request_id,source}=>self.replies.push_back(SessionCommand::SourceSwitched{id,request_id:request_id+u32::from(self.bad_switch),source,supports_input:true, max_touch_points: 0 }),
                 SessionCommand::ReleaseInput{id}=>if self.release_ack{self.replies.push_back(SessionCommand::InputReleased{id})}else{return Err("input binding unavailable".into())},
                 SessionCommand::Unsubscribe{id}=>self.replies.push_back(SessionCommand::Unsubscribed{id}),
                 SessionCommand::Close{connection_id}=>self.replies.push_back(SessionCommand::Closed{connection_id,reason:STOPPED.into()}),_=>{}
             }Ok(())
         }
-        async fn subscribe(&mut self,s:CaptureSource)->Result<()>{assert_eq!(s,CaptureSource::MainDisplay);self.subscribes+=1;self.replies.push_back(SessionCommand::Subscribed{id:ID,audio_owner:None,supports_input:true});Ok(())}
+        async fn subscribe(&mut self,s:CaptureSource)->Result<()>{assert_eq!(s,CaptureSource::MainDisplay);self.subscribes+=1;self.replies.push_back(SessionCommand::Subscribed{id:ID,audio_owner:None,supports_input:true, max_touch_points: 0 });Ok(())}
         async fn next(&mut self,_wait:Duration)->Option<SessionCommand>{tokio::task::yield_now().await;self.replies.pop_front()}
         fn video(&self)->(u64,u64,u64){if self.resumed{self.frames.set(self.frames.get()+2);} (self.frames.get(),0,8)}
         fn reset_video(&mut self){self.reset=true;self.frames.set(0);}

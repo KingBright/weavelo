@@ -20,7 +20,8 @@ data class WorkspaceSource(val source: Any, val title: String, val width: Int, v
 }
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
-    val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null)
+    val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null,
+    val maxTouchPoints: Int = 0)
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val deviceId: String = "", val transferring: Boolean = false, val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
@@ -444,6 +445,7 @@ object WorkspaceClient {
     internal fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
         mode: TouchMode, width: Int, height: Int, event: JSONObject,
         geometry: VideoFrameGeometry? = null,
+        contacts: JSONArray? = null,
         onCursor: (Float, Float) -> Unit = { _, _ -> }) = guarded {
         if (!currentView(id, sessionKey, generation, true)) {
             inputViewIssue(id,sessionKey,generation)
@@ -463,7 +465,7 @@ object WorkspaceClient {
         runCatching { action(12, JSONObject().put("id", id).put("token", token)
             .put("mode", mode.code).put("width", width).put("height", height)
             .put("geometry",presented ?: JSONObject.NULL)
-            .put("event", JSONObject().put("Touch", event)).toString()) }
+            .put("event", if(contacts==null) JSONObject().put("Touch",event) else JSONObject().put("TouchFrame",contacts)).toString()) }
             .onFailure { inputIssue(id, it.message ?: "Control is unavailable") }
             .onSuccess { result ->
                 if (event.optString("action") == "Down") inputIssue(id, null)
@@ -611,7 +613,8 @@ object WorkspaceClient {
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map {
-                    if (it.id == subscribed.getInt("id")) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input"), accepted = true, videoError = null) else it
+                    if (it.id == subscribed.getInt("id")) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input"),
+                        maxTouchPoints = subscribed.getInt("max_touch_points").coerceIn(0,10), accepted = true, videoError = null) else it
                 })
                 activity()
             }

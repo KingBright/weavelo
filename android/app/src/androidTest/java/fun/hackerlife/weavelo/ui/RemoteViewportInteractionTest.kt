@@ -37,6 +37,7 @@ class RemoteViewportInteractionTest {
     @get:Rule val compose = createComposeRule()
     private data class Touch(val action: Int, val id: Int, val x: Float, val y: Float)
     private val touches = CopyOnWriteArrayList<Touch>()
+    private val nativeSamples = CopyOnWriteArrayList<List<RemoteTouchChange>>()
     private val callbackOwners = CopyOnWriteArrayList<Pair<Int, Int>>()
     private val transform = mutableStateOf(ViewportTransform())
     private val enabled = mutableStateOf(true)
@@ -61,6 +62,7 @@ class RemoteViewportInteractionTest {
                         touches.add(Touch(action, id, x, y))
                         callbackOwners.add(owner to action)
                     },
+                    sendTouchFrame = { sample -> nativeSamples.add(sample) },
                     overlay = {
                         Text("RESET", Modifier.align(Alignment.BottomEnd)
                             .background(Color.DarkGray).clickable { transform.value = transform.value.reset() }
@@ -122,6 +124,42 @@ class RemoteViewportInteractionTest {
         }
         assertTrue("Rendered SurfaceView marker is missing", count > 20)
         return Offset(sumX.toFloat() / count, sumY.toFloat() / count)
+    }
+
+    @Test fun phone_pinch_and_five_fingers_stay_remote_and_keep_identity() {
+        mode.value=TouchMode.NATIVE
+        showViewport()
+        viewport().performTouchInput {
+            for(id in 0..4) down(id,Offset(width*(id+1)/6f,height*.5f))
+            moveTo(0,Offset(width*.1f,height*.4f))
+            moveTo(4,Offset(width*.9f,height*.6f))
+            up(2)
+            moveTo(0,Offset(width*.15f,height*.3f))
+            for(id in listOf(0,1,3,4)) up(id)
+        }
+        compose.runOnIdle {
+            assertTrue(touches.isEmpty())
+            assertEquals(1f,transform.value.scale,0f)
+            val all=nativeSamples.flatten()
+            assertEquals(5,all.count{it.action==0})
+            assertEquals(5,all.count{it.action==2})
+            assertFalse(all.any{it.action==3})
+            assertEquals(all.filter{it.action==0}.map{it.pointerId}.toSet(),all.filter{it.action==2}.map{it.pointerId}.toSet())
+            assertTrue(nativeSamples.all{it.size in 1..10 && it.map{c->c.pointerId}.distinct().size==it.size})
+        }
+    }
+    @Test fun phone_view_adjustment_emits_no_remote_touch() {
+        mode.value=TouchMode.VIEW
+        showViewport()
+        viewport().performTouchInput {
+            down(0,Offset(width*.4f,height*.5f));down(1,Offset(width*.6f,height*.5f))
+            moveTo(0,Offset(width*.2f,height*.5f));moveTo(1,Offset(width*.8f,height*.5f))
+            up(0);up(1)
+        }
+        compose.runOnIdle {
+            assertTrue(nativeSamples.isEmpty());assertTrue(touches.isEmpty())
+            assertTrue(transform.value.scale>1.2f)
+        }
     }
 
     @Test fun surface_pixels_and_remote_touch_share_the_same_zoom_transform() {

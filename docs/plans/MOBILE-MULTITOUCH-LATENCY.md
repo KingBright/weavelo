@@ -26,3 +26,11 @@
 纯状态回归覆盖两指／五指交错按下、同时移动、单指抬起其余保持、丢失／重复／过期消息、移动合并、断线取消和几何变化。Android 实机用专用触点记录页面独立记录事件与坐标，验证“一指持续拖动＋另一指连续点击”、双指缩放与旋转后的落点；再测实际手游操作。先证明事件正确，再比较良好同 Wi-Fi 下的输入延迟与画面延迟，保留原始样本，不以本地模拟或提交完成替代远端实际效果。系统屏幕会话授权仍由机主完成。
 
 Android 官方依据：[多笔画构造](https://developer.android.com/reference/android/accessibilityservice/GestureDescription.Builder#addStroke(android.accessibilityservice.GestureDescription.StrokeDescription))、[连续笔画](https://developer.android.com/reference/android/accessibilityservice/GestureDescription.StrokeDescription#continueStroke(android.graphics.Path,%20long,%20long,%20boolean))。原生 API 支持多笔画和按住延续，但这不构成任意游戏性能已经达标的证据。
+
+## 第一轮实现接续
+
+已实现协议 9 的同帧触点、触点持有和按最后位置取消；订阅回报原生触点能力，桌面回报零，Android 屏幕在真实控制就绪时回报支持。移动端按能力默认多点模式，增加 HUD“调整画面”，把本地缩放与目标手机手势区分。Android 一次提交所有活动触点的持续笔画；排队的连续纯移动合并到最新位置，按下／抬起之间不跨越合并。完成回调直接取后续输入，活动触点期间缩短空等轮询。
+
+本地协议 64 项、桥接 102 项、公共输入 12 项检查通过；桌面／JNI 编译通过，Android Kotlin、80 项 JVM 测试及 lint 通过，新增五指与本地调整模式的设备测试已编译。发布回归 1,047 项通过、19 项跳过。两次 Kotlin 检查暴露本机增量缓存保留旧 ABI，按当前源码完整重编相关任务后通过，未修改产品源码掩盖缓存问题。正式签名安装及两部手机实际多指链路仍待进行；不以这些本地测试声称手游可用。
+
+用户随后要求全自动屏幕拉取、独立后台应用，并明确模拟控制能力必须归属移动端 Weavelo。采集、触摸／键盘、虚拟显示及应用生命周期由 Weavelo 持有；Octendra 仅用于消息触达与远程维护，不承载视频或高频输入，也不成为运行时控制依赖。下一步在 Weavelo 自有、已授权的本机辅助进程中接入原生显示及输入适配器，复用本方案的会话、触点和几何逻辑。

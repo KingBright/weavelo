@@ -227,8 +227,8 @@ impl MobileWorkspace {
                         {
                             let mut touches = event_touches.lock().unwrap();
                             let release = match &event {
-                                SessionCommand::Subscribed { id, supports_input, .. }
-                                | SessionCommand::SourceSwitched { id, supports_input, .. } => touches.get_mut(id).and_then(|t| t.support(*supports_input)),
+                                SessionCommand::Subscribed { id, supports_input, max_touch_points, .. }
+                                | SessionCommand::SourceSwitched { id, supports_input, max_touch_points, .. } => touches.get_mut(id).and_then(|t| t.capabilities(*supports_input,*max_touch_points)),
                                 SessionCommand::Unsubscribed { id } => touches.remove(id).and_then(|mut t| t.invalidate()),
                                 SessionCommand::Closed { .. } => { touches.clear(); None },
                                 _ => None,
@@ -462,13 +462,16 @@ impl MobileWorkspace {
             #[serde(default)] geometry:Option<protocol::viewport::FrameGeometry>,
         }
         let event: Touch = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        if !matches!(event.event, protocol::InputEvent::Touch { .. }) {
+        if !matches!(event.event, protocol::InputEvent::Touch { .. } | protocol::InputEvent::TouchFrame(_)) {
             return Err("expected a local touch gesture".into());
         }
         let mut touches = self.touches.lock().unwrap();
         let Some(touch) = touches.get_mut(&event.id) else {
             return Ok(None);
         };
+        // An old surface cannot replace the current frame's geometry or cancel
+        // a fresh gesture, even if its delayed payload is malformed.
+        if !touch.current_surface(event.token) { return Ok(None); }
         let current = self.connection.input_binding(event.id, touch.revision);
         if let Some(g)=event.geometry {
             g.validate()?;
@@ -478,11 +481,13 @@ impl MobileWorkspace {
             }
         }
         touch.presented_geometry(event.geometry);
-        let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..});
+        let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..})
+            || matches!(&event.event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action==protocol::TouchAction::Down));
         let unavailable=touch.unavailable_reason(event.token,current);
         let mode=match event.mode {
             0=>crate::touch_mapper::TouchMode::DirectTouch,
             1=>crate::touch_mapper::TouchMode::VirtualTrackpad,
+            3 if touch.native_touch_points()>0 && matches!(&event.event,protocol::InputEvent::TouchFrame(_)) => crate::touch_mapper::TouchMode::NativeTouch,
             _=>return Err("unsupported touch mode".into()),
         };
         let Some(releases)=touch.select_mode(event.token,mode,
@@ -491,15 +496,18 @@ impl MobileWorkspace {
         if let Some(binding)=touch.binding() {
             for release in releases {self.connection.try_bound_input(binding,Some(release));}
         }
-        let (release, events) =
-            touch.touch(event.token, event.event, current, std::time::Instant::now());
+        let (release, events) = match event.event {
+            protocol::InputEvent::TouchFrame(contacts) => touch.touch_frame(event.token,contacts,current,std::time::Instant::now()),
+            event_data => touch.touch(event.token,event_data,current,std::time::Instant::now()),
+        };
         if let Some(binding) = release {
             self.connection.try_bound_input(binding, None);
         }
         if starting && let Some(reason)=unavailable {return Err(reason.into());}
         if let Some(binding) = touch.binding() {
             if event.geometry.is_some_and(|g|events.iter().any(|event|matches!(event,
-                protocol::InputEvent::MouseMoveAbsolute{x,y} if !g.contains_source_point(f32::from(*x)/65535.,f32::from(*y)/65535.)))) {
+                protocol::InputEvent::MouseMoveAbsolute{x,y} if !g.contains_source_point(f32::from(*x)/65535.,f32::from(*y)/65535.))
+                || matches!(event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action!=protocol::TouchAction::Cancel&&!g.contains_source_point(p.normalized_x,p.normalized_y))))) {
                 touch.cancel();self.connection.try_bound_input(binding,None);
                 return Ok(None);
             }

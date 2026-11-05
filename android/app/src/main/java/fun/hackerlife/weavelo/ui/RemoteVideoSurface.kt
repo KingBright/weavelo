@@ -33,6 +33,7 @@ internal fun RemoteViewport(
     rotation: Int = 0,
     onViewportSizeChanged: (IntSize) -> Unit = {},
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
+    sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {},
     overlay: @Composable BoxScope.() -> Unit = {},
     factory: (Context) -> SurfaceView
 ) {
@@ -53,7 +54,8 @@ internal fun RemoteViewport(
                     next.width.toFloat(), next.height.toFloat())
                 onSize(next)
             }
-            .remoteViewportGestures(transformState, touchMode, viewportSize, enabled, contentKey to rotation, sendTouch)
+            .remoteViewportGestures(transformState, touchMode, viewportSize, enabled && touchMode != TouchMode.VIEW,
+                contentKey to rotation, sendTouch, sendTouchFrame)
         ) {
             RemoteVideoSurface(transformState.value,
                 Modifier.align(Alignment.Center).requiredSize(if (quarterTurn) height else width, if (quarterTurn) width else height),

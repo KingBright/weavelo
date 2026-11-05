@@ -7,6 +7,7 @@ pub mod session;
 pub mod interaction;
 pub mod session_auth;
 pub mod realtime_input;
+pub mod touch;
 pub mod shared_files;
 pub mod timing;
 pub mod viewport;
@@ -1162,6 +1163,8 @@ pub enum InputEvent {
     },
     /// Native dispatch only: admitted through the receipted CommitText channel.
     Text(crate::interaction::CommittedText),
+    /// Simultaneous native contacts, owned by the existing realtime input lease.
+    TouchFrame(Vec<crate::touch::Contact>),
 }
 
 pub mod input_modifiers {
@@ -1762,12 +1765,11 @@ mod tests {
                 id: 7,
                 request_id: 0x4000_002a,
                 source: CaptureSource::Display(77),
-                supports_input: false,
-            },
+                supports_input: false, max_touch_points: 0 },
         )));
         assert!(
             matches!(reply,ControlMessage::Session(command) if matches!(*command,
-            SessionCommand::SourceSwitched{id:7,request_id:0x4000_002a,source:CaptureSource::Display(77),supports_input:false}))
+            SessionCommand::SourceSwitched{id:7,request_id:0x4000_002a,source:CaptureSource::Display(77),supports_input:false, max_touch_points: 0 }))
         );
     }
 

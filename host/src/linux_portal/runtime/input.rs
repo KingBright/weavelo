@@ -336,7 +336,7 @@ impl PortalInput {
                     self.key(&mut held, code, pressed).await
                 }
                 InputEvent::ModifiersChanged(flags) => self.modifiers(&mut held, flags).await,
-                InputEvent::MouseMove { .. } | InputEvent::Touch { .. } => {
+                InputEvent::MouseMove { .. } | InputEvent::Touch { .. } | InputEvent::TouchFrame(_) => {
                     Err(PortalInputError::InvalidEvent)
                 }
             }

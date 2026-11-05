@@ -1670,8 +1670,7 @@ mod tests {
                             Some(SessionCommand::Subscribed {
                                 id: request.id,
                                 audio_owner: Some(request.id),
-                                supports_input: true,
-                            })
+                                supports_input: true, max_touch_points: 0 })
                         }
                         SessionCommand::SetActivity {
                             id,

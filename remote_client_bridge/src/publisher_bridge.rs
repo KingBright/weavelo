@@ -402,7 +402,7 @@ impl MobilePublisher {
                                 for sub in p.subscriptions.values() {
                                     let audio=sub.audio;
                                     reply(&sender,p.addr,SessionCommand::Subscribed{id:sub.request.id,
-                                        audio_owner:audio.then_some(sub.request.id),supports_input:ready&&sub.input_allowed()}).await;
+                                        audio_owner:audio.then_some(sub.request.id),supports_input:ready&&sub.input_allowed(), max_touch_points: if ready&&sub.input_allowed() {protocol::touch::MAX_CONTACTS as u8} else {0} }).await;
                                 }
                             }
                         }
@@ -614,7 +614,7 @@ impl MobilePublisher {
                                             let supports_input=request.source==CaptureSource::MainDisplay&&shared_input.lock().unwrap().ready();
                                             peers.get_mut(&addr).unwrap().subscriptions.entry(id).or_insert_with(||MobileSubscription::new(request,source.grant,audio));
                                             recompute(&peers,&shared);
-                                            reply(&sender,addr,SessionCommand::Subscribed{id,audio_owner:audio.then_some(id),supports_input}).await;
+                                            reply(&sender,addr,SessionCommand::Subscribed{id,audio_owner:audio.then_some(id),supports_input, max_touch_points: if supports_input {protocol::touch::MAX_CONTACTS as u8} else {0} }).await;
                                         }
                                         SessionCommand::SetActivity{id,revision,video,audio} if peers.contains_key(&addr)=>{
                                             let Some(sub)=peers[&addr].subscriptions.get(&id)else{continue;};
@@ -1665,9 +1665,9 @@ mod tests {
         assert!(matches!(reply(&ar).await,SessionCommand::Subscribed{id:256,..}));
         let mut request=receiver_subscription(512);request.source=camera;
         command(&a,publisher.address,SessionCommand::Subscribe(request.clone())).await;
-        assert!(matches!(reply(&ar).await,SessionCommand::Subscribed{id:512,audio_owner:None,supports_input:false}));
+        assert!(matches!(reply(&ar).await,SessionCommand::Subscribed{id:512,audio_owner:None,supports_input:false, max_touch_points: 0 }));
         request.id=256;command(&b,publisher.address,SessionCommand::Subscribe(request)).await;
-        assert!(matches!(reply(&br).await,SessionCommand::Subscribed{id:256,audio_owner:None,supports_input:false}));
+        assert!(matches!(reply(&br).await,SessionCommand::Subscribed{id:256,audio_owner:None,supports_input:false, max_touch_points: 0 }));
         let epoch=publisher.media.lock().unwrap().demand(camera).epoch;
         assert!(publisher.frame_from(camera,epoch,vec![0,0,0,1,0x26,1,7],0,false).await);
         for (receiver,id) in [(&ar,512),(&br,256)] {

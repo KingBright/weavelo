@@ -1,7 +1,7 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 8;
+pub const SESSION_VERSION: u32 = 9;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -150,6 +150,8 @@ pub enum SessionCommand {
         id: u32,
         audio_owner: Option<u32>,
         supports_input: bool,
+        /// Native simultaneous contacts for this accepted source; zero means mouse/key input.
+        max_touch_points: u8,
     },
     Input {
         id: u32,
@@ -192,6 +194,8 @@ pub enum SessionCommand {
         request_id: u32,
         source: CaptureSource,
         supports_input: bool,
+        /// Native simultaneous contacts for this accepted source; zero means mouse/key input.
+        max_touch_points: u8,
     },
     // Window input is bound to a source revision. An old datagram cannot act on
     // the newly selected window even when the media subscription ID is reused.

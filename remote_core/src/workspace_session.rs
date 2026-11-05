@@ -978,8 +978,7 @@ impl Actor {
             self.refresh_audio_activity();
         }
         if let SessionCommand::Subscribed {
-            id, audio_owner, supports_input
-        } = command
+            id, audio_owner, supports_input, .. } = command
         {
             if !supports_input { self.input.lock().unwrap().invalidate_text_owner(*id); }
             if let Some(view) = self.subscriptions.get_mut(id) {
@@ -1685,8 +1684,7 @@ mod tests {
                 &ControlMessage::Session(Box::new(SessionCommand::Subscribed {
                     id: 7,
                     audio_owner: None,
-                    supports_input: true,
-                })),
+                    supports_input: true, max_touch_points: 0 })),
                 local,
             )
             .await
@@ -1783,8 +1781,7 @@ mod tests {
                 &ControlMessage::Session(Box::new(SessionCommand::Subscribed {
                     id: 7,
                     audio_owner: None,
-                    supports_input: true,
-                })),
+                    supports_input: true, max_touch_points: 0 })),
                 local,
             )
             .await
@@ -1823,8 +1820,7 @@ mod tests {
             id: 7,
             request_id: 100,
             source: CaptureSource::Display(88),
-            supports_input: true
-        }));
+            supports_input: true, max_touch_points: 0 }));
         actor
             .packet(source_video(7, 20), FrameTimingCheckpoints::default())
             .await;
@@ -1891,8 +1887,7 @@ mod tests {
         let ack = SessionCommand::Subscribed {
             id: 7,
             audio_owner: Some(7),
-            supports_input: true,
-        };
+            supports_input: true, max_touch_points: 0 };
         assert!(actor.accept_control(&ack));
         assert!(!actor.subscriptions[&7].active);
         assert!(!actor.subscriptions[&7].audio_active);
@@ -1959,7 +1954,7 @@ mod tests {
             source:CaptureSource::Window(123),width:640,height:360,fps:30,bitrate_kbps:2000,audio:true })).await;
         actor.pending.get_mut(&(2,7)).unwrap().started -= Duration::from_secs(9);
         actor.expire_request((2,7)).await;
-        let late = SessionCommand::Subscribed { id:7,audio_owner:Some(7),supports_input:true };
+        let late = SessionCommand::Subscribed { id:7,audio_owner:Some(7),supports_input:true, max_touch_points: 0 };
         assert!(!actor.accept_control(&late), "expired subscription acknowledgement must not reopen media");
         assert!(!actor.subscriptions.contains_key(&7), "expired subscription must retire its media ingress");
         assert!(!actor.audio_groups.contains_key(&7));
@@ -1988,10 +1983,10 @@ mod tests {
         assert_eq!(audio.try_recv().unwrap(),AudioIngressEvent::Packet(sound));
         for (id,request_id,source) in [(8,100,88),(7,99,88),(7,100,77)] {
             assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id,request_id,
-                source:CaptureSource::Display(source),supports_input:true}));
+                source:CaptureSource::Display(source),supports_input:true, max_touch_points: 0 }));
             assert!(actor.source_switch_pending(7));
         }
-        let accepted=SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true};
+        let accepted=SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true, max_touch_points: 0 };
         assert!(actor.accept_control(&accepted));
         assert!(!actor.source_switch_pending(7));
         assert!(!actor.accept_control(&accepted)); // Duplicate cannot reset the new epoch.
@@ -2031,7 +2026,7 @@ mod tests {
         assert!(other.try_recv().is_ok());
         assert!(files.same_channel(&actor.files_tx) && !files.is_closed());
         assert!(actor.accept_control(&SessionCommand::Unsubscribed { id:7 }));
-        assert!(!actor.accept_control(&SessionCommand::Subscribed { id:7, audio_owner:Some(7), supports_input:true }));
+        assert!(!actor.accept_control(&SessionCommand::Subscribed { id:7, audio_owner:Some(7), supports_input:true, max_touch_points: 0 }));
     }
 
     #[tokio::test]
@@ -2043,11 +2038,11 @@ mod tests {
             actor.request(SessionCommand::SwitchSource{id:7,request_id,source:CaptureSource::Display(display)}).await;
         }
         assert_eq!(actor.pending.len(),1);
-        assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true}));
+        assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true, max_touch_points: 0 }));
         assert!(actor.source_switch_pending(7));
         actor.prepare_control(&SessionCommand::Unsubscribe{id:7});
         assert!(!actor.source_switch_pending(7));
-        assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:101,source:CaptureSource::Display(99),supports_input:true}));
+        assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:101,source:CaptureSource::Display(99),supports_input:true, max_touch_points: 0 }));
         assert!(!actor.subscriptions.contains_key(&7));
         assert!(actor.subscriptions.contains_key(&8));
     }
@@ -2068,7 +2063,7 @@ mod tests {
         assert!(video.try_recv().is_ok(),"a rejected selection must preserve the existing stream");
         actor.prepare_control(&SessionCommand::SetActivity{id:7,revision:2,video:false,audio:false});
         actor.request(SessionCommand::SwitchSource{id:7,request_id:101,source:CaptureSource::Display(99)}).await;
-        assert!(actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:101,source:CaptureSource::Display(99),supports_input:true}));
+        assert!(actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:101,source:CaptureSource::Display(99),supports_input:true, max_touch_points: 0 }));
         assert!(!actor.subscriptions[&7].active);
         actor.packet(source_video(7,11),FrameTimingCheckpoints::default()).await;
         assert!(video.try_recv().is_err(),"source acknowledgement must not unpause video");
@@ -2105,7 +2100,7 @@ mod tests {
         assert!(actor.accept_control(&SessionCommand::InputReleased { id: 7 }));
         assert!(!actor.pending.contains_key(&(7, 7)));
         assert!(actor.accept_control(&SessionCommand::Configured { id: 7, revision: 2 }));
-        assert!(actor.accept_control(&SessionCommand::SourceSwitched { id: 7, request_id: 7, source: CaptureSource::Display(88), supports_input: true }));
+        assert!(actor.accept_control(&SessionCommand::SourceSwitched { id: 7, request_id: 7, source: CaptureSource::Display(88), supports_input: true, max_touch_points: 0 }));
         assert!(actor.pending.is_empty());
     }
 
@@ -2169,7 +2164,7 @@ mod tests {
         assert!(!actor.source_switch_pending(7));
         assert_eq!(actor.subscriptions.get_mut(&7).unwrap().handler.take_keyframe_request(),Some((actor.target,7)));
         assert_eq!(actor.subscriptions.get_mut(&8).unwrap().handler.take_keyframe_request(),None);
-        assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true}));
+        assert!(!actor.accept_control(&SessionCommand::SourceSwitched{id:7,request_id:100,source:CaptureSource::Display(88),supports_input:true, max_touch_points: 0 }));
     }
 
     #[tokio::test]

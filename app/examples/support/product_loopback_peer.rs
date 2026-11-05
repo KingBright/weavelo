@@ -386,7 +386,7 @@ async fn serve(
                     if let Some(c)=connections.get_mut(&response.addr) && c.id==response.connection
                         && let Some(s)=c.subscriptions.get_mut(&response.id) {
                         s.request.source=response.source; s.source_revision=response.request;
-                        reply(&sender,response.addr,SessionCommand::SourceSwitched{id:response.id,request_id:response.request,source:response.source,supports_input:true}).await;
+                        reply(&sender,response.addr,SessionCommand::SourceSwitched{id:response.id,request_id:response.request,source:response.source,supports_input:true, max_touch_points: 0 }).await;
                     }
                 }
                 delayed=waiting;
@@ -447,7 +447,7 @@ async fn serve(
                                 if let Some(c)=connections.get_mut(&addr) {
                                     let id=request.id;let audio=request.audio;
                                     c.subscriptions.entry(id).or_insert(Subscription{request,source_revision:0,video:true,audio});
-                                    reply(&sender,addr,SessionCommand::Subscribed{id,audio_owner:None,supports_input:true}).await;
+                                    reply(&sender,addr,SessionCommand::Subscribed{id,audio_owner:None,supports_input:true, max_touch_points: 0 }).await;
                                 }
                             }
                             SessionCommand::SwitchSource{id,request_id,source}=>{

@@ -342,6 +342,9 @@ impl MacInputInjector {
                     self.post(&cg_event, deadline);
                 }
             }
+            // macOS advertises no native touchscreen capability. Never convert
+            // a multi-contact sample into a different mouse action.
+            InputEvent::TouchFrame(_) => {}
             InputEvent::Touch {
                 action,
                 pointer_id: _,

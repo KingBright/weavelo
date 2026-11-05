@@ -759,8 +759,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     id,
                     request_id,
                     source,
-                    supports_input,
-                } if id == self.video_id && self.pending.is_some_and(|p| p.0 == request_id) => {
+                    supports_input, .. } if id == self.video_id && self.pending.is_some_and(|p| p.0 == request_id) => {
                     self.source = source;
                     self.source_revision = request_id;
                     self.request.source = source;
@@ -1325,14 +1324,14 @@ pub(crate) mod static_input_tests {
         session.poll();
         assert!(!session.confirmed);assert_eq!(session.video_id,old);
         assert!(session.media.is_none());
-        sender.send(SessionCommand::Subscribed {id:old,audio_owner:None,supports_input:true}).unwrap();
+        sender.send(SessionCommand::Subscribed {id:old,audio_owner:None,supports_input:true, max_touch_points: 0 }).unwrap();
         sender.send(SessionCommand::Unsubscribed {id:old+256}).unwrap();
         session.poll();assert_eq!(session.video_id,old);assert!(!session.confirmed);
         sender.send(SessionCommand::Unsubscribed {id:old}).unwrap();session.poll();
         assert_eq!(session.video_id,old+256);assert!(!session.confirmed);
-        sender.send(SessionCommand::Subscribed {id:old,audio_owner:None,supports_input:true}).unwrap();
+        sender.send(SessionCommand::Subscribed {id:old,audio_owner:None,supports_input:true, max_touch_points: 0 }).unwrap();
         session.poll();assert!(!session.confirmed);
-        sender.send(SessionCommand::Subscribed {id:old+256,audio_owner:None,supports_input:false}).unwrap();
+        sender.send(SessionCommand::Subscribed {id:old+256,audio_owner:None,supports_input:false, max_touch_points: 0 }).unwrap();
         session.poll();assert!(session.confirmed);assert!(!session.supports_input);
         recorder.abort();
     }
@@ -1643,8 +1642,7 @@ pub(crate) mod static_input_tests {
             .send(SessionCommand::Subscribed {
                 id: session.video_id,
                 audio_owner: None,
-                supports_input: true,
-            })
+                supports_input: true, max_touch_points: 0 })
             .unwrap();
         session.poll();
         assert!(session.confirmed);
@@ -1731,8 +1729,7 @@ pub(crate) mod static_input_tests {
                 id: session.video_id,
                 request_id: 100,
                 source: CaptureSource::Display(88),
-                supports_input: true,
-            })
+                supports_input: true, max_touch_points: 0 })
             .unwrap();
         session.poll();
         assert_eq!(

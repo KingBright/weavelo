@@ -7,6 +7,7 @@ pub enum TouchMode {
     DirectTouch,
     VirtualTrackpad,
     GamepadOverlay,
+    NativeTouch,
 }
 
 #[derive(Debug, Clone)]
@@ -87,7 +88,13 @@ impl TouchStateTracker {
     }
 
     pub fn cancel_all(&mut self) -> Vec<InputEvent> {
-        let releases = if self.is_left_down {
+        let releases = if self.mode == TouchMode::NativeTouch && !self.active_pointers.is_empty() {
+            vec![InputEvent::TouchFrame(self.active_pointers.iter().map(|id| {
+                let (x,y) = self.pointer_positions.get(id).copied().unwrap_or((0.,0.));
+                protocol::touch::Contact { action:TouchAction::Cancel, pointer_id:*id,
+                    normalized_x:x, normalized_y:y, pressure:0. }
+            }).collect())]
+        } else if self.is_left_down {
             vec![InputEvent::MouseUp(0)]
         } else {
             Vec::new()
@@ -122,7 +129,7 @@ impl TouchStateTracker {
         pointer_id: u32,
         norm_x: f32,
         norm_y: f32,
-        _pressure: f32,
+        pressure: f32,
         now: Instant,
     ) -> Vec<InputEvent> {
         let mut events = Vec::new();
@@ -144,6 +151,28 @@ impl TouchStateTracker {
         let abs_y = (clamped_y * f32::from(u16::MAX)).round() as u16;
 
         match self.mode {
+            TouchMode::NativeTouch => {
+                if !pressure.is_finite() || !(0.0..=1.0).contains(&pressure) {
+                    return self.cancel_all();
+                }
+                match action {
+                    TouchAction::Down => {
+                        if self.active_pointers.contains(&pointer_id) { return events; }
+                        if self.active_pointers.len() >= protocol::touch::MAX_CONTACTS { return self.cancel_all(); }
+                        self.active_pointers.push(pointer_id);
+                        self.pointer_positions.insert(pointer_id,(clamped_x,clamped_y));
+                    }
+                    TouchAction::Move => { self.pointer_positions.insert(pointer_id,(clamped_x,clamped_y)); }
+                    TouchAction::Up | TouchAction::Cancel => {
+                        self.active_pointers.retain(|id| *id != pointer_id);
+                        self.pointer_positions.remove(&pointer_id);
+                    }
+                }
+                events.push(InputEvent::TouchFrame(vec![protocol::touch::Contact {
+                    action, pointer_id, normalized_x:clamped_x, normalized_y:clamped_y,
+                    pressure:if matches!(action,TouchAction::Up|TouchAction::Cancel) {0.}else{pressure},
+                }]));
+            }
             TouchMode::DirectTouch => {
                 match action {
                     TouchAction::Down => {
@@ -448,7 +477,7 @@ impl TouchStateTracker {
                         if self.pointer_positions.get(&pointer_id)
                             .is_some_and(|point|*point != (clamped_x,clamped_y)) {
                             events.extend(self.process_touch(TouchAction::Move,pointer_id,
-                                clamped_x,clamped_y,_pressure,now));
+                                clamped_x,clamped_y,pressure,now));
                         }
                         if !self.has_dragged {
                             if self.session_max_pointers == 1 {
@@ -495,7 +524,7 @@ impl TouchStateTracker {
                     pointer_id,
                     normalized_x: clamped_x,
                     normalized_y: clamped_y,
-                    pressure: _pressure,
+                    pressure: pressure,
                 });
             }
         }

@@ -6,6 +6,7 @@ use std::time::Instant;
 pub(crate) struct WorkspaceTouch {
     pub revision: u32,
     supported: bool,
+    native_touch_points: u8,
     visible: bool,
     surface: u64,
     attached: bool,
@@ -23,6 +24,7 @@ impl WorkspaceTouch {
         Self {
             revision: 0,
             supported: false,
+            native_touch_points: 0,
             visible: true,
             surface: 0,
             attached: false,
@@ -86,6 +88,14 @@ impl WorkspaceTouch {
         if !supported { self.cursor = (0.5, 0.5); }
         if supported { None } else { self.cancel() }
     }
+    pub fn capabilities(&mut self, supported: bool, contacts: u8) -> Option<InputBinding> {
+        let next = if supported { contacts.min(protocol::touch::MAX_CONTACTS as u8) } else { 0 };
+        let release = (next != self.native_touch_points).then(|| self.cancel()).flatten();
+        self.native_touch_points = next;
+        self.support(supported).or(release)
+    }
+    pub fn native_touch_points(&self) -> u8 { self.native_touch_points }
+    pub fn current_surface(&self, token: u64) -> bool { token != 0 && token == self.surface && self.attached }
     /// Only a new gesture may change its mode/geometry. Late continuations
     /// cannot cancel or reinterpret the replacement gesture.
     pub fn select_mode(&mut self, token:u64, mode:TouchMode, bounds:RemoteScreenBounds,
@@ -222,7 +232,7 @@ impl WorkspaceTouch {
         else {
             return (self.cancel().or(release), Vec::new());
         };
-        if action == TouchAction::Cancel {
+        if action == TouchAction::Cancel && self.tracker.mode != TouchMode::NativeTouch {
             return (release, self.cancel_pointer());
         }
         let events = self.tracker.process_touch(
@@ -235,6 +245,28 @@ impl WorkspaceTouch {
         );
         self.last_intent = self.tracker.has_active_pointers().then_some(now);
         (release, self.normalized_trackpad(events))
+    }
+    pub fn touch_frame(&mut self, token: u64, contacts: Vec<protocol::touch::Contact>,
+        current: Option<InputBinding>, now: Instant) -> (Option<InputBinding>, Vec<InputEvent>) {
+        if !self.current_surface(token) { return (None,Vec::new()); }
+        if self.native_touch_points == 0 || !protocol::touch::valid_frame(&contacts)
+            || contacts.len() > usize::from(self.native_touch_points)
+            || self.tracker.mode != TouchMode::NativeTouch {
+            return (self.cancel(),Vec::new());
+        }
+        let mut released = None;
+        let mut output = Vec::with_capacity(contacts.len());
+        for c in contacts {
+            let (release,events) = self.touch(token,InputEvent::Touch {action:c.action,pointer_id:c.pointer_id,
+                normalized_x:c.normalized_x,normalized_y:c.normalized_y,pressure:c.pressure},current,now);
+            released = release.or(released);
+            for event in events { if let InputEvent::TouchFrame(points) = event { output.extend(points); } }
+        }
+        if !output.is_empty() && !protocol::touch::valid_frame(&output) {
+            return (self.cancel().or(released),Vec::new());
+        }
+        let events = if output.is_empty() {Vec::new()} else {vec![InputEvent::TouchFrame(output)]};
+        (released,events)
     }
     pub fn binding(&self) -> Option<InputBinding> {
         self.binding
@@ -298,6 +330,25 @@ mod tests {
         touch.surface(1, "begin");
         touch.surface(1, "ready");
         touch
+    }
+    #[test]
+    fn native_samples_keep_contacts_simultaneous_and_cancel_only_owned_surfaces() {
+        let mut touch=ready();touch.capabilities(true,10);
+        touch.select_mode(1,TouchMode::NativeTouch,RemoteScreenBounds{width:400,height:800},true).unwrap();
+        let grant=Some(binding(1));let now=Instant::now();
+        let point=|id,action,x|protocol::touch::Contact{pointer_id:id,action,normalized_x:x,normalized_y:0.5,pressure:1.};
+        let first=vec![point(1,TouchAction::Down,0.1),point(8,TouchAction::Down,0.8)];
+        assert_eq!(touch.touch_frame(1,first.clone(),grant,now).1,vec![InputEvent::TouchFrame(first)]);
+        let next=vec![point(1,TouchAction::Move,0.3),point(8,TouchAction::Up,0.9)];
+        let result=touch.touch_frame(1,next,grant,now).1;
+        assert!(matches!(result.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==2 && c[0].pointer_id==1 && c[1].pressure==0.));
+        assert_eq!(touch.healthy_binding(1),grant);
+        assert!(touch.touch_frame(99,vec![point(1,TouchAction::Cancel,0.)],grant,now).1.is_empty());
+        assert!(touch.touch_frame(99,vec![point(1,TouchAction::Down,f32::NAN)],grant,now).0.is_none());
+        assert_eq!(touch.healthy_binding(1),grant);
+        let cancelled=touch.surface(1,"cancel").1;
+        assert!(matches!(cancelled.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==1 && c[0].pointer_id==1 && c[0].action==TouchAction::Cancel));
+        assert!(touch.healthy_binding(1).is_none());
     }
     #[test]
     fn unavailable_reasons_follow_the_same_surface_and_grant_fences_as_input() {

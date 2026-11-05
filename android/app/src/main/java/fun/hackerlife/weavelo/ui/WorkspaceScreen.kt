@@ -401,7 +401,9 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     var videoStatus by remember(pane.id, sessionKey, generation) { mutableStateOf<String?>("Waiting for video…") }
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
-    var touchMode by remember(pane.id, sessionKey, generation) { mutableStateOf(TouchMode.DIRECT) }
+    var touchMode by remember(pane.id, sessionKey, generation, pane.maxTouchPoints) {
+        mutableStateOf(if(pane.maxTouchPoints>0) TouchMode.NATIVE else TouchMode.DIRECT)
+    }
     var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
     val nativeViewport = remember(pane.id, sessionKey, generation) { java.util.concurrent.atomic.AtomicReference<GpuVideoSurface?>() }
@@ -480,6 +482,28 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     transform.value=transform.value.reveal(cx,cy,measured.width.toFloat(),measured.height.toFloat())
                 }
                 }
+                }
+            },
+            sendTouchFrame = { sample ->
+                val presentation=nativeViewport.get()?.presentation
+                val geometry=presentation?.geometry
+                val invalid=sample.size>pane.maxTouchPoints || presentation?.ready!=true || geometry==null ||
+                    geometry.sourceRevision!=0 || geometry.sourceWidth!=dimensions.width || geometry.sourceHeight!=dimensions.height ||
+                    sample.any { it.action!=3 && !geometry.contains(it.x,it.y) }
+                if(invalid) {
+                    pointers.clear();touching=false
+                    WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
+                } else {
+                    val contacts=org.json.JSONArray()
+                    sample.forEach { c ->
+                        when(c.action) {0->pointers.add(c.pointerId);2,3->pointers.remove(c.pointerId)}
+                        contacts.put(JSONObject().put("action",when(c.action){0->"Down";1->"Move";2->"Up";else->"Cancel"})
+                            .put("pointer_id",Integer.toUnsignedLong(c.pointerId)).put("normalized_x",c.x)
+                            .put("normalized_y",c.y).put("pressure",c.pressure))
+                    }
+                    touching=pointers.isNotEmpty()
+                    WorkspaceClient.touch(pane.id,sessionKey,generation,token,sample.minOf {it.time},TouchMode.NATIVE,
+                        geometry.sourceWidth,geometry.sourceHeight,JSONObject(),geometry,contacts)
                 }
             },
             overlay = {
@@ -640,13 +664,22 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset zoom") }
                 }
                 if (pane.input) TextButton(onClick = {
-                    touchMode = if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT
+                    WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
+                    pointers.clear();touching=false
+                    touchMode = if(touchMode==TouchMode.TRACKPAD) {
+                        if(pane.maxTouchPoints>0) TouchMode.NATIVE else TouchMode.DIRECT
+                    } else TouchMode.TRACKPAD
                 }) {
-                    Icon(if (touchMode == TouchMode.DIRECT) MobileSymbol.Touch.image else MobileSymbol.Trackpad.image,
+                    Icon(if (touchMode != TouchMode.TRACKPAD) MobileSymbol.Touch.image else MobileSymbol.Trackpad.image,
                         contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(if (touchMode == TouchMode.DIRECT) "Direct touch" else "Touchpad")
+                    Text(when(touchMode){TouchMode.NATIVE->"Multi-touch";TouchMode.TRACKPAD->"Touchpad";TouchMode.VIEW->"Adjust view";else->"Direct touch"})
                 }
+                if(pane.input && pane.maxTouchPoints>0) TextButton(onClick={
+                    WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
+                    pointers.clear();touching=false
+                    touchMode=if(touchMode==TouchMode.VIEW) TouchMode.NATIVE else TouchMode.VIEW
+                }) { Text(if(touchMode==TouchMode.VIEW) "Control" else "Adjust view") }
                 if (pane.input) MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
                     enabled = token != 0L, modifier = Modifier.size(40.dp)) {
                     if (keyboardVisible) keyboardVisible = false else {

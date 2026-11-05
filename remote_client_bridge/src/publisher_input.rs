@@ -157,13 +157,32 @@ impl PublisherInput {
         let Some(events) = owner.lease.accept(packet, now_ms()) else {
             return;
         };
-        // Touch continuations have no HeldState press. End those OS holds too.
+        // An explicit release cancels native work as well as the wire holds.
         if matches!(
             packet.payload,
             protocol::realtime_input::InputPayload::Release
         ) {
             self.revoke();
             return;
+        }
+        if events.is_empty() { return; }
+        // Movement is replaceable; contact edges and text are not. Merge only
+        // the adjacent unsent move sample, keeping every other finger's latest
+        // position and the oldest retained deadline. No OS receipt is invented
+        // for superseded work.
+        if let Some(next) = protocol::touch::only_moves(&events)
+            && let Some(previous) = self.queued.back_mut()
+            && let Some(old) = protocol::touch::only_moves(&previous.events) {
+            let mut contacts: std::collections::BTreeMap<_,_> = old.iter()
+                .map(|contact| (contact.pointer_id,*contact)).collect();
+            contacts.extend(next.iter().map(|contact| (contact.pointer_id,*contact)));
+            let contacts: Vec<_> = contacts.into_values().collect();
+            if protocol::touch::valid_frame(&contacts) {
+                previous.events = vec![InputEvent::TouchFrame(contacts)];
+                previous.sequence = packet.sequence;
+                previous.created = previous.created.min(packet.created_host_ms);
+                return;
+            }
         }
         if self.queued.len() + usize::from(self.executing.is_some()) >= MAX_PENDING {
             self.revoke();
@@ -279,6 +298,27 @@ mod tests {
         let binding = input.grant(addr, 1, 256).unwrap();
         assert!(matches!(input.poll(), Some(Dispatch::Reset { .. })));
         (input, addr, binding)
+    }
+    #[test]
+    fn consecutive_native_moves_coalesce_without_crossing_contact_edges() {
+        use protocol::TouchAction::*;
+        let (mut input,addr,binding)=fixture();
+        let point=|id,action,x|protocol::touch::Contact{pointer_id:id,action,normalized_x:x,normalized_y:0.5,pressure:1.};
+        let packet=|sequence,contacts|RealtimeInput{binding,sequence,created_host_ms:now_ms(),payload:InputPayload::Event(InputEvent::TouchFrame(contacts))};
+        input.admit(addr,&packet(1,vec![point(1,Down,0.1),point(2,Down,0.2)]));
+        input.admit(addr,&packet(2,vec![point(1,Move,0.3)]));
+        input.admit(addr,&packet(3,vec![point(2,Move,0.4)]));
+        input.admit(addr,&packet(4,vec![point(1,Move,0.5)]));
+        input.admit(addr,&packet(5,vec![point(2,Up,0.4)]));
+        assert_eq!(input.queued.len(),3);
+        let Dispatch::Events{generation,token,events}=input.poll().unwrap() else{panic!()};
+        assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==2 && c.iter().all(|p|p.action==Down)));
+        input.complete(generation,token,true);
+        let Dispatch::Events{generation,token,events}=input.poll().unwrap() else{panic!()};
+        assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c==&vec![point(1,Move,0.5),point(2,Move,0.4)]));
+        input.complete(generation,token,true);
+        let Dispatch::Events{events,..}=input.poll().unwrap() else{panic!()};
+        assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==1 && c[0].action==Up));
     }
     fn movement(binding: InputBinding, sequence: u64) -> RealtimeInput {
         RealtimeInput {

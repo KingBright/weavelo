@@ -22,6 +22,7 @@ pub enum Press {
     Key(u16),
     Button(u8),
     Modifier(u8),
+    Touch(u32),
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InputPayload {
@@ -39,8 +40,8 @@ pub struct RealtimeInput {
     pub payload: InputPayload,
 }
 
-#[derive(Default, Debug)]
-pub struct HeldState(BTreeMap<Press, u64>);
+#[derive(Default, Debug, Clone)]
+pub struct HeldState(BTreeMap<Press, u64>, BTreeMap<u32, crate::touch::Contact>);
 impl HeldState {
     pub fn snapshot(&self) -> Vec<(Press, u64)> {
         self.0.iter().map(|(p, s)| (*p, *s)).collect()
@@ -66,6 +67,9 @@ impl HeldState {
         }
     }
     pub fn event(&mut self, event: InputEvent, sequence: u64) -> Option<InputEvent> {
+        if let InputEvent::TouchFrame(contacts) = &event {
+            return self.touch_frame(contacts, sequence);
+        }
         // Scancode and structured-key messages share one physical press identity.
         let event = match event {
             InputEvent::KeyDown(code) if code <= 0x7e => InputEvent::Key {
@@ -123,7 +127,7 @@ impl HeldState {
             InputEvent::MouseUp(b) if *b <= 2 => {
                 self.transition(Press::Button(*b), false, sequence)
             }
-            InputEvent::MouseDown(_) | InputEvent::MouseUp(_) | InputEvent::Touch { .. } | InputEvent::Text(_) => false,
+            InputEvent::MouseDown(_) | InputEvent::MouseUp(_) | InputEvent::Touch { .. } | InputEvent::Text(_) | InputEvent::TouchFrame(_) => false,
             InputEvent::ModifiersChanged(mask) => {
                 // Caps Lock is a toggle, not a releasable momentary press.
                 for bit in [1, 2, 4, 8] {
@@ -168,6 +172,7 @@ impl HeldState {
             .collect();
         let mut output = Vec::new();
         let mut modifiers_changed = false;
+        let mut contacts = Vec::new();
         for press in removed {
             self.0.remove(&press);
             match press {
@@ -178,12 +183,54 @@ impl HeldState {
                 }),
                 Press::Button(b) => output.push(InputEvent::MouseUp(b)),
                 Press::Modifier(_) => modifiers_changed = true,
+                Press::Touch(id) => {
+                    if let Some(mut contact) = self.1.remove(&id) {
+                        contact.action = crate::TouchAction::Cancel;
+                        contact.pressure = 0.0;
+                        contacts.push(contact);
+                    }
+                }
             }
         }
         if modifiers_changed {
             output.push(InputEvent::ModifiersChanged(self.modifiers()));
         }
+        if !contacts.is_empty() { output.push(InputEvent::TouchFrame(contacts)); }
         output
+    }
+
+    fn touch_frame(&mut self, contacts: &[crate::touch::Contact], sequence: u64) -> Option<InputEvent> {
+        use crate::TouchAction;
+        if !crate::touch::valid_frame(contacts) { return None; }
+        // Validate the whole sample before replacing owned state. A bad point
+        // must never leave an earlier point from the same sample pressed.
+        let mut next = self.clone();
+        let mut output = Vec::with_capacity(contacts.len());
+        for contact in contacts {
+            let mut contact = *contact;
+            let press = Press::Touch(contact.pointer_id);
+            let admitted = match contact.action {
+                TouchAction::Down => next.transition(press, true, sequence),
+                TouchAction::Move => next.0.contains_key(&press),
+                TouchAction::Up | TouchAction::Cancel => next.transition(press, false, sequence),
+            };
+            if !admitted { continue; }
+            match contact.action {
+                TouchAction::Down | TouchAction::Move => { next.1.insert(contact.pointer_id, contact); }
+                TouchAction::Up | TouchAction::Cancel => {
+                    if let Some(previous) = next.1.remove(&contact.pointer_id)
+                        && contact.action == TouchAction::Cancel {
+                        contact.normalized_x = previous.normalized_x;
+                        contact.normalized_y = previous.normalized_y;
+                    }
+                    contact.pressure = 0.0;
+                }
+            }
+            output.push(contact);
+        }
+        if next.1.len() > crate::touch::MAX_CONTACTS || output.is_empty() { return None; }
+        *self = next;
+        Some(InputEvent::TouchFrame(output))
     }
 }
 
@@ -271,6 +318,8 @@ impl InputLease {
         // Committed text requires its ordered receipt channel; a fabricated
         // realtime text event must not renew the input lease either.
         if matches!(&packet.payload,InputPayload::Event(InputEvent::Text(_))) {return None;}
+        if let InputPayload::Event(InputEvent::TouchFrame(contacts)) = &packet.payload
+            && !crate::touch::valid_frame(contacts) { return None; }
         // An explicit chord must not become a different (possibly bare) key
         // when its modifier-down was lost/reordered. Consume the sequence but
         // reject before changing held state. Legacy KeyDown has no such field.
@@ -329,6 +378,40 @@ mod tests {
         assert!(held.event(InputEvent::KeyDown(0x38), 4).is_none());
         assert!(held.event(InputEvent::KeyUp(0x38), 5).is_some());
         assert!(held.event(InputEvent::KeyUp(0x38), 6).is_none());
+    }
+    fn touch(id: u32, action: crate::TouchAction, x: f32) -> crate::touch::Contact {
+        crate::touch::Contact { pointer_id: id, action, normalized_x: x, normalized_y: 0.4, pressure: 1.0 }
+    }
+    #[test]
+    fn native_contacts_preserve_other_fingers_and_release_at_the_last_position() {
+        use crate::TouchAction::*;
+        let mut state = HeldState::default();
+        assert!(state.event(InputEvent::TouchFrame(vec![touch(1, Down, 0.1), touch(9, Down, 0.9)]), 1).is_some());
+        assert_eq!(state.snapshot(), vec![(Press::Touch(1), 1), (Press::Touch(9), 1)]);
+        assert!(state.event(InputEvent::TouchFrame(vec![touch(1, Move, 0.3), touch(9, Up, 0.8)]), 2).is_some());
+        assert_eq!(state.snapshot(), vec![(Press::Touch(1), 1)]);
+        assert!(state.event(InputEvent::TouchFrame(vec![touch(9, Move, 0.7)]), 3).is_none());
+        let released = state.release_missing(&[]);
+        assert_eq!(released, vec![InputEvent::TouchFrame(vec![crate::touch::Contact {
+            pressure: 0.0, ..touch(1, Cancel, 0.3)
+        }])]);
+        assert!(state.release_missing(&[(Press::Touch(1), 1)]).is_empty());
+        assert!(state.snapshot().is_empty());
+    }
+    #[test]
+    fn malformed_touch_sample_is_atomic_and_old_holds_cannot_create_contacts() {
+        use crate::TouchAction::*;
+        let mut state = HeldState::default();
+        assert!(state.event(InputEvent::TouchFrame(vec![touch(1, Down, 0.1), touch(2, Down, f32::NAN)]), 1).is_none());
+        assert!(state.snapshot().is_empty());
+        let mut lease = InputLease::new(binding(1), 1000);
+        assert!(lease.accept(&packet(1,InputPayload::Held(vec![(Press::Touch(1),1)])),1000).unwrap().is_empty());
+        assert!(lease.accept(&packet(2,InputPayload::Event(InputEvent::TouchFrame(vec![touch(1, Move, 0.3)]))),1000).unwrap().is_empty());
+        let frame=packet(3,InputPayload::Event(InputEvent::TouchFrame(vec![touch(1, Down, 0.3)])));
+        assert_eq!(lease.accept(&frame,1000).unwrap().len(),1);
+        assert!(lease.accept(&frame,1000).is_none());
+        let released=lease.accept(&packet(4,InputPayload::Held(vec![])),1000).unwrap();
+        assert!(matches!(released.as_slice(),[InputEvent::TouchFrame(c)] if c[0].action==Cancel));
     }
     fn binding(epoch: u8) -> InputBinding {
         InputBinding {

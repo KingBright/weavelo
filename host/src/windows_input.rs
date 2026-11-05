@@ -290,7 +290,7 @@ impl WindowsInputInjector {
             InputEvent::KeyDown(code) => self.post_key(code as VIRTUAL_KEY, true, deadline)?,
             InputEvent::KeyUp(code) => self.post_key(code as VIRTUAL_KEY, false, deadline)?,
             InputEvent::ModifiersChanged(modifiers) => self.set_modifiers(modifiers, deadline)?,
-            InputEvent::Touch { .. } => {}
+            InputEvent::Touch { .. } | InputEvent::TouchFrame(_) => {}
         }
         Ok(())
     }

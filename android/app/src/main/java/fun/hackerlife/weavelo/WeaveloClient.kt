@@ -25,7 +25,9 @@ enum class SessionState {
 enum class TouchMode(val code: Int) {
     DIRECT(0),
     TRACKPAD(1),
-    GAMEPAD(2)
+    GAMEPAD(2),
+    NATIVE(3),
+    VIEW(4)
 }
 
 class DeviceInvitation(val code: String, val qrPayload: String, val networkName: String) {

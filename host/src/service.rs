@@ -610,6 +610,9 @@ impl Connection {
         Some(SessionCommand::InputBinding{binding:self.input_leases.get(&id)?.lease.binding,request,host_time_ms:now})
     }
     fn accept_input(&mut self,packet:&RealtimeInput) -> Option<Vec<InputEvent>> {
+        // Desktop sources advertise zero native touch points; do not accept
+        // contacts that their OS adapter cannot inject faithfully.
+        if matches!(&packet.payload,InputPayload::Event(InputEvent::TouchFrame(_))) { return None; }
         let id=packet.binding.subscription_id;
         let (revision,target,generation)=self.input_signature(id)?;
         let slot=self.input_leases.get_mut(&id)?;
@@ -1116,8 +1119,7 @@ impl Connection {
                 audio_owner: existing
                     .audio_group
                     .and_then(|key| self.audio_groups.get(&key).map(|g| g.owner)),
-                supports_input: existing.supports_input_now(),
-            });
+                supports_input: existing.supports_input_now(), max_touch_points: 0 });
         }
         if self.subscriptions.len() >= MAX_SUBSCRIPTIONS
             && !self.subscriptions.contains_key(&request.id)
@@ -1399,8 +1401,7 @@ impl Connection {
         Ok(SessionCommand::Subscribed {
             id,
             audio_owner,
-            supports_input: self.subscriptions[&id].supports_input_now(),
-        })
+            supports_input: self.subscriptions[&id].supports_input_now(), max_touch_points: 0 })
     }
 
     async fn switch_source(
@@ -1427,8 +1428,7 @@ impl Connection {
                 id,
                 request_id,
                 source,
-                supports_input: current.supports_input_now(),
-            });
+                supports_input: current.supports_input_now(), max_touch_points: 0 });
         }
         let mut request = current.request.clone();
         request.source = source;
@@ -1443,8 +1443,7 @@ impl Connection {
             id,
             request_id,
             source,
-            supports_input: current.supports_input_now(),
-        })
+            supports_input: current.supports_input_now(), max_touch_points: 0 })
     }
 
     fn set_activity(

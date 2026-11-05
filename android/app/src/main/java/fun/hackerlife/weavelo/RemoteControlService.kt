@@ -38,13 +38,22 @@ class RemoteControlService : AccessibilityService() {
     private var x = 0f
     private var y = 0f
     private var stroke: GestureDescription.StrokeDescription? = null
-    private var touchPointer: Int? = null
+    private data class ContactStroke(val x: Float, val y: Float, val stroke: GestureDescription.StrokeDescription)
+    private var contacts = linkedMapOf<Long, ContactStroke>()
+    private var pollScheduled = false
+    private fun schedulePoll(delay: Long) {
+        if (!running) return
+        handler.removeCallbacks(poll)
+        pollScheduled = true
+        handler.postDelayed(poll, delay)
+    }
     private val poll = object : Runnable {
         override fun run() {
+            pollScheduled = false
             if (!running) return
             if (!mutableConnected.value || PublisherClient.controlSize == null) {
                 if (generation != -1L) reset(-1)
-                handler.postDelayed(this,250)
+                schedulePoll(250)
                 return
             }
             runCatching {
@@ -64,7 +73,7 @@ class RemoteControlService : AccessibilityService() {
                     }
                 }
             }.onFailure { reset(-1) }
-            handler.postDelayed(this,16)
+            if (!pollScheduled) schedulePoll(if (contacts.isNotEmpty() || stroke != null) 4 else 16)
         }
     }
     override fun onServiceConnected() {
@@ -76,7 +85,7 @@ class RemoteControlService : AccessibilityService() {
         }
         mutableConnected.value = true
         running = true
-        handler.removeCallbacks(poll); handler.post(poll)
+        schedulePoll(0)
     }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
     override fun onInterrupt() {
@@ -99,24 +108,28 @@ class RemoteControlService : AccessibilityService() {
         return size.takeIf { it.first == metrics.widthPixels && it.second == metrics.heightPixels && it.first > 1 && it.second > 1 }
     }
     private fun reset(next: Long) {
-        generation = next; val version = ++work; busy = true; touchPointer = null
+        generation = next; val version = ++work; busy = true
         val old = stroke; stroke = null
+        val oldContacts = contacts; contacts = linkedMapOf()
         fun released() {
             if (work == version) {
                 dimensions()?.let { x = it.first/2f; y = it.second/2f }
                 busy = false
+                schedulePoll(0)
             }
         }
-        if (old == null) released()
-        else {
+        val releases = oldContacts.values.map { contact ->
+            contact.stroke.continueStroke(Path().apply { moveTo(contact.x,contact.y) },0,1,false)
+        }.toMutableList()
+        if (old != null) {
             val path = Path().apply { moveTo(x,y) }
-            val release = old.continueStroke(path,0,1,false)
-            dispatch(release) { released() }
+            releases.add(old.continueStroke(path,0,1,false))
         }
+        if (releases.isEmpty()) released() else dispatch(releases) { released() }
     }
     private fun finish(gen: Long, token: Long, accepted: Boolean) {
         runCatching { PublisherClient.action(10,JSONObject().put("generation",gen).put("token",token).put("accepted",accepted).toString()) }
-        if (gen == generation) busy = false
+        if (gen == generation) { busy = false; schedulePoll(0) }
     }
     private fun valid(gen: Long, token: Long) = PublisherClient.action(11,
         JSONObject().put("generation",gen).put("token",token).toString()) == "true"
@@ -136,6 +149,7 @@ class RemoteControlService : AccessibilityService() {
             if (stroke == null) { x = nx; y = ny; done(true) }
             else continueTouch(nx,ny,false,::done)
         }
+        if (contacts.isNotEmpty() && name.startsWith("Mouse")) { done(false); return }
         when (name) {
             "MouseMoveAbsolute" -> {
                 val p = value as JSONObject
@@ -178,18 +192,43 @@ class RemoteControlService : AccessibilityService() {
                 val key = value as JSONObject
                 done(!key.getBoolean("pressed") || this.key(key.getInt("key_code"),key.getInt("modifiers")))
             }
-            "Touch" -> {
-                val touch = value as JSONObject; val pointer = touch.getInt("pointer_id")
-                val nx = touch.getDouble("normalized_x").toFloat()*(size.first-1)
-                val ny = touch.getDouble("normalized_y").toFloat()*(size.second-1)
-                when (touch.getString("action")) {
-                    "Down" -> if (touchPointer == null && stroke == null) { touchPointer = pointer; x = nx; y = ny; startTouch(::done) } else done(false)
-                    "Move" -> if (touchPointer == pointer && stroke != null) continueTouch(nx,ny,false,::done) else done(false)
-                    "Up", "Cancel" -> if (touchPointer == pointer && stroke != null) { touchPointer = null; continueTouch(nx,ny,true,::done) } else done(false)
-                    else -> done(false)
-                }
-            }
+            "TouchFrame" -> dispatchContacts(value as JSONArray,size,::done)
             else -> done(false)
+        }
+    }
+    /** Continue every held finger in one OS gesture, including stationary ones. */
+    private fun dispatchContacts(frame: JSONArray, size: Pair<Int,Int>, done: (Boolean) -> Unit) {
+        if (stroke != null || frame.length() !in 1..10) { done(false); return }
+        data class Change(val action: String, val x: Float, val y: Float)
+        val changes = linkedMapOf<Long,Change>()
+        for (i in 0 until frame.length()) {
+            val c=frame.getJSONObject(i);val id=c.getLong("pointer_id");val action=c.getString("action")
+            val nx=c.getDouble("normalized_x").toFloat();val ny=c.getDouble("normalized_y").toFloat()
+            if (id !in 0..0xffffffffL || changes.containsKey(id) || !nx.isFinite() || !ny.isFinite()
+                || nx !in 0f..1f || ny !in 0f..1f || action !in listOf("Down","Move","Up","Cancel")
+                || (action=="Down") == contacts.containsKey(id)) { done(false); return }
+            changes[id]=Change(action,nx*(size.first-1),ny*(size.second-1))
+        }
+        val ids=(contacts.keys+changes.keys).distinct()
+        if (ids.size > GestureDescription.getMaxStrokeCount()) { done(false); return }
+        val previous=contacts
+        val next=linkedMapOf<Long,ContactStroke>()
+        val strokes=ArrayList<GestureDescription.StrokeDescription>(ids.size)
+        for (id in ids) {
+            val old=previous[id];val change=changes[id]
+            val nx=if(change?.action=="Cancel") old!!.x else change?.x ?: old!!.x
+            val ny=if(change?.action=="Cancel") old!!.y else change?.y ?: old!!.y
+            val keep=change?.action !in listOf("Up","Cancel")
+            val path=Path().apply { moveTo(old?.x ?: nx,old?.y ?: ny); if(old!=null) lineTo(nx,ny) }
+            val updated=old?.stroke?.continueStroke(path,0,8,keep)
+                ?: GestureDescription.StrokeDescription(path,0,8,keep)
+            strokes.add(updated)
+            if(keep) next[id]=ContactStroke(nx,ny,updated)
+        }
+        contacts=next
+        dispatch(strokes) { ok ->
+            if(!ok && contacts===next) contacts=previous
+            done(ok)
         }
     }
     private fun startTouch(done: (Boolean) -> Unit) {
@@ -206,11 +245,16 @@ class RemoteControlService : AccessibilityService() {
         dispatch(next) { ok -> if (!ok && stroke === next) stroke = null; done(ok) }
     }
     private fun dispatch(stroke: GestureDescription.StrokeDescription, done: (Boolean) -> Unit) {
+        dispatch(listOf(stroke),done)
+    }
+    private fun dispatch(strokes: List<GestureDescription.StrokeDescription>, done: (Boolean) -> Unit) {
         val callback = object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) { done(true) }
             override fun onCancelled(gestureDescription: GestureDescription?) { done(false) }
         }
-        if (!dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(),callback,handler)) done(false)
+        val builder=GestureDescription.Builder()
+        strokes.forEach { builder.addStroke(it) }
+        if (!dispatchGesture(builder.build(),callback,handler)) done(false)
     }
     private fun key(code: Int, modifiers: Int): Boolean {
         if (code == 0x35 && modifiers == 0) return performGlobalAction(GLOBAL_ACTION_BACK)

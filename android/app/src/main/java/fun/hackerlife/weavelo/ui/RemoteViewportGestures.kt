@@ -13,6 +13,9 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.unit.IntSize
 import `fun`.hackerlife.weavelo.TouchMode
 
+internal data class RemoteTouchChange(val action: Int, val pointerId: Int,
+    val x: Float, val y: Float, val pressure: Float, val time: Long)
+
 /** The production gesture handler, with an injectable transport sink for on-device tests. */
 internal fun Modifier.remoteViewportGestures(
     transformState: MutableState<ViewportTransform>,
@@ -20,9 +23,11 @@ internal fun Modifier.remoteViewportGestures(
     viewportSize: IntSize,
     enabled: Boolean,
     contentKey: Any? = null,
-    sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit
+    sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
+    sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {}
 ): Modifier = composed {
     val currentSink by rememberUpdatedState(sendTouch)
+    val currentFrameSink by rememberUpdatedState(sendTouchFrame)
     pointerInput(touchMode, viewportSize, enabled, contentKey) {
         var transform by transformState
         // At 1x, two-finger drag/tap remains a remote scroll/right-click.
@@ -31,6 +36,7 @@ internal fun Modifier.remoteViewportGestures(
             // Cleanup belongs to the callback that started this gesture. A
             // replacement surface/session must never receive the old cancel.
             val gestureSink = currentSink
+            val frameSink = currentFrameSink
             val activePointers = mutableSetOf<Int>()
             var twoFingerMode = TwoFingerGestureMode.UNDECIDED
             var twoFingerStarted = false
@@ -88,7 +94,10 @@ internal fun Modifier.remoteViewportGestures(
             }
 
             fun cancelRemotePointers() {
-                for (id in activePointers) {
+                if (touchMode == TouchMode.NATIVE && activePointers.isNotEmpty()) {
+                    val now=android.os.SystemClock.uptimeMillis()
+                    frameSink(activePointers.map { RemoteTouchChange(3,it,0f,0f,0f,now) })
+                } else for (id in activePointers) {
                     gestureSink(3, id, 0f, 0f, 0f, android.os.SystemClock.uptimeMillis())
                 }
                 activePointers.clear()
@@ -106,6 +115,34 @@ internal fun Modifier.remoteViewportGestures(
                     val viewWidth = size.width.coerceAtLeast(1).toFloat()
                     val viewHeight = size.height.coerceAtLeast(1).toFloat()
                     val pressedChanges = event.changes.filter { it.pressed }
+
+                    if (touchMode == TouchMode.NATIVE) {
+                        if (pressedChanges.size > 10) { suppressGesture=true;cancelRemotePointers() }
+                        val sample=ArrayList<RemoteTouchChange>()
+                        if (enabled && !suppressGesture) for(change in event.changes) {
+                            val id=change.id.value.toInt()
+                            val point=transform.screenToNormalized(change.position.x,change.position.y,viewWidth,viewHeight)
+                            val action=when {
+                                !change.previousPressed && change.pressed -> {activePointers.add(id);0}
+                                change.previousPressed && !change.pressed && activePointers.remove(id) -> 2
+                                change.pressed && change.positionChanged() && id in activePointers -> 1
+                                else -> null
+                            }
+                            if(action!=null) sample.add(RemoteTouchChange(action,id,point.first,point.second,
+                                if(change.pressed) change.pressure.coerceIn(0f,1f) else 0f,change.uptimeMillis))
+                        }
+                        if(sample.isNotEmpty()) frameSink(sample)
+                        event.changes.forEach { it.consume() }
+                        if(event.changes.none { it.pressed }) break
+                        continue
+                    }
+                    if (touchMode == TouchMode.VIEW && pressedChanges.size == 1) {
+                        val change=pressedChanges.single()
+                        if(change.previousPressed) transform=transform.update(1f,
+                            change.position-change.previousPosition,viewWidth,viewHeight,change.previousPosition)
+                        event.changes.forEach { it.consume() }
+                        continue
+                    }
 
                     if (pressedChanges.size > 2) {
                         suppressGesture = true
@@ -144,7 +181,7 @@ internal fun Modifier.remoteViewportGestures(
                             )
                         }
 
-                        if (twoFingerMode == TwoFingerGestureMode.LOCAL_TRANSFORM) {
+                        if (touchMode == TouchMode.VIEW || twoFingerMode == TwoFingerGestureMode.LOCAL_TRANSFORM) {
                             val baselineDistance = if (localTransformGesture) prevDistance else initialDistance
                             val baselineCentroid = if (localTransformGesture) prevCentroid else initialCentroid
                             if (!localTransformGesture) {

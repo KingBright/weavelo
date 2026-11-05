@@ -643,8 +643,7 @@ pub fn spawn_client_session_receiver(
                                     id,
                                     request_id,
                                     source,
-                                    supports_input,
-                                } => {
+                                    supports_input, .. } => {
                                     let _ = tx.send(ClientSessionEvent::CaptureSourceSwitched {
                                         id,
                                         request_id,

@@ -110,8 +110,7 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
                     SessionCommand::Subscribed {
                         id: request.id,
                         audio_owner: None,
-                        supports_input: false,
-                    }
+                        supports_input: false, max_touch_points: 0 }
                 }
                 SessionCommand::Unsubscribe { id } => SessionCommand::Unsubscribed { id },
                 _ => continue,

@@ -494,7 +494,7 @@ mod tests {
         }
         async fn subscribe(&mut self,source:CaptureSource)->Result<()> {
             assert_eq!(source,CaptureSource::Window(77));
-            self.replies.push_back(SessionCommand::Subscribed{id:ID,audio_owner:None,supports_input:self.ready});Ok(())
+            self.replies.push_back(SessionCommand::Subscribed{id:ID,audio_owner:None,supports_input:self.ready, max_touch_points: 0 });Ok(())
         }
         async fn next(&mut self,wait:Duration)->Option<SessionCommand>{if let Some(c)=self.replies.pop_front(){Some(c)}else{tokio::time::sleep(wait).await;None}}
         fn video(&self)->(u64,u64,u64){let n=self.frames+if input_count(self)==5{4}else{0};(n,0,n)}

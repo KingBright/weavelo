@@ -190,7 +190,7 @@ impl WorkspaceView {
                                 let mut state = shared.lock().unwrap();
                                 match message {
                                     SessionCommand::Sources { sources, .. } => state.sources = sources,
-                                    SessionCommand::Subscribed { id, audio_owner, supports_input } => { state.bindings.insert(id, audio_owner); if supports_input { state.input_sources.insert(id); } }
+                                    SessionCommand::Subscribed { id, audio_owner, supports_input, .. } => { state.bindings.insert(id, audio_owner); if supports_input { state.input_sources.insert(id); } }
                                     SessionCommand::Error { reason, .. } => state.status = reason,
                                     SessionCommand::Closed { reason, .. } => state.status = format!("Disconnected: {reason}"),
                                     _ => {}
