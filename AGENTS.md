@@ -28,17 +28,17 @@ Run `./scripts/test_release.sh` from the primary `main` checkout for release tes
 
 The original GPUI 0.3.3 / yororen_ui 0.2.0 components have compiled and rendered in native windows on HO5, Mac Studio and cube. Restore that design on all desktop platforms; do not use target cfg as proof of framework incapability or choose a new default toolkit before this path is fairly evaluated. Follow docs/reviews/2026-09-30/ORIGINAL-GPUI-RESTORATION.md. Native video presentation must retain platform buffers; a CPU NV12-to-RGBA loop is not performance-equivalent. Probe success is not full product restoration. Never switch installed apps to the incomplete probe or revert secure Session/network fixes just to regain appearance.
 
-## User approval and preservation contract (2026-09-30, latest instruction)
+## Product preservation contract (2026-09-30)
 
 Simple/direct/useful interaction, platform-optimal measured performance, and no loss of existing functionality are simultaneous requirements. Use the union in docs/plans/GUI-PRESERVATION-CATALOG.json, not the current simplified UI as the entire product. It is an initial inventory, not proof of complete coverage.
 
-Before substantial GUI/default-entry, native media, protocol/configuration, platform support, signing/identity or deployment changes, obtain explicit user confirmation of the concrete plan. docs/plans/GUI-RESTORATION-QUALITY-CONTRACT.md is a proposal, not approval. Prior direction to restore the original design is not blanket approval for any architecture change. Do not decompose a major rewrite into nominally minor steps to avoid this rule.
+When the user's requirements are clear, implement them directly, including the necessary GUI, native media, protocol, configuration and platform changes. Document concrete decisions for review, but do not ask again whether already requested work should be done. Ask only to resolve material ambiguity or obtain an actual action or authorization that the user must personally provide. This instruction, explicitly requested on 2026-11-06, supersedes earlier requirements for separate plan confirmation. Preserve signing identities, credentials and real OS consent; do not turn those protections into repeated delivery prompts.
 
 Do not equate decoding or UI submission with actual presentation; do not trade quality, reliable input, audio or existing features for a performance number. The report comparator is a consistency check on supplied data, not an external verifier or release authorization. Missing physical tests remain unknown. Preserve unrelated worktree changes and recoverable signed builds.
 
 ## Confirmed implementation approval (2026-10-01)
 
-The user replied “好的请完成” to the concrete GUI-RESTORATION-QUALITY-CONTRACT.md plan. Scope A-D may now be implemented. This does not waive functional preservation, actual visual/performance acceptance, stable signing, or staged deployment. Changes outside that scope (Flutter, protocol/identity changes, full Android rewrite, system capture defaults) still require a new confirmation.
+The user replied “好的请完成” to the concrete GUI-RESTORATION-QUALITY-CONTRACT.md plan. Scope A-D was authorized. Functional preservation, actual visual/performance acceptance and stable signing remain required; the former requirement to reconfirm implementation outside that historical plan was removed by the user's 2026-11-06 instruction above.
 
 ## Transferred source and native-video evidence (2026-10-03)
 
