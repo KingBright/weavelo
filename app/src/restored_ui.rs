@@ -1639,6 +1639,8 @@ impl RestoredDashboard {
             return;
         };
         let key_code = *key_code;
+        // Text/IME key-downs stay local; do not send an unmatched remote release.
+        if !pressed && !self.pointer_input.pressed_keys.contains(&key_code) { return; }
         if self.owner.queue_viewing_input(event) {
             self.pointer_input.key_changed(key_code, pressed);
         }
@@ -2599,8 +2601,7 @@ impl Render for RestoredDashboard {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
         let Some(keystroke) = fresh_key_down(event) else { return; };
                 if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
-                    if this.text_mode && !keystroke.modifiers.control && !keystroke.modifiers.platform
-                        && (keystroke.key_char.is_some() || this.remote_text.as_ref().is_some_and(|input|input.read(cx).composing())) {
+                    if this.text_mode && text_key_stays_local(keystroke, this.remote_text.as_ref().is_some_and(|input|input.read(cx).composing())) {
                         return;
                     }
                     this.queue_key(keystroke, true);
@@ -5795,6 +5796,12 @@ pub(crate) fn protocol_modifiers(modifiers: Modifiers) -> u8 {
 
 // Native held input is renewed by the healthy frontend. OS autorepeat is not
 // a fresh press and must never resurrect an expired chord before the next poll.
+fn text_key_stays_local(key: &Keystroke, composing: bool) -> bool {
+    !key.modifiers.control && !key.modifiers.platform
+        && (composing || key.key_char.as_ref().is_some_and(|text|
+            !text.is_empty() && text.chars().all(|ch| !ch.is_control())))
+}
+
 pub(crate) fn fresh_key_down(event: &KeyDownEvent) -> Option<&Keystroke> {
     (!event.is_held).then_some(&event.keystroke)
 }
@@ -6549,6 +6556,20 @@ mod input_tests {
             protocol_mouse_button(MouseButton::Navigate(NavigationDirection::Back)),
             None
         );
+    }
+
+    #[test]
+    fn text_mode_keeps_ime_confirmation_local_but_routes_enter_and_tab() {
+        for (name, text) in [("enter", "\n"), ("tab", "\t")] {
+            let key=Keystroke {key:name.into(),key_char:Some(text.into()),..Default::default()};
+            assert!(!super::text_key_stays_local(&key,false));
+            assert!(protocol_key_event(&key,true).is_some());
+            assert!(super::text_key_stays_local(&key,true));
+        }
+        for text in ["a", " ", "你好🙂"] {
+            let key=Keystroke {key:"a".into(),key_char:Some(text.into()),..Default::default()};
+            assert!(super::text_key_stays_local(&key,false));
+        }
     }
 
     #[test]
