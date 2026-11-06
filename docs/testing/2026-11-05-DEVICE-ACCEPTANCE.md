@@ -301,3 +301,15 @@ Android99 正式构建已完成，努比亚与红米均已安装，独立拉回 
 - 60秒实测确认Capture→UI空值来自时钟拟合：最近探测持续新鲜，但选中样本一直只有1条，年龄从6.7秒增长到58.6秒，状态长期Stale；旧样本离开60秒历史后恢复Synchronized。证据 `native146-long-clock.json`。这与旧低RTT样本长期排除新样本的机制吻合，不是单纯UI刷新问题。
 - Book145→Studio146滚动对照收到24个合并事件、位移−208完整、跨度382.721毫秒、事件间隔中位16.640毫秒；最终偏移241。单次路径、系统合并与惯性表现存在变化，不把与145的数值差异直接当成优化收益或物理端到端测量。证据 `scroll-native144/paced146-receiver-proof.json`。
 - 下一轮用现有10秒新鲜度窗口确定当前RTT范围，并允许60秒历史中同一范围的样本支撑拟合，避免周期性20／60／60毫秒探测引发拟合反复丢失；同时修正活跃串流每秒探测被定时抖动跳过的问题；不延长过期阈值、不伪造时钟准确度。真实升级后的稳定性仍须单独验证。
+
+## Desktop147 时钟修复、发布与双向粘贴 · 2026-11-07
+
+`7f0ae2e`已提交推送，四台电脑均通过正式安装更新到147，两个Mac保留各自签名。三平台桌面包已发布，公开下载SHA全部核对；证据 `native147-nas-verified.json`。时钟30项、客户端消费者23项及探测节拍1项测试通过，独立240次探测复核通过；发布回归1052项通过、25跳过。
+
+Studio147接收Linux147约60秒，12次定时检查中首次为Acquiring，之后11次均为Synchronized且有有效UI提交样本；解码约60FPS，未见解码错误。本次没有再出现146中旧样本导致几十秒Stale的状态。证据 `native147-long-clock.json`、`native147-clock-summary.json`及 `native147-long-linux-11.png`。这是定时抽样与UI提交估计，不是逐帧无波动保证或物理显示时延测量。
+
+复制粘贴补齐反向验收：Book145本地复制后，Studio146/147的原生测试窗口实际收到远程Cmd+V，文字（含中文）、64×64图片、文件内容分别核对通过。图片按原生sRGB RGBA逐像素SHA为 `50089497cf8929f9f196d0da39ca5e1036b774d5944d536565cbb426c30f0144`，文件SHA为 `bdfaaf4faf8d2ec0aafdeb1d74841d978022ef07a95a98dd7a8c9c942ed5a5c9`，重名接收生成 `fixture-file (1).bin`。初次失败因测试未真正激活Weavelo窗口，不能归为产品粘贴故障。证据 `clipboard145/diagnostic-reverse-20261107` 与 `clipboard145/reverse-formats-20261107`（两台Mac）。自建连接及夹具已关闭；Studio剪贴板按所有权恢复，Book变化未能确认写入时序，因此保留现状，未覆盖其当前内容。
+
+上述补齐两台Mac普通场景的双向文字／图片／文件粘贴，不代表跨平台全矩阵、初始剪贴板竞争、大文件与新内容竞争、同路径文件修改后再次复制、或原生跨窗口拖放已完成。Book清理后的内容对应保存的原始文字或测试图片，但现有证据不能区分测试清理顺序与延迟写入；后续须在Stop确认及两端恢复前后记录格式、摘要和changeCount，不读取或公开用户内容。
+
+Android 101 同源 `7f0ae2e` 已正式构建、发布并安装至努比亚 NX741J、红米 2409BRN2CC；公开 APK 与两机已安装 base.apk 的 SHA-256 均为 `755dbdede63361c363e591ce21cbc5c4883668328e9312746d2a5ec0a3b2f094`，原签名及无障碍启用列表保持一致。Studio 147 拉取两机 MainDisplay 均有解码帧、零解码错误和 UI 提交记录，测试自有会话已停止。证据：`android101-{nubia,redmi}-installed-proof.json`、`android101-public-proof.json`、`android101-studio147-first-frame.json`；这不代替物理呈现、音频或控制的完整矩阵验收。
