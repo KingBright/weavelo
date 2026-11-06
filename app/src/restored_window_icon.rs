@@ -11,7 +11,7 @@ pub(super) enum DockAction {
 
 #[derive(Default)]
 pub(super) struct Artwork {
-    current: Option<(Option<[u8; 32]>, [u8;32])>,
+    current: Option<(bool, Option<[u8; 32]>, [u8;32], Option<String>)>,
     #[cfg(target_os = "macos")]
     dock_icon: Option<(Option<[u8; 32]>, [u8;32])>,
     #[cfg(target_os = "macos")]
@@ -19,23 +19,42 @@ pub(super) struct Artwork {
     #[cfg(target_os = "macos")]
     dock_device: String,
     #[cfg(target_os = "macos")]
+    dock_bundle_id: Option<String>,
+    #[cfg(target_os = "macos")]
     dock_proxy: Option<macos_dock::Proxy>,
 }
 impl Artwork {
     pub fn sync(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>) {
-        self.sync_badged(window,cx,bitmap,None);
+        self.sync_badged(window,cx,bitmap,None,false,None);
     }
-    fn sync_badged(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>,appearance:Option<&SourceAppearance>) {
-        let next=Some((bitmap.map(|bitmap|bitmap.id),badge_id(appearance)));
+    fn sync_badged(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>,appearance:Option<&SourceAppearance>,stream:bool,device_name:Option<&str>) {
+        #[cfg(target_os = "macos")]
+        let device_name=device_name.filter(|name|!name.trim().is_empty()).map(str::to_owned);
+        #[cfg(not(target_os = "macos"))]
+        let device_name:Option<String>=None;
+        let next=Some((stream,bitmap.map(|bitmap|bitmap.id),badge_id(appearance),device_name.clone()));
         if self.current==next {return;}
         let result=(||->Result<(),String> {
             if let Some(bitmap)=bitmap {
-                let (edge,pixels)=remote_application_pixels(bitmap, &badge_pixels(cx,appearance)?, false)?;
+                let (edge,mut pixels)=remote_application_pixels(bitmap, &badge_pixels(cx,appearance)?, true)?;
+                #[cfg(target_os = "macos")]
+                if let Some(name)=device_name.as_deref() {
+                    pixels=macos_dock::with_device_name(edge,&pixels,name)?;
+                }
                 let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
                 window.set_window_icon(&icon).map_err(|e|e.to_string())?;
-            } else if appearance.is_some() {
-                let badge=badge_pixels(cx,appearance)?;
-                let icon=WindowIcon::new(badge.width(),badge.into_raw()).map_err(|e|e.to_string())?;
+            } else if stream {
+                let (edge,mut pixels)=default_remote_pixels(cx)?;
+                if appearance.is_some() {
+                    let mut image=image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid remote window icon")?;
+                    overlay_device_badge(&mut image,&badge_pixels(cx,appearance)?);
+                    pixels=image.into_raw();
+                }
+                #[cfg(target_os = "macos")]
+                if let Some(name)=device_name.as_deref() {
+                    pixels=macos_dock::with_device_name(edge,&pixels,name)?;
+                }
+                let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
                 window.set_window_icon(&icon).map_err(|e|e.to_string())?;
             } else {apply(window,cx);}
             Ok(())
@@ -55,7 +74,7 @@ impl Artwork {
         title: &str,
         device: &str,
     ) {
-        self.sync_badged(window, cx, bitmap, appearance);
+        self.sync_badged(window, cx, bitmap, appearance,true,Some(device));
         #[cfg(target_os = "macos")]
         {
             if cfg!(test)
@@ -65,17 +84,31 @@ impl Artwork {
                 return;
             }
             let next_icon = Some((bitmap.map(|b|b.id),badge_id(appearance)));
+            let name_changed = self.dock_title != title;
+            let device_changed = self.dock_device != device;
             let icon_changed = self.dock_icon != next_icon || self.dock_proxy.is_none();
-            let title_changed = self.dock_title != title || self.dock_device != device;
-            if !icon_changed && !title_changed {
+            if !icon_changed && !name_changed && !device_changed {
                 return;
             }
+            if name_changed {
+                // AppKit's native Dock hover label comes from the running
+                // application's bundle display name. Start a new helper
+                // bundle when the source/window name changes.
+                self.dock_proxy = None;
+                self.dock_icon = None;
+                self.dock_bundle_id = None;
+            }
+            let icon_changed = self.dock_icon != next_icon || self.dock_proxy.is_none();
             let pixels = if icon_changed {
                 let raw = if let Some(bitmap) = bitmap {
                     badge_pixels(cx,appearance).and_then(|badge| remote_application_pixels(bitmap, &badge, true))
                 } else {
-                    if appearance.is_some() {badge_pixels(cx,appearance).map(|badge|(badge.width(),badge.into_raw()))}
-                    else {default_remote_dock_pixels(cx)}
+                    default_remote_pixels(cx).and_then(|(edge,pixels)| {
+                        if appearance.is_none() {return Ok((edge,pixels));}
+                        let mut image=image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid Dock fallback icon")?;
+                        overlay_device_badge(&mut image,&badge_pixels(cx,appearance)?);
+                        Ok((edge,image.into_raw()))
+                    })
                 };
                 match raw {
                     Ok(rgba) => Some(rgba),
@@ -88,7 +121,14 @@ impl Artwork {
                 None
             };
             if self.dock_proxy.is_none() {
-                match macos_dock::Proxy::spawn() {
+                if self.dock_bundle_id.is_none() {
+                    match macos_dock::new_bundle_id() {
+                        Ok(bundle_id)=>self.dock_bundle_id=Some(bundle_id),
+                        Err(error)=>{eprintln!("Weavelo stream Dock bundle identifier: {error}");return;}
+                    }
+                }
+                let bundle_id=self.dock_bundle_id.as_deref().unwrap_or_default();
+                match macos_dock::Proxy::spawn(bundle_id,title) {
                     Ok(proxy) => self.dock_proxy = Some(proxy),
                     Err(error) => {
                         eprintln!("Weavelo stream Dock proxy: {error}");
@@ -125,7 +165,6 @@ impl Artwork {
         {
             self.dock_proxy = None;
             self.dock_icon = None;
-            self.dock_title.clear();
             self.dock_device.clear();
         }
     }
@@ -143,20 +182,24 @@ fn remote_application_pixels(
         image = image::imageops::resize(&image, minimum_edge, minimum_edge, image::imageops::FilterType::Triangle);
     }
     let edge = image.width();
-    let badge_edge = edge * 3 / 8;
-    let offset = edge / 32;
-    let top = offset;
-    let badge = image::imageops::resize(device_badge, badge_edge, badge_edge, image::imageops::FilterType::Triangle);
+    overlay_device_badge(&mut image,device_badge);
+    Ok((edge, image.into_raw()))
+}
+
+fn overlay_device_badge(image:&mut image::RgbaImage,device_badge:&image::RgbaImage) {
+    let edge=image.width();
+    let badge_edge=edge*3/8;
+    let offset=edge/32;
+    let badge=image::imageops::resize(device_badge,badge_edge,badge_edge,image::imageops::FilterType::Triangle);
     // The application and SVG badge both use premultiplied RGBA here.
-    for (x, y, foreground) in badge.enumerate_pixels() {
-        let background = image.get_pixel_mut(x + offset, y + top);
-        let remaining = 255 - u16::from(foreground[3]);
+    for (x,y,foreground) in badge.enumerate_pixels() {
+        let background=image.get_pixel_mut(x+offset,y+offset);
+        let remaining=255-u16::from(foreground[3]);
         for channel in 0..4 {
-            background[channel] = (u16::from(foreground[channel])
-                + (u16::from(background[channel]) * remaining + 127) / 255).min(255) as u8;
+            background[channel]=(u16::from(foreground[channel])
+                +(u16::from(background[channel])*remaining+127)/255).min(255) as u8;
         }
     }
-    Ok((edge, image.into_raw()))
 }
 
 fn badge_id(appearance:Option<&SourceAppearance>)->[u8;32] {
@@ -192,8 +235,7 @@ fn computer_badge(cx: &App) -> Result<&'static image::RgbaImage, String> {
     Ok(BADGE.get_or_init(|| badge))
 }
 
-#[cfg(target_os = "macos")]
-fn default_remote_dock_pixels(cx: &App) -> Result<(u32, Vec<u8>), String> {
+fn default_remote_pixels(cx: &App) -> Result<(u32, Vec<u8>), String> {
     const EDGE: u32 = 256;
     static DOCK_FALLBACK: OnceLock<Vec<u8>> = OnceLock::new();
     if let Some(pixels) = DOCK_FALLBACK.get() {
@@ -267,7 +309,10 @@ pub(crate) mod macos_dock {
         sel, sel_impl,
     };
     use std::{
+        fs,
         io::{BufRead, BufReader, Read, Write},
+        os::unix::fs::symlink,
+        path::{Path, PathBuf},
         process::{Child, Command, Stdio},
         sync::{Arc, mpsc::{self, Receiver}},
     };
@@ -286,16 +331,19 @@ pub(crate) mod macos_dock {
 
     pub(super) struct Proxy {
         child: Child,
+        _bundle: tempfile::TempDir,
         updates: Option<watch::Sender<Option<Presentation>>>,
         bitmap: Option<Arc<Bitmap>>,
         actions: Receiver<DockAction>,
     }
 
     impl Proxy {
-        pub fn spawn() -> Result<Self, String> {
+        pub fn spawn(bundle_id: &str, title: &str) -> Result<Self, String> {
             let runtime = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let mut child = Command::new(exe)
+            let bundle=tempfile::tempdir().map_err(|e|e.to_string())?;
+            let executable=prepare_bundle(bundle.path(),&exe,bundle_id,title)?;
+            let mut child = Command::new(executable)
                 .arg("--macos-dock-tile")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -334,6 +382,7 @@ pub(crate) mod macos_dock {
             });
             Ok(Self {
                 child,
+                _bundle:bundle,
                 updates: Some(updates),
                 bitmap: None,
                 actions,
@@ -346,7 +395,7 @@ pub(crate) mod macos_dock {
             }
             let bitmap = self.bitmap.clone().ok_or("Missing initial Dock icon")?;
             self.updates.as_ref().ok_or("Dock proxy closed")?.send(Some(Presentation {
-                title: title.to_owned(), device: device.to_owned(), bitmap,
+                title: native_title(title), device: device.to_owned(), bitmap,
             })).map_err(|e| e.to_string())
         }
 
@@ -359,6 +408,69 @@ pub(crate) mod macos_dock {
                 }
             }
             latest
+        }
+    }
+
+    pub(super) fn new_bundle_id() -> Result<String,String> {
+        let mut random=[0u8;16];
+        getrandom::fill(&mut random).map_err(|e|e.to_string())?;
+        let suffix=random.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        Ok(format!("fun.hackerlife.weavelo.dock.{suffix}"))
+    }
+
+    fn native_title(value:&str)->String {
+        let bounded=&value[..value.floor_char_boundary(value.len().min(MAX_TITLE_BYTES))];
+        let safe=bounded.chars().filter(|character|!character.is_control()).collect::<String>();
+        if safe.is_empty() {"Weavelo".to_owned()} else {safe}
+    }
+
+    fn plist_string(value:&str)->String {
+        native_title(value).replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;")
+    }
+
+    fn bundle_component(value:&str)->String {
+        let component=native_title(value).chars().map(|character|match character {
+            '/' => '⁄',
+            ':' => '∶',
+            character => character,
+        }).collect::<String>();
+        let bounded=&component[..component.floor_char_boundary(component.len().min(240))];
+        let bounded=bounded.trim_matches(|character:char|character==' '||character=='.');
+        if bounded.is_empty() {"Weavelo.app".to_owned()} else {format!("{bounded}.app")}
+    }
+
+    pub(super) fn prepare_bundle(root:&Path,executable:&Path,bundle_id:&str,title:&str)->Result<PathBuf,String> {
+        let app=root.join(bundle_component(title));
+        let contents=app.join("Contents");
+        let executable_dir=contents.join("MacOS");
+        fs::create_dir_all(&executable_dir).map_err(|e|e.to_string())?;
+        let executable_path=executable_dir.join("weavelo");
+        symlink(executable,&executable_path).map_err(|e|e.to_string())?;
+        let title=plist_string(title);
+        let bundle_id=plist_string(bundle_id);
+        let info=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{bundle_id}</string><key>CFBundleName</key><string>{title}</string><key>CFBundleDisplayName</key><string>{title}</string><key>CFBundleExecutable</key><string>weavelo</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n");
+        fs::write(contents.join("Info.plist"),info).map_err(|e|e.to_string())?;
+        Ok(executable_path)
+    }
+
+    pub(super) fn with_device_name(edge:u32,rgba:&[u8],device:&str)->Result<Vec<u8>,String> {
+        if icon_bytes(edge)!=Some(rgba.len()) {return Err("Invalid native window icon dimensions".into());}
+        unsafe {
+            let rep:id=msg_send![class!(NSBitmapImageRep),alloc];
+            let rep:id=msg_send![rep,initWithBitmapDataPlanes:std::ptr::null_mut::<*mut u8>()
+                pixelsWide:edge as isize pixelsHigh:edge as isize bitsPerSample:8isize
+                samplesPerPixel:4isize hasAlpha:YES isPlanar:NO
+                colorSpaceName:ns_string("NSCalibratedRGBColorSpace") bitmapFormat:0usize
+                bytesPerRow:edge as isize*4 bitsPerPixel:32isize];
+            if rep==nil {return Err("Native window icon bitmap allocation failed".into());}
+            let data:*mut u8=msg_send![rep,bitmapData];
+            if data.is_null() {let _:()=msg_send![rep,release];return Err("Native window icon bitmap has no storage".into());}
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(),data,rgba.len());
+            draw_labels(rep,edge,device);
+            let mut pixels=vec![0u8;rgba.len()];
+            std::ptr::copy_nonoverlapping(data,pixels.as_mut_ptr(),pixels.len());
+            let _:()=msg_send![rep,release];
+            Ok(pixels)
         }
     }
 
@@ -661,6 +773,14 @@ pub(crate) mod macos_dock {
         unsafe {
             let pool = NSAutoreleasePool::new(nil);
             let app = NSApplication::sharedApplication(nil);
+            let title=native_title(&title);
+            let running_app:id=msg_send![class!(NSRunningApplication),currentApplication];
+            let native_name:id=msg_send![running_app,localizedName];
+            let expected_name=ns_string(&title);
+            let name_matches:BOOL=if native_name==nil {NO}else{msg_send![native_name,isEqualToString:expected_name]};
+            if name_matches!=YES {
+                return Err("The native Dock item name does not match its source name".into());
+            }
             app.setActivationPolicy_(
                 NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
             );
@@ -779,6 +899,37 @@ mod tests {
         let mut invalid = 513u32.to_be_bytes().to_vec();
         invalid.extend_from_slice(&[0; 513]);
         assert!(macos_dock::decode_frame(&invalid[..]).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_dock_bundle_uses_the_source_name_and_the_original_executable() {
+        use std::os::unix::fs::MetadataExt;
+        let root=tempfile::tempdir().unwrap();
+        let source=root.path().join("signed-weavelo");
+        std::fs::write(&source,b"original executable fixture").unwrap();
+        let bundle_id="fun.hackerlife.weavelo.dock.fixture";
+        let executable=macos_dock::prepare_bundle(root.path(),&source,bundle_id,"Safari & Maps <Preview>").unwrap();
+        assert!(std::fs::symlink_metadata(&executable).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_link(&executable).unwrap(),source);
+        assert_eq!(executable.parent().unwrap().parent().unwrap().parent().unwrap().file_name().unwrap(),"Safari & Maps <Preview>.app");
+        let info=std::fs::read_to_string(executable.parent().unwrap().parent().unwrap().join("Info.plist")).unwrap();
+        assert!(info.contains("<key>CFBundleDisplayName</key><string>Safari &amp; Maps &lt;Preview&gt;</string>"));
+        assert!(info.contains("<key>CFBundleIdentifier</key><string>fun.hackerlife.weavelo.dock.fixture</string>"));
+        let executable_metadata=std::fs::metadata(&source).unwrap();
+        let linked_metadata=std::fs::metadata(&executable).unwrap();
+        assert_eq!(executable_metadata.ino(),linked_metadata.ino());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn minimized_window_icon_uses_the_dock_device_label(cx:&mut gpui::TestAppContext) {
+        cx.update(|_| {
+            let pixels=[240,80,20,255].repeat(256*256);
+            let labelled=macos_dock::with_device_name(256,&pixels,"MacStudio").unwrap();
+            assert_ne!(labelled,pixels);
+            assert!(WindowIcon::new(256,labelled).is_ok());
+        });
     }
 
 }

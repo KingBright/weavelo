@@ -16,14 +16,14 @@ fn mac_window_is_shareable(layer: i32, on_screen: bool) -> bool {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn mac_window_catalog_title(title: Option<String>, application: &str, layer: i32, on_screen: bool) -> Option<String> {
+fn mac_window_catalog_title(title: Option<String>, application: &str, layer: i32, on_screen: bool, active: bool) -> Option<String> {
     if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
         return Some(title);
     }
     // Some real application windows (including Gemini) intentionally have no
     // title. Their WindowServer ID remains the capture identity. Do not turn
     // unnamed hidden menu surfaces or floating helpers into application sources.
-    (layer == 0 && on_screen && !application.trim().is_empty())
+    (layer == 0 && (on_screen || active) && !application.trim().is_empty())
         .then(|| application.to_owned())
 }
 
@@ -183,7 +183,7 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
                 continue;
             }
             let Some(title) = mac_window_catalog_title(
-                window.title(), &app.application_name(), window.window_layer(), window.is_on_screen(),
+                window.title(), &app.application_name(), window.window_layer(), window.is_on_screen(), window.is_active(),
             ) else {
                 continue;
             };
@@ -295,12 +295,13 @@ mod transformed_window_tests {
     use super::{mac_window_catalog_title, mac_window_is_shareable, window_is_transformed};
     #[test]
     fn untitled_visible_application_windows_keep_their_application_name() {
-        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, true).as_deref(), Some("Gemini"));
-        assert_eq!(mac_window_catalog_title(Some("  ".into()), "Gemini", 0, true).as_deref(), Some("Gemini"));
-        assert_eq!(mac_window_catalog_title(Some("Document".into()), "Editor", 0, false).as_deref(), Some("Document"));
-        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, false), None);
-        assert_eq!(mac_window_catalog_title(None, "Gemini", 3, true), None);
-        assert_eq!(mac_window_catalog_title(None, "", 0, true), None);
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, true, true).as_deref(), Some("Gemini"));
+        assert_eq!(mac_window_catalog_title(Some("  ".into()), "Gemini", 0, true, true).as_deref(), Some("Gemini"));
+        assert_eq!(mac_window_catalog_title(Some("Document".into()), "Editor", 0, false, false).as_deref(), Some("Document"));
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, false, true).as_deref(), Some("Gemini"), "Stage Manager may park an active window off screen");
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, false, false), None);
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 3, true, true), None);
+        assert_eq!(mac_window_catalog_title(None, "", 0, true, true), None);
     }
     #[test]
     fn hidden_auxiliary_panels_are_not_capture_sources() {
