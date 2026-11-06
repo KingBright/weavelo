@@ -106,7 +106,24 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
             drawable.draw(android.graphics.Canvas(bitmap))
             val output=java.io.ByteArrayOutputStream()
             check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,output))
-            output.toByteArray().also {require(it.size<=256*1024)}
+            // Skia adds ancillary PNG chunks to our sRGB RGBA bitmap. The
+            // shared artwork format deliberately carries only IHDR/IDAT/IEND.
+            // Keep their original compressed pixels and CRCs; no image decode,
+            // recompression or relaxed network validation is needed.
+            val png=output.toByteArray()
+            val normalized=java.io.ByteArrayOutputStream(png.size)
+            normalized.write(png,0,8)
+            var offset=8
+            while(offset<png.size) {
+                require(offset<=png.size-12)
+                val length=java.nio.ByteBuffer.wrap(png,offset,4).int
+                require(length>=0 && length<=png.size-offset-12)
+                val type=String(png,offset+4,4,Charsets.US_ASCII)
+                if(type in listOf("IHDR","IDAT","IEND")) normalized.write(png,offset,length+12)
+                else require(png[offset+4].toInt() and 32 != 0) {"Unsupported critical native PNG chunk"}
+                offset+=length+12
+            }
+            normalized.toByteArray().also {require(it.size<=256*1024)}
         } finally {bitmap.recycle()}
     }
     @android.annotation.SuppressLint("WrongConstant") // AOSP's documented hidden display flags above API 34.

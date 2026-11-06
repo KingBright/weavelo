@@ -118,7 +118,7 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
                     val digest=java.security.MessageDigest.getInstance("SHA-256").digest(png)
                     JSONObject().put("id",JSONArray(digest.map { it.toInt() and 255 }))
                         .put("png",JSONArray(png.map { it.toInt() and 255 }))
-                }.getOrNull()
+                }.onFailure { android.util.Log.w("Weavelo","Native application artwork unavailable",it) }.getOrNull()
                 var artworkEpoch = -1L
                 display = host.createApplication(app.packageName, width, height, density)
                 target = Target(host, display, app.packageName, width, height)

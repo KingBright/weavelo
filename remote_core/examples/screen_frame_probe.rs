@@ -7,13 +7,14 @@ use std::{io::Write, sync::Arc, time::Duration};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(2..=3).contains(&args.len()) {
-        return Err("screen_frame_probe LAN_ENDPOINT NEW_OUTPUT.hevc [WINDOW_ID]".into());
+    if !(2..=4).contains(&args.len()) || (args.len()==4 && args[3]!="--artwork") {
+        return Err("screen_frame_probe LAN_ENDPOINT NEW_OUTPUT.hevc [WINDOW_ID [--artwork]]".into());
     }
+    let inspect_artwork=args.len()==4;
     let source = args.get(2).map(|id| id.parse().map(CaptureSource::Window)).transpose()?.unwrap_or(CaptureSource::MainDisplay);
     let target: std::net::SocketAddr = args[0].parse()?;
-    if !matches!(target.ip(), std::net::IpAddr::V4(ip) if ip.is_private()) {
-        return Err("Use the owned device's LAN endpoint".into());
+    if !matches!(target.ip(), std::net::IpAddr::V4(ip) if ip.is_private() || ip.is_loopback()) {
+        return Err("Use the paired device's LAN endpoint or existing loopback relay".into());
     }
     let identity = remote_core::mesh::AppPrivateMeshConfigStore::new(
         remote_core::mesh::default_app_private_mesh_dir(),
@@ -55,15 +56,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut frames = 0;
         let mut bytes = 0;
         let mut first_geometry = None;
-        while frames < 8 {
+        let mut artwork = None;
+        while frames < 8 || (inspect_artwork && artwork.is_none()) {
             tokio::select! {
                 event = events.control.recv() => match event {
                     Some(SessionCommand::Error { reason, .. } | SessionCommand::Closed { reason, .. }) => return Err(reason),
+                    Some(SessionCommand::SourceAppearance { id:85,source:actual,appearance,.. }) if inspect_artwork && actual==source => {
+                        let appearance=(*appearance)?;
+                        let icon=appearance.application.as_ref().map(|icon|remote_core::application_icons::decode_artwork(icon,true)).transpose()?;
+                        if let Some(icon)=&icon {
+                            let path=std::path::Path::new(&args[1]).with_extension("png");
+                            let mut out=options.open(path).map_err(|e|e.to_string())?;
+                            out.write_all(&icon.png).map_err(|e|e.to_string())?;
+                        }
+                        artwork=Some(serde_json::json!({"device":appearance.device,"application":icon.map(|icon|serde_json::json!({
+                            "width":icon.width,"height":icon.height,"png_bytes":icon.png.len(),"id":icon.id}))}));
+                    },
                     None => return Err("Connection ended".into()),
                     _ => {}
                 },
                 packet = video.recv() => {
                     let (packet, _, _) = packet.ok_or("Video route ended")?;
+                    if frames >= 8 { continue; }
                     let (geometry, hevc) = protocol::viewport::split_frame(&packet.payload)?;
                     if packet.header.ssrc != 85 || bytes + hevc.len() > 32 * 1024 * 1024 {
                         return Err("Unexpected subscription or excessive sample".into());
@@ -75,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
         file.flush().map_err(|e| e.to_string())?;
-        Ok::<_, String>(serde_json::json!({ "frames": frames, "bytes": bytes, "geometry": first_geometry }))
+        Ok::<_, String>(serde_json::json!({ "frames": frames, "bytes": bytes, "geometry": first_geometry, "artwork":artwork }))
     }).await;
     let closed = conn.close_verified().await;
     eprintln!("cleanup_confirmed={}", closed.is_ok());
