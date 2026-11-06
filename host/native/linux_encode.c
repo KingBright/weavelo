@@ -141,7 +141,11 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
     e->codec->time_base = (AVRational){1, fps}; e->codec->framerate = (AVRational){fps, 1};
     if (exact_output) e->codec->sample_aspect_ratio = (AVRational){1,1};
     e->codec->bit_rate = (int64_t)bitrate * 1000;
-    e->codec->rc_max_rate = (int64_t)bitrate * 1000; e->codec->rc_buffer_size = bitrate * 1000;
+    e->codec->rc_max_rate = (int64_t)bitrate * 1000;
+    /* Real-time capture cannot amortize a startup burst over a second of video.
+     * Give hardware BRC one frame's reservoir; retain every encoded reference. */
+    e->codec->rc_buffer_size = (int)((int64_t)bitrate * 1000 / fps);
+    e->codec->rc_initial_buffer_occupancy = e->codec->rc_buffer_size;
     e->codec->gop_size = fps; e->codec->max_b_frames = 0; e->codec->thread_count = 1;
     e->codec->flags |= AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_CLOSED_GOP;
     e->codec->color_range = range; e->codec->colorspace = matrix;

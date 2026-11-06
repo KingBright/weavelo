@@ -223,6 +223,10 @@ class RemoteControlService : AccessibilityService() {
                         android.util.Log.w("Weavelo","App text commit failed display=${target.displayId} selection=${node.textSelectionStart}:${node.textSelectionEnd} editable=${node.isEditable}")
                         done(false);return
                     }
+                    // SET_TEXT already moves the cursor to the end. Android can
+                    // return false for SET_SELECTION when nothing changes; that
+                    // must not turn an already committed text into a rejection.
+                    if(edit.start==edit.text.length && edit.end==edit.start) {done(true);return}
                     done(node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION,Bundle().apply {
                         putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT,edit.start)
                         putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT,edit.end)
