@@ -68,11 +68,11 @@ class RemoteControlService : AccessibilityService() {
                         "Reset" -> if (generation != job.getLong("generation")) reset(job.getLong("generation"))
                         "Events" -> {
                             val token = job.getLong("token"); val gen = job.getLong("generation")
-                            if (busy || gen != generation) finish(gen,token,false)
+                            if (busy || gen != generation) reject(gen,token,"native input generation is busy or changed")
                             else {
                                 val source=job.get("source")
                                 val target=ManagedApplications.target(source)
-                                if(source is JSONObject && target==null) { finish(gen,token,false);schedulePoll(0);return }
+                                if(source is JSONObject && target==null) { reject(gen,token,"application display is no longer owned");schedulePoll(0);return }
                                 if(appInput?.target!=target) { appInput?.release();appInput=target?.let(::ManagedApplicationInput) }
                                 appSource=source
                                 busy = true
@@ -81,7 +81,10 @@ class RemoteControlService : AccessibilityService() {
                         }
                     }
                 }
-            }.onFailure { reset(-1) }
+            }.onFailure {
+                android.util.Log.w("Weavelo","Native input dispatch failed: ${it.javaClass.simpleName}")
+                reset(-1)
+            }
             if (!pollScheduled) schedulePoll(if (contacts.isNotEmpty() || stroke != null) 4 else 16)
         }
     }
@@ -143,19 +146,24 @@ class RemoteControlService : AccessibilityService() {
         runCatching { PublisherClient.action(10,JSONObject().put("generation",gen).put("token",token).put("accepted",accepted).toString()) }
         if (gen == generation) { busy = false; schedulePoll(0) }
     }
+    private fun reject(gen: Long, token: Long, reason: String) {
+        android.util.Log.w("Weavelo","Input rejected generation=$gen token=$token: $reason")
+        finish(gen,token,false)
+    }
     private fun valid(gen: Long, token: Long) = PublisherClient.action(11,
         JSONObject().put("generation",gen).put("token",token).toString()) == "true"
     private fun execute(events: JSONArray, index: Int, gen: Long, token: Long, version: Long) {
         if (version != work) return
-        if (!valid(gen,token)) { finish(gen,token,false); return }
+        if (!valid(gen,token)) { reject(gen,token,"input expired or ownership changed"); return }
         if (index == events.length()) { finish(gen,token,true); return }
         val size = dimensions()
-        if (size == null) { finish(gen,token,false); return }
+        if (size == null) { reject(gen,token,"source geometry is no longer current"); return }
         val event = events.getJSONObject(index); val name = event.keys().next()
         val value = event.get(name)
         fun done(accepted: Boolean) {
             if (version != work) return
-            if (accepted) execute(events,index+1,gen,token,version) else finish(gen,token,false)
+            if (accepted) execute(events,index+1,gen,token,version)
+            else reject(gen,token,"native $name was not accepted on display ${appInput?.target?.displayId ?: Display.DEFAULT_DISPLAY}")
         }
         val native=appInput
         if(native!=null && name!="Text") { done(native.execute(event));return }
