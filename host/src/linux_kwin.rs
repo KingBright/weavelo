@@ -84,6 +84,29 @@ struct Catalog {
     id_by_uuid: HashMap<String, u32>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct DiscoverySummary {
+    screencast_protocol: bool,
+    runner_matches: usize,
+    runner_truncated: usize,
+    invalid_runner_id: usize,
+    window_info_failed: usize,
+    uuid_missing: usize,
+    uuid_mismatch: usize,
+    invalid_uuid: usize,
+    duplicate_uuid: usize,
+    invalid_pid: usize,
+    own_process: usize,
+    invalid_width: usize,
+    invalid_height: usize,
+    invalid_title: usize,
+    icon_data_decoded: usize,
+    named_icon_decoded: usize,
+    icon_missing: usize,
+    accepted: usize,
+    source_id_failed: usize,
+}
+
 fn catalog() -> &'static RwLock<Catalog> {
     static CATALOG: OnceLock<RwLock<Catalog>> = OnceLock::new();
     CATALOG.get_or_init(|| RwLock::new(Catalog::default()))
@@ -94,34 +117,41 @@ pub(crate) fn is_kwin_window(source: CaptureSource) -> bool {
 }
 
 pub(crate) fn list() -> Result<Vec<CaptureSourceInfo>, String> {
+    list_with_diagnostics().map(|(sources, _)| sources)
+}
+
+fn list_with_diagnostics() -> Result<(Vec<CaptureSourceInfo>, DiscoverySummary), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| "KWin source discovery could not start")?;
-    runtime.block_on(list_async())
+    runtime.block_on(list_async_with_diagnostics())
 }
 
-async fn list_async() -> Result<Vec<CaptureSourceInfo>, String> {
+async fn list_async_with_diagnostics() -> Result<(Vec<CaptureSourceInfo>, DiscoverySummary), String>
+{
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
         clear_catalog();
         return Err("KWin window capture requires a Wayland session".into());
     }
-    let entries = match tokio::time::timeout(CATALOG_TIMEOUT, discover()).await {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(error)) => {
-            clear_catalog();
-            return Err(error);
-        }
-        Err(_) => {
-            clear_catalog();
-            return Err("KWin window catalog timed out".into());
-        }
-    };
+    let (entries, mut summary) =
+        match tokio::time::timeout(CATALOG_TIMEOUT, discover_with_diagnostics()).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                clear_catalog();
+                return Err(error);
+            }
+            Err(_) => {
+                clear_catalog();
+                return Err("KWin window catalog timed out".into());
+            }
+        };
     let mut next = catalog().write().unwrap_or_else(|error| error.into_inner());
     let mut by_source = HashMap::with_capacity(entries.len());
     let mut sources = Vec::with_capacity(entries.len());
     for mut entry in entries {
         let Some(id) = source_id_for_uuid(&entry.info.uuid, &mut next.id_by_uuid) else {
+            summary.source_id_failed += 1;
             continue;
         };
         entry.info.source.source = CaptureSource::Window(id);
@@ -129,7 +159,7 @@ async fn list_async() -> Result<Vec<CaptureSourceInfo>, String> {
         by_source.insert(entry.info.source.source, entry);
     }
     next.by_source = by_source;
-    Ok(sources)
+    Ok((sources, summary))
 }
 
 fn clear_catalog() {
@@ -217,13 +247,15 @@ pub(crate) fn icon(
     }
 }
 
-async fn discover() -> Result<Vec<CatalogEntry>, String> {
+async fn discover_with_diagnostics() -> Result<(Vec<CatalogEntry>, DiscoverySummary), String> {
+    let mut summary = DiscoverySummary::default();
     if !tokio::task::spawn_blocking(screencast_available)
         .await
         .map_err(|_| "KWin window protocol probe failed")?
     {
         return Err("KWin native application-window capture is unavailable. Install the Weavelo KDE desktop entry and restart Weavelo.".into());
     }
+    summary.screencast_protocol = true;
     let connection = tokio::time::timeout(DBUS_TIMEOUT, BusConnection::session())
         .await
         .map_err(|_| "KWin window catalog timed out")?
@@ -248,6 +280,7 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
         .await
         .map_err(|_| "KWin application-window catalog timed out")?
         .map_err(|_| "KWin application-window catalog is unavailable")?;
+    summary.runner_matches = matches.len();
 
     let kwin = Proxy::new_owned(
         connection,
@@ -258,6 +291,7 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
     .await
     .map_err(|_| "KWin window geometry is unavailable")?;
     matches.truncate(::protocol::interaction::MAX_APPLICATION_ICONS);
+    summary.runner_truncated = summary.runner_matches.saturating_sub(matches.len());
     let query_deadline = tokio::time::Instant::now() + CATALOG_TIMEOUT;
     let mut raw = Vec::new();
     let mut seen_uuid = HashSet::new();
@@ -267,6 +301,7 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
             break;
         }
         let Some(match_uuid) = uuid_from_runner_id(&id) else {
+            summary.invalid_runner_id += 1;
             continue;
         };
         let info: HashMap<String, OwnedValue> = match tokio::time::timeout(
@@ -276,30 +311,51 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
         .await
         {
             Ok(Ok(info)) => info,
-            _ => continue,
+            _ => {
+                summary.window_info_failed += 1;
+                continue;
+            }
         };
-        let Some(uuid) = value_string(&info, "uuid").or_else(|| Some(match_uuid.clone())) else {
-            continue;
+        let uuid = match value_string(&info, "uuid") {
+            Some(uuid) if normalize_uuid(&uuid) != normalize_uuid(&match_uuid) => {
+                summary.uuid_mismatch += 1;
+                continue;
+            }
+            Some(uuid) => uuid,
+            None => {
+                summary.uuid_missing += 1;
+                match_uuid.clone()
+            }
         };
         let normalized = normalize_uuid(&uuid);
-        if normalized.is_empty() || !seen_uuid.insert(normalized.clone()) {
+        if normalized.is_empty() {
+            summary.invalid_uuid += 1;
+            continue;
+        }
+        if !seen_uuid.insert(normalized.clone()) {
+            summary.duplicate_uuid += 1;
             continue;
         }
         let Some(pid) = value_i32(&info, "pid").filter(|pid| *pid > 0) else {
+            summary.invalid_pid += 1;
             continue;
         };
         if pid == std::process::id() as i32 {
+            summary.own_process += 1;
             continue;
         }
         let Some(width) = value_dimension(&info, "width") else {
+            summary.invalid_width += 1;
             continue;
         };
         let Some(height) = value_dimension(&info, "height") else {
+            summary.invalid_height += 1;
             continue;
         };
         let caption = clean_label(&title)
             .or_else(|| value_string(&info, "caption").and_then(|value| clean_label(&value)));
         let Some(title) = caption else {
+            summary.invalid_title += 1;
             continue;
         };
         let app_id = value_string(&info, "desktopFile")
@@ -308,8 +364,24 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
             .or_else(|| value_string(&info, "resourceName"))
             .unwrap_or_default();
         let application = application_name(&app_id);
-        let icon = icon_rgba(properties.get("icon-data"))
-            .or_else(|| named_application_icon(&icon_name, &app_id));
+        let icon_data = icon_rgba(properties.get("icon-data"));
+        let icon = match icon_data {
+            Some(icon) => {
+                summary.icon_data_decoded += 1;
+                Some(icon)
+            }
+            None => match named_application_icon(&icon_name, &app_id) {
+                Some(icon) => {
+                    summary.named_icon_decoded += 1;
+                    Some(icon)
+                }
+                None => {
+                    summary.icon_missing += 1;
+                    None
+                }
+            },
+        };
+        summary.accepted += 1;
         raw.push((
             normalized,
             WindowInfo {
@@ -331,10 +403,12 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
         ));
     }
     raw.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(raw
-        .into_iter()
-        .map(|(_, info, rgba)| CatalogEntry { info, rgba })
-        .collect())
+    Ok((
+        raw.into_iter()
+            .map(|(_, info, rgba)| CatalogEntry { info, rgba })
+            .collect(),
+        summary,
+    ))
 }
 
 fn screencast_available() -> bool {
@@ -1207,6 +1281,28 @@ impl Dispatch<kwin_wayland_bindings::zkde_screencast_unstable_v1::ZkdeScreencast
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the active native KWin user session"]
+    fn native_kwin_catalog_probe_reports_rust_filter_counts() {
+        let (sources, summary) = list_with_diagnostics()
+            .unwrap_or_else(|error| panic!("native KWin catalog probe failed: {error}"));
+        let windows = sources
+            .iter()
+            .filter(|source| is_kwin_window(source.source))
+            .count();
+        eprintln!(
+            "native KWin Rust probe: {summary:?}; returned_sources={} kwin_windows={windows}; wayland={} runtime_dir={} session_bus={}",
+            sources.len(),
+            std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            std::env::var_os("XDG_RUNTIME_DIR").is_some(),
+            std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some(),
+        );
+        assert!(
+            windows > 0,
+            "KWin produced no Rust catalog entries: {summary:?}"
+        );
+    }
 
     #[test]
     fn kwin_runner_ids_keep_exact_uuid_and_windows_have_a_separate_source_range() {

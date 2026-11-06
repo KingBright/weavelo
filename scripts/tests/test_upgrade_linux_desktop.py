@@ -533,6 +533,75 @@ class UpgradeTests(unittest.TestCase):
         current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
         self.assertEqual({key:self.paths[key].read_bytes() for key in self.entries},before);self.unchanged()
 
+    def prepare_legacy_desktop_entry_migration(self):
+        legacy=up.fresh.legacy_desktop_entry(self.home)
+        self.paths['desktop'].write_bytes(legacy)
+        self.entries['desktop']=(b'canonical binary Exec with KWin interface',0o644)
+        return legacy
+
+    def selinux_xattrs(self,temp_label):
+        desktop=self.paths['desktop']
+        def names(path):
+            path=Path(path)
+            return ['security.selinux'] if path==desktop or path.name.startswith('.weavelo-desktop-') else []
+        def value(path,name):
+            self.assertEqual(name,'security.selinux')
+            return b'installed-label' if Path(path)==desktop else temp_label
+        return (patch.object(up.os,'listxattr',side_effect=names),
+                patch.object(up.os,'getxattr',side_effect=value))
+
+    def test_current_update_migrates_only_exact_legacy_desktop_entry_atomically(self):
+        legacy=self.prepare_legacy_desktop_entry_migration()
+        current=up.CurrentUpgrade(self.home,self.control)
+        matching=self.selinux_xattrs(b'installed-label')
+        with matching[0],matching[1]:
+            plan=current.plan(self.archive,self.pins)
+            self.assertEqual(plan['startup_entry_compatibility']['desktop'],
+                             'migrate-known-legacy-desktop-entry')
+            result=current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+        self.assertTrue(result['desktop_entry_updated'])
+        self.assertNotEqual(self.paths['desktop'].read_bytes(),legacy)
+        self.assertEqual(self.paths['desktop'].read_bytes(),self.entries['desktop'][0])
+
+    def test_current_update_migrates_wrapper_entry_with_existing_kwin_marker(self):
+        legacy=up.fresh.legacy_desktop_entry(self.home,with_kwin_interface=True)
+        self.paths['desktop'].write_bytes(legacy)
+        self.entries['desktop']=(b'canonical binary Exec with KWin interface',0o644)
+        current=up.CurrentUpgrade(self.home,self.control)
+        plan=current.plan(self.archive,self.pins)
+        self.assertEqual(plan['startup_entry_compatibility']['desktop'],
+                         'migrate-known-legacy-desktop-entry')
+        result=current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+        self.assertTrue(result['desktop_entry_updated'])
+        self.assertEqual(self.paths['desktop'].read_bytes(),self.entries['desktop'][0])
+
+    def test_current_update_preserves_user_edited_desktop_entry(self):
+        edited=b'[Desktop Entry]\nName=My Weavelo Shortcut\nExec=/custom/weavelo\n'
+        self.paths['desktop'].write_bytes(edited)
+        self.entries['desktop']=(b'canonical binary Exec with KWin interface',0o644)
+        current=up.CurrentUpgrade(self.home,self.control)
+        plan=current.plan(self.archive,self.pins)
+        self.assertEqual(plan['startup_entry_compatibility']['desktop'],'retained-installed-entry')
+        current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+        self.assertEqual(self.paths['desktop'].read_bytes(),edited)
+
+    def test_current_update_can_retry_legacy_entry_migration_after_committed_binary(self):
+        self.prepare_legacy_desktop_entry_migration()
+        current=up.CurrentUpgrade(self.home,self.control)
+        mismatch=self.selinux_xattrs(b'different-label')
+        with mismatch[0],mismatch[1]:
+            with self.assertRaisesRegex(ValueError,'would change extended attributes'):
+                self.apply_current(current)
+        self.assertEqual(current.status()['phase'],'completed')
+        self.assertEqual((self.paths['app']/'weavelo').read_bytes(),self.new['weavelo'])
+        matching=self.selinux_xattrs(b'installed-label')
+        with matching[0],matching[1]:
+            plan=current.plan(self.archive,self.pins)
+            self.assertEqual(plan['new_sha256'],plan['old_sha256'])
+            result=current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+        self.assertTrue(result['desktop_entry_updated'])
+        self.assertEqual(self.paths['desktop'].read_bytes(),self.entries['desktop'][0])
+
     def test_unfinished_historical_update_blocks_before_any_new_stop(self):
         self.fail='start';plan,digest=self.plan()
         with self.assertRaises(TimeoutError):self.up.apply(plan,digest)

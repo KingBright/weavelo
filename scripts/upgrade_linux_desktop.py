@@ -25,7 +25,7 @@ import zipfile
 import build_identity_gate as gate
 import linux_desktop_profile_launch as profile_launch
 import install_linux_independent as fresh
-from install_linux_desktop import sync
+from install_linux_desktop import atomic_write as atomic_desktop_write, sync
 from upgrade_macos_desktop import private, read_record, atomic_record, atomic_bytes, fsync_tree, discard_matching_pending
 
 def require(ok, text):
@@ -369,13 +369,16 @@ class Upgrade:
         fixed=self.invariants();old=image(self.paths['app'])
         old_sha=next(r['sha256'] for r in old['files'] if r['path']=='weavelo')
         require(old_sha==predecessor['binary_sha256'],'Installed committed binary differs')
-        require(manifest['binary_sha256']!=old_sha,'Candidate is already installed')
         configuration=self.control.configuration();compatibility={}
         for key,(raw,_) in fresh.payloads(self.home,archive).items():
             if gate.digest(raw)==fixed['entries'][key]['sha256']:
                 compatibility[key]='matching-rendered-template'
                 continue
             compatibility[key]=self.startup_compatibility(key,archive,fixed,configuration)
+        if manifest['binary_sha256']==old_sha:
+            require(manifest['files']==old['files']
+                    and compatibility.get('desktop')=='migrate-known-legacy-desktop-entry',
+                    'Candidate is already installed')
         before=self.control.observe(old_sha)
         opaque=any(row.get('opaque_environment_preserved') for row in configuration['dropins'].values())
         require(not opaque or configuration.get('canonical_profile_launch') is True,
@@ -473,7 +476,9 @@ class Upgrade:
         compatibility=plan.get('startup_entry_compatibility',{})
         require(set(compatibility)=={'launcher','service','desktop','icon'}
                 and all(value=='matching-rendered-template' or value=='retained-installed-entry' and plan.get('no_new_rollback') is True or key=='service' and
-                    value=='retained-stock-template-with-canonical-launcher' for key,value in compatibility.items()),
+                    value=='retained-stock-template-with-canonical-launcher' or key=='desktop' and
+                    value=='migrate-known-legacy-desktop-entry' and plan.get('no_new_rollback') is True
+                    for key,value in compatibility.items()),
                 'Unknown startup compatibility proof retained')
         if compatibility['service']=='retained-stock-template-with-canonical-launcher':
             require(plan['configuration'].get('policy',{}).get('execution',{}).get('canonical_profile_launcher')
@@ -569,8 +574,16 @@ class CurrentUpgrade(Upgrade):
         self.journal=self.transaction/'state.json';self.slot=self.transaction/'candidate-app'
 
     def startup_compatibility(self,key,archive,fixed,configuration):
-        # Binary-only updates do not install package startup templates. Current
-        # launchers, UI entries and service policy remain pinned by same().
+        # Keep user-owned startup entries unless the desktop file is the exact
+        # previous installer template. That known file can be migrated with the
+        # same current update that installs --desktop-launch.
+        if key=='desktop':
+            entry=fixed['entries']['desktop']
+            if (entry['sha256'] in {gate.digest(raw) for raw in fresh.legacy_desktop_entries(self.home)}
+                    and entry['mode']==0o644
+                    and set(entry['xattrs'])<={'security.selinux'}):
+                return 'migrate-known-legacy-desktop-entry'
+        # Binary-only updates retain launchers and service policy.
         return 'retained-installed-entry'
 
     def plan(self,archive,pins):
@@ -631,6 +644,20 @@ class CurrentUpgrade(Upgrade):
     def finish(self,record,current):
         result=super().finish(record,current)
         self.discard_old_stage(record)
+        if record['plan']['startup_entry_compatibility'].get('desktop')=='migrate-known-legacy-desktop-entry':
+            plan=record['plan'];path=self.paths['desktop']
+            old=plan['invariants']['entries']['desktop']
+            require(old['sha256'] in {gate.digest(raw) for raw in fresh.legacy_desktop_entries(self.home)}
+                    and old['mode']==0o644 and set(old['xattrs'])<={'security.selinux'},
+                    'Legacy desktop entry proof changed; preserve installed file')
+            require(file_pin(path)==old,'Installed desktop entry changed after update; preserve it')
+            desired=fresh.payloads(self.home,Path(plan['archive']))['desktop'][0]
+            atomic_desktop_write(path,desired,0o644,{'sha256':old['sha256'],'mode':old['mode']},
+                                 preserve_xattrs=True)
+            updated=file_pin(path)
+            require(updated['sha256']==gate.digest(desired) and updated['mode']==0o644,
+                    'Canonical KWin desktop entry replacement is unconfirmed')
+            result['desktop_entry_updated']=True
         result.update(rollback_retained=False,historical_rollback_preserved=True)
         return result
 

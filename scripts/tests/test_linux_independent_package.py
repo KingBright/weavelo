@@ -134,9 +134,11 @@ class IndependentLinuxTests(unittest.TestCase):
 
     def test_independent_menu_name_is_distinct_without_changing_identity(self):
         entry = install.payloads(self.home, self.zip)['desktop'][0].decode()
+        executable = install.paths(self.home)['app']/'weavelo'
         self.assertEqual(entry.splitlines().count('Name=Weavelo Desktop'), 1)
-        self.assertIn('Exec="'+str(install.paths(self.home)['launcher'])+'"', entry)
+        self.assertIn('Exec="'+str(executable)+'" --desktop-launch', entry)
         self.assertIn('StartupWMClass=fun.hackerlife.weavelo.desktop', entry)
+        self.assertIn('X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1', entry)
         packaged = (desktop.ROOT/'deploy/linux/fun.hackerlife.weavelo.desktop.desktop').read_text()
         retained = (desktop.ROOT/'deploy/linux/fun.hackerlife.weavelo.desktop').read_text()
         self.assertIn('Name=Weavelo Desktop', packaged.splitlines())

@@ -20,7 +20,11 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     let mut config = weavelo_app::UnifiedRuntimeConfig::from_env()?;
-    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let mut arguments: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if arguments == ["--desktop-launch"] {
+        arguments[0] = "--gui".into();
+    }
     if arguments == ["--background-service"] {
         #[cfg(any(unix, windows))]
         return weavelo_app::background_service::run(config).await;

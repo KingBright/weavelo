@@ -49,15 +49,25 @@ def state(path):
     return {'sha256': gate.hash_file(path), 'mode': stat.S_IMODE(m.st_mode)}
 
 
-def atomic_write(path, raw, mode, expected):
+def atomic_write(path, raw, mode, expected, *, preserve_xattrs=False):
     require(state(path) == expected, 'Desktop destination drift; nothing overwritten')
+    prior_xattrs = ({name:os.getxattr(path,name) for name in sorted(os.listxattr(path))}
+                    if preserve_xattrs else None)
     path.parent.mkdir(parents=True, exist_ok=True)
     safe(path.parent)
     fd, temp = tempfile.mkstemp(prefix='.weavelo-desktop-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as out:
             os.fchmod(out.fileno(), mode); out.write(raw); out.flush(); os.fsync(out.fileno())
+        if prior_xattrs is not None:
+            current_xattrs={name:os.getxattr(path,name) for name in sorted(os.listxattr(path))}
+            temp_xattrs={name:os.getxattr(temp,name) for name in sorted(os.listxattr(temp))}
+            require(current_xattrs==prior_xattrs and temp_xattrs==prior_xattrs,
+                    'Atomic desktop replacement would change extended attributes')
         require(state(path) == expected, 'Desktop file changed before atomic replacement')
+        if prior_xattrs is not None:
+            require({name:os.getxattr(path,name) for name in sorted(os.listxattr(path))}==prior_xattrs,
+                    'Desktop extended attributes changed before atomic replacement')
         os.replace(temp, path)
         sync(path.parent)
     finally:

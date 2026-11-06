@@ -247,3 +247,12 @@ Studio、Book、cube 已正式升级142（`743aec1`）；两台Mac分别保留�
 
 
 红米设置首帧失败的原因现已确认：设备卡片的真实接收错误为 `App is already open; close its existing task before opening an independent app`，系统任务列表也显示设置仍有现有任务。失败没有归因于录屏授权；为避免搬走手机已有任务，当前独立空间明确拒绝这种启动。此前“原因未知”的记录由此更新，不代表已支持重复启动任意应用。错误保留在 `stream_activity.devices`，不能只读取已关闭会话的空数组。证据：`native142-redmi-settings-confirmed-rejection.json`、`native142-redmi-activities.txt`。随后Studio142拉取红米98整个屏幕，4帧、0解码错误并有UI提交，测试流已关闭；证据 `native142-redmi-screen.json`。
+
+
+## Android99 设备类别图标与原生入口验收补充 · 2026-11-06
+
+`a62cc74` 已提交并推送：设备发现复用现有能力字段的保留位传递设备类别，Android 设备卡片使用对应手机、MacBook、Mac Studio、Windows 或 Linux 图标；不依据名字猜测类型，不广播自定义图片。桌面读取其实际配置目录，手机自定义图片仍通过现有鉴权串流通道获取。发现序列化19项、桥接与发布端各1项、配置目录隔离2项检查通过；Android JVM 85项及 lint 通过。新增 Compose 仪器测试尚未运行，不能据此宣称实机界面验收。正式 APK 构建和两机安装仍在进行。
+
+Book142 的两个接收窗口实际创建 Gemini／ChatGPT 独立 Dock helper；原生进程 localizedName 与 Dock AXTitle 对应，停止后进程和临时 bundle 均已清理。旧 ChatGPT Dock 缓存条目无进程、路径不存在，未修改用户 Dock 配置。自动隐藏 Dock 的截图未拍到气泡，最小化属性写入后仍读回0，所以可见悬停外观、侧边／最小化窗口图标仍未通过实机验收。
+
+Android99 正式构建已完成，努比亚与红米均已安装，独立拉回 base.apk 核对 SHA 均为 `656c36458de837097bf2561fa4cf26f002c608249be9fe237b76a179b5408448`，原有无障碍启用列表未改变；helper API4/version99。NAS 当前版本99和公开下载亦已核对。红米实际设备页截图 `android99-redmi-device-cards.png` 已显示努比亚手机图标；其余电脑尚在142/143，未声称其新分类图标已验收。Compose 仪器测试源码补充编译通过（修正 assertExists 成员方法的错误导入，`3130c60`），尚未运行设备仪器测试。

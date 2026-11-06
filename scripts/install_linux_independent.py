@@ -131,15 +131,33 @@ def service_for_home(home, template):
     return text.replace(original, 'Environment="' + escaped + '"', 1).encode()
 
 
+def desktop_entry(home):
+    p = paths(home)
+    return ('[Desktop Entry]\nType=Application\nName=Weavelo Desktop\nExec="'+str(p['app']/'weavelo')+'" --desktop-launch\n'
+        'Icon=fun.hackerlife.weavelo.desktop\nStartupWMClass=fun.hackerlife.weavelo.desktop\n'
+        'X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1\n'
+        'Terminal=false\nCategories=Network;RemoteAccess;\n').encode()
+
+
+def legacy_desktop_entry(home, *, with_kwin_interface=False):
+    """One exact wrapper-based entry rendered by supported earlier installers."""
+    p = paths(home)
+    return ('[Desktop Entry]\nType=Application\nName=Weavelo Desktop\nExec="'+str(p['launcher'])+'"\n'
+        'Icon=fun.hackerlife.weavelo.desktop\nStartupWMClass=fun.hackerlife.weavelo.desktop\n'
+        + ('X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1\n' if with_kwin_interface else '')
+        + 'Terminal=false\nCategories=Network;RemoteAccess;\n').encode()
+
+
+def legacy_desktop_entries(home):
+    return (legacy_desktop_entry(home), legacy_desktop_entry(home, with_kwin_interface=True))
+
+
 def payloads(home, archive):
     p = paths(home)
     with zipfile.ZipFile(archive) as source:
         icon = source.read('Weavelo/assets/icon.svg')
         service = service_for_home(home, source.read('Weavelo/deploy/linux/weavelo-desktop.service'))
-    entry = ('[Desktop Entry]\nType=Application\nName=Weavelo Desktop\nExec="'+str(p['launcher'])+'"\n'
-        'Icon=fun.hackerlife.weavelo.desktop\nStartupWMClass=fun.hackerlife.weavelo.desktop\n'
-        'X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1\n'
-        'Terminal=false\nCategories=Network;RemoteAccess;\n').encode()
+    entry = desktop_entry(home)
     return {'launcher':(launcher(home),0o755),'service':(service,0o644),
             'desktop':(entry,0o644),'icon':(icon,0o644)}
 

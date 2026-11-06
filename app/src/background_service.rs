@@ -166,7 +166,13 @@ impl Service {
                                 Response::Rejected("Sharing owner changed or is stopping".into())
                             } else {
                                 #[cfg(target_os="linux")]
-                                let sources:Result<Vec<protocol::session::CaptureSourceInfo>,String>=Ok(sharing.catalog());
+                                let sources = match host::capture_sources::local_catalog().await {
+                                    Ok(native) => Ok(merge_linux_capture_sources(native, sharing.catalog())),
+                                    Err(error) => {
+                                        let portal = sharing.catalog();
+                                        if portal.is_empty() { Err(error) } else { Ok(portal) }
+                                    }
+                                };
                                 #[cfg(not(target_os="linux"))]
                                 let sources=host::capture_sources::local_catalog().await;
                                 match sources {
@@ -256,6 +262,38 @@ impl Service {
         });
         Ok(Self { path, task, delivery_task, closing, broker, stopped, #[cfg(target_os="linux")] sharing })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn merge_linux_capture_sources(
+    mut native: Vec<protocol::session::CaptureSourceInfo>,
+    portal: Vec<protocol::session::CaptureSourceInfo>,
+) -> Vec<protocol::session::CaptureSourceInfo> {
+    use protocol::session::CaptureSource;
+    use std::collections::HashSet;
+
+    // Linux's native catalog includes a generic MainDisplay fallback. Once a
+    // portal display is active, expose its concrete identity instead of two
+    // entries for the same screen. Keep MainDisplay when no portal display is
+    // available so X11 and the existing default-screen route still work.
+    let portal_has_display = portal.iter().any(|source| {
+        matches!(source.source, CaptureSource::Display(_))
+    });
+    if portal_has_display {
+        native.retain(|source| !matches!(source.source, CaptureSource::MainDisplay));
+    }
+
+    let mut seen = HashSet::with_capacity(native.len() + portal.len());
+    native.retain(|source| seen.insert(source.source));
+    for source in portal {
+        if let Some(existing) = native.iter_mut().find(|existing| existing.source == source.source) {
+            // Portal entries carry the active grant and its current dimensions.
+            *existing = source;
+        } else if seen.insert(source.source) {
+            native.push(source);
+        }
+    }
+    native
 }
 async fn read_only_answer(schema:u32, runtime:&UnifiedRuntimeHandle, generation:&str, hash:&str, mode:OwnerMode, closing:&Mutex<bool>)->Response {
     if schema != READ_ONLY_SCHEMA || mode != OwnerMode::Background {
@@ -764,6 +802,65 @@ pub async fn run(mut config: UnifiedRuntimeConfig) -> Result<(), Error> {
 #[cfg(test)]
 mod service_contract_tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    fn capture_source(
+        source: protocol::session::CaptureSource,
+        title: &str,
+    ) -> protocol::session::CaptureSourceInfo {
+        protocol::session::CaptureSourceInfo {
+            source,
+            title: title.into(),
+            application: String::new(),
+            process_id: None,
+            width: 1920,
+            height: 1080,
+            supports_input: false,
+            camera: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_capture_sources_merge_native_apps_cameras_and_portal_screens() {
+        use protocol::session::CaptureSource;
+
+        let merged = merge_linux_capture_sources(
+            vec![
+                capture_source(CaptureSource::MainDisplay, "Desktop"),
+                capture_source(CaptureSource::Window(7), "Editor"),
+                capture_source(CaptureSource::Camera(3), "Camera"),
+            ],
+            vec![
+                capture_source(CaptureSource::Display(0x8000_0001), "Shared display"),
+                capture_source(CaptureSource::Window(0x8000_0002), "Shared window"),
+            ],
+        );
+
+        assert!(merged.iter().any(|source| source.source == CaptureSource::Window(7)));
+        assert!(merged.iter().any(|source| source.source == CaptureSource::Camera(3)));
+        assert!(merged.iter().any(|source| source.source == CaptureSource::Display(0x8000_0001)));
+        assert!(merged.iter().any(|source| source.source == CaptureSource::Window(0x8000_0002)));
+        assert!(!merged.iter().any(|source| source.source == CaptureSource::MainDisplay));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_capture_sources_keep_one_portal_main_display_when_no_concrete_screen_exists() {
+        use protocol::session::CaptureSource;
+
+        let merged = merge_linux_capture_sources(
+            vec![capture_source(CaptureSource::MainDisplay, "Desktop")],
+            vec![capture_source(CaptureSource::MainDisplay, "Portal desktop")],
+        );
+
+        let main_displays: Vec<_> = merged
+            .iter()
+            .filter(|source| source.source == CaptureSource::MainDisplay)
+            .collect();
+        assert_eq!(main_displays.len(), 1);
+        assert_eq!(main_displays[0].title, "Portal desktop");
+    }
 
     #[test]
     fn safe_network_response_has_no_pairing_and_requires_exact_owner() {
