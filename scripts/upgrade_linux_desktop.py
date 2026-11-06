@@ -580,7 +580,7 @@ class CurrentUpgrade(Upgrade):
         if key=='desktop':
             entry=fixed['entries']['desktop']
             if (entry['sha256'] in {gate.digest(raw) for raw in fresh.legacy_desktop_entries(self.home)}
-                    and entry['mode']==0o644
+                    and entry['mode'] in (0o600,0o644)
                     and set(entry['xattrs'])<={'security.selinux'}):
                 return 'migrate-known-legacy-desktop-entry'
         # Binary-only updates retain launchers and service policy.
@@ -648,14 +648,14 @@ class CurrentUpgrade(Upgrade):
             plan=record['plan'];path=self.paths['desktop']
             old=plan['invariants']['entries']['desktop']
             require(old['sha256'] in {gate.digest(raw) for raw in fresh.legacy_desktop_entries(self.home)}
-                    and old['mode']==0o644 and set(old['xattrs'])<={'security.selinux'},
+                    and old['mode'] in (0o600,0o644) and set(old['xattrs'])<={'security.selinux'},
                     'Legacy desktop entry proof changed; preserve installed file')
             require(file_pin(path)==old,'Installed desktop entry changed after update; preserve it')
             desired=fresh.payloads(self.home,Path(plan['archive']))['desktop'][0]
-            atomic_desktop_write(path,desired,0o644,{'sha256':old['sha256'],'mode':old['mode']},
+            atomic_desktop_write(path,desired,old['mode'],{'sha256':old['sha256'],'mode':old['mode']},
                                  preserve_xattrs=True)
             updated=file_pin(path)
-            require(updated['sha256']==gate.digest(desired) and updated['mode']==0o644,
+            require(updated['sha256']==gate.digest(desired) and updated['mode']==old['mode'],
                     'Canonical KWin desktop entry replacement is unconfirmed')
             result['desktop_entry_updated']=True
         result.update(rollback_retained=False,historical_rollback_preserved=True)
