@@ -129,12 +129,19 @@ internal class ManagedApplicationInput(val target: ManagedApplications.Target) {
             val py=position(change.getDouble("normalized_y").toFloat(),target.height)
             contacts[id]?.apply { x=px;y=py;this.pressure=pressure }
         }
+        if(changes.any { it.getString("action")=="Cancel" }) {
+            // Android cancels a gesture as a whole. Turning cancellation into
+            // ACTION_UP could activate a button the user deliberately left.
+            val accepted=motion(MotionEvent.ACTION_CANCEL)
+            contacts.clear()
+            return accepted
+        }
         for(change in changes.filter { it.getString("action")=="Down" }) {
             if(!start(change.getLong("pointer_id"),position(change.getDouble("normalized_x").toFloat(),target.width),
                 position(change.getDouble("normalized_y").toFloat(),target.height),change.getDouble("pressure").toFloat())) return false
         }
         if(changes.any { it.getString("action")=="Move" } && !motion(MotionEvent.ACTION_MOVE)) return false
-        for(change in changes.filter { it.getString("action") in listOf("Up","Cancel") }) if(!end(change.getLong("pointer_id"))) return false
+        for(change in changes.filter { it.getString("action")=="Up" }) if(!end(change.getLong("pointer_id"))) return false
         return true
     }
     fun release() {

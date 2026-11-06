@@ -32,6 +32,9 @@ pub(crate) struct Source {
     pub audio: bool,
     pub grant: u64,
     pub demand: CaptureDemand,
+    // Outer None is pending; Some(None) is a completed native read without an icon.
+    pub artwork: Option<Option<protocol::interaction::ApplicationIcon>>,
+    pub artwork_epoch: u64,
 }
 pub(crate) struct ActiveRequest<'a> {
     pub stream: u64,
@@ -53,7 +56,7 @@ impl MediaSources {
         this.sources.insert(CaptureSource::MainDisplay,Source {
             info:CaptureSourceInfo {source:CaptureSource::MainDisplay,title:"Android selected screen or app".into(),
                 application:"MediaProjection".into(),process_id:None,width:1080,height:1920,supports_input:false,camera:None},
-            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},
+            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},artwork:None,artwork_epoch:1,
         });this
     }
     fn next(&mut self)->u64 {
@@ -79,7 +82,7 @@ impl MediaSources {
                 existing.info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }Ok(bindings)
     }
@@ -102,7 +105,7 @@ impl MediaSources {
                 let id=info.source;self.sources.get_mut(&id).unwrap().info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }
         Ok(())
@@ -193,7 +196,14 @@ impl MediaSources {
                 !=(next.active,next.width,next.height,next.fps,next.bitrate_kbps);
             next.epoch=old.epoch;next.keyframe=old.keyframe;next.grant=old.grant;
             if changed{next.epoch=self.next();next.keyframe=next.keyframe.saturating_add(1);}
-            self.sources.get_mut(&id).unwrap().demand=next;
+            let entry=self.sources.get_mut(&id).unwrap();
+            if next.subscriptions==0 && entry.demand.subscriptions>0 {
+                entry.artwork=None;
+                // A quick reconnect can reuse the still-closing native worker.
+                // Its cached icon may be republished, but old completions cannot.
+                entry.artwork_epoch=entry.artwork_epoch.checked_add(1).expect("artwork generation exhausted");
+            }
+            entry.demand=next;
         }
     }
     pub fn request_keyframe(&mut self,source:CaptureSource){if let Some(entry)=self.sources.get_mut(&source){entry.demand.keyframe=entry.demand.keyframe.saturating_add(1);}}

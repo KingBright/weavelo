@@ -67,6 +67,7 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
             val row = list.getJSONObject(i)
             val id = row.getJSONObject("source").getLong("Window")
             val demand = row.getJSONObject("demand")
+            demand.put("artwork_epoch",row.getLong("artwork_epoch"))
             val allViews=demand.optJSONArray("views") ?: JSONArray()
             val views=JSONArray()
             for(index in 0 until allViews.length()) {
@@ -111,11 +112,30 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
             var publisher: GpuScreenPublisher? = null
             var target: Target? = null
             try {
+                val icon=runCatching {
+                    val png=host.applicationIcon(app.packageName)
+                    require(png.size in 1..256*1024)
+                    val digest=java.security.MessageDigest.getInstance("SHA-256").digest(png)
+                    JSONObject().put("id",JSONArray(digest.map { it.toInt() and 255 }))
+                        .put("png",JSONArray(png.map { it.toInt() and 255 }))
+                }.getOrNull()
+                var artworkEpoch = -1L
                 display = host.createApplication(app.packageName, width, height, density)
                 target = Target(host, display, app.packageName, width, height)
                 targets[app.id] = target
                 while (alive.get()) {
-                    val views = demand.optJSONArray("views") ?: JSONArray()
+                    val current = demand
+                    if(artworkEpoch!=current.getLong("artwork_epoch")) {
+                        artworkEpoch=current.getLong("artwork_epoch")
+                        val payload=JSONObject().put("source",JSONObject().put("Window",app.id))
+                            .put("grant",current.getLong("grant")).put("epoch",artworkEpoch)
+                            .put("icon",icon ?: JSONObject.NULL)
+                        runCatching {PublisherClient.action(45,payload.toString())}.onFailure {
+                            android.util.Log.w("Weavelo","Application artwork unavailable",it)
+                            runCatching {PublisherClient.action(45,payload.put("icon",JSONObject.NULL).toString())}
+                        }
+                    }
+                    val views = current.optJSONArray("views") ?: JSONArray()
                     if (views.length() > 0) {
                         if (publisher == null) {
                             publisher = GpuScreenPublisher(width,height)

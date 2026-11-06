@@ -51,6 +51,7 @@ pub struct MobilePublisher {
     pub address: SocketAddr,
     media: Arc<Mutex<MediaSources>>,
     media_changed: watch::Sender<u64>,
+    artwork_changed: watch::Sender<()>,
     generation: String,
     alive: Arc<AtomicBool>,
     frames: mpsc::Sender<Frame>,
@@ -117,6 +118,37 @@ struct MobileSubscription {
     video_sequence: u16,
     audio_sequence: u16,
     screen_stream: u64,
+}
+struct PendingArtwork {
+    request_id:u32,
+    connection:u32,
+    nonce:[u8;16],
+    source:CaptureSource,
+    grant:u64,
+    deadline:Instant,
+}
+async fn finish_artwork(pending:&mut HashMap<(SocketAddr,u32),PendingArtwork>,
+    peers:&HashMap<SocketAddr,Peer>,authenticated:&HashMap<SocketAddr,([u8;16],[u8;16],Instant)>,
+    media:&Mutex<MediaSources>,badge:&Mutex<protocol::appearance::DeviceBadge>,sender:&UdpSender) {
+    let mut replies=Vec::new();
+    {
+        let media=media.lock().unwrap();
+        pending.retain(|&(addr,id),request| {
+            let Some(peer)=peers.get(&addr).filter(|p|p.id==request.connection) else{return false;};
+            if !authenticated.get(&addr).is_some_and(|(_,nonce,_)|*nonce==request.nonce) {return false;}
+            let valid=peer.subscriptions.get(&id).is_some_and(|sub|sub.request.source==request.source&&sub.grant==request.grant);
+            let entry=media.sources.get(&request.source).filter(|entry|entry.enabled&&entry.grant==request.grant);
+            let value=if !valid || entry.is_none() {Some(Err("Artwork source is no longer selected".to_owned()))}
+                else if let Some(icon)=&entry.unwrap().artwork {Some(Ok(icon.clone()))}
+                else if Instant::now()>=request.deadline {Some(Ok(None))} else {None};
+            let Some(value)=value else{return true;};
+            replies.push((addr,SessionCommand::SourceAppearance {request_id:request.request_id,id,source:request.source,
+                appearance:Box::new(value.map(|application|protocol::appearance::SourceAppearance {
+                    application,device:badge.lock().unwrap().clone()}))}));
+            false
+        });
+    }
+    for (addr,response) in replies {reply(sender,addr,response).await;}
 }
 impl MobileSubscription {
     fn new(request:SubscriptionRequest,grant:u64,audio:bool)->Self {
@@ -333,6 +365,7 @@ impl MobilePublisher {
         let device_badge=Arc::new(Mutex::new(protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone)));
         let shared_badge=device_badge.clone();
         let (media_changed,mut changed_rx)=watch::channel(1u64);
+        let (artwork_changed,mut artwork_rx)=watch::channel(());
         let (frames,mut frame_rx)=mpsc::channel::<Frame>(4);
         let (errors,mut error_rx)=mpsc::channel::<CaptureFailure>(8);
         let mut advertised = crate::inbound_capabilities(address.port(), capture_enabled);
@@ -356,6 +389,7 @@ impl MobilePublisher {
             let _advertised_lifetime = advertised_lifetime;
             let mut peers: HashMap<SocketAddr, Peer> = HashMap::new();
             let mut authenticated: HashMap<SocketAddr, ([u8;16], [u8;16], Instant)> = HashMap::new();
+            let mut artwork_requests=HashMap::new();
             let mut handshakes=remote_core::session_auth::ServerHandshake::default();
             let mut maintenance = tokio::time::interval(Duration::from_secs(1));
             let mut input_watchdog = tokio::time::interval(Duration::from_millis(protocol::realtime_input::INPUT_WATCHDOG_INTERVAL_MS));
@@ -364,10 +398,16 @@ impl MobilePublisher {
             loop {
                 tokio::select! {
                     biased;
+                    changed=artwork_rx.changed()=>{
+                        if changed.is_err(){break;}
+                        artwork_rx.borrow_and_update();
+                        finish_artwork(&mut artwork_requests,&peers,&authenticated,&shared,&shared_badge,&sender).await;
+                    }
                     changed=changed_rx.changed()=>{
                         if changed.is_err(){break;}
                         changed_rx.borrow_and_update();
                         refresh_sources(&mut peers,&shared,&shared_input,&sender,&source_capabilities,&task_alive).await;
+                        finish_artwork(&mut artwork_requests,&peers,&authenticated,&shared,&shared_badge,&sender).await;
                     }
                     Some(failure)=error_rx.recv()=>{match failure {
                       CaptureFailure::Source(source,epoch,reason)=>{
@@ -416,6 +456,7 @@ impl MobilePublisher {
                         }
                     }
                     _ = maintenance.tick() => {
+                        finish_artwork(&mut artwork_requests,&peers,&authenticated,&shared,&shared_badge,&sender).await;
                         peer_delivery.reconcile(|owner|peers.get(&owner.addr).is_some_and(|peer|peer.id==owner.connection)
                             && authenticated.get(&owner.addr).is_some_and(|(_,nonce,_)|*nonce==owner.nonce));
                         let ended=peers.iter().filter(|(_,peer)|peer.delivery_owner.is_some_and(|(owner,ticket)|!peer_delivery.claim_alive(owner,ticket)))
@@ -545,6 +586,19 @@ impl MobilePublisher {
                                             reply(&sender,addr,peer_delivery.cancel(DeliveryPeer {addr,connection:peer.id,nonce,scope},request_id)).await;
                                         }
                                         SessionCommand::GetSourceAppearance{request_id,id,source} if peers.contains_key(&addr)=>{
+                                            finish_artwork(&mut artwork_requests,&peers,&authenticated,&shared,&shared_badge,&sender).await;
+                                            if let Some(sub)=peers[&addr].subscriptions.get(&id).filter(|sub|sub.request.source==source)
+                                                && matches!(source,CaptureSource::Window(_)) {
+                                                if artwork_requests.get(&(addr,id)).is_some_and(|pending|pending.request_id==request_id) {continue;}
+                                                if artwork_requests.len()>=64 || artwork_requests.contains_key(&(addr,id)) {
+                                                    reply(&sender,addr,SessionCommand::SourceAppearance{request_id,id,source,appearance:Box::new(Err("Application artwork request is already pending".into()))}).await;
+                                                } else {
+                                                    artwork_requests.insert((addr,id),PendingArtwork{request_id,connection:peers[&addr].id,
+                                                        nonce:authenticated[&addr].1,source,grant:sub.grant,deadline:Instant::now()+Duration::from_secs(5)});
+                                                    finish_artwork(&mut artwork_requests,&peers,&authenticated,&shared,&shared_badge,&sender).await;
+                                                }
+                                                continue;
+                                            }
                                             let response=if peers[&addr].subscriptions.get(&id).is_some_and(|sub|sub.request.source==source) {
                                                 SessionCommand::SourceAppearance{request_id,id,source,appearance:Box::new(Ok(protocol::appearance::SourceAppearance{application:None,device:shared_badge.lock().unwrap().clone()}))}
                                             } else {SessionCommand::SourceAppearance{request_id,id,source,appearance:Box::new(Err("Artwork source is no longer selected".into()))}};
@@ -722,6 +776,7 @@ impl MobilePublisher {
             address,
             media,
             media_changed,
+            artwork_changed,
             generation,
             alive,
             frames,
@@ -756,8 +811,19 @@ impl MobilePublisher {
         let ids=media.sources.iter().filter(|(id,entry)|matches!(id,CaptureSource::Window(_))
             && entry.enabled && entry.demand.subscriptions>0).map(|(id,_)|*id).collect::<Vec<_>>();
         serde_json::Value::Array(ids.into_iter().map(|source| {
-            serde_json::json!({"source":source,"demand":media.screen_source_demand(source)})
+            serde_json::json!({"source":source,"artwork_epoch":media.sources[&source].artwork_epoch,"demand":media.screen_source_demand(source)})
         }).collect())
+    }
+    pub fn set_application_artwork(&self,source:CaptureSource,grant:u64,epoch:u64,icon:Option<protocol::interaction::ApplicationIcon>)->Result<(),String> {
+        if let Some(icon)=&icon {remote_core::application_icons::decode_artwork(icon,true)?;}
+        {
+            let mut media=self.media.lock().unwrap();
+            let entry=media.sources.get_mut(&source).filter(|entry|matches!(source,CaptureSource::Window(_))
+                && entry.enabled&&entry.grant==grant&&entry.artwork_epoch==epoch&&entry.demand.subscriptions>0)
+                .ok_or("Application artwork source is no longer selected")?;
+            entry.artwork=Some(icon);
+        }
+        self.artwork_changed.send_replace(());Ok(())
     }
     pub fn set_cameras(&self,cameras:Vec<remote_core::cameras::NativeCamera>)->Result<Vec<(CaptureSource,String)>,String> {
         let bindings=self.media.lock().unwrap().set_cameras(cameras)?;self.notify_sources();Ok(bindings)
@@ -950,6 +1016,52 @@ mod tests {
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:4,id:256,source:CaptureSource::Camera(9)}).await;
         assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance,..} if appearance.is_err()));
         assert!(publisher.demand().active,"Optional artwork must not end media");
+    }
+    #[tokio::test]
+    async fn selected_app_artwork_waits_for_native_read_and_expires_with_subscription() {
+        let key=b"selected-application-artwork".to_vec();
+        let publisher=MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),std::env::temp_dir(),key.clone(),true,false,false).await.unwrap();
+        let source=CaptureSource::Window(42);
+        publisher.set_applications(vec![CaptureSourceInfo{source,title:"Fixture".into(),application:"Fixture".into(),
+            process_id:None,width:720,height:1280,supports_input:false,camera:None}]).unwrap();
+        let (sender,receiver)=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap().split();
+        remote_core::session_auth::authenticate_with_key(&sender,&receiver,publisher.address,&key).await.unwrap();
+        command(&sender,publisher.address,SessionCommand::Open{connection_id:77,version:SESSION_VERSION}).await;
+        while !matches!(reply(&receiver).await,SessionCommand::Opened{..}) {}
+        command(&sender,publisher.address,SessionCommand::Subscribe(SubscriptionRequest{id:256,source,width:720,height:1280,fps:30,bitrate_kbps:4000,audio:false})).await;
+        while !matches!(reply(&receiver).await,SessionCommand::Subscribed{id:256,..}) {}
+        let grant=publisher.media.lock().unwrap().sources[&source].grant;
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:8,id:256,source}).await;
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:8,id:256,source}).await;
+        // This catalog response orders the preceding artwork request. No empty
+        // placeholder may win the race before the native icon is available.
+        command(&sender,publisher.address,SessionCommand::ListSources{request_id:9,known_icons:vec![]}).await;
+        loop {match reply(&receiver).await {
+            SessionCommand::Sources{request_id:9,..}=>break,
+            SessionCommand::SourceAppearance{request_id:8,..}=>panic!("Artwork completed before native read"),
+            _=>{}
+        }}
+        let icon=remote_core::application_icons::encode_artwork(256,256,&vec![255;256*256*4]).unwrap();
+        assert!(publisher.set_application_artwork(source,grant+1,1,Some(icon.clone())).is_err());
+        let mut corrupt=icon.clone();corrupt.id[0]^=1;
+        assert!(publisher.set_application_artwork(source,grant,1,Some(corrupt)).is_err());
+        publisher.set_application_artwork(source,grant,1,Some(icon.clone())).unwrap();
+        loop {if let SessionCommand::SourceAppearance{request_id:8,appearance,..}=reply(&receiver).await {
+            assert_eq!(appearance.unwrap().application,Some(icon.clone()));break;
+        }}
+        command(&sender,publisher.address,SessionCommand::Unsubscribe{id:256}).await;
+        while !matches!(reply(&receiver).await,SessionCommand::Unsubscribed{id:256}) {}
+        assert!(publisher.media.lock().unwrap().sources[&source].artwork.is_none());
+        assert!(publisher.set_application_artwork(source,grant,1,Some(icon.clone())).is_err(),"late worker cannot retain an unselected icon");
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:10,id:256,source}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{request_id:10,appearance,..} if appearance.is_err()));
+        command(&sender,publisher.address,SessionCommand::Subscribe(SubscriptionRequest{id:257,source,width:720,height:1280,fps:30,bitrate_kbps:4000,audio:false})).await;
+        while !matches!(reply(&receiver).await,SessionCommand::Subscribed{id:257,..}) {}
+        assert!(publisher.set_application_artwork(source,grant,1,Some(icon.clone())).is_err(),"rapid reconnect must reject the prior artwork completion");
+        publisher.set_application_artwork(source,grant,2,Some(icon.clone())).unwrap();
+        command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:11,id:257,source}).await;
+        let SessionCommand::SourceAppearance{request_id:11,appearance,..}=reply(&receiver).await else {panic!("missing reconnected artwork")};
+        assert_eq!(appearance.unwrap().application,Some(icon));
     }
     #[tokio::test]
     async fn idle_app_catalog_does_not_enter_the_native_demand_poll() {

@@ -198,6 +198,13 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 publisher.set_applications(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())
             }
             44 => Ok(publisher.application_demands().to_string()),
+            45 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Artwork {source:protocol::session::CaptureSource,grant:u64,epoch:u64,icon:Option<protocol::interaction::ApplicationIcon>}
+                if value.len()>1400*1024 {return Err("Application artwork is oversized".into());}
+                let artwork:Artwork=serde_json::from_str(&value).map_err(|e|e.to_string())?;
+                publisher.set_application_artwork(artwork.source,artwork.grant,artwork.epoch,artwork.icon)?;Ok(String::new())
+            }
             41 => {publisher.set_device_badge(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())}
             22 => {
                 #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
