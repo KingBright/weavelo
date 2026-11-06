@@ -261,7 +261,7 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
     let query_deadline = tokio::time::Instant::now() + CATALOG_TIMEOUT;
     let mut raw = Vec::new();
     let mut seen_uuid = HashSet::new();
-    for (id, title, _icon_name, _match_type, _relevance, properties) in matches {
+    for (id, title, icon_name, _match_type, _relevance, properties) in matches {
         let remaining = query_deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
@@ -308,6 +308,8 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
             .or_else(|| value_string(&info, "resourceName"))
             .unwrap_or_default();
         let application = application_name(&app_id);
+        let icon = icon_rgba(properties.get("icon-data"))
+            .or_else(|| named_application_icon(&icon_name, &app_id));
         raw.push((
             normalized,
             WindowInfo {
@@ -325,7 +327,7 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
                 },
                 uuid,
             },
-            icon_rgba(properties.get("icon-data")),
+            icon,
         ));
     }
     raw.sort_by(|a, b| a.0.cmp(&b.0));
@@ -474,6 +476,364 @@ fn desktop_paths(app_id: &str) -> Vec<std::path::PathBuf> {
             .flat_map(|root| ids.iter().map(move |id| root.join(id))),
     );
     paths
+}
+
+fn desktop_icon_name(app_id: &str) -> Option<String> {
+    for path in desktop_paths(app_id) {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut in_desktop_entry = false;
+        for line in content.lines() {
+            if line.starts_with('[') {
+                in_desktop_entry = line.trim() == "[Desktop Entry]";
+            } else if in_desktop_entry
+                && let Some(value) = line.strip_prefix("Icon=")
+                && let Some(value) = clean_icon_name(value.trim())
+            {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn clean_icon_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
+        return None;
+    }
+    let path = std::path::Path::new(name);
+    if path.is_absolute() {
+        return Some(name.to_owned());
+    }
+    if name == "."
+        || name == ".."
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.@".contains(&byte))
+    {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+fn named_application_icon(krunner_name: &str, app_id: &str) -> Option<RgbaIcon> {
+    let desktop_name = desktop_icon_name(app_id);
+    let names = [clean_icon_name(krunner_name), desktop_name];
+    for name in names.into_iter().flatten() {
+        for path in icon_paths(&name) {
+            if let Some(icon) = load_gdk_pixbuf(&path) {
+                return Some(icon);
+            }
+        }
+    }
+    None
+}
+
+fn icon_paths(name: &str) -> Vec<std::path::PathBuf> {
+    let Some(name) = clean_icon_name(name) else {
+        return Vec::new();
+    };
+    let direct = std::path::PathBuf::from(&name);
+    if direct.is_absolute() {
+        return vec![direct];
+    }
+    let file_names = ["png", "svg", "xpm"].map(|extension| format!("{name}.{extension}"));
+    let mut paths = Vec::new();
+    for (theme_root, directories) in icon_theme_roots() {
+        for subdir in directories {
+            for file in &file_names {
+                paths.push(theme_root.join(subdir).join(file));
+            }
+        }
+    }
+    for data_dir in icon_data_dirs() {
+        for file in &file_names {
+            paths.push(data_dir.join("pixmaps").join(file));
+        }
+    }
+    for root in ["/usr/local/share/pixmaps", "/usr/share/pixmaps"] {
+        for file in &file_names {
+            paths.push(std::path::PathBuf::from(root).join(file));
+        }
+    }
+    paths
+}
+
+fn icon_theme_roots() -> &'static Vec<(std::path::PathBuf, Vec<std::path::PathBuf>)> {
+    static ROOTS: OnceLock<Vec<(std::path::PathBuf, Vec<std::path::PathBuf>)>> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        let themes = icon_theme_names();
+        icon_data_dirs()
+            .into_iter()
+            .flat_map(|data_dir| {
+                let themes = themes.clone();
+                themes.into_iter().map(move |theme| {
+                    let root = data_dir.join("icons").join(theme);
+                    let directories = theme_directories(&root);
+                    (root, directories)
+                })
+            })
+            .collect()
+    })
+}
+
+fn icon_data_dirs() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
+        paths.push(path.into());
+    } else if let Some(home) = std::env::var_os("HOME") {
+        paths.push(std::path::PathBuf::from(home).join(".local/share"));
+    }
+    if let Some(dirs) = std::env::var_os("XDG_DATA_DIRS") {
+        paths.extend(std::env::split_paths(&dirs));
+    } else {
+        paths.extend(["/usr/local/share", "/usr/share"].map(std::path::PathBuf::from));
+    }
+    paths
+}
+
+fn icon_theme_names() -> Vec<String> {
+    let mut themes = Vec::new();
+    if let Some(theme) = std::env::var("GTK_THEME")
+        .ok()
+        .and_then(|value| value.split(':').next().map(str::to_owned))
+    {
+        themes.push(theme);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        for path in [
+            std::path::PathBuf::from(&home).join(".config/kdeglobals"),
+            std::path::PathBuf::from(&home).join(".config/gtk-3.0/settings.ini"),
+        ] {
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let mut in_icons = false;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_icons = line == "[Icons]" || line == "[Settings]";
+                } else if in_icons {
+                    if let Some(theme) = line
+                        .strip_prefix("Theme=")
+                        .or_else(|| line.strip_prefix("gtk-icon-theme-name="))
+                    {
+                        themes.push(theme.trim().to_owned());
+                    }
+                }
+            }
+        }
+    }
+    for fallback in ["breeze", "Adwaita", "hicolor"] {
+        themes.push(fallback.to_owned());
+    }
+    let mut seen = HashSet::new();
+    themes.retain(|theme| {
+        !theme.is_empty()
+            && theme.len() <= 128
+            && theme
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+            && seen.insert(theme.clone())
+    });
+    themes
+}
+
+fn theme_directories(theme_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut directories = Vec::new();
+    if let Ok(content) = std::fs::read_to_string(theme_root.join("index.theme")) {
+        let mut in_icon_theme = false;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_icon_theme = line == "[Icon Theme]";
+            } else if in_icon_theme {
+                if let Some(value) = line
+                    .strip_prefix("Directories=")
+                    .or_else(|| line.strip_prefix("ScaledDirectories="))
+                {
+                    directories.extend(value.split(',').take(128).filter_map(safe_theme_directory));
+                }
+            }
+        }
+    }
+    // Minimal standard locations also cover themes which omit index.theme.
+    for relative in [
+        "apps/256x256",
+        "applications/256x256",
+        "apps/128x128",
+        "applications/128x128",
+        "apps/64x64",
+        "applications/64x64",
+        "apps/48x48",
+        "applications/48x48",
+        "apps/scalable",
+        "applications/scalable",
+        "apps/32x32",
+        "applications/32x32",
+        "apps/24x24",
+        "applications/24x24",
+        "apps/22x22",
+        "applications/22x22",
+        "apps/16x16",
+        "applications/16x16",
+    ] {
+        directories.push(relative.into());
+    }
+    let mut seen = HashSet::new();
+    directories.retain(|directory| seen.insert(directory.clone()));
+    directories
+}
+
+fn safe_theme_directory(directory: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(directory);
+    (!directory.is_empty()
+        && directory.len() <= 256
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))))
+    .then(|| path.to_owned())
+}
+
+fn load_gdk_pixbuf(path: &std::path::Path) -> Option<RgbaIcon> {
+    use std::os::unix::ffi::OsStrExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 8 * 1024 * 1024 {
+        return None;
+    }
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    gdk_pixbuf::api()?.load(path.as_c_str())
+}
+
+#[cfg(target_os = "linux")]
+mod gdk_pixbuf {
+    use std::{
+        ffi::{CStr, CString, c_char, c_int, c_uchar, c_void},
+        sync::OnceLock,
+    };
+
+    type LoadFile =
+        unsafe extern "C" fn(*const c_char, c_int, c_int, c_int, *mut *mut c_void) -> *mut c_void;
+    type GetInt = unsafe extern "C" fn(*const c_void) -> c_int;
+    type GetBool = unsafe extern "C" fn(*const c_void) -> c_int;
+    type GetPixels = unsafe extern "C" fn(*const c_void) -> *const c_uchar;
+    type Unref = unsafe extern "C" fn(*mut c_void);
+    type ErrorFree = unsafe extern "C" fn(*mut c_void);
+
+    struct Api {
+        load_file: LoadFile,
+        width: GetInt,
+        height: GetInt,
+        channels: GetInt,
+        rowstride: GetInt,
+        bits: GetInt,
+        has_alpha: GetBool,
+        pixels: GetPixels,
+        object_unref: Unref,
+        error_free: ErrorFree,
+        _libraries: [usize; 3],
+    }
+
+    pub struct PixbufApi(Api);
+
+    pub fn api() -> Option<&'static PixbufApi> {
+        static API: OnceLock<Option<PixbufApi>> = OnceLock::new();
+        API.get_or_init(load).as_ref()
+    }
+
+    impl PixbufApi {
+        pub fn load(&self, path: &CStr) -> Option<super::RgbaIcon> {
+            let api = &self.0;
+            let mut error = std::ptr::null_mut();
+            let pixbuf = unsafe { (api.load_file)(path.as_ptr(), 256, 256, 1, &mut error) };
+            if !error.is_null() {
+                unsafe { (api.error_free)(error) };
+            }
+            if pixbuf.is_null() {
+                return None;
+            }
+            let result = unsafe {
+                let width = (api.width)(pixbuf);
+                let height = (api.height)(pixbuf);
+                let channels = (api.channels)(pixbuf);
+                let rowstride = (api.rowstride)(pixbuf);
+                let bits = (api.bits)(pixbuf);
+                let has_alpha = (api.has_alpha)(pixbuf) != 0;
+                let source = (api.pixels)(pixbuf);
+                if width <= 0
+                    || height <= 0
+                    || width > 256
+                    || height > 256
+                    || bits != 8
+                    || !matches!(channels, 3 | 4)
+                    || (has_alpha && channels != 4)
+                    || rowstride < width.saturating_mul(channels)
+                    || source.is_null()
+                {
+                    None
+                } else {
+                    let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+                    for y in 0..height as usize {
+                        let row = std::slice::from_raw_parts(
+                            source.add(y * rowstride as usize),
+                            width as usize * channels as usize,
+                        );
+                        for pixel in row.chunks_exact(channels as usize) {
+                            pixels.extend_from_slice(&pixel[..3]);
+                            pixels.push(if has_alpha { pixel[3] } else { 255 });
+                        }
+                    }
+                    Some(super::RgbaIcon {
+                        width: width as u32,
+                        height: height as u32,
+                        pixels,
+                    })
+                }
+            };
+            unsafe { (api.object_unref)(pixbuf) };
+            result
+        }
+    }
+
+    fn load() -> Option<PixbufApi> {
+        unsafe {
+            let gdk = open(&["libgdk_pixbuf-2.0.so.0", "libgdk_pixbuf-2.0.so"])?;
+            let gobject = open(&["libgobject-2.0.so.0", "libgobject-2.0.so"])?;
+            let glib = open(&["libglib-2.0.so.0", "libglib-2.0.so"])?;
+            Some(PixbufApi(Api {
+                load_file: symbol(gdk, "gdk_pixbuf_new_from_file_at_scale")?,
+                width: symbol(gdk, "gdk_pixbuf_get_width")?,
+                height: symbol(gdk, "gdk_pixbuf_get_height")?,
+                channels: symbol(gdk, "gdk_pixbuf_get_n_channels")?,
+                rowstride: symbol(gdk, "gdk_pixbuf_get_rowstride")?,
+                bits: symbol(gdk, "gdk_pixbuf_get_bits_per_sample")?,
+                has_alpha: symbol(gdk, "gdk_pixbuf_get_has_alpha")?,
+                pixels: symbol(gdk, "gdk_pixbuf_read_pixels")?,
+                object_unref: symbol(gobject, "g_object_unref")?,
+                error_free: symbol(glib, "g_error_free")?,
+                _libraries: [gdk as usize, gobject as usize, glib as usize],
+            }))
+        }
+    }
+
+    unsafe fn open(names: &[&str]) -> Option<*mut c_void> {
+        for name in names {
+            let name = CString::new(*name).ok()?;
+            let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+            if !handle.is_null() {
+                return Some(handle);
+            }
+        }
+        None
+    }
+
+    unsafe fn symbol<T: Copy>(handle: *mut c_void, name: &str) -> Option<T> {
+        let name = CString::new(name).ok()?;
+        let value = unsafe { libc::dlsym(handle, name.as_ptr()) };
+        (!value.is_null()).then(|| unsafe { std::mem::transmute_copy(&value) })
+    }
 }
 
 fn icon_rgba(value: Option<&OwnedValue>) -> Option<RgbaIcon> {
@@ -881,6 +1241,23 @@ mod tests {
         )
         .unwrap();
         assert!(::protocol::interaction::validate_icon_container(&icon.png).is_ok());
+    }
+
+    #[test]
+    fn named_icon_values_are_confined_to_real_icon_names_or_absolute_files() {
+        assert_eq!(
+            clean_icon_name("org.example.Editor"),
+            Some("org.example.Editor".into())
+        );
+        assert_eq!(
+            clean_icon_name("/usr/share/pixmaps/editor.svg"),
+            Some("/usr/share/pixmaps/editor.svg".into())
+        );
+        for invalid in ["", "..", "../editor", "icons/editor", "editor\nExec=run"] {
+            assert!(clean_icon_name(invalid).is_none(), "{invalid:?}");
+        }
+        assert!(safe_theme_directory("apps/48x48").is_some());
+        assert!(safe_theme_directory("../outside").is_none());
     }
 
     #[test]
