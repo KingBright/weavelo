@@ -184,3 +184,15 @@ Android91 产品源码为 `6eb30da`，桌面138为 `8f98bd6`，均已推送 main
 Android93已安装努比亚，独立核对base.apk SHA为`8711da23f92d2507825d1cc800dafb8a1a4be8f6be4ac2f42a3efa859edf0eac`，保留既有签名及用户恢复的无障碍。真实独立编辑器出画、触摸到达，但文字出现“text input owner changed”，接收端原生文件仍为空；继续定位，未标记为修复。93增加异步64px真实应用目录图标，界面验收和红米升级待完成。Linux真实应用列表与图标仍未实现；已确认KWin只读窗口目录可用，正确采集绑定待完成。
 
 证据：各机同一任务目录`native139-*`、`linux139-reported-journal.log`、`android93-nubia-installed-proof.json`、`android93-native-independent-input.json`、`android93-restored-nubia-text-native.png`。
+
+## 共用修复部署与 Linux 码率验证 · 2026-11-06
+
+上述共用修复已提交、推送并升级：Studio、Book、cube 运行 desktop140（`3349b30`），HO5 运行 Linux141（`3180b46`）。三种桌面安装包已正式发布，公开下载内容与发布 SHA 一致；签名、设备身份、既有系统授权与启动方式保留。139 的“待升级”是前一阶段记录，不代表当前安装状态。
+
+继续排查发现 Mac/Linux 的关键帧与可视区域重绘没有共用采集帧率预算，Android GPU 重绘也漏了帧间隔；140／Android95 起统一约束这些路径。实际 Studio 动态测试窗口设置 7／30 FPS，接收平均为 7.04／28.17 FPS；曾有一个短统计区间显示 8.60 FPS，不能据此宣称任意瞬时区间都严格不超过目标。Windows 原生路径已有对应帧率约束。
+
+Linux141 将硬件编码 VBV 从一秒改为一帧，消除低帧率下过大的码率突发；不丢弃压缩参考帧，不降低分辨率或改变颜色。原生 VAAPI 对照实验（7 FPS／1 Mbps 与 30 FPS／2 Mbps）中，持续变化噪声的最高一秒码率由 12.16／15.99 Mbps 降至 1.94／2.94 Mbps，稳定段为 1.515／1.870 Mbps。因此这是改善突发与目标跟随，**不是任意内容的硬性带宽上限**。实际移动图形 testsrc2 的稳定码率为 1.003／2.062 Mbps；编码中位数 4.84／3.21 ms，p95 约 5.98／4.07 ms。该对照只测实际硬件编码，不包含采集、网络、解码或显示，不等同于同 Wi-Fi glass-to-glass 延迟。
+
+Studio140 的原生窗口已显示 Windows140 实际桌面且解码错误为零。HO5 当前 Wayland 会话锁定，Linux 流虽解码并提交两帧，实际截图为黑屏；不把这次结果算作可见桌面或拖动验收。还需在 HO5 解锁后核验实际移动桌面的帧率、码率、拖动连续性和遥测稳定性。Linux 遥测的采集起点是 PipeWire 到帧，未包含此前合成器等待；UI 提交也不是屏幕实际发光。5／20 ms 仅作为良好同 Wi-Fi 条件下的优化目标。
+
+检查通过：共用 FramePacer 4 项、Linux capture 20 项（1 跳过）、签名发布回归 1047 项（19 跳过），以及前述输入与遥测针对性检查。证据：`native140-streams-live*`、`native140-synthetic-rate.json`、`native141vbv-synthetic-rate.json`、`native140-testsrc-rate.json`、`native141rt-testsrc-rate.json`、各机正式升级记录、`native141-nas-verified.json`。测试会话均已关闭。
