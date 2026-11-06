@@ -35,6 +35,29 @@ fn native_scroll_phases(gesture: protocol::ScrollGesture) -> (i64, i64) {
     (phase, momentum)
 }
 
+enum WindowScrollContinuation {
+    Other,
+    Ignore,
+    Validated(CGPoint),
+}
+
+fn window_scroll_continuation(
+    event: &InputEvent,
+    point: Option<(u16, u16)>,
+    check: impl FnOnce(u16, u16) -> Result<CGPoint, String>,
+) -> WindowScrollContinuation {
+    if !matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
+        if !gesture.can_take_control(*delta_x, *delta_y)) {
+        return WindowScrollContinuation::Other;
+    }
+    // An obsolete gesture must not activate or send to another target. Reuse
+    // only this event's successful live hit test and its exact coordinates.
+    match point.and_then(|(x, y)| check(x, y).ok()) {
+        Some(position) => WindowScrollContinuation::Validated(position),
+        None => WindowScrollContinuation::Ignore,
+    }
+}
+
 pub struct MacInputInjector {
     source: CGEventSource,
     #[cfg(test)]
@@ -144,14 +167,10 @@ impl MacInputInjector {
         }
         current_pointer_location(&self.source)
     }
-    fn obsolete_scroll_continuation(&self, event: &InputEvent) -> bool {
-        if !matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
-            if !gesture.can_take_control(*delta_x, *delta_y)) { return false; }
-        let Some(window) = &self.window else { return false; };
+    fn scroll_continuation(&self, event: &InputEvent) -> WindowScrollContinuation {
+        let Some(window) = &self.window else { return WindowScrollContinuation::Other; };
         let point = *self.target_pointer.lock().expect("source pointer lock");
-        // An old viewer's gesture cleanup must neither activate its window nor
-        // send a terminal gesture to a different app now under the pointer.
-        point.is_none_or(|(x, y)| window.check_pointer(x, y).is_err())
+        window_scroll_continuation(event, point, |x, y| window.check_pointer(x, y))
     }
     fn prepare_window_event(&self, event: &InputEvent, deadline: Option<Instant>) -> Result<(), Box<dyn Error + Send + Sync>> {
         let Some(window) = &self.window else {
@@ -178,13 +197,6 @@ impl MacInputInjector {
             }
             return Ok(());
         };
-        if matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
-            if !gesture.can_take_control(*delta_x, *delta_y)) {
-            let (x, y) = self.target_pointer.lock().expect("source pointer lock")
-                .ok_or("Pointer position missing")?;
-            window.check_pointer(x, y)?;
-            return Ok(());
-        }
         let click = matches!(event, InputEvent::MouseDown(_)
             | InputEvent::Touch { action: protocol::TouchAction::Down, .. });
         // A click checks live bounds before activation and again in its hit test.
@@ -292,7 +304,12 @@ impl MacInputInjector {
         Ok(())
     }
 
+    #[cfg(test)]
     fn inject(&self, event: InputEvent, deadline: Option<Instant>) {
+        self.inject_with_scroll_position(event, deadline, None);
+    }
+
+    fn inject_with_scroll_position(&self, event: InputEvent, deadline: Option<Instant>, scroll_position: Option<CGPoint>) {
         match event {
             InputEvent::Text(_) => unreachable!("text uses checked native dispatch"),
             InputEvent::KeyDown(scancode) => {
@@ -375,7 +392,7 @@ impl MacInputInjector {
                 self.post_mouse_button(button, false, deadline);
             }
             InputEvent::MouseScroll { delta_x, delta_y, gesture } => {
-                let position = self.pointer_position();
+                let position = scroll_position.unwrap_or_else(|| self.pointer_position());
                 if let Ok(cg_event) = CGEvent::new_scroll_event(
                     self.source.clone(),
                     ScrollEventUnit::PIXEL,
@@ -444,14 +461,25 @@ impl MacInputInjector {
     }
 
     fn cancel_scroll(&self) {
+        self.cancel_scroll_with(None, || {
+            if let Some(window) = &self.window {
+                let point = *self.target_pointer.lock().expect("source pointer lock");
+                let (x, y) = point.ok_or(())?;
+                window.check_pointer(x, y).map(Some).map_err(|_| ())
+            } else if self.display_id.is_some_and(|id| display_bounds(id).is_err()) {
+                Err(())
+            } else {
+                Ok(None)
+            }
+        });
+    }
+
+    fn cancel_scroll_with(&self, deadline: Option<Instant>, validate: impl FnOnce() -> Result<Option<CGPoint>, ()>) {
         let gesture = std::mem::take(&mut *self.scroll_gesture.lock().expect("scroll gesture lock"));
         let Some(gesture) = gesture.cancellation() else { return; };
-        if let Some(window) = &self.window {
-            let point = *self.target_pointer.lock().expect("source pointer lock");
-            if point.is_none_or(|(x, y)| window.check_pointer(x, y).is_err()) { return; }
-        } else if self.display_id.is_some_and(|id| display_bounds(id).is_err()) { return; }
+        let Ok(position) = validate() else { return; };
         // End only this owner's native sequence; never raise a displaced window.
-        self.inject(InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }, None);
+        self.inject_with_scroll_position(InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }, deadline, position);
     }
 
     pub fn release_all_input(&self) {
@@ -790,10 +818,16 @@ impl InputInjector for MacInputInjector {
         // real error through INPUT_UNAVAILABLE before changing held state or
         // posting events; CGEvent::post itself has no success return value.
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
-        if self.obsolete_scroll_continuation(&event) { return Ok(()); }
-        self.prepare_window_event(&event, None)?;
+        let scroll_position = match self.scroll_continuation(&event) {
+            WindowScrollContinuation::Ignore => return Ok(()),
+            WindowScrollContinuation::Validated(position) => Some(position),
+            WindowScrollContinuation::Other => {
+                self.prepare_window_event(&event, None)?;
+                None
+            }
+        };
         if let InputEvent::Text(text) = &event { return self.commit_text(text, None); }
-        self.inject(event, None);
+        self.inject_with_scroll_position(event, None, scroll_position);
         Ok(())
     }
 
@@ -808,8 +842,14 @@ impl InputInjector for MacInputInjector {
         let started = Instant::now();
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
         let access_checked = Instant::now();
-        if self.obsolete_scroll_continuation(&event) { return Ok(()); }
-        self.prepare_window_event(&event, Some(deadline))?;
+        let scroll_position = match self.scroll_continuation(&event) {
+            WindowScrollContinuation::Ignore => return Ok(()),
+            WindowScrollContinuation::Validated(position) => Some(position),
+            WindowScrollContinuation::Other => {
+                self.prepare_window_event(&event, Some(deadline))?;
+                None
+            }
+        };
         // AX focus/identity validation may have waited; check after it as well.
         if std::time::Instant::now() >= deadline {
             eprintln!("MACOS_INPUT_EXPIRED phase=target_validation access_us={} target_us={} budget_us={}",
@@ -818,7 +858,7 @@ impl InputInjector for MacInputInjector {
             return Err(remote_core::InputExpired("after target validation").into());
         }
         if let InputEvent::Text(text) = &event { return self.commit_text(text, Some(deadline)); }
-        self.inject(event, Some(deadline));
+        self.inject_with_scroll_position(event, Some(deadline), scroll_position);
         if Instant::now() >= deadline {
             return Err(remote_core::InputExpired("during native dispatch").into());
         }
@@ -968,6 +1008,72 @@ mod deadline_tests {
             })),
         };
         (Arc::new(input), calls)
+    }
+    #[test]
+    fn window_scroll_continuations_use_one_live_hit_and_ignore_invalid_targets() {
+        use protocol::{MomentumPhase as M, ScrollGesture, ScrollPhase as P};
+        let changed = InputEvent::MouseScroll { delta_x: 0, delta_y: 5,
+            gesture: ScrollGesture { phase: P::Changed, momentum: M::None } };
+        let expected = CGPoint::new(-13., 42.);
+        let calls = std::cell::Cell::new(0);
+        let validate = |x, y| {
+            calls.set(calls.get() + 1);
+            assert_eq!((x, y), (123, 456));
+            Ok(expected)
+        };
+        assert!(matches!(window_scroll_continuation(&changed, Some((123, 456)), validate),
+            WindowScrollContinuation::Validated(p) if (p.x, p.y) == (expected.x, expected.y)));
+        assert_eq!(calls.get(), 1);
+        assert!(matches!(window_scroll_continuation(&changed, Some((123, 456)), |_, _| Err("covered".into())),
+            WindowScrollContinuation::Ignore));
+        assert!(matches!(window_scroll_continuation(&changed, None, |_, _| panic!("missing pointer must not be checked")),
+            WindowScrollContinuation::Ignore));
+        let began = InputEvent::MouseScroll { delta_x: 0, delta_y: 0,
+            gesture: ScrollGesture { phase: P::Began, momentum: M::None } };
+        assert!(matches!(window_scroll_continuation(&began, Some((123, 456)), |_, _| panic!("new gesture takes the activation path")),
+            WindowScrollContinuation::Other));
+    }
+    #[test]
+    fn validated_scroll_uses_the_live_hit_test_position() {
+        let (mut input, _) = fixture(None);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        Arc::get_mut(&mut input).unwrap().post_observer = Some(Arc::new(move |event| {
+            let p = event.location();
+            sink.lock().unwrap().push((p.x, p.y));
+        }));
+        let expected = CGPoint::new(-13., 42.);
+        input.inject_with_scroll_position(InputEvent::scroll(0, 5), None, Some(expected));
+        assert_eq!(*seen.lock().unwrap(), vec![(-13., 42.)]);
+        input.inject_with_scroll_position(InputEvent::scroll(0, 5), Some(Instant::now()), Some(expected));
+        assert_eq!(*seen.lock().unwrap(), vec![(-13., 42.)]);
+    }
+    #[test]
+    fn cancellation_posts_at_the_validated_position_and_honors_deadline() {
+        use protocol::{MomentumPhase as M, ScrollGesture, ScrollPhase as P};
+        let (mut input, _) = fixture(None);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        Arc::get_mut(&mut input).unwrap().post_observer = Some(Arc::new(move |event| {
+            let p = event.location();
+            sink.lock().unwrap().push((p.x, p.y, event.get_integer_value_field(SCROLL_PHASE_FIELD)));
+        }));
+        *input.scroll_gesture.lock().unwrap() = ScrollGesture { phase: P::Changed, momentum: M::None };
+        let calls = std::cell::Cell::new(0);
+        input.cancel_scroll_with(None, || {
+            calls.set(calls.get() + 1);
+            Ok(Some(CGPoint::new(-13., 42.)))
+        });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(*seen.lock().unwrap(), vec![(-13., 42., 8)]);
+        *input.scroll_gesture.lock().unwrap() = ScrollGesture { phase: P::Changed, momentum: M::None };
+        input.cancel_scroll_with(Some(Instant::now()), || Ok(Some(CGPoint::new(17., 24.))));
+        assert_eq!(*seen.lock().unwrap(), vec![(-13., 42., 8)]);
+        assert!(input.scroll_gesture.lock().unwrap().cancellation().is_none());
+        *input.scroll_gesture.lock().unwrap() = ScrollGesture { phase: P::Changed, momentum: M::None };
+        input.cancel_scroll_with(None, || Err(()));
+        assert_eq!(*seen.lock().unwrap(), vec![(-13., 42., 8)]);
+        assert!(input.scroll_gesture.lock().unwrap().cancellation().is_none());
     }
     #[test]
     fn native_scroll_uses_source_coordinates_before_any_cursor_motion_is_posted() {

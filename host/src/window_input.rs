@@ -464,7 +464,7 @@ impl WindowTarget {
             },
         )
     }
-    pub fn check_pointer(&self, x: u16, y: u16) -> Result<(), String> {
+    pub fn check_pointer(&self, x: u16, y: u16) -> Result<CGPoint, String> {
         // One live snapshot binds identity, geometry and same-process ordering.
         // Do not cache it across input events or reuse pre-activation geometry.
         let list = windows(1 | 16, 0)?;
@@ -512,7 +512,7 @@ impl WindowTarget {
             if unsafe { AXUIElementGetPid(hit.as_CFTypeRef(), &mut pid) } != 0 || pid != self.pid {
                 return Err("Another application covers the selected point; foreground window input is blocked".into());
             }
-            Ok(())
+            Ok(p)
         } else {
             Err("Another window covers the selected point. Bring the selected window forward; no input was sent to the covering window".into())
         }

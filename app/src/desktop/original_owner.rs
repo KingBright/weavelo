@@ -27,6 +27,50 @@ use std::{
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
+// Expose relative stage offsets, not the host's absolute capture timestamp.
+fn diagnostic_checkpoints(timing: Option<&protocol::FrameTimingCheckpoints>) -> serde_json::Value {
+    timing.map_or(serde_json::Value::Null, |t| serde_json::json!({
+        "capture_present": t.capture_ts_us != 0,
+        "encode_queue_us": t.encode_queue_ts_us,
+        "encode_done_us": t.encode_done_ts_us,
+        "packetize_us": t.packetize_ts_us,
+        "send_us": t.send_ts_us,
+        "receive_us": t.recv_ts_us,
+        "jitter_enter_us": t.jitter_enter_ts_us,
+        "jitter_exit_us": t.jitter_exit_ts_us,
+        "decode_enter_us": t.decode_enter_ts_us,
+        "decode_done_us": t.decode_done_ts_us,
+        "ui_submit_us": t.render_submit_ts_us,
+        "render_done_us": t.render_done_ts_us,
+    }))
+}
+
+fn diagnostic_telemetry(
+    stats: &remote_core::SharedHostStats,
+    frame: Option<(&protocol::FrameTimingCheckpoints, Instant)>,
+) -> serde_json::Value {
+    let clock = stats.clock_estimate();
+    let now = remote_core::timing::quanta_now_us();
+    let host = stats.latest_host_timing();
+    let submitted = stats.latest_ui_submission();
+    serde_json::json!({
+        "clock": clock.map(|c| serde_json::json!({
+            "state": format!("{:?}", c.state),
+            "sample_count": c.sample_count,
+            "selected_sample_count": c.selected_sample_count,
+            "query_before_estimate": now < c.client_time_us,
+            "selected_sample_age_us": c.sample_age_us.saturating_add(now.saturating_sub(c.client_time_us)),
+            "selected_span_us": c.selected_span_us,
+            "latest_probe_age_us": now.saturating_sub(c.latest_sample.client_recv_us),
+            "latest_probe_rtt_us": c.latest_sample.network_rtt_us,
+        })),
+        "host_timing": diagnostic_checkpoints(host.as_ref()),
+        "texture_timing": diagnostic_checkpoints(frame.map(|(timing, _)| timing)),
+        "texture_age_ms": frame.map(|(_, decoded_at)| decoded_at.elapsed().as_millis() as u64),
+        "latest_ui_submission": diagnostic_checkpoints(submitted.as_ref()),
+    })
+}
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ConnectionPurpose { View, Files, Sources }
 
@@ -2119,6 +2163,10 @@ impl OriginalOwner {
                 "presented_epoch":s.uploaded_epoch.map(|epoch|serde_json::json!({"source":epoch.source,"attempt":epoch.recovery})),
                 "presented_age_ms":s.uploaded_at.map(|at|at.elapsed().as_millis() as u64),
             });
+            let telemetry_diagnostics = diagnostic_telemetry(
+                &s.host_stats,
+                s.texture.as_ref().map(|frame| (&frame.timing, frame.decoded_at)),
+            );
             let native=serde_json::Value::Null;
             #[cfg(all(target_os="windows",feature="native-windows-video"))]
             let native=s.texture.as_ref().and_then(|frame|frame.native.as_ref().map(|n|serde_json::json!({
@@ -2156,6 +2204,7 @@ impl OriginalOwner {
             result["background_computer_use_allowed"]=self.computer_use_background_allowed().into();
             result["input_status"]=s.input_status().into();
             result["video_diagnostics"]=video_diagnostics;
+            result["telemetry_diagnostics"]=telemetry_diagnostics;
             result
         }).collect::<Vec<_>>()})
     }
@@ -2568,5 +2617,54 @@ fn active_video_error(host:Option<&str>,decoder:Option<&str>)->Option<String> {
         assert!(active_video_error(None,Some("")).is_none());assert!(active_video_error(None,None).is_none());
         assert!(active_video_error(Some("  "),Some("
  ")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod telemetry_diagnostic_tests {
+    use super::diagnostic_telemetry;
+    use remote_core::{SharedHostStats, clock_sync::ClockSynchronizer};
+    use std::time::Instant;
+
+    #[test]
+    fn reports_real_availability_without_exposing_capture_timestamp() {
+        let stats = SharedHostStats::default();
+        let empty = diagnostic_telemetry(&stats, None);
+        assert!(empty["clock"].is_null());
+        assert!(empty["host_timing"].is_null());
+        assert!(empty["texture_timing"].is_null());
+        assert!(empty["latest_ui_submission"].is_null());
+
+        let mut frame = protocol::FrameTimingCheckpoints::new(1_234_567_890);
+        frame.recv_ts_us = 10_000;
+        frame.decode_done_ts_us = 12_000;
+        let decoded = diagnostic_telemetry(&stats, Some((&frame, Instant::now())));
+        assert_eq!(decoded["texture_timing"]["capture_present"], true);
+        assert_eq!(decoded["texture_timing"]["decode_done_us"], 12_000);
+        assert!(!decoded.to_string().contains("1234567890"));
+        assert!(decoded["latest_ui_submission"].is_null());
+
+        frame.render_submit_ts_us = 13_000;
+        stats.set_latest_timing(frame);
+        let submitted = diagnostic_telemetry(&stats, None);
+        assert_eq!(submitted["latest_ui_submission"]["ui_submit_us"], 13_000);
+        assert_eq!(submitted["latest_ui_submission"]["render_done_us"], 0);
+    }
+
+    #[test]
+    fn reports_the_actual_clock_state_and_sample_count() {
+        let stats = SharedHostStats::default();
+        let mut clock = ClockSynchronizer::new();
+        let now = remote_core::timing::quanta_now_us();
+        let sent = now.saturating_sub(200);
+        clock.begin_probe(1, sent).unwrap();
+        clock.complete_probe(1, sent, sent + 50, sent + 50, sent + 100).unwrap();
+        stats.set_clock_estimate(clock.estimate(now));
+        let report = diagnostic_telemetry(&stats, None);
+        assert_eq!(report["clock"]["state"], "Acquiring");
+        assert_eq!(report["clock"]["sample_count"], 1);
+        assert_eq!(report["clock"]["latest_probe_rtt_us"], 100);
+        assert!(report["clock"]["selected_sample_age_us"].as_u64().is_some());
+        assert!(report["clock"]["latest_probe_age_us"].as_u64().is_some());
     }
 }
