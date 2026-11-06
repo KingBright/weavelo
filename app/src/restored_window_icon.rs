@@ -144,8 +144,8 @@ fn remote_application_pixels(
     }
     let edge = image.width();
     let badge_edge = edge * 3 / 8;
-    let offset = edge - badge_edge - edge / 32;
-    let top = if with_device_name { offset - edge / 16 } else { offset };
+    let offset = edge / 32;
+    let top = offset;
     let badge = image::imageops::resize(device_badge, badge_edge, badge_edge, image::imageops::FilterType::Triangle);
     // The application and SVG badge both use premultiplied RGBA here.
     for (x, y, foreground) in badge.enumerate_pixels() {
@@ -538,7 +538,7 @@ pub(crate) mod macos_dock {
                 let measured: NSSize = msg_send![label, sizeWithAttributes: attributes];
                 let width = (measured.width + 4.0 * scale).clamp(12.0 * scale, max_width * scale);
                 let available = f64::from(edge) - width;
-                let left = if corner { available - 2.0 * scale } else { available / 2.0 };
+                let left = if corner { 2.0 * scale } else { available / 2.0 };
                 let height = height * scale;
                 let plate = NSRect::new(NSPoint::new(left, bottom), NSSize::new(width, height));
                 let shape: id = msg_send![class!(NSBezierPath), bezierPathWithRoundedRect: plate xRadius: 2.4 * scale yRadius: 2.4 * scale];
@@ -752,7 +752,8 @@ mod tests {
         let (edge, pixels) = remote_application_pixels(&bitmap, &badge, true).unwrap();
         assert_eq!(edge, 256);
         assert_eq!(&pixels[..4], &[240, 80, 20, 255]);
-        assert_ne!(&pixels[(200 * 256 + 200) * 4..(200 * 256 + 200) * 4 + 4], &[240, 80, 20, 255]);
+        assert_ne!(&pixels[(24 * 256 + 24) * 4..(24 * 256 + 24) * 4 + 4], &[240, 80, 20, 255]);
+        assert_eq!(&pixels[(200 * 256 + 200) * 4..(200 * 256 + 200) * 4 + 4], &[240, 80, 20, 255]);
         assert!(pixels.chunks_exact(4).all(|pixel| pixel[..3].iter().all(|channel| *channel <= pixel[3])));
     }
     #[cfg(target_os = "macos")]

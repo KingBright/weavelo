@@ -2547,15 +2547,18 @@ impl Render for RestoredDashboard {
         let app_source = matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_));
         if self.purpose == WindowPurpose::Stream && matches!(role, RoleState::Viewing(_))
             && (!app_source || source.is_some()) {
+            let screen_source = snapshot.active_capture_source.category() == protocol::session::SourceCategory::Screen;
             let app_name = source.map(|source| source.application.trim())
                 .filter(|name| !name.is_empty())
                 .unwrap_or(match snapshot.active_capture_source.category() {
                     protocol::session::SourceCategory::Window => "Remote window",
                     protocol::session::SourceCategory::Camera => "Camera",
-                    protocol::session::SourceCategory::Screen => "Display",
+                    protocol::session::SourceCategory::Screen => peer.unwrap_or("Device"),
                 });
             self.native_window_artwork.sync_stream(
-                window, cx, bitmap.as_deref(), appearance.map(AsRef::as_ref), app_name, peer.unwrap_or("Device"),
+                window, cx, bitmap.as_deref(), appearance.map(AsRef::as_ref),
+                if screen_source { peer.unwrap_or("Device") } else { app_name },
+                if screen_source { "" } else { peer.unwrap_or("Device") },
             );
         } else {
             self.native_window_artwork.close();
@@ -3173,7 +3176,7 @@ fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::Ca
         Some(peer) => match source {
             Some(source) => {
                 let label=match source.source.category() {
-                    protocol::session::SourceCategory::Screen=>"Screen".into(),
+                    protocol::session::SourceCategory::Screen=>return peer.to_owned(),
                     protocol::session::SourceCategory::Camera=>if source.title.trim().is_empty(){"Camera".into()}else{source.title.trim().to_owned()},
                     protocol::session::SourceCategory::Window=>if source.application.trim().is_empty(){capture_source_label(source)}else{source.application.trim().to_owned()},
                 };
@@ -4973,6 +4976,9 @@ fn telemetry_waterfall_overlay(
             .absolute()
             .bottom(px(12.0))
             .right(px(16.0))
+            .w(px(300.0))
+            .max_w(relative(0.95))
+            .flex_none()
             .flex()
             .flex_col()
             .gap_1p5()
@@ -5029,12 +5035,15 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
-                    .child(div().text_color(theme.content.tertiary).child("Frame Rate"))
+                    .child(div().text_color(theme.content.tertiary).child("Frame rate"))
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(color_accent_cyan())
                             .child(format!("{:.0} FPS", stats.fps)),
                     ),
@@ -5044,12 +5053,15 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .child(div().text_color(theme.content.tertiary).child("Bitrate"))
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(theme.content.secondary)
                             .child(format_bitrate(stats.bitrate_kbps)),
                     ),
@@ -5059,18 +5071,24 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .id("capture_submit_hud_metric")
                     .tooltip(tooltip(stats.capture_submit.submission_detail()).build())
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_left()
                             .text_color(theme.content.tertiary)
                             .child("Capture → UI submit"),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(color_accent_emerald())
                             .child(stats.capture_submit.value()),
                     ),
@@ -5080,16 +5098,22 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_left()
                             .text_color(theme.content.tertiary)
                             .child("Network RTT"),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(theme.content.secondary)
                             .child(format!("{:.1} ms", stats.rtt_ms)),
                     ),
@@ -5099,16 +5123,22 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Host Encode"),
+                            .child("Encode"),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(theme.content.secondary)
                             .child(format!("{:.1} ms", stats.latency)),
                     ),
@@ -5118,16 +5148,22 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Client Decode"),
+                            .child("Decode"),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(theme.content.secondary)
                             .child(format!("{:.1} ms", stats.decode_latency_ms)),
                     ),
@@ -5137,16 +5173,22 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Packet Loss"),
+                            .child("Packet loss"),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(if stats.packet_loss_rate > 2.0 {
                                 color_accent_amber().into()
                             } else {
@@ -5160,23 +5202,29 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_6()
+                    .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Link Health"),
+                            .child("Link"),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .flex_1()
+                            .text_right()
                             .text_color(if stats.link_status.is_empty() {
                                 color_accent_emerald().into()
                             } else {
                                 theme.content.primary
                             })
                             .child(if stats.link_status.is_empty() {
-                                "🟢 流畅极佳"
+                                "Healthy"
                             } else {
                                 stats.link_status
                             }),
