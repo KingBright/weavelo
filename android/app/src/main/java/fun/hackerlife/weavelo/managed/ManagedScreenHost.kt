@@ -140,10 +140,13 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
         check(tasks.none { it.baseActivity?.packageName == packageName || it.topActivity?.packageName == packageName }) {
             "App is already open; close its existing task before opening an independent app"
         }
-        // AOSP Android 14 flags: own content, touch, destroy owned content on
-        // removal, trusted display, independent focus, never steal top focus.
+        // Android accessibility ignores private virtual displays (except SystemUI).
+        // Public makes this same-user display's editor available to the user's
+        // authorized accessibility service; it does not mirror the main screen.
+        // Keep own content, touch, destroy owned content on removal, trusted
+        // display, independent focus, and never steal top focus.
         // Do not set ALWAYS_UNLOCKED, SECURE or keyguard-bypass flags.
-        val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+        val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
             (1 shl 6) or (1 shl 8) or (1 shl 10) or (1 shl 14) or (1 shl 16)
         val display = checkNotNull(manager.createVirtualDisplay("Weavelo · ${entry.loadLabel(context.packageManager)}",
             width, height, density, null, flags)) { "Independent display unavailable" }
