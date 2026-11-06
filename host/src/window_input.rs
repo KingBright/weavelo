@@ -49,6 +49,20 @@ fn attr(element: &CFType, name: &str) -> Option<CFType> {
         Some(CFType::wrap_under_create_rule(out))
     }
 }
+fn ax_window_bounds(window: &CFType) -> Option<CGRect> {
+    let position = attr(window, "AXPosition")?;
+    let size = attr(window, "AXSize")?;
+    let mut origin = CGPoint::new(0., 0.);
+    let mut dimensions = CGSize::new(0., 0.);
+    unsafe {
+        if AXValueGetType(position.as_CFTypeRef()) != 1 || AXValueGetType(size.as_CFTypeRef()) != 2
+            || !AXValueGetValue(position.as_CFTypeRef(), 1, (&mut origin as *mut CGPoint).cast())
+            || !AXValueGetValue(size.as_CFTypeRef(), 2, (&mut dimensions as *mut CGSize).cast()) {
+            return None;
+        }
+    }
+    Some(CGRect::new(&origin, &dimensions))
+}
 fn value(dictionary: &CFType, key: &str) -> Option<CFType> {
     let dictionary = dictionary.downcast::<CFDictionary>()?;
     let key = CFString::new(key);
@@ -400,30 +414,51 @@ impl WindowTarget {
         }
         let mut pid=0;
         if unsafe {AXUIElementGetPid(window.as_CFTypeRef(),&mut pid)}!=0 || pid!=self.pid {return None;}
-        let position=attr(&window,"AXPosition")?;
-        let size=attr(&window,"AXSize")?;
-        let mut origin=CGPoint::new(0.,0.);
-        let mut dimensions=CGSize::new(0.,0.);
-        unsafe {
-            if AXValueGetType(position.as_CFTypeRef())!=1 || AXValueGetType(size.as_CFTypeRef())!=2
-                || !AXValueGetValue(position.as_CFTypeRef(),1,(&mut origin as *mut CGPoint).cast())
-                || !AXValueGetValue(size.as_CFTypeRef(),2,(&mut dimensions as *mut CGSize).cast()) {return None;}
-        }
         // Public AX geometry must identify exactly one live WindowServer window.
         // Missing/ambiguous accessibility data never weakens the old rejection.
-        focused_window_id(list,pid,CGRect::new(&origin,&dimensions))
+        focused_window_id(list,pid,ax_window_bounds(&window)?)
     }
-    pub fn focus_for_click(&self, deadline: Option<std::time::Instant>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn raise_selected_window(&self, deadline: Option<std::time::Instant>) {
+        let Ok(list) = windows(1 | 16, 0) else { return; };
+        let Some(windows) = attr(&self.application, "AXWindows").and_then(|v| v.downcast::<CFArray>()) else { return; };
+        let mut selected = None;
+        for raw in windows.iter() {
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) { return; }
+            let window = unsafe { CFType::wrap_under_get_rule(*raw) };
+            let mut pid = 0;
+            if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 || pid != self.pid { continue; }
+            if ax_window_bounds(&window).and_then(|bounds| focused_window_id(&list, pid, bounds)) != Some(self.id) { continue; }
+            // Identical/ambiguous AX windows are never substituted for the
+            // selected WindowServer identity, even inside the same process.
+            if selected.is_some() { return; }
+            selected = Some(window);
+        }
+        if let Some(window) = selected {
+            if current(self.id, self.pid).is_err() { return; }
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) { return; }
+            let action = CFString::new("AXRaise");
+            unsafe { AXUIElementPerformAction(window.as_CFTypeRef(), action.as_CFTypeRef()); }
+        }
+    }
+    pub fn focus_for_input(&self, point: Option<(u16, u16)>, deadline: Option<std::time::Instant>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let name = CFString::new("AXFrontmost");
         let yes = CFBoolean::true_value();
         focus_for_click_with(
             deadline,
             || self.bounds().map(|_| ()),
-            || self.app_frontmost(),
-            || unsafe {
-                AXUIElementSetAttributeValue(
+            || match point {
+                // App activation can finish before Stage Manager exposes the
+                // window. Wait for the actual hit target, within this event's
+                // original deadline, rather than permanently pausing control.
+                Some((x, y)) => self.app_frontmost() && self.check_pointer(x, y).is_ok(),
+                None => self.focused(),
+            },
+            || {
+                self.raise_selected_window(deadline);
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) { return 0; }
+                unsafe { AXUIElementSetAttributeValue(
                     self.application.as_CFTypeRef(), name.as_CFTypeRef(), yes.as_CFTypeRef(),
-                )
+                ) }
             },
         )
     }
@@ -488,6 +523,77 @@ impl WindowTarget {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "requires explicit owned AppKit fixtures and existing OS input permission"]
+    fn native_two_window_input_keeps_text_and_enter_on_the_selected_source() {
+        use remote_core::InputInjector;
+        use protocol::{InputEvent, interaction::CommittedText};
+        use std::time::{Duration, Instant};
+        let receipt = std::env::var("WEAVELO_NATIVE_INPUT_FIXTURE").expect("owned fixture receipt required");
+        let targets: serde_json::Value = serde_json::from_slice(&std::fs::read(receipt).unwrap()).unwrap();
+        let targets = targets.as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+        let mut expected = [String::new(), String::new()];
+        for (step, index) in [0usize, 1, 0, 1].into_iter().enumerate() {
+            let target = &targets[index];
+            let id = u32::try_from(target["window"].as_u64().unwrap()).unwrap();
+            let pid = i32::try_from(target["pid"].as_i64().unwrap()).unwrap();
+            let title = target["title"].as_str().unwrap();
+            assert!(title.starts_with("Weavelo native input acceptance "));
+            let raw = unsafe { CGWindowListCopyWindowInfo(1 << 3, id) };
+            assert!(!raw.is_null());
+            let list = unsafe { CFType::wrap_under_create_rule(raw) }.downcast::<CFArray>().unwrap();
+            assert!(list.iter().any(|raw| {
+                let entry = unsafe { CFType::wrap_under_get_rule(*raw) };
+                number(&entry, "kCGWindowNumber") == Some(f64::from(id))
+                    && number(&entry, "kCGWindowOwnerPID") == Some(f64::from(pid))
+                    && value(&entry, "kCGWindowName").and_then(|v| v.downcast::<CFString>()).is_some_and(|name| name == title)
+            }), "native fixture identity changed");
+            let injector = crate::input_injector::MacInputInjector::for_window(id, pid).unwrap();
+            let text = format!("window-{index}-step-{step}你好🙂");
+            let run = || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let inject = |event: InputEvent| {
+                    let started = Instant::now();
+                    let result = injector.inject_input_before(event.clone(), started + Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS));
+                    eprintln!("NATIVE_EVENT event={event:?} elapsed_ms={} outcome={result:?}", started.elapsed().as_millis());
+                    result
+                };
+                if step < 2 {
+                    inject(InputEvent::MouseMoveAbsolute { x: 30000, y: 45000 })?;
+                    inject(InputEvent::MouseDown(0))?;
+                    inject(InputEvent::MouseUp(0))?;
+                }
+                inject(InputEvent::Text(CommittedText::new(text.clone()).unwrap()))?;
+                inject(InputEvent::Key { key_code: 0x24, pressed: true, modifiers: 0 })?;
+                inject(InputEvent::Key { key_code: 0x24, pressed: false, modifiers: 0 })?;
+                Ok(())
+            };
+            let started = Instant::now();
+            let result = run();
+            injector.release_all_input();
+            result.unwrap();
+            expected[index].push_str(&text);
+            expected[index].push('\n');
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                let log = std::fs::read_to_string(target["log"].as_str().unwrap()).unwrap();
+                let observed = log.lines().rev().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .find(|event| event["stage"] == "textview_key_after" && event["receiver"] == title)
+                    .and_then(|event| event["text"].as_str().map(str::to_owned));
+                if observed.as_deref() == Some(expected[index].as_str()) { break; }
+                assert!(Instant::now() < until, "native editor mismatch: source={id} expected={:?} observed={observed:?}", expected[index]);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            eprintln!("NATIVE_WINDOW_INPUT source={id} step={step} editor_confirmed=true elapsed_ms={}", started.elapsed().as_millis());
+            if step == 1 {
+                let old = &targets[0];
+                let previous = crate::input_injector::MacInputInjector::for_window(
+                    old["window"].as_u64().unwrap().try_into().unwrap(), old["pid"].as_i64().unwrap().try_into().unwrap()).unwrap();
+                previous.inject_input_before(InputEvent::ModifiersChanged(0), Instant::now() + Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS)).unwrap();
+                assert!(WindowTarget::new(id, pid).unwrap().focused(), "old modifier cleanup must not steal the selected editor's focus");
+            }
+        }
+    }
+    #[test]
     fn focus_deadline_read_delay_prevents_activation_and_following_input() {
         use std::{cell::Cell, time::{Duration, Instant}};
         for delay_in_bounds in [false, true] {
@@ -532,6 +638,17 @@ mod tests {
             || activated.get().is_some_and(|at: Instant| at.elapsed() >= Duration::from_millis(15)),
             || { writes.set(writes.get() + 1); activated.set(Some(Instant::now())); 0 }).unwrap();
         assert_eq!(writes.get(), 1, "wait for the one activation, never repeat the focus write");
+    }
+    #[test]
+    fn active_application_waits_for_its_selected_pointer_target() {
+        use std::{cell::Cell, time::{Duration, Instant}};
+        let application_active = true;
+        let raised_at = Cell::new(None);
+        let raises = Cell::new(0);
+        focus_for_click_with(Some(Instant::now() + Duration::from_secs(1)), || Ok(()),
+            || application_active && raised_at.get().is_some_and(|at: Instant| at.elapsed() >= Duration::from_millis(15)),
+            || { raises.set(raises.get() + 1); raised_at.set(Some(Instant::now())); 0 }).unwrap();
+        assert_eq!(raises.get(), 1, "an active process alone must not admit input before the selected window is ready");
     }
     #[test]
     fn activation_completion_read_cannot_dispatch_after_the_original_deadline() {

@@ -53,3 +53,26 @@ References:
 
 Status: requirement recorded; native feasibility/behavior investigation pending.
 No claim of implemented or deployed independent background input.
+
+## Native foreground-path verification, 2026-11-06
+
+The macOS adapter now waits for the selected pointer hit target rather than only
+the application's frontmost flag. Fresh key/text input can activate the selected
+window without synthesizing an editor click. An AX window is raised only when its
+owner and unique live geometry identify the selected WindowServer ID. Existing
+deadlines and final target checks remain; releases do not activate old targets.
+
+An explicitly invoked native test exercised the actual adapter against two owned
+AppKit editors: different processes with overlapping windows, then two windows
+in one process. A/B/A/B committed Chinese, emoji and Return were independently
+read back from each editor. Both runs passed; the second visit to each editor
+used keyboard input without another mouse click. Evidence is in the task's
+`native142-input-acceptance` directory (`native-test-fad4*` and `native-test-daeef*`).
+This proves the native adapter's foreground switching, not cross-device delivery,
+unchanged host stacking order, arbitrary applications, or glass-to-glass latency.
+
+The fixture requires a real NSTextStorage/LayoutManager/Container. The earlier
+background probe's nil text container could not verify typing. Also, run the
+native test binary through a small owned app bundle: CoreFoundation's initial
+bundle search in the large Cargo dependency directory added seconds unrelated
+to the installed app. Keep these failed attempts distinct from product evidence.

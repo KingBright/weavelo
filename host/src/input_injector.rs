@@ -148,7 +148,7 @@ impl MacInputInjector {
             | InputEvent::Touch { action: protocol::TouchAction::Down, .. });
         // A click checks live bounds before activation and again in its hit test.
         // Other events still validate their current selected window here.
-        if !click { window.bounds()?; }
+        if !click && !matches!(event, InputEvent::MouseScroll { .. }) { window.bounds()?; }
         if matches!(event, InputEvent::MouseMove { .. }) {
             return Err("Window control requires normalized absolute coordinates".into());
         }
@@ -187,8 +187,7 @@ impl MacInputInjector {
                     .expect("source pointer lock")
                     .ok_or("Pointer position missing")?,
             };
-            window.focus_for_click(deadline)?;
-            window.check_pointer(point.0, point.1)?;
+            window.focus_for_input(Some(point), deadline)?;
             return Ok(());
         }
         // Release only previously tracked presses. Source changes also release held state.
@@ -204,6 +203,13 @@ impl MacInputInjector {
         ) {
             return Ok(());
         }
+        if let InputEvent::ModifiersChanged(mask) = event
+            && mask & !self.current_modifiers() & 0x0f == 0
+        {
+            // Removing old modifiers is cleanup, not intent to switch the
+            // foreground window back after another viewer has taken control.
+            return Ok(());
+        }
         if matches!(event, InputEvent::MouseScroll { .. }) {
             let (x, y) = self
                 .target_pointer
@@ -214,13 +220,13 @@ impl MacInputInjector {
             // the selected application before the live hit test; otherwise a
             // background app's first wheel event permanently pauses control.
             // The hit test still prevents delivery to another window/app.
-            window.focus_for_click(deadline)?;
-            window.check_pointer(x, y)?;
+            window.focus_for_input(Some((x, y)), deadline)?;
             return Ok(());
         }
-        if !window.focused() {
-            return Err("The selected application window does not have keyboard focus. Click that window's remote picture before typing".into());
-        }
+        // A fresh key/text event is already bound to this selected source.
+        // Switching viewers must not require a synthetic click in an editor.
+        // Tracked releases return above and never activate an old target.
+        window.focus_for_input(None, deadline)?;
         Ok(())
     }
 
