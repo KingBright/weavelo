@@ -718,6 +718,21 @@ pub(crate) mod macos_dock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn preset_badges_fit_native_window_and_dock_limits(cx: &mut gpui::TestAppContext) {
+        use protocol::appearance::DeviceBadgePreset::*;
+        cx.update(|app| {
+            for preset in [Computer,MacBook,MacStudio,Windows,Linux,Phone] {
+                let appearance=SourceAppearance{application:None,preset,custom:None};
+                let pixels=badge_pixels(app,Some(&appearance)).unwrap();
+                let edge=pixels.width();
+                assert_eq!(edge,pixels.height(),"{preset:?}");
+                assert!(WindowIcon::new(edge,pixels.clone().into_raw()).is_ok(),"{preset:?}: {edge} px");
+                #[cfg(target_os="macos")]
+                assert!(macos_dock::encode_frame("Display","Device",(edge,pixels.as_raw())).is_ok());
+            }
+        });
+    }
     #[test]
     fn application_artwork_keeps_aspect_and_premultiplies_transparent_pixels() {
         let bitmap=IconBitmap{id:[1;32],width:2,height:1,
