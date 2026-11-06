@@ -7,6 +7,7 @@ use crate::linux_frame::{
 };
 use crate::linux_frame::dmabuf::{self, BufferKey};
 use crate::linux_portal::runtime::{PortalCallError, PortalCaptureLease, PreparedPortalCapture};
+use crate::linux_kwin::WindowStream;
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use spa::buffer::{
@@ -108,6 +109,16 @@ impl Drop for Worker {
         }
     }
 }
+impl Worker {
+    fn take_thread(&self) -> Option<std::thread::JoinHandle<()>> {
+        self.stop.store(true, Ordering::Release);
+        self.mailbox.close();
+        self.thread
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+}
 
 async fn revoked(receiver: &mut watch::Receiver<bool>) {
     while !*receiver.borrow() {
@@ -159,7 +170,7 @@ async fn prepare_capture(
         .name("rp-pipewire".into())
         .spawn(move || {
             if let Err(error) = run(
-                fd,
+                Some(fd),
                 node,
                 serial,
                 generation,
@@ -193,6 +204,189 @@ async fn prepare_capture(
     Ok(prepared)
 }
 
+/// KWin creates and authorizes a stream for one concrete UUID. Its returned
+/// node/serial are consumed on PipeWire's ordinary session connection; no
+/// desktop-wide or portal stream is substituted for the selected window.
+pub(crate) struct PreparedKwinCapture(Arc<PreparedKwinCaptureInner>);
+struct PreparedKwinCaptureInner {
+    info: protocol::session::CaptureSourceInfo,
+    generation: u64,
+    mailbox: Arc<FrameMailbox>,
+    revoked: watch::Sender<bool>,
+    worker_stop: Arc<AtomicBool>,
+    worker: Mutex<Option<Worker>>,
+    worker_done: watch::Receiver<bool>,
+    window: WindowStream,
+    window_stop: watch::Sender<bool>,
+}
+impl Drop for PreparedKwinCaptureInner {
+    fn drop(&mut self) {
+        self.revoked.send_replace(true);
+        self.worker_stop.store(true, Ordering::Release);
+        self.window_stop.send_replace(true);
+        self.mailbox.close();
+    }
+}
+impl Clone for PreparedKwinCapture {
+    fn clone(&self) -> Self { Self(self.0.clone()) }
+}
+impl PreparedKwinCapture {
+    pub(crate) fn is_revoked(&self) -> bool {
+        *self.0.revoked.borrow() || self.0.mailbox.is_closed()
+    }
+    pub(crate) fn revocation(&self) -> watch::Receiver<bool> { self.0.revoked.subscribe() }
+    pub(crate) fn revoke(&self) {
+        self.0.revoked.send_replace(true);
+        self.0.mailbox.close();
+        self.0.worker_stop.store(true, Ordering::Release);
+        self.0.window_stop.send_replace(true);
+    }
+    pub(crate) fn generation(&self) -> u64 { self.0.generation }
+    pub(crate) fn source_info(&self) -> protocol::session::CaptureSourceInfo {
+        let mut info = self.0.info.clone();
+        if let Some((width, height)) = self.0.mailbox.dimensions() {
+            info.width = width;
+            info.height = height;
+        }
+        info
+    }
+    pub(crate) fn matches_subscription_source(&self, source: protocol::session::CaptureSource) -> bool {
+        self.0.info.source == source
+    }
+    pub(crate) fn mailbox(&self) -> Arc<FrameMailbox> { self.0.mailbox.clone() }
+    pub(crate) async fn close_owned(&self) -> bool {
+        self.revoke();
+        let window_closed = self.0.window.close_owned().await;
+        let mut done = self.0.worker_done.clone();
+        let worker_closed = tokio::time::timeout(Duration::from_secs(2), async {
+            while !*done.borrow_and_update() {
+                if done.changed().await.is_err() { return false; }
+            }
+            true
+        }).await.unwrap_or(false);
+        let worker = if worker_closed {
+            let mut worker = self.0.worker.lock().unwrap_or_else(|error| error.into_inner());
+            worker.take()
+        } else {
+            None
+        };
+        let worker_joined = if worker_closed {
+            if let Some(worker) = worker {
+                let thread = worker.take_thread();
+                drop(worker);
+                match thread {
+                    Some(thread) => tokio::task::spawn_blocking(move || thread.join().is_ok())
+                        .await
+                        .unwrap_or(false),
+                    None => true,
+                }
+            } else { true }
+        } else { false };
+        window_closed && worker_closed && worker_joined
+    }
+}
+
+pub(crate) async fn prepare_kwin_window_capture(
+    mut info: crate::linux_kwin::WindowInfo,
+    node: u32,
+    serial: u64,
+    window: WindowStream,
+) -> Result<PreparedKwinCapture, String> {
+    if node == 0 || serial == 0 || !matches!(info.source.source, protocol::session::CaptureSource::Window(_)) {
+        return Err("KWin returned an invalid application-window stream identity".into());
+    }
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let generation = GENERATION.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .map_err(|_| "KWin capture generation exhausted")?;
+    let mailbox = Arc::new(FrameMailbox::native_stream(generation, RAW_FRAME_MAX_AGE)
+        .map_err(|error| format!("KWin frame mailbox: {error:?}"))?);
+    let budget = crate::linux_frame::FrameBudget::new(MAX_FRAME_BYTES, 2 * MAX_FRAME_BYTES)
+        .map_err(|error| format!("KWin frame budget: {error:?}"))?;
+    let worker_stop = Arc::new(AtomicBool::new(false));
+    let (first_tx, first_rx) = oneshot::channel();
+    let (done_tx, worker_done) = watch::channel(false);
+    let thread_mailbox = mailbox.clone();
+    let thread_stop = worker_stop.clone();
+    let thread = std::thread::Builder::new()
+        .name("weavelo-kwin-pipewire".into())
+        .spawn(move || {
+            if let Err(error) = run(
+                None,
+                node,
+                Some(serial),
+                generation,
+                thread_mailbox.clone(),
+                thread_stop,
+                first_tx,
+                Some(budget),
+                None,
+                None,
+            ) {
+                eprintln!("WEAVELO_PIPEWIRE_ERROR stage=kwin-window error={error}");
+            }
+            thread_mailbox.close();
+            done_tx.send_replace(true);
+        })
+        .map_err(|error| format!("KWin PipeWire worker could not start: {error}"))?;
+    let worker = Worker { stop: worker_stop.clone(), mailbox: mailbox.clone(), thread: Mutex::new(Some(thread)) };
+    let mut window_revoked = window.revocation();
+    let first = tokio::select! {
+        biased;
+        _ = wait_revoked(&mut window_revoked) => return Err("KWin closed the selected application-window stream".into()),
+        result = tokio::time::timeout(FIRST_FRAME_TIMEOUT, first_rx) => result
+            .map_err(|_| "KWin application window did not produce a native frame")?
+            .map_err(|_| "KWin PipeWire stream ended before its first frame")?,
+    };
+    crate::linux_raw_encode::validate_native_input(&first)
+        .map_err(|error| format!("KWin application-window frame format: {error:?}"))?;
+    info.source.width = first.width;
+    info.source.height = first.height;
+    mailbox.publish(first);
+    let (revoked, mut own_revocation) = watch::channel(false);
+    let window_stop = window.stop_signal();
+    let mut worker_completion = worker_done.clone();
+    let monitor_revoked = revoked.clone();
+    let monitor_mailbox = mailbox.clone();
+    let monitor_stop = worker_stop.clone();
+    let monitor_window_stop = window_stop.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            _ = wait_revoked(&mut own_revocation) => return,
+            _ = wait_revoked(&mut window_revoked) => {},
+            _ = wait_complete(&mut worker_completion) => {},
+        }
+        monitor_revoked.send_replace(true);
+        monitor_stop.store(true, Ordering::Release);
+        monitor_window_stop.send_replace(true);
+        monitor_mailbox.close();
+    });
+    Ok(PreparedKwinCapture(Arc::new(PreparedKwinCaptureInner {
+        info: info.source,
+        generation,
+        mailbox,
+        revoked,
+        worker_stop,
+        worker: Mutex::new(Some(worker)),
+        worker_done,
+        window,
+        window_stop,
+    })))
+}
+
+async fn wait_revoked(receiver: &mut watch::Receiver<bool>) {
+    loop {
+        if *receiver.borrow_and_update() { return; }
+        if receiver.changed().await.is_err() { return; }
+    }
+}
+async fn wait_complete(receiver: &mut watch::Receiver<bool>) {
+    loop {
+        if *receiver.borrow_and_update() { return; }
+        if receiver.changed().await.is_err() { return; }
+    }
+}
+
 /// A camera owns a restricted remote and raw worker, without inventing a
 /// ScreenCast session or desktop input grant. The existing checked CPU buffer
 /// contract is reused; this is not a claim of zero-copy camera capture.
@@ -213,7 +407,7 @@ pub(crate) async fn prepare_camera_capture(fd:OwnedFd,node:u32,serial:u64,cookie
         .map_err(|e|format!("Camera buffer budget: {e:?}"))?;
     let (frames,cancel)=(mailbox.clone(),stop.clone());
     let thread=std::thread::Builder::new().name("weavelo-camera".into()).spawn(move|| {
-        if let Err(error)=run(fd,node,Some(serial),generation,frames.clone(),cancel,first,Some(budget),Some(cookie),Some((width,height,fps))) {
+        if let Err(error)=run(Some(fd),node,Some(serial),generation,frames.clone(),cancel,first,Some(budget),Some(cookie),Some((width,height,fps))) {
             eprintln!("WEAVELO_PIPEWIRE_ERROR stage=camera error={error}");
         }
         frames.close();
@@ -366,7 +560,7 @@ fn format(raw: spa::param::video::VideoInfoRaw) -> Result<FrameFormat, WorkerErr
 }
 
 fn run(
-    fd: OwnedFd,
+    fd: Option<OwnedFd>,
     node: u32,
     serial: Option<u64>,
     generation: u64,
@@ -380,7 +574,10 @@ fn run(
     initialize();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
-    let core = context.connect_fd_rc(fd, None)?;
+    let core = match fd {
+        Some(fd) => context.connect_fd_rc(fd, None)?,
+        None => context.connect_rc(None)?,
+    };
     let error_loop = mainloop.clone();
     let error_mailbox = mailbox.clone();
     let identity_loop=mainloop.clone();let identity_mailbox=mailbox.clone();

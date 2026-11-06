@@ -3,6 +3,8 @@ mod audio_capture;
 mod audio_encode;
 #[cfg(target_os = "linux")]
 mod linux_system_audio;
+#[cfg(target_os = "linux")]
+mod linux_kwin;
 #[cfg(target_os = "macos")]
 mod capture;
 #[cfg(target_os="macos")]
@@ -421,6 +423,8 @@ struct StreamingRunConfig {
     video_sequence: Arc<std::sync::atomic::AtomicU16>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     native_capture: Option<linux_portal::runtime::PreparedPortalCapture>,
+    #[cfg(target_os = "linux")]
+    kwin_capture: Option<linux_pipewire::native::PreparedKwinCapture>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -1055,6 +1059,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         video_sequence,
         #[cfg(all(unix, any(test, target_os = "linux")))]
         native_capture,
+        #[cfg(target_os = "linux")]
+        kwin_capture,
     } = config;
     // Native resources drop before this guard, including cancellation paths.
     let _worker = lifecycle::VideoStreamGuard::new(resources.clone());
@@ -1117,7 +1123,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     if !matches!(source,protocol::session::CaptureSource::Camera(_)) {video_encoder.viewport_settings(&initial,source)?;}
 
     #[cfg(target_os="linux")]
-    let native_encoder=if native_capture.is_some() || matches!(source,protocol::session::CaptureSource::Camera(_)) {
+    let native_encoder=if native_capture.is_some() || kwin_capture.is_some() || matches!(source,protocol::session::CaptureSource::Camera(_)) {
         Some(tokio::task::spawn_blocking(crate::linux_raw_encode::vaapi::HardwareEncoder::probe).await??)
     } else {None};
     #[cfg(target_os="linux")]
@@ -1127,6 +1133,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     #[cfg(target_os = "linux")]
     let mut video_capturer = if let Some(camera)=&camera_capture {
         LinuxVideoCapturer::from_owned_mailbox(camera.native.mailbox.clone(),fps)?
+    } else if let Some(capture)=&kwin_capture {
+        if capture.matches_subscription_source(source) {
+            LinuxVideoCapturer::from_owned_mailbox(capture.mailbox(),fps)?
+        } else {return Err("KWin capture source does not match the subscription".into());}
     } else {match &native_capture {
         Some(capture) if capture.matches_subscription_source(source) => {
             LinuxVideoCapturer::from_owned_mailbox(capture.mailbox(), fps)?
@@ -1138,6 +1148,11 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut video_encoder = if let Some(camera)=&camera_capture {
         LinuxVideoEncoder::from_hardware_frames(camera.native.generation,width,height,fps,bitrate_kbps,
             native_encoder.ok_or("Camera hardware encoder is unavailable")?)?
+    } else if let Some(capture)=&kwin_capture {
+        LinuxVideoEncoder::from_hardware_frames(
+            capture.generation(),width,height,fps,bitrate_kbps,
+            native_encoder.ok_or("KWin window hardware encoder is unavailable")?,
+        )?
     } else {match &native_capture {
         Some(capture) => LinuxVideoEncoder::from_hardware_frames(
             capture.generation(),
@@ -1152,7 +1167,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     #[cfg(target_os = "linux")]
     if !matches!(source,protocol::session::CaptureSource::Camera(_)) {video_encoder.viewport_settings(&initial,source)?;}
     #[cfg(target_os = "linux")]
-    let mut native_revoked = native_capture.as_ref().map(|capture| capture.revocation());
+    let mut native_revoked = native_capture.as_ref().map(|capture| capture.revocation())
+        .or_else(||kwin_capture.as_ref().map(|capture| capture.revocation()));
 
     #[cfg(target_os = "windows")]
     let mut video_encoder =
@@ -1335,7 +1351,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     }
                 }
                 #[cfg(target_os = "linux")]
-                if native_capture.as_ref().is_some_and(|capture| capture.is_revoked()) { break; }
+                if native_capture.as_ref().is_some_and(|capture| capture.is_revoked())
+                    || kwin_capture.as_ref().is_some_and(|capture| capture.is_revoked()) { break; }
                 if paused || chunk.nalu.is_empty() {
                     continue;
                 }

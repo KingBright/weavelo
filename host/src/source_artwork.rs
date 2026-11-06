@@ -31,7 +31,7 @@ impl Requests {
                     let sources=crate::capture_sources::list().map_err(|e|e.to_string())?;
                     let info=sources.into_iter().find(|info|info.source==source)
                         .ok_or("The selected source is no longer available")?;
-                    info.process_id.and_then(|pid|native_icon(pid,256))
+                    icon_for_source(source,info.process_id,256)
                 } else {None};
                 Ok(Directory {sources:vec![],bindings:vec![],icons:icon.into_iter().collect()})
             }).await?;
@@ -72,18 +72,26 @@ impl Directory {
             ..Self::default()
         };
         let known: HashSet<_> = known.iter().copied().collect();
+        #[cfg(not(target_os = "linux"))]
         let mut apps = HashMap::<i32, Option<ApplicationIcon>>::new();
         let mut included = HashSet::new();
         for source in &directory.sources {
             if !matches!(source.source, CaptureSource::Window(_)) {
                 continue;
             }
-            let Some(pid) = source.process_id.filter(|pid| *pid > 0) else {
-                continue;
+            #[cfg(target_os = "linux")]
+            let icon = icon_for_source(source.source, source.process_id, 64);
+            #[cfg(not(target_os = "linux"))]
+            let icon = {
+                let Some(pid) = source.process_id.filter(|pid| *pid > 0) else {
+                    continue;
+                };
+                let Some(icon) = apps.entry(pid).or_insert_with(|| native_icon(pid, 64)) else {
+                    continue;
+                };
+                Some(icon.clone())
             };
-            let Some(icon) = apps.entry(pid).or_insert_with(|| native_icon(pid, 64)) else {
-                continue;
-            };
+            let Some(icon) = icon else { continue; };
             directory.bindings.push(SourceIconBinding {
                 source: source.source,
                 icon_id: icon.id,
@@ -106,6 +114,19 @@ impl Directory {
             source_icons: self.bindings,
             icons: self.icons,
         }
+    }
+}
+
+fn icon_for_source(source: CaptureSource, pid: Option<i32>, edge: u32) -> Option<ApplicationIcon> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = pid;
+        crate::linux_kwin::icon(source, edge)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = source;
+        pid.filter(|pid| *pid > 0).and_then(|pid| native_icon(pid, edge))
     }
 }
 

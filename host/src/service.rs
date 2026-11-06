@@ -1,5 +1,7 @@
 #[cfg(all(unix, any(test, target_os = "linux")))]
 use crate::linux_portal::{PeerOwner, runtime::PreparedPortalCapture};
+#[cfg(target_os = "linux")]
+use crate::linux_pipewire::native::PreparedKwinCapture;
 use crate::{
     StreamingRunConfig, SubscriptionAudioConfig, env_flag_enabled, run_streaming,
     start_subscription_audio,
@@ -259,6 +261,8 @@ struct Subscription {
     _capture_reservation: Arc<WindowsVideoCaptureReservation>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     native_capture: Option<PreparedPortalCapture>,
+    #[cfg(target_os = "linux")]
+    kwin_capture: Option<PreparedKwinCapture>,
 }
 impl Subscription {
     fn viewport(&mut self,demand:protocol::viewport::ViewportDemand)->Result<u64,String> {
@@ -301,6 +305,10 @@ impl Drop for Subscription {
     fn drop(&mut self) {
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = &self.native_capture {
+            capture.revoke();
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(capture) = &self.kwin_capture {
             capture.revoke();
         }
         let _ = self.cancel.send(());
@@ -665,6 +673,8 @@ impl Connection {
             subscription.task_joined = true;
             joined(result)
         };
+        #[cfg(target_os = "linux")]
+        let kwin_capture = subscription.kwin_capture.clone();
         self.subscriptions.remove(&id);
         if let Err(error) = capture_result {
             self.worker_failure = true;
@@ -672,6 +682,10 @@ impl Connection {
         }
         if self.worker_failure {
             return Err("prior connection worker failed; teardown is not confirmed".into());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(capture) = kwin_capture && !capture.close_owned().await {
+            return Err("KWin window stream teardown is unconfirmed; no unsubscribe acknowledgement".into());
         }
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = self.native_capture.remove(&id) {
@@ -733,6 +747,12 @@ impl Connection {
             if !subscription.task_joined {
                 worker_failure |= joined((&mut subscription.task).await).is_err();
                 subscription.task_joined = true;
+            }
+        }
+        #[cfg(target_os = "linux")]
+        for subscription in self.subscriptions.values() {
+            if let Some(capture) = &subscription.kwin_capture {
+                worker_failure |= !capture.close_owned().await;
             }
         }
         self.subscriptions.clear();
@@ -855,6 +875,12 @@ impl Connection {
         #[cfg(all(unix, any(test, target_os = "linux")))]
         for capture in self.native_capture.values() {
             if !capture.is_revoked() {
+                sources.push(capture.source_info());
+            }
+        }
+        #[cfg(target_os = "linux")]
+        for subscription in self.subscriptions.values() {
+            if let Some(capture) = &subscription.kwin_capture && !capture.is_revoked() {
                 sources.push(capture.source_info());
             }
         }
@@ -1087,6 +1113,9 @@ impl Connection {
             .is_none_or(|capture|!capture.is_revoked() && if capture.is_subscriber() {
                 shared_candidate.as_ref().is_some_and(|parent|capture.same_source(parent))
             } else {true});
+        #[cfg(target_os = "linux")]
+        let native_current=native_current && self.subscriptions.get(&request.id)
+            .and_then(|sub|sub.kwin_capture.as_ref()).is_none_or(|capture|!capture.is_revoked());
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if shared_candidate.is_none() && self.subscriptions.get(&request.id).is_some_and(|sub|
             sub.request.source==request.source && sub.native_capture.as_ref().is_some_and(PreparedPortalCapture::is_subscriber)) {
@@ -1275,11 +1304,19 @@ impl Connection {
                     existing.native_capture = None;
                 }
             }
+            #[cfg(target_os = "linux")]
+            if let Some(previous) = &existing.kwin_capture && !previous.close_owned().await {
+                return Err("previous KWin window stream teardown is unconfirmed; replacement was not started".into());
+            }
         }
         self.subscriptions.remove(&request.id);
         if self.delivery_owner.is_some() && self.delivery_cancel.as_ref().is_none_or(|lease|*lease.borrow()||lease.has_changed().is_err()) {
             return Err("Sending intent ended before capture allocation".into());
         }
+        #[cfg(target_os = "linux")]
+        let kwin_capture = if crate::linux_kwin::is_kwin_window(request.source) {
+            Some(crate::linux_kwin::prepare_capture(request.source).await?)
+        } else { None };
         // Replacement subscriptions must release the previous Windows capture
         // reservation before acquiring the next one. Otherwise same-session
         // display/source switches fail against their own reservation.
@@ -1348,6 +1385,8 @@ impl Connection {
             video_sequence: video_sequence.clone(),
             #[cfg(all(unix, any(test, target_os = "linux")))]
             native_capture: native_capture.clone(),
+            #[cfg(target_os = "linux")]
+            kwin_capture: kwin_capture.clone(),
         };
         let id = request.id;
         let task = tokio::spawn(async move {
@@ -1395,6 +1434,8 @@ impl Connection {
                 _capture_reservation: capture_reservation,
                 #[cfg(all(unix, any(test, target_os = "linux")))]
                 native_capture,
+                #[cfg(target_os = "linux")]
+                kwin_capture,
             },
         );
         self.refresh_audio();
@@ -4183,6 +4224,8 @@ mod failure_admission_tests {
                 _capture_reservation: Arc::new(WindowsVideoCaptureReservation::acquire().unwrap()),
                 #[cfg(all(unix, any(test, target_os = "linux")))]
                 native_capture: None,
+                #[cfg(target_os = "linux")]
+                kwin_capture: None,
             },
             stopped,
         )
