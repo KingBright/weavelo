@@ -210,7 +210,11 @@ class RemoteControlService : AccessibilityService() {
                     val roots=windows.mapNotNull {it.root}
                     val focused=roots.mapNotNull {it.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)}
                     val node=focused.firstOrNull { it.packageName?.toString()==target.packageName && it.isEditable && !it.isPassword }
-                    if(node==null) {
+                    // The service does not subscribe to every text/content event.
+                    // A cached node may still contain the old hint or selection;
+                    // using it would replace text already committed by the user.
+                    if(node==null || !node.refresh() || !node.isFocused ||
+                        node.packageName?.toString()!=target.packageName || !node.isEditable || node.isPassword) {
                         android.util.Log.w("Weavelo","App text target unavailable display=${target.displayId} windows=${windows.size} roots=${roots.size} focused=${focused.size}")
                         done(false);return
                     }
@@ -324,6 +328,7 @@ class RemoteControlService : AccessibilityService() {
     private fun key(code: Int, modifiers: Int): Boolean {
         if (code == 0x35 && modifiers == 0) return performGlobalAction(GLOBAL_ACTION_BACK)
         val node = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        if(!node.refresh() || !node.isFocused) return false
         if (code == 0x30 && modifiers and 0x1E == 0) {
             return node.focusSearch(if (modifiers and 1 == 0) View.FOCUS_FORWARD else View.FOCUS_BACKWARD)
                 ?.performAction(AccessibilityNodeInfo.ACTION_FOCUS) == true
