@@ -1,0 +1,55 @@
+# Independent application-window interaction
+
+User clarification, 2026-11-06: two separately streamed application windows must
+remain independently usable when the user alternates between them. Strictly
+simultaneous input is not required. Remote stacking order and occlusion should
+not make either viewer pause control, lose typing, or receive the other's input.
+
+## Acceptance
+
+- Open two application sources without opening a desktop stream. Cover A with B
+  on the host, then alternate operations through their separate viewers.
+- Each viewer retains its own pointer coordinates, scroll state and selected
+  source. Text, Enter, selection and dragging reach the intended window.
+- Repeat for different processes and two windows belonging to one process;
+  process-targeted events alone cannot prove exact-window routing.
+- Hold/release modifiers and drag across a viewer focus transition. No stuck
+  keys, cross-window releases, duplicated text or control-paused toolbar.
+- Check native editors, browser/Electron content and custom-drawn content;
+  successful accessibility actions on one editor are not universal support.
+- Inspect actual target content and the other window's unchanged state.
+  Decoding a frame or accepting an input message is not input acceptance.
+
+## Current verified gap
+
+The macOS application input adapter posts global HID events and requires native
+foreground/window hit confirmation (`host/src/input_injector.rs`,
+`host/src/window_input.rs`). Its current CUA entry shares input infrastructure;
+the CUA label does not provide independent background application input.
+Book's application-stream observation reported an occlusion error followed by
+control-paused state. Automatically activating the application before a wheel
+event improves the existing foreground path but does not meet this requirement.
+
+## Implementation investigation
+
+Keep authenticated source identity, current source geometry and per-session input
+state shared. Evaluate native process/window-targeted events and accessibility
+actions on owned fixtures before selecting an adapter. Preserve input-method
+composition, shortcuts, scrolling and cancellation semantics; setting an entire
+text field's value is not equivalent to typing.
+
+Apple exposes process-targeted CGEvent posting and accessibility object actions.
+Neither API contract guarantees arbitrary exact-window background interaction:
+validate same-process windows and unsupported controls explicitly. Do not remove
+the existing global HID hit guard or silently redirect a rejected operation.
+
+If a platform needs foreground activation, report that limitation accurately.
+Automatic activation may be an incremental improvement, but is not independent
+background input and must not be reported as completion of this requirement.
+
+References:
+- https://developer.apple.com/documentation/coregraphics/cgevent
+- https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction
+
+Status: requirement recorded; native feasibility/behavior investigation pending.
+No claim of implemented or deployed independent background input.
