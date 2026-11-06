@@ -244,3 +244,6 @@ Studio、Book、cube 已正式升级142（`743aec1`）；两台Mac分别保留�
 - Linux KWin独立窗口采集、真实图标路径已实现，但143的真实Studio来源选择页仍只有Display1，不能标记完成。已修复KWin宽高实际返回double造成的过滤；继续排查运行时目录与后台IPC仅返回共享屏幕的问题。证据：`native143-linux-source-picker.png`、HO5 `/tmp/weavelo-linux143-sources.json`。仍无KWin选中应用的首帧验收。
 
 本轮发布回归1047项通过、25跳过，Linux KWin针对性检查6项通过。Dock真实名称、侧边窗口图标、跨平台持续滚动／输入和未完成六设备事项继续验收；这里不代表全部问题关闭。
+
+
+红米设置首帧失败的原因现已确认：设备卡片的真实接收错误为 `App is already open; close its existing task before opening an independent app`，系统任务列表也显示设置仍有现有任务。失败没有归因于录屏授权；为避免搬走手机已有任务，当前独立空间明确拒绝这种启动。此前“原因未知”的记录由此更新，不代表已支持重复启动任意应用。错误保留在 `stream_activity.devices`，不能只读取已关闭会话的空数组。证据：`native142-redmi-settings-confirmed-rejection.json`、`native142-redmi-activities.txt`。随后Studio142拉取红米98整个屏幕，4帧、0解码错误并有UI提交，测试流已关闭；证据 `native142-redmi-screen.json`。

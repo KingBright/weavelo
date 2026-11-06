@@ -174,8 +174,10 @@ fn observed_native_caption_geometry(child: &WindowDescription, parent: &WindowDe
     child.generic_frame_caption
         && (child.bounds.size.width - 66.).abs() <= 1.
         && (child.bounds.size.height - 20.).abs() <= 1.
-        && (child.bounds.origin.x - parent.bounds.origin.x - 6.).abs() <= 1.
-        && (child.bounds.origin.y - parent.bounds.origin.y - 6.).abs() <= 1.
+        && [6., 16.].into_iter().any(|inset| {
+            (child.bounds.origin.x - parent.bounds.origin.x - inset).abs() <= 1.
+                && (child.bounds.origin.y - parent.bounds.origin.y - inset).abs() <= 1.
+        })
 }
 
 fn frame_accessory_shape(child: &WindowDescription, parent: &WindowDescription) -> bool {
@@ -741,6 +743,20 @@ mod tests {
         other_process.pid = 20;
         assert!(catalog_frame_caption_ids(&[caption, other_process]).is_empty());
         assert!(catalog_frame_caption_ids(&[small_content, dialog, parent]).is_empty());
+    }
+    #[test]
+    fn gemini_inset_native_caption_is_not_an_independent_source() {
+        // Actual Gemini WindowServer geometry: 66x20 controls at (119,46)
+        // inside its 1229x937 document at (103,30).
+        let mut parent = w(20363, 13356, 103.);
+        parent.bounds = CGRect::new(&CGPoint::new(103., 30.), &CGSize::new(1229., 937.));
+        let mut caption = w(20434, 13356, 119.);
+        caption.generic_frame_caption = true;
+        caption.bounds = CGRect::new(&CGPoint::new(119., 46.), &CGSize::new(66., 20.));
+        assert_eq!(catalog_frame_caption_ids(&[caption, parent]), [20434].into_iter().collect());
+        assert_eq!(top_at(&[caption, parent], CGPoint::new(120., 47.)), Some(20434));
+        caption.bounds.origin.y += 10.;
+        assert!(catalog_frame_caption_ids(&[caption, parent]).is_empty());
     }
     #[test]
     fn catalog_omits_parked_fullscreen_caption_only_with_its_hidden_titlebar_and_content() {
