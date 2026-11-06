@@ -196,3 +196,19 @@ Linux141 将硬件编码 VBV 从一秒改为一帧，消除低帧率下过大的
 Studio140 的原生窗口已显示 Windows140 实际桌面且解码错误为零。HO5 当前 Wayland 会话锁定，Linux 流虽解码并提交两帧，实际截图为黑屏；不把这次结果算作可见桌面或拖动验收。还需在 HO5 解锁后核验实际移动桌面的帧率、码率、拖动连续性和遥测稳定性。Linux 遥测的采集起点是 PipeWire 到帧，未包含此前合成器等待；UI 提交也不是屏幕实际发光。5／20 ms 仅作为良好同 Wi-Fi 条件下的优化目标。
 
 检查通过：共用 FramePacer 4 项、Linux capture 20 项（1 跳过）、签名发布回归 1047 项（19 跳过），以及前述输入与遥测针对性检查。证据：`native140-streams-live*`、`native140-synthetic-rate.json`、`native141vbv-synthetic-rate.json`、`native140-testsrc-rate.json`、`native141rt-testsrc-rate.json`、各机正式升级记录、`native141-nas-verified.json`。测试会话均已关闭。
+
+## Android98：连续文字、应用目录图标与两机升级 · 2026-11-06
+
+努比亚 NX741J（Book USB `324662166861`）和红米 2409BRN2CC（Studio USB `UGXC8DQGDYBATKB6`）均已正式升级 Android98，来源 `0359d29`。原签名与各机既有无障碍启用状态保留；分别拉回已安装 `base.apk` 独立核对 SHA，与正式包和公开下载相同：`89e099f0f57a28b91c3e3c734247d5be4ee4667c1eb1865be7d29a135676aa10`，19,679,906 bytes。两机 helper API4／version98 已启动，NAS 当前 Android 也已发布98。
+
+独立应用文字输入修复包括：空编辑器的 -1 光标与提示文字处理；避免重复设置已在末尾的光标引起虚假拒绝；提交前刷新原生编辑节点，再校验焦点、显示器与应用归属。97 曾出现第二段覆盖第一段，不能沿用其“界面无错误”作为成功证据。98 最初两次测试还遇到测试窗口失焦／仅收到后一段，因此增加接收端逐次记录，并恢复测试工具在每次输入前的焦点校验。
+
+真实 Studio GPUI → 努比亚独立原生编辑器先后记录了空文本、`abc你好🙂`、`abc你好🙂继续Z`；下一次独立会话再以约200ms间隔逐字追加七个字符，手机原生文件最终精确为 `abc你好🙂继续Z逐字输入`，nonce `c435762a-42ce-485e-8e50-e42fbd46c69c`、display82。该证据独立于发送端事件排队／界面提交；不代表游戏多指、任意应用编辑器或物理显示延迟的验收。
+
+Android 应用目录异步提供真实64px PNG，选中应用仍使用高清图标路径。此前真实配对网络目录验证249来源、248图标绑定、245个可解码去重PNG；98又在正式Studio可见应用选择页验证了真实图标和“计算器”名称筛选，已查看实际截图。红米98的独立文件管理窗口已在Studio出画、图标和设备名称正确、零解码错误；画面停在该应用自己的首次同意页，未替用户同意，不能声称文件管理交互已验收。
+
+Android98 JVM83项与lint通过，发布回归1047项通过、19跳过。证据：Book任务目录 `android98-build.log`、`android98-nubia-installed-proof.json`、`android98-input-transitions.json`、`android98-continuous-input-proof.json`、`android98-publication.log`；Studio任务目录 `android98-redmi-installed-proof.json`、`android98-public-download-verified.json`、`android98-continuous-keyboard-run.log`、`android98-catalog-20204.png`、`android98-catalog-search-native.png`、`android98-redmi-nubia-app-artwork-native.png`。测试会话和本次新开的目录窗口均已关闭。
+
+红米“设置”应用的额外探测已连接到目录确认的 `Window(3359028817)`，但未获首帧，接收窗口随后自动关闭；原因未确认，不能归为系统权限不足。记录在 `android98-redmi-settings-run.log`、`android98-redmi-settings-app-artwork-all.json` 和 `android98-redmi-managed-after-settings.log`，后续需补齐具体失败原因及界面错误保留。
+
+未完成项继续保留：HO5解锁后的真实拖动与移动画面码率验收；Linux真实应用窗口采集与目录图标（KWin目录可读，正确采集／控制绑定尚未实现）；红米设置应用首帧、独立编辑器测试及六设备其余音频、摄像头、多指与双向验收。以上部署不代表所有已知问题全部完成。
