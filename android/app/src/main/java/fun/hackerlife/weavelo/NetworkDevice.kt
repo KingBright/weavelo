@@ -11,7 +11,8 @@ data class HostDevice(
     val canView: Boolean = false,
     val fileTransfer: Boolean = false,
     val clipboardSync: Boolean = false,
-    val hasService: Boolean = false
+    val hasService: Boolean = false,
+    val deviceBadge: DeviceBadgePreset = DeviceBadgePreset.COMPUTER
 ) {
     val canOpenWorkspace: Boolean get() = online && hasService && (canStream || fileTransfer)
     val canViewScreen: Boolean get() = online && hasService && canStream

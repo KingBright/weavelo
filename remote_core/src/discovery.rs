@@ -22,6 +22,8 @@ const CAP_CAN_VIEW: u32 = 1 << 1;
 const CAP_FILE_TRANSFER: u32 = 1 << 2;
 const CAP_CLIPBOARD_SYNC: u32 = 1 << 3;
 const CAP_TALKBACK: u32 = 1 << 4;
+const DEVICE_BADGE_SHIFT: u32 = 5;
+const DEVICE_BADGE_MASK: u32 = 0b111 << DEVICE_BADGE_SHIFT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DiscoveryScope {
@@ -38,6 +40,9 @@ pub struct DiscoveryCapabilities {
     pub file_transfer: bool,
     pub clipboard_sync: bool,
     pub talkback: bool,
+    /// Public preset only; the wire encoding reserves three capability bits.
+    #[serde(default)]
+    pub device_badge: protocol::appearance::DeviceBadgePreset,
 }
 
 impl DiscoveryCapabilities {
@@ -48,6 +53,7 @@ impl DiscoveryCapabilities {
             file_transfer: true,
             clipboard_sync: true,
             talkback: true,
+            device_badge: protocol::appearance::DeviceBadgePreset::Computer,
         }
     }
 
@@ -68,6 +74,7 @@ impl DiscoveryCapabilities {
         if self.talkback {
             bits |= CAP_TALKBACK;
         }
+        bits |= u32::from(self.device_badge.discovery_code()) << DEVICE_BADGE_SHIFT;
         bits
     }
 
@@ -78,6 +85,9 @@ impl DiscoveryCapabilities {
             file_transfer: bits & CAP_FILE_TRANSFER != 0,
             clipboard_sync: bits & CAP_CLIPBOARD_SYNC != 0,
             talkback: bits & CAP_TALKBACK != 0,
+            device_badge: protocol::appearance::DeviceBadgePreset::from_discovery_code(
+                ((bits & DEVICE_BADGE_MASK) >> DEVICE_BADGE_SHIFT) as u8,
+            ),
         }
     }
 }
@@ -893,6 +903,35 @@ mod tests {
 
         let decoded = DiscoveryAnnouncement::decode(&encoded).expect("decode announcement");
         assert_eq!(decoded, announcement);
+    }
+
+    #[test]
+    fn device_badge_presets_roundtrip_in_reserved_capability_bits_without_growing_packet() {
+        use protocol::appearance::DeviceBadgePreset;
+        let original = sample_announcement().encode().unwrap();
+        for preset in [
+            DeviceBadgePreset::Computer,
+            DeviceBadgePreset::MacBook,
+            DeviceBadgePreset::MacStudio,
+            DeviceBadgePreset::Windows,
+            DeviceBadgePreset::Linux,
+            DeviceBadgePreset::Phone,
+        ] {
+            let mut announcement = sample_announcement();
+            announcement.capabilities.device_badge = preset;
+            let encoded = announcement.encode().unwrap();
+            assert_eq!(encoded.len(), original.len());
+            assert_eq!(DiscoveryAnnouncement::decode(&encoded).unwrap(), announcement);
+        }
+
+        let mut unknown = original;
+        let capabilities = u32::from_be_bytes(unknown[12..16].try_into().unwrap());
+        let invalid_category = (capabilities & !DEVICE_BADGE_MASK) | (6 << DEVICE_BADGE_SHIFT);
+        unknown[12..16].copy_from_slice(&invalid_category.to_be_bytes());
+        assert_eq!(
+            DiscoveryAnnouncement::decode(&unknown).unwrap().capabilities.device_badge,
+            DeviceBadgePreset::Computer
+        );
     }
 
     #[test]

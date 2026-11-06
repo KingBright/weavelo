@@ -164,6 +164,8 @@ pub async fn run_host_binary() -> Result<(), Box<dyn Error + Send + Sync>> {
                 || std::env::var_os("WEAVELO_HOST_SEND_FILE").is_some(),
             clipboard_sync: env_flag_enabled("WEAVELO_CLIPBOARD_SYNC"),
             talkback: env_flag_enabled("WEAVELO_TALKBACK"),
+            device_badge: remote_core::device_artwork::desktop_badge_preset()
+                .unwrap_or_else(|_| remote_core::device_artwork::automatic()),
         },
     )
     .await;

@@ -398,7 +398,8 @@ object WeaveloClient {
                             canView = obj.optBoolean("can_view", false),
                             fileTransfer = obj.optBoolean("file_transfer", false),
                             clipboardSync = obj.optBoolean("clipboard_sync", false),
-                            hasService = obj.optBoolean("has_service", false)
+                            hasService = obj.optBoolean("has_service", false),
+                            deviceBadge = DeviceBadgePreset.fromWire(obj.optString("device_badge", "computer"))
                         )
                     )
                 }

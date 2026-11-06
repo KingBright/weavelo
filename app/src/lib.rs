@@ -1236,6 +1236,8 @@ fn build_unified_discovery_config_from_mesh(
         file_transfer: config.enable_file_transfer,
         clipboard_sync: config.enable_clipboard_sync,
         talkback: config.enable_talkback && cfg!(target_os = "macos"),
+        device_badge: remote_core::device_artwork::desktop_badge_preset_for_profile(&config.mesh_dir)
+            .unwrap_or_else(|_| remote_core::device_artwork::automatic()),
     };
     let announcement = DiscoveryAnnouncement {
         network_name: mesh_config.network_name.clone(),
@@ -2933,6 +2935,47 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc;
 
+    #[test]
+    fn unified_discovery_uses_badge_from_its_configured_mesh_profile() {
+        let directory = std::env::temp_dir().join(format!(
+            "weavelo-app-device-badge-profile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("preferences.json"),
+            r#"{"ui":{"device_badge":{"preset":"mac_studio"}}}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                directory.join("preferences.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        let config = UnifiedRuntimeConfig {
+            mesh_dir: directory.clone(),
+            enable_passive_host: false,
+            ..UnifiedRuntimeConfig::default()
+        };
+        let mesh = MeshConfig::generate("Profile fixture");
+
+        let discovery = build_unified_discovery_config_from_mesh(&config, &mesh).unwrap();
+        assert_eq!(
+            discovery.announcement.capabilities.device_badge,
+            protocol::appearance::DeviceBadgePreset::MacStudio
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn runtime_with_peer(
         device_id: &str,
         can_stream: bool,
@@ -2953,6 +2996,7 @@ mod tests {
                     file_transfer: true,
                     clipboard_sync: true,
                     talkback: true,
+                    device_badge: remote_core::device_artwork::automatic(),
                 },
                 scope: DiscoveryScope::Lan,
                 ttl: DEFAULT_PEER_TTL,
@@ -4685,6 +4729,7 @@ mod tests {
                             file_transfer: false,
                             clipboard_sync: false,
                             talkback: false,
+                            device_badge: protocol::appearance::DeviceBadgePreset::Computer,
                         },
                         scope: device.scope,
                         ttl: Duration::from_secs(8),

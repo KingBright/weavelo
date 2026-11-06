@@ -63,6 +63,7 @@ fn inbound_capabilities(port: u16, capture_authorized: bool) -> DiscoveryCapabil
         file_transfer: port != 0,
         clipboard_sync: false,
         talkback: false,
+        device_badge: protocol::appearance::DeviceBadgePreset::Phone,
     }
 }
 
@@ -157,6 +158,8 @@ pub struct BridgeDiscoveredDevice {
     pub endpoint: String,
     pub scope: String,
     pub can_stream: bool,
+    #[serde(default)]
+    pub device_badge: protocol::appearance::DeviceBadgePreset,
     #[serde(default)]
     pub can_view: bool,
     #[serde(default)]
@@ -1363,6 +1366,7 @@ fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscover
             }
             .to_string(),
             can_stream: peer.announcement.capabilities.can_stream,
+            device_badge: peer.announcement.capabilities.device_badge,
             can_view: peer.announcement.capabilities.can_view,
             file_transfer: peer.announcement.capabilities.file_transfer,
             clipboard_sync: peer.announcement.capabilities.clipboard_sync,
@@ -1522,6 +1526,29 @@ mod tests {
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].scope, "LAN");
         assert_eq!(devices[0].endpoint, "192.168.1.20:39271");
+    }
+
+    #[test]
+    fn bridge_device_json_forwards_the_discovery_badge_preset() {
+        let mut cache = remote_core::discovery::DiscoveryPeerCache::new("group", "android");
+        let announcement = DiscoveryAnnouncement {
+            network_name: "group".into(),
+            device_id: "studio".into(),
+            display_name: "Studio".into(),
+            control_port: 39271,
+            virtual_ip: None,
+            capabilities: DiscoveryCapabilities {
+                can_stream: true,
+                device_badge: protocol::appearance::DeviceBadgePreset::MacStudio,
+                ..DiscoveryCapabilities::default()
+            },
+            scope: DiscoveryScope::Lan,
+            ttl: DEFAULT_PEER_TTL,
+        };
+        cache.apply_announcement(announcement, "192.168.1.20:38117".parse().unwrap(), 1);
+        let devices = devices_from_snapshot(&cache.snapshot());
+        assert_eq!(devices[0].device_badge, protocol::appearance::DeviceBadgePreset::MacStudio);
+        assert_eq!(serde_json::to_value(&devices[0]).unwrap()["device_badge"], "mac_studio");
     }
 
     #[test]

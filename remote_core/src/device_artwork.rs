@@ -56,8 +56,12 @@ pub fn resolve(value: DeviceBadge) -> Result<DeviceBadge, String> {
 /// The GUI writes this existing profile document atomically. The background
 /// reads it only when a viewer requests artwork, so changes need no restart.
 pub fn desktop_badge() -> Result<DeviceBadge, String> {
+    desktop_badge_for_profile(&crate::mesh::default_app_private_mesh_dir())
+}
+
+pub fn desktop_badge_for_profile(mesh_dir: &std::path::Path) -> Result<DeviceBadge, String> {
     use std::io::Read;
-    let path = crate::mesh::default_app_private_mesh_dir().join("preferences.json");
+    let path = mesh_dir.join("preferences.json");
     let mut file =
         match crate::desktop_storage::open_regular(&path, true).map_err(|e| e.to_string())? {
             Some(file) => file,
@@ -80,4 +84,57 @@ pub fn desktop_badge() -> Result<DeviceBadge, String> {
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     resolve(badge)
+}
+
+/// Resolve the configured public device category without exposing a custom
+/// stream badge in discovery. Custom artwork remains available through the
+/// authenticated source-appearance request.
+pub fn desktop_badge_preset() -> Result<Preset, String> {
+    desktop_badge_preset_for_profile(&crate::mesh::default_app_private_mesh_dir())
+}
+
+pub fn desktop_badge_preset_for_profile(mesh_dir: &std::path::Path) -> Result<Preset, String> {
+    Ok(match desktop_badge_for_profile(mesh_dir)? {
+        DeviceBadge::Preset(preset) => preset,
+        DeviceBadge::Automatic | DeviceBadge::Custom(_) => automatic(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_preset_uses_the_explicit_profile_preferences() {
+        let directory = std::env::temp_dir().join(format!(
+            "weavelo-device-badge-profile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("preferences.json"),
+            r#"{"ui":{"device_badge":{"preset":"mac_book"}}}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                directory.join("preferences.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            desktop_badge_preset_for_profile(&directory).unwrap(),
+            Preset::MacBook
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

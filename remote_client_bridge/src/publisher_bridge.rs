@@ -204,10 +204,16 @@ impl Drop for Peer {
 }
 impl MobilePublisher {
     pub fn set_device_badge(&self, badge: protocol::appearance::DeviceBadge) -> Result<(),String> {
-        *self.device_badge.lock().unwrap()=match badge {
+        let badge=match badge {
             protocol::appearance::DeviceBadge::Automatic=>protocol::appearance::DeviceBadge::Preset(protocol::appearance::DeviceBadgePreset::Phone),
             other=>remote_core::device_artwork::resolve(other)?,
         };
+        let preset=match &badge {
+            protocol::appearance::DeviceBadge::Preset(preset)=>*preset,
+            protocol::appearance::DeviceBadge::Automatic | protocol::appearance::DeviceBadge::Custom(_)=>protocol::appearance::DeviceBadgePreset::Phone,
+        };
+        *self.device_badge.lock().unwrap()=badge;
+        self.capabilities.send_modify(|capabilities|capabilities.device_badge=preset);
         Ok(())
     }
     pub fn set_device_identity(&self, identity:String) {
@@ -1012,8 +1018,13 @@ mod tests {
         assert!(matches!(reply(&receiver).await,SessionCommand::Subscribed{id:256,..}));
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:2,id:256,source:CaptureSource::MainDisplay}).await;
         assert!(matches!(reply(&receiver).await,SessionCommand::SourceAppearance{appearance,..} if matches!(appearance.as_ref(),Ok(protocol::appearance::SourceAppearance{application:None,device:DeviceBadge::Preset(DeviceBadgePreset::Phone)}))));
+        publisher.set_device_badge(DeviceBadge::Preset(DeviceBadgePreset::MacStudio)).unwrap();
+        let advertised=publisher.capabilities.subscribe();
+        assert_eq!(advertised.borrow().device_badge,DeviceBadgePreset::MacStudio);
         let icon=remote_core::application_icons::encode_rgba(2,2,&[255;16]).unwrap();
         publisher.set_device_badge(DeviceBadge::Custom(icon.clone())).unwrap();
+        assert_eq!(advertised.borrow().device_badge,DeviceBadgePreset::Phone,
+            "custom stream artwork must keep advertising the Android device category");
         command(&sender,publisher.address,SessionCommand::GetSourceAppearance{request_id:3,id:256,source:CaptureSource::MainDisplay}).await;
         let SessionCommand::SourceAppearance{appearance,..}=reply(&receiver).await else {panic!("missing artwork")};
         let appearance=appearance.unwrap();

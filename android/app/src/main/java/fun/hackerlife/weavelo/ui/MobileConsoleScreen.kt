@@ -5,6 +5,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -21,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -31,6 +33,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import `fun`.hackerlife.weavelo.HostDevice
+import `fun`.hackerlife.weavelo.DeviceArtwork
+import `fun`.hackerlife.weavelo.DeviceBadgePreset
 import `fun`.hackerlife.weavelo.TelemetrySnapshot
 import `fun`.hackerlife.weavelo.DiscoveryDiagnostics
 import `fun`.hackerlife.weavelo.AppNetworkStatus
@@ -266,19 +270,21 @@ fun QuickActionButton(text: String, modifier: Modifier = Modifier, enabled: Bool
 
 @Composable
 fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true,
+    deviceBadge: DeviceBadgePreset = DeviceBadgePreset.COMPUTER,
     canSendFiles: Boolean = false, onSendFiles: () -> Unit = {},
     canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {},
     canSendCamera: Boolean = false, onSendCamera: () -> Unit = {},
     details: String = "", onEnd: (() -> Unit)? = null, onConnect: () -> Unit) {
     var sendMenu by remember(name) { mutableStateOf(false) }
     var expanded by remember(name) { mutableStateOf(false) }
+    val badge = remember(deviceBadge) { DeviceArtwork.badge(deviceBadge).asImageBitmap() }
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
         .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
         .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 10.dp, vertical = 6.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            androidx.compose.material3.Icon(MobileSymbol.Devices.image, contentDescription = null,
-                tint = ColorAccentEmerald, modifier = Modifier.size(20.dp))
+            Image(badge, contentDescription = "Device type: ${deviceBadge.displayName}",
+                modifier = Modifier.size(24.dp))
             Text(name, modifier = Modifier.weight(1f), color = ColorTextPrimary, fontSize = 15.sp,
                 lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
@@ -422,6 +428,7 @@ private fun DevicesTabContent(
                 }.joinToString(" · ")
                 HostCard(
                     name = device.name.ifBlank { device.id },
+                    deviceBadge = device.deviceBadge,
                     tag = device.scope,
                     subtext = state.ifBlank { "Available" },
                     details = listOfNotNull(streamError, if (outgoing.target == device.id) outgoing.status.takeIf { it.isNotBlank() } else null,

@@ -8,7 +8,17 @@ import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class RemoteAppearance(val application: Bitmap?, val preset: String, val custom: Bitmap?)
+enum class DeviceBadgePreset(val wireValue: String, val displayName: String) {
+    COMPUTER("computer", "Computer"), MAC_BOOK("mac_book", "MacBook"), MAC_STUDIO("mac_studio", "Mac Studio"),
+    WINDOWS("windows", "Windows PC"), LINUX("linux", "Linux PC"), PHONE("phone", "Android phone");
+
+    companion object {
+        fun fromWire(value: String?): DeviceBadgePreset =
+            values().firstOrNull { it.wireValue == value } ?: COMPUTER
+    }
+}
+
+data class RemoteAppearance(val application: Bitmap?, val preset: DeviceBadgePreset, val custom: Bitmap?)
 
 /** Immutable assets, decoded once per source response; never on a video frame. */
 object DeviceArtwork {
@@ -36,7 +46,7 @@ object DeviceArtwork {
     fun decode(value: JSONObject): RemoteAppearance {
         val device = value.getJSONObject("device")
         return RemoteAppearance(bitmap(value.optJSONObject("application"), 256, 262144),
-            device.optString("preset", "computer"), bitmap(device.optJSONObject("custom"), 64, 16384))
+            DeviceBadgePreset.fromWire(device.optString("preset", "computer")), bitmap(device.optJSONObject("custom"), 64, 16384))
     }
     fun importImage(context: Context, uri: Uri): JSONObject {
         val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
@@ -65,36 +75,36 @@ object DeviceArtwork {
         val icon = JSONObject(PublisherClient.action(42, JSONObject().put("width",64).put("height",64).put("rgba",rgba).toString()))
         return JSONObject().put("custom",icon)
     }
-    fun badge(preset: String, custom: Bitmap? = null): Bitmap {
+    fun badge(preset: DeviceBadgePreset, custom: Bitmap? = null): Bitmap {
         if (custom != null) return custom
         val bitmap = Bitmap.createBitmap(128,128,Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap); val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         paint.color=Color.rgb(24,52,59); canvas.drawRoundRect(4f,4f,124f,124f,30f,30f,paint)
         paint.color=Color.rgb(139,228,229)
         when(preset) {
-            "phone" -> {
+            DeviceBadgePreset.PHONE -> {
                 canvas.drawRoundRect(39f,22f,89f,107f,9f,9f,paint)
                 paint.color=Color.rgb(49,139,153); canvas.drawRoundRect(44f,28f,84f,94f,4f,4f,paint)
                 canvas.drawRoundRect(55f,99f,73f,102f,1.5f,1.5f,paint)
             }
-            "mac_book" -> {
+            DeviceBadgePreset.MAC_BOOK -> {
                 canvas.drawRoundRect(27f,30f,101f,85f,5f,5f,paint)
                 canvas.drawRoundRect(17f,89f,111f,98f,4f,4f,paint)
                 paint.color=Color.rgb(49,139,153); canvas.drawRect(32f,35f,96f,79f,paint)
             }
-            "mac_studio" -> {
+            DeviceBadgePreset.MAC_STUDIO -> {
                 canvas.drawRoundRect(24f,39f,104f,91f,12f,12f,paint)
                 paint.color=Color.rgb(49,139,153); canvas.drawCircle(90f,78f,3f,paint)
             }
-            "windows" -> for(y in listOf(32f,67f)) for(x in listOf(32f,67f)) canvas.drawRect(x,y,x+29,y+29,paint)
-            "linux" -> {
+            DeviceBadgePreset.WINDOWS -> for(y in listOf(32f,67f)) for(x in listOf(32f,67f)) canvas.drawRect(x,y,x+29,y+29,paint)
+            DeviceBadgePreset.LINUX -> {
                 paint.color=Color.BLACK; canvas.drawOval(37f,21f,91f,104f,paint)
                 paint.color=Color.WHITE; canvas.drawOval(45f,49f,83f,95f,paint)
                 canvas.drawCircle(56f,43f,6f,paint); canvas.drawCircle(72f,43f,6f,paint)
                 paint.color=Color.rgb(242,181,66); canvas.drawOval(53f,51f,75f,61f,paint)
                 canvas.drawOval(31f,95f,60f,106f,paint); canvas.drawOval(68f,95f,97f,106f,paint)
             }
-            else -> {
+            DeviceBadgePreset.COMPUTER -> {
                 canvas.drawRoundRect(24f,29f,104f,86f,6f,6f,paint)
                 canvas.drawRect(58f,86f,70f,99f,paint); canvas.drawRect(44f,98f,84f,103f,paint)
             }
@@ -104,7 +114,7 @@ object DeviceArtwork {
     fun task(activity: Activity, pane: WorkspacePane, device: String) {
         val appearance = pane.appearance
         val app = appearance?.application ?: pane.source.icon
-        val badge = badge(appearance?.preset ?: "computer", appearance?.custom)
+        val badge = badge(appearance?.preset ?: DeviceBadgePreset.COMPUTER, appearance?.custom)
         val icon = Bitmap.createBitmap(256,256,Bitmap.Config.ARGB_8888)
         val canvas = Canvas(icon); val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val main = app ?: badge

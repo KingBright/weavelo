@@ -817,6 +817,8 @@ pub async fn run_client_binary() -> Result<(), Box<dyn Error + Send + Sync>> {
                 || env_flag_enabled("WEAVELO_FILE_CLIPBOARD"),
             clipboard_sync: env_flag_enabled("WEAVELO_CLIPBOARD_SYNC"),
             talkback: env_flag_enabled("WEAVELO_TALKBACK"),
+            device_badge: remote_core::device_artwork::desktop_badge_preset()
+                .unwrap_or_else(|_| remote_core::device_artwork::automatic()),
         },
     )
     .await;
