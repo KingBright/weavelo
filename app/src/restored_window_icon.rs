@@ -504,7 +504,7 @@ pub(crate) mod macos_dock {
         }
     }
 
-    unsafe fn draw_labels(rep: id, edge: u32, footer: u32, title: &str, device: &str) {
+    unsafe fn draw_labels(rep: id, edge: u32, device: &str) {
         unsafe extern "C" {
             static NSFontAttributeName: id;
             static NSForegroundColorAttributeName: id;
@@ -525,8 +525,7 @@ pub(crate) mod macos_dock {
             let _: () = msg_send![class!(NSGraphicsContext), saveGraphicsState];
             let _: () = msg_send![class!(NSGraphicsContext), setCurrentContext: context];
             for (value, font_size, height, bottom, max_width, corner) in [
-                (device, 6.5, 9.0, f64::from(footer) + scale, 42.0, true),
-                (title, 8.5, 11.0, scale, 60.0, false),
+                (device, 6.5, 9.0, scale, 42.0, true),
             ] {
                 if value.trim().is_empty() {
                     continue;
@@ -558,11 +557,11 @@ pub(crate) mod macos_dock {
         }
     }
 
-    unsafe fn dock_image(edge: u32, rgba: &[u8], title: &str, device: &str) -> Option<id> {
+    unsafe fn dock_image(edge: u32, rgba: &[u8], _title: &str, device: &str) -> Option<id> {
         if icon_bytes(edge) != Some(rgba.len()) {
             return None;
         }
-        let footer = edge * 13 / 64;
+        let footer = 0;
         unsafe {
             let rep: id = msg_send![class!(NSBitmapImageRep), alloc];
             let rep: id = msg_send![
@@ -589,7 +588,7 @@ pub(crate) mod macos_dock {
             }
             std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, rgba.len());
             std::ptr::write_bytes(data.add(rgba.len()), 0, edge as usize * footer as usize * 4);
-            draw_labels(rep, edge, footer, title, device);
+            draw_labels(rep, edge, device);
             let size = NSSize::new(64.0, 64.0 + 64.0 * f64::from(footer) / f64::from(edge));
             let _: () = msg_send![rep, setSize: size];
             let image: id = msg_send![class!(NSImage), alloc];
