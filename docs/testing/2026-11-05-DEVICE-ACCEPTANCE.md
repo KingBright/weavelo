@@ -230,3 +230,17 @@ Android98 JVM83项与lint通过，发布回归1047项通过、19跳过。证据�
 - 红米设置应用首帧失败及其他前述遗留问题：继续保留，不因本轮界面修改关闭。
 
 最后必须完成正式打包、NAS发布、兼容安装、实际运行版本及实机行为核验；不得只把main提交当作全设备完成。
+
+
+## 2026-11-06 桌面142／Linux143继续验收
+
+Studio、Book、cube 已正式升级142（`743aec1`）；两台Mac分别保留原有证书，正式安装记录确认配置和启动方式保留。HO5已升级Linux143（`67db7d9`）。Android98本轮源码没有改变，仍是当前手机版本。NAS尚未发布本轮桌面包，不能将安装与公开发布混写。
+
+- Book142同时打开Studio的Gemini主窗20363、ChatGPT主窗18227、DeepSeek Harness主窗19556，分别解码12／27／20帧，错误均为0，三路均有UI提交帧。来源不再默认添加桌面，测试连接全部关闭。证据：Book `native142-book-studio-three-apps.json`。这是接收和UI提交证据，不是物理显示测量。
+- Studio142拉取cube142桌面，解码9帧、错误0并提交画面；自身测试连接已关闭。证据：`native142-studio-cube-display.json`。
+- 两个原生AppKit编辑器的A/B/A/B输入测试通过，包括中文、emoji、Return和旧窗口modifier清理不抢焦点；不同进程重叠窗口与同进程双窗口分别验证。随后实测Book142两个接收窗口→Studio142同进程双编辑器，A/B/A/B各输入`net0`至`net3`并回车，接收端独立读回A为`net0\nnet2\n`、B为`net1\nnet3\n`，完全匹配。后两次切换没有再点击编辑器。自建流和夹具全部清理。证据：Book `native142-book-studio-input.json`、Studio `native142-input-acceptance/network-independent-input-proof.json`。
+- 上述输入会切换远端前台窗口，不是保持远端窗口顺序不变的后台控制。有效编辑器基线后的`postToPid`后台对照没有实际事件／文字到达；该实验路径未作为产品能力交付。
+- Windows像素滚动换算、横向滚动、分数累积和窗口焦点交接已实现；18项录制API契约检查通过，包含拒绝焦点时不发输入、释放旧按键不抢焦点。实际Windows窗口滚动体验仍须单独检查。
+- Linux KWin独立窗口采集、真实图标路径已实现，但143的真实Studio来源选择页仍只有Display1，不能标记完成。已修复KWin宽高实际返回double造成的过滤；继续排查运行时目录与后台IPC仅返回共享屏幕的问题。证据：`native143-linux-source-picker.png`、HO5 `/tmp/weavelo-linux143-sources.json`。仍无KWin选中应用的首帧验收。
+
+本轮发布回归1047项通过、25跳过，Linux KWin针对性检查6项通过。Dock真实名称、侧边窗口图标、跨平台持续滚动／输入和未完成六设备事项继续验收；这里不代表全部问题关闭。
