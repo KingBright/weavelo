@@ -80,7 +80,7 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
             accepted=encoder.drain(0,::send)&&accepted
             val now=PublisherClient.nativeClockMicros()
             val redraw=geometryRevision!=g.revision || keyframe!=demand.keyframe
-            if (pending.size<3 && (redraw || (captureUs!=gpu.sourceCaptureUs && now-lastSubmitUs>=1_000_000/demand.fps))) {
+            if (pending.size<3 && now-lastSubmitUs>=1_000_000/demand.fps && (redraw || captureUs!=gpu.sourceCaptureUs)) {
                 encoder.requestKeyframe(demand.keyframe)
                 val geometry=g.copy(width=plan.width,height=plan.height)
                 check(geometry.valid())

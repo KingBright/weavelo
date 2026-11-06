@@ -137,8 +137,14 @@ impl LinuxVideoCapturer {
         resources.capture_target_fps.store(u64::from(self.target_fps),Ordering::Relaxed);
         self.resources=Some(resources);self
     }
-    pub(crate) fn snapshot(&self)->Option<OwnedFrame>{self.native.as_ref()?.snapshot()}
-    pub(crate) fn accepted_snapshot(&self,stamp:crate::linux_frame::FrameStamp){if let Some(mailbox)=&self.native{mailbox.accepted_snapshot(stamp);}}
+    pub(crate) fn snapshot(&self)->Option<OwnedFrame>{
+        if !self.pacer.ready(remote_core::timing::quanta_now_us()) {return None;}
+        self.native.as_ref()?.snapshot()
+    }
+    pub(crate) fn accepted_snapshot(&mut self,stamp:crate::linux_frame::FrameStamp){
+        if let Some(mailbox)=&self.native{mailbox.accepted_snapshot(stamp);}
+        self.pacer.admit(remote_core::timing::quanta_now_us());
+    }
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let (frame_tx, frame_rx) = mpsc::channel(4);
         // An idle capturer must not retain a sender that could keep recv alive.

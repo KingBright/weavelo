@@ -17,6 +17,11 @@ impl FramePacer {
         *self = Self::new(fps);
     }
 
+    /// A conditional redraw must not consume a slot until it is submitted.
+    pub fn ready(&self, timestamp_us: u64) -> bool {
+        self.next_due_us.is_none_or(|due| timestamp_us.saturating_add(self.period_us / 2) >= due)
+    }
+
     pub fn admit(&mut self, timestamp_us: u64) -> bool {
         let due = self.next_due_us.unwrap_or(timestamp_us);
         let latest = timestamp_us.saturating_add(self.period_us / 2);
@@ -34,6 +39,24 @@ impl FramePacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewport_redraws_and_capture_share_one_budget() {
+        for fps in [7,30,47] {
+            let mut pacer=FramePacer::new(fps);
+            let mut frames=0u32;
+            // 60 Hz capture plus 20 Hz viewport/keyframe refresh. Neither path
+            // may create an extra encoder budget; checking idle redraws is free.
+            for step in 0..6000 {
+                let now=step*1_000_000/600;
+                if step%10==0 && pacer.admit(now) {frames+=1;}
+                if step%30==0 && pacer.ready(now) {
+                    assert!(pacer.ready(now));
+                    assert!(pacer.admit(now));frames+=1;
+                }
+            }
+            assert!(frames.abs_diff(fps*10)<=1,"{fps}: {frames}");
+        }
+    }
     #[test]
     fn arbitrary_rates_do_not_round_down_to_display_divisors() {
         for fps in [1, 7, 24, 29, 37, 47, 59, 60, 120] {

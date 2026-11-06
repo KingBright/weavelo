@@ -119,10 +119,14 @@ impl MacVideoCapturer {
         if let Some(viewer)=&self.viewer{viewer.configure(fps,!self.paused);}Ok(())
     }
     pub(crate) fn snapshot(&self)->Option<(u64,MacVideoFrame)>{
+        if !self.pacer.ready(remote_core::timing::quanta_now_us()) {return None;}
         if self.paused{return None;}let viewer=self.viewer.as_ref()?;let state=viewer.root.state.lock().unwrap_or_else(|e|e.into_inner());
         if state.ending||state.error.is_some()||viewer.root.health.reason().is_some(){return None;}let frame=(state.sequence,state.latest.as_ref()?.clone());drop(state);viewer.observe_geometry();Some(frame)
     }
-    pub(crate) fn accepted_snapshot(&mut self,sequence:u64){self.seen=self.seen.max(sequence);}
+    pub(crate) fn accepted_snapshot(&mut self,sequence:u64){
+        self.seen=self.seen.max(sequence);
+        self.pacer.admit(remote_core::timing::quanta_now_us());
+    }
     async fn await_stop(&mut self)->Result<(),Failure>{if let Some(receipt)=&self.pending_stop{receipt.wait().await?;self.pending_stop=None;}Ok(())}
     fn detach(&mut self){if let Some(mut viewer)=self.viewer.take(){self.pending_stop=viewer.detach();}self.progress=None;}
 }
