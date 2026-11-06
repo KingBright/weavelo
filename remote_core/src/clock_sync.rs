@@ -468,18 +468,21 @@ impl ClockSynchronizer {
     }
 
     fn refit(&mut self) {
-        let min_rtt = self
-            .samples
-            .iter()
+        // Anchor the RTT cohort to recent observations, while retaining older
+        // comparable samples for a stable fit when low-RTT probes are sparse.
+        let newest = self.samples.back().expect("refit requires a sample").client_recv_us;
+        let recent = || self.samples.iter().filter(|sample|
+            newest.saturating_sub(sample.client_recv_us) <= self.config.freshness_limit_us);
+        let min_rtt = recent()
             .map(|s| s.network_rtt_us)
             .min()
             .unwrap_or(0) as f64;
-        let threshold = min_rtt
-            + (self.config.low_rtt_slack_us as f64).max(min_rtt * self.config.low_rtt_ratio);
-        let selected: Vec<_> = self
-            .samples
-            .iter()
-            .filter(|s| s.network_rtt_us as f64 <= threshold)
+        let slack = |rtt: f64| (self.config.low_rtt_slack_us as f64).max(rtt * self.config.low_rtt_ratio);
+        let selected: Vec<_> = self.samples.iter()
+            .filter(|s| {
+                let rtt = s.network_rtt_us as f64;
+                rtt <= min_rtt + slack(min_rtt) && min_rtt <= rtt + slack(rtt)
+            })
             .collect();
         let first = selected[0];
         let reference_client_us = first.client_send_us;
@@ -816,6 +819,89 @@ mod tests {
     }
 
     #[test]
+    fn sustained_higher_rtt_reacquires_using_recent_samples_without_discarding_history() {
+        let mut sync = ClockSynchronizer::new();
+        let last = regular_fit(&mut sync, 5_000_000);
+        let mut newest = last;
+        for id in 0..12 {
+            newest = exchange(&mut sync, 10 + id, last + (id + 1) * 1_000_000,
+                5_000_000, 20_000, 100, 20_000).client_recv_us;
+        }
+        let estimate = sync.estimate(newest).unwrap();
+        assert_eq!(estimate.sample_count, 18); // Old samples remain in raw history.
+        assert_eq!(estimate.selected_sample_count, 12); // The obsolete 2 ms cohort is excluded.
+        assert!(estimate.selected_span_us >= 3_000_000);
+        assert_eq!(estimate.state, ClockSyncState::Synchronized);
+        assert!((estimate.offset_us - 5_000_000.0).abs() < 1.0);
+        assert!(estimate.asymmetry_bound_us >= 20_000.0);
+        assert_eq!(sync.estimate(newest + 10_000_001).unwrap().state, ClockSyncState::Stale);
+    }
+
+    #[test]
+    fn recent_fit_preserves_uncertainty_for_a_sustained_asymmetric_path() {
+        let mut sync = ClockSynchronizer::new();
+        let last = regular_fit(&mut sync, 5_000_000);
+        let mut newest = last;
+        for id in 0..12 {
+            newest = exchange(&mut sync, 10 + id, last + (id + 1) * 1_000_000,
+                5_000_000, 35_000, 100, 5_000).client_recv_us;
+        }
+        let estimate = sync.estimate(newest).unwrap();
+        assert_eq!(estimate.state, ClockSyncState::Synchronized);
+        assert!((estimate.offset_us - 5_015_000.0).abs() < 1.0);
+        assert!(estimate.asymmetry_bound_us >= 20_000.0);
+        assert!(estimate.uncertainty_us().is_some_and(|bound| bound >= 20_000.0));
+    }
+
+    #[test]
+    fn intermittent_low_rtt_samples_keep_a_stable_fit() {
+        let mut sync = ClockSynchronizer::new();
+        for id in 0..55 {
+            let delay = if id % 3 == 0 { 10_000 } else { 30_000 };
+            let sample = exchange(&mut sync, id, 1_000_000 + id * 1_000_000,
+                50, delay, 0, delay);
+            let estimate = sync.estimate(sample.client_recv_us).unwrap();
+            if id >= 9 {
+                assert_eq!(estimate.state, ClockSyncState::Synchronized, "probe {id}");
+                assert!(estimate.selected_sample_count >= 4);
+                assert!(estimate.sample_age_us <= 2_000_000 + 40_000);
+            }
+        }
+    }
+
+    #[test]
+    fn fit_selection_uses_the_freshness_boundary_inclusively() {
+        for (age, selected_age, selected_count, state) in [
+            (10_000_000, 10_000_000, 6, ClockSyncState::Synchronized),
+            (10_000_001, 0, 1, ClockSyncState::Acquiring),
+        ] {
+            let mut sync = ClockSynchronizer::new();
+            let last = regular_fit(&mut sync, 50);
+            let sample = exchange(&mut sync, 10, last + age - 40_000,
+                50, 20_000, 0, 20_000);
+            let estimate = sync.estimate(sample.client_recv_us).unwrap();
+            assert_eq!(estimate.sample_age_us, selected_age);
+            assert_eq!(estimate.selected_sample_count, selected_count);
+            assert_eq!(estimate.state, state);
+        }
+    }
+
+    #[test]
+    fn sparse_idle_probes_keep_a_fit_from_comparable_history() {
+        let mut sync = ClockSynchronizer::new();
+        let mut last = 0;
+        for id in 0..6 {
+            last = exchange(&mut sync, id, 1_000_000 + id * 5_000_000,
+                50, 1_000, 0, 1_000).client_recv_us;
+        }
+        let estimate = sync.estimate(last).unwrap();
+        assert_eq!(estimate.sample_count, 6);
+        assert_eq!(estimate.selected_sample_count, 6);
+        assert_eq!(estimate.state, ClockSyncState::Synchronized);
+        assert!(estimate.drift_estimated);
+    }
+
+    #[test]
     fn fixed_asymmetry_remains_visible_even_when_fit_residuals_are_zero() {
         let mut sync = ClockSynchronizer::new();
         let true_offset = 5_000_000;
@@ -850,12 +936,12 @@ mod tests {
         assert_eq!(stale.state, ClockSyncState::Stale);
         assert!(stale.holdover_bound_us > 1_000.0);
         assert!(stale.asymmetry_bound_us > at_last.asymmetry_bound_us);
-        // An unselected queued response must not make the old fit look fresh.
+        // One late response starts acquisition; it cannot refresh the old fit.
         let spike = exchange(&mut sync, 10, last + 11_000_000, 50, 300_000, 0, 1_000);
-        assert_eq!(
-            sync.estimate(spike.client_recv_us).unwrap().state,
-            ClockSyncState::Stale
-        );
+        let estimate = sync.estimate(spike.client_recv_us).unwrap();
+        assert_eq!(estimate.state, ClockSyncState::Acquiring);
+        assert_eq!(estimate.selected_sample_count, 1);
+        assert!(!estimate.drift_estimated);
     }
 
     #[test]

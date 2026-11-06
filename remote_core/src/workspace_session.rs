@@ -26,6 +26,10 @@ use tokio::time::Instant;
 type VideoIngress = crate::video_queue::VideoSender;
 type PointerUpdate = Arc<std::sync::Mutex<Option<(protocol::realtime_input::RealtimeInput, Instant)>>>;
 
+fn clock_probe_due(active: bool, last_probe: Option<Instant>, now: Instant) -> bool {
+    active || last_probe.is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(5))
+}
+
 #[derive(Default)]
 struct PointerQueue(std::sync::Weak<std::sync::Mutex<Option<(protocol::realtime_input::RealtimeInput, Instant)>>>);
 impl PointerQueue {
@@ -1127,14 +1131,17 @@ impl Actor {
         let mut clock = crate::clock_sync::ClockSynchronizer::new();
         let mut clock_continuity=crate::clock_sync::ClockContinuity::new();
         let mut probe_id = 0u64;
-        let mut last_probe=Instant::now()-Duration::from_secs(5);
+        let mut last_probe = None;
         let mut retry = tokio::time::interval(Duration::from_millis(250));
         let mut input_tick = tokio::time::interval(Duration::from_millis(protocol::realtime_input::INPUT_REFRESH_INTERVAL_MS));
         input_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut input_requests_at = Instant::now() - Duration::from_secs(1);
         let mut clipboard_barriers: Vec<(u64, tokio::sync::oneshot::Sender<Result<(), String>>)> = Vec::new();
         let mut media = tokio::time::interval(Duration::from_millis(10));
-        for interval in [&mut heartbeat, &mut retry, &mut media] {
+        // A delayed heartbeat must not be followed immediately by a catch-up
+        // probe. Active subscriptions send once on each heartbeat.
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        for interval in [&mut retry, &mut media] {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
         loop {
@@ -1149,8 +1156,10 @@ impl Actor {
                     if !clock_continuity.observe(now,std::time::SystemTime::now()){clock.invalidate_measurements();}
                     let estimate=clock.estimate(now);
                     for view in self.subscriptions.values_mut(){view.handler.update_clock_estimate(estimate.clone());}
-                    let cadence=if self.subscriptions.values().any(|view|view.active){Duration::from_secs(1)}else{Duration::from_secs(5)};
-                    if last_probe.elapsed()<cadence{continue;}last_probe=Instant::now();
+                    let active = self.subscriptions.values().any(|view| view.active);
+                    let probe_time = Instant::now();
+                    if !clock_probe_due(active, last_probe, probe_time) { continue; }
+                    last_probe = Some(probe_time);
                     if let Some(session_id)=self.sender.peer_session_id(self.target) {
                         let Some(next)=probe_id.checked_add(1) else { break; };probe_id=next;
                         if clock.begin_probe(probe_id,now).is_ok() {
@@ -1467,6 +1476,30 @@ async fn initial_open(
 mod tests {
     use super::*;
     use protocol::session::CaptureSource;
+
+    #[test]
+    fn active_clock_probes_follow_heartbeat_despite_phase_jitter() {
+        let start = Instant::now();
+        let mut last = None;
+        // Real one-second ticks can land slightly less than one second after
+        // the preceding send because the previous callback ran late.
+        for elapsed_ms in [3, 1001, 2004, 3002] {
+            let tick = start + Duration::from_millis(elapsed_ms);
+            assert!(clock_probe_due(true, last, tick));
+            last = Some(tick);
+        }
+        let last_tick = last.unwrap();
+        assert!(!clock_probe_due(false, last, last_tick + Duration::from_millis(4999)));
+        assert!(clock_probe_due(false, last, last_tick + Duration::from_secs(5)));
+        assert!(clock_probe_due(true, last, last_tick + Duration::from_millis(100)));
+        assert!(clock_probe_due(false, None, start));
+        // A heartbeat due at 5s but handled at 9.9s must not permit a
+        // second idle probe when the following heartbeat fires at 10.9s.
+        let delayed_send = start + Duration::from_millis(9_900);
+        assert!(clock_probe_due(false, Some(start), delayed_send));
+        assert!(!clock_probe_due(false, Some(delayed_send), start + Duration::from_millis(10_900)));
+        assert!(clock_probe_due(false, Some(delayed_send), start + Duration::from_millis(14_900)));
+    }
 
     #[tokio::test]
     async fn artwork_replies_require_the_current_selected_source_and_request() {

@@ -103,8 +103,12 @@ an estimate: fixed path asymmetry and clock offset cannot be uniquely separated
 from these four timestamps. For example a 4 ms forward / 12 ms return path looks
 like 8 ms each under the symmetry estimate.
 
-The bounded 64-sample / 60-second window selects low-RTT observations, then fits
-centered offset plus drift. At least four selected observations spanning three
+From the bounded 64-sample / 60-second history, the lowest RTT in the 10-second
+freshness window anchors a cohort of comparable observations. For RTT `r` and
+recent minimum `m`, both `r <= m + slack(m)` and `m <= r + slack(r)` must hold,
+where `slack(x) = max(250 µs, 0.25 × x)`. Older comparable observations can
+support the fit, but the newest selected observation must still be fresh. The
+cohort fits centered offset plus drift. At least four selected observations spanning three
 seconds are required before Synchronized. Fit residual CI, an independently
 propagated RTT/2 asymmetry allowance, assumed holdover wander and quantization
 are separate diagnostics. Their sum is a model allowance, not a certified

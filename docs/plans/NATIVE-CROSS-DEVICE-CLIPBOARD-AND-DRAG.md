@@ -48,3 +48,5 @@
 - 共用剪贴板的格式转换与内容传输，但原生拖放使用独立的会话和生命周期，不通过改写用户剪贴板模拟拖放。
 
 必须区分内容拖放与源应用内部操作：拖动窗口标题栏、滑块、选区手柄或没有可移植导出的私有对象，并不自动产生可跨设备携带的内容。对这些对象保留原应用操作；只有系统或应用真正提供可移植数据时才能扩展为跨机拖放。产品不会承诺无条件支持“所有可拖动对象”。
+
+原生适配还需要分别验证源内容导出与目标接纳，而不仅是系统存在拖放API：macOS使用[拖放会话](https://developer.apple.com/documentation/appkit/nsdraggingsession)与[粘贴板](https://developer.apple.com/documentation/appkit/nspasteboard)，Windows目标通过[IDropTarget::Drop](https://learn.microsoft.com/en-us/windows/win32/api/oleidl/nf-oleidl-idroptarget-drop)接收数据对象；Android[跨应用拖放](https://developer.android.com/develop/ui/views/touch-and-input/drag-drop/multi-window)还涉及来源授权和内容URI访问。跨设备不能直接沿用另一设备的路径、对象指针或URI授权，必须传递可移植内容并在目标系统提供有效引用。存在原生API不代表Weavelo已能截获所有第三方应用的拖放；各平台接入与权限范围要通过真实应用验证。
