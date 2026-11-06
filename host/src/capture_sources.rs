@@ -206,7 +206,7 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
                 camera: None,
             });
         }
-        Ok(sources)
+        return Ok(sources);
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let desktop = CaptureSourceInfo {
@@ -233,7 +233,11 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
         }
         Ok(sources)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(
+        not(target_os = "macos"),
+        not(target_os = "windows"),
+        not(target_os = "linux")
+    ))]
     Ok(vec![desktop])
 }
 
