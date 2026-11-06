@@ -17,9 +17,95 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT, SendInput, VIRTUAL_KEY,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    SPI_GETWHEELSCROLLCHARS, SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
+};
+
+const WHEEL_DELTA: f64 = 120.0;
+const PIXELS_PER_SCROLL_LINE: f64 = 40.0;
+const WHEEL_PAGESCROLL: u32 = u32::MAX;
+// WM_MOUSEWHEEL and WM_MOUSEHWHEEL carry a signed 16-bit delta.
+const MAX_WHEEL_MESSAGE_DELTA: i32 = i16::MAX as i32;
+const MIN_WHEEL_MESSAGE_DELTA: i32 = i16::MIN as i32;
+
+#[derive(Clone, Copy)]
+struct WheelScrollPreferences {
+    lines: u32,
+    chars: u32,
+}
+
+fn wheel_scroll_preferences() -> InputResult<WheelScrollPreferences> {
+    let mut lines = 0_u32;
+    let mut chars = 0_u32;
+    let lines_read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            (&mut lines as *mut u32).cast(),
+            0,
+        )
+    };
+    let chars_read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLCHARS,
+            0,
+            (&mut chars as *mut u32).cast(),
+            0,
+        )
+    };
+    if lines_read == 0 || chars_read == 0 {
+        return Err("Windows did not provide its current wheel scroll settings".into());
+    }
+    Ok(WheelScrollPreferences { lines, chars })
+}
+
+#[derive(Default)]
+struct WheelDeltaRemainder {
+    setting: Option<u32>,
+    value: f64,
+}
+
+impl WheelDeltaRemainder {
+    fn convert(&mut self, delta_pixels: i32, setting: u32, horizontal: bool) -> i32 {
+        if self.setting != Some(setting) {
+            self.setting = Some(setting);
+            self.value = 0.0;
+        }
+        if setting == 0 {
+            self.value = 0.0;
+            return 0;
+        }
+
+        // The client sends GPUI pixel deltas, with 40 pixels per line. Windows
+        // expects WHEEL_DELTA units and each target application applies this
+        // system preference again. WHEEL_PAGESCROLL is a sentinel, not a huge
+        // line count: keep the native 120-units-per-page behavior in that case.
+        let units_per_pixel = if setting == WHEEL_PAGESCROLL {
+            1.0
+        } else {
+            WHEEL_DELTA / (PIXELS_PER_SCROLL_LINE * f64::from(setting))
+        };
+        // GPUI negates native horizontal wheel input when building ScrollDelta.
+        let axis_sign = if horizontal { -1.0 } else { 1.0 };
+        let exact = f64::from(delta_pixels) * units_per_pixel * axis_sign + self.value;
+        let whole = exact.trunc();
+        self.value = exact - whole;
+        whole.clamp(
+            f64::from(MIN_WHEEL_MESSAGE_DELTA),
+            f64::from(MAX_WHEEL_MESSAGE_DELTA),
+        ) as i32
+    }
+}
+
+#[derive(Default)]
+struct WheelDeltaRemainders {
+    horizontal: WheelDeltaRemainder,
+    vertical: WheelDeltaRemainder,
+}
 
 pub struct WindowsInputInjector {
     pressed: AtomicU8,
@@ -27,6 +113,7 @@ pub struct WindowsInputInjector {
     modifiers: AtomicU8,
     pressed_keys: Mutex<BTreeSet<VIRTUAL_KEY>>,
     unicode_up: Mutex<Option<u16>>,
+    scroll_remainders: Mutex<WheelDeltaRemainders>,
     source: Option<(native_sources::Selection,(u32,u32))>,
 }
 
@@ -46,6 +133,7 @@ impl WindowsInputInjector {
             modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
             unicode_up: Mutex::new(None),
+            scroll_remainders: Mutex::new(WheelDeltaRemainders::default()),
             source:Some((selection,canvas)),
         })
     }
@@ -148,7 +236,13 @@ fn send_mouse(
     data: u32,
     deadline: Option<Instant>,
 ) -> InputResult<bool> {
-    let mut input = INPUT {
+    let mut input = mouse_input(flags, dx, dy, data);
+    check_deadline(deadline)?;
+    Ok(unsafe { SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32) == 1 })
+}
+
+fn mouse_input(flags: u32, dx: i32, dy: i32, data: u32) -> INPUT {
+    INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {
             mi: MOUSEINPUT {
@@ -160,9 +254,21 @@ fn send_mouse(
                 dwExtraInfo: 0,
             },
         },
-    };
+    }
+}
+
+fn send_mouse_batch(inputs: &mut [INPUT], deadline: Option<Instant>) -> InputResult<bool> {
+    if inputs.is_empty() {
+        return Ok(true);
+    }
     check_deadline(deadline)?;
-    Ok(unsafe { SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32) == 1 })
+    Ok(unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        ) == inputs.len() as u32
+    })
 }
 
 fn send_key(vk: VIRTUAL_KEY, pressed: bool, deadline: Option<Instant>) -> InputResult<bool> {
@@ -258,17 +364,40 @@ impl WindowsInputInjector {
                     }
                 }
             }
-            InputEvent::MouseScroll {
-                delta_x: _,
-                delta_y,
-            } => {
-                if !send_mouse(
-                    MOUSEEVENTF_WHEEL,
-                    0,
-                    0,
-                    delta_y.saturating_mul(120) as u32,
-                    deadline,
-                )? {
+            InputEvent::MouseScroll { delta_x, delta_y } => {
+                let preferences = wheel_scroll_preferences()?;
+                let (horizontal, vertical) = {
+                    let mut remainder = self.scroll_remainders.lock().unwrap();
+                    (
+                        remainder.horizontal.convert(delta_x, preferences.chars, true),
+                        remainder.vertical.convert(delta_y, preferences.lines, false),
+                    )
+                };
+                let (mut inputs, count) = match (horizontal != 0, vertical != 0) {
+                    (true, true) => (
+                        [
+                            mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, horizontal as u32),
+                            mouse_input(MOUSEEVENTF_WHEEL, 0, 0, vertical as u32),
+                        ],
+                        2,
+                    ),
+                    (true, false) => (
+                        [
+                            mouse_input(MOUSEEVENTF_HWHEEL, 0, 0, horizontal as u32),
+                            mouse_input(0, 0, 0, 0),
+                        ],
+                        1,
+                    ),
+                    (false, true) => (
+                        [
+                            mouse_input(MOUSEEVENTF_WHEEL, 0, 0, vertical as u32),
+                            mouse_input(0, 0, 0, 0),
+                        ],
+                        1,
+                    ),
+                    (false, false) => ([mouse_input(0, 0, 0, 0), mouse_input(0, 0, 0, 0)], 0),
+                };
+                if !send_mouse_batch(&mut inputs[..count], deadline)? {
                     return Err("Windows did not accept scrolling".into());
                 }
             }

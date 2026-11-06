@@ -3,6 +3,9 @@
 use protocol::{InputEvent, input_modifiers};
 use remote_core::InputInjector;
 use std::sync::Mutex;
+use recording_api::Win32::UI::Input::KeyboardAndMouse::{
+    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL,
+};
 
 mod actual {
     use super::recording_api as windows_sys;
@@ -28,7 +31,7 @@ mod windows_sources {
 }
 #[derive(Debug, PartialEq, Eq)]
 enum Posted {
-    Mouse(u32),
+    Mouse(u32, u32),
     Key(u16, bool),
     Unicode(u16,bool),
 }
@@ -43,6 +46,9 @@ struct Calls {
     foreground_blocked: bool,
     covered: bool,
     raise_uncovers: bool,
+    wheel_lines: Option<u32>,
+    wheel_chars: Option<u32>,
+    fail_wheel_settings: bool,
 }
 static CALLS: Mutex<Calls> = Mutex::new(Calls {
     attempts: 0,
@@ -54,6 +60,9 @@ static CALLS: Mutex<Calls> = Mutex::new(Calls {
     foreground_blocked: false,
     covered: false,
     raise_uncovers: false,
+    wheel_lines: Some(3),
+    wheel_chars: Some(3),
+    fail_wheel_settings: false,
 });
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -99,6 +108,7 @@ mod recording_api {
     pub const MOUSEEVENTF_MIDDLEDOWN: u32 = 32;
     pub const MOUSEEVENTF_MIDDLEUP: u32 = 64;
     pub const MOUSEEVENTF_WHEEL: u32 = 0x800;
+    pub const MOUSEEVENTF_HWHEEL: u32 = 0x1000;
     pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
     pub const MOUSEEVENTF_VIRTUALDESK:u32=0x4000;
     pub unsafe fn SendInput(count: u32, inputs: *mut INPUT, _size: i32) -> u32 {
@@ -112,7 +122,8 @@ mod recording_api {
         for i in 0..accepted {
             let input = unsafe { &*inputs.add(i as usize) };
             let posted = if input.r#type == INPUT_MOUSE {
-                super::Posted::Mouse(unsafe { input.Anonymous.mi.dwFlags })
+                let mouse = unsafe { input.Anonymous.mi };
+                super::Posted::Mouse(mouse.dwFlags, mouse.mouseData)
             } else {
                 let key = unsafe { input.Anonymous.ki };
                 if key.dwFlags & KEYEVENTF_UNICODE != 0 {super::Posted::Unicode(key.wScan,key.dwFlags&KEYEVENTF_KEYUP==0)}
@@ -151,6 +162,18 @@ mod recording_api {
                 }
                 pub unsafe fn WindowFromPoint(_point:POINT)->HWND {if super::super::super::super::CALLS.lock().unwrap().covered {2usize as HWND}else{1usize as HWND}}
                 pub unsafe fn GetCursorPos(point:*mut POINT)->i32 {unsafe{(*point).x=0;(*point).y=0;}1}
+                pub const SPI_GETWHEELSCROLLLINES:u32=104;
+                pub const SPI_GETWHEELSCROLLCHARS:u32=108;
+                pub unsafe fn SystemParametersInfoW(action:u32,_param:u32,value:*mut core::ffi::c_void,_flags:u32)->i32 {
+                    let calls=super::super::super::super::CALLS.lock().unwrap();
+                    if calls.fail_wheel_settings || value.is_null() {return 0;}
+                    let setting=match action {
+                        SPI_GETWHEELSCROLLLINES=>calls.wheel_lines.unwrap_or(3),
+                        SPI_GETWHEELSCROLLCHARS=>calls.wheel_chars.unwrap_or(3),
+                        _=>return 0,
+                    };
+                    unsafe{*value.cast::<u32>()=setting;}1
+                }
             }
             pub mod Input {
                 pub mod KeyboardAndMouse {
@@ -206,8 +229,133 @@ fn cleanup_never_releases_unowned_buttons_or_replays_duplicate_downs() {
     input.release_all_input();
     let calls = CALLS.lock().unwrap();
     assert_eq!(calls.attempts, 2);
-    assert_eq!(calls.posted, vec![Posted::Mouse(2), Posted::Mouse(4)]);
+    assert_eq!(calls.posted, vec![Posted::Mouse(2, 0), Posted::Mouse(4, 0)]);
 }
+
+#[test]
+fn windows_scroll_maps_gpui_pixels_to_current_native_wheel_units_on_both_axes() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls {
+        wheel_lines: Some(3),
+        wheel_chars: Some(3),
+        ..Default::default()
+    };
+    let input = actual::WindowsInputInjector::new().unwrap();
+    input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 40,
+            delta_y: 120,
+        })
+        .unwrap();
+
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(calls.attempts, 1, "both axes should use one SendInput call");
+    assert_eq!(
+        calls.posted,
+        vec![
+            Posted::Mouse(MOUSEEVENTF_HWHEEL, (-40_i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, 120),
+        ]
+    );
+}
+
+#[test]
+fn windows_scroll_preserves_disabled_and_page_preferences_with_bounded_native_deltas() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls {
+        wheel_lines: Some(0),
+        wheel_chars: Some(0),
+        ..Default::default()
+    };
+    let input = actual::WindowsInputInjector::new().unwrap();
+    input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 40,
+            delta_y: 40,
+        })
+        .unwrap();
+    assert!(CALLS.lock().unwrap().posted.is_empty(), "zero means disabled");
+
+    *CALLS.lock().unwrap() = Calls {
+        wheel_lines: Some(u32::MAX),
+        wheel_chars: Some(u32::MAX),
+        ..Default::default()
+    };
+    input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 120,
+            delta_y: 120,
+        })
+        .unwrap();
+    input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: i32::MIN,
+            delta_y: i32::MAX,
+        })
+        .unwrap();
+    assert_eq!(
+        CALLS.lock().unwrap().posted,
+        vec![
+            Posted::Mouse(MOUSEEVENTF_HWHEEL, (-120_i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, 120),
+            Posted::Mouse(MOUSEEVENTF_HWHEEL, (i16::MAX as i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, i16::MAX as u32),
+        ]
+    );
+}
+
+#[test]
+fn fractional_wheel_units_accumulate_until_sendinput_can_represent_them() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls {
+        wheel_lines: Some(8),
+        wheel_chars: Some(8),
+        ..Default::default()
+    };
+    let input = actual::WindowsInputInjector::new().unwrap();
+    for _ in 0..8 {
+        input
+            .inject_input(InputEvent::MouseScroll {
+                delta_x: 1,
+                delta_y: 1,
+            })
+            .unwrap();
+    }
+
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(calls.attempts, 3);
+    assert_eq!(
+        calls.posted,
+        vec![Posted::Mouse(MOUSEEVENTF_HWHEEL, (-1_i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, 1),
+            Posted::Mouse(MOUSEEVENTF_HWHEEL, (-1_i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, 1),
+            Posted::Mouse(MOUSEEVENTF_HWHEEL, (-1_i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, 1)]
+    );
+}
+
+#[test]
+fn missing_windows_scroll_preferences_reject_scroll_without_injecting() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls {
+        fail_wheel_settings: true,
+        ..Default::default()
+    };
+    let input = actual::WindowsInputInjector::new().unwrap();
+    assert!(
+        input
+            .inject_input(InputEvent::MouseScroll {
+                delta_x: 1,
+                delta_y: 1,
+            })
+            .is_err()
+    );
+    let calls = CALLS.lock().unwrap();
+    assert!(calls.posted.is_empty());
+    assert_eq!(calls.attempts, 0);
+}
+
 #[test]
 fn failed_modifier_never_forwards_the_bare_printable_key() {
     let _serial = SERIAL.lock().unwrap();

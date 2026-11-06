@@ -210,7 +210,13 @@ impl MacInputInjector {
                 .lock()
                 .expect("source pointer lock")
                 .ok_or("Pointer position missing")?;
+            // Scrolling is fresh pointer intent, just like clicking. Restore
+            // the selected application before the live hit test; otherwise a
+            // background app's first wheel event permanently pauses control.
+            // The hit test still prevents delivery to another window/app.
+            window.focus_for_click(deadline)?;
             window.check_pointer(x, y)?;
+            return Ok(());
         }
         if !window.focused() {
             return Err("The selected application window does not have keyboard focus. Click that window's remote picture before typing".into());
@@ -322,9 +328,7 @@ impl MacInputInjector {
                 self.post_mouse_button(button, false, deadline);
             }
             InputEvent::MouseScroll { delta_x, delta_y } => {
-                if self.window.is_some() || self.display_id.is_some() {
-                    self.post_pointer_move(self.pointer_position(), deadline);
-                }
+                let position = self.pointer_position();
                 if let Ok(cg_event) = CGEvent::new_scroll_event(
                     self.source.clone(),
                     ScrollEventUnit::PIXEL,
@@ -333,12 +337,12 @@ impl MacInputInjector {
                     delta_x,
                     0,
                 ) {
-                    // Posting the preceding move is asynchronous. Bind this
-                    // scroll to the same source coordinates, not the cursor
-                    // location observed while constructing the native event.
+                    // Bind the wheel directly to its source coordinates. An
+                    // extra synthetic mouse move adds native work and hover
+                    // side effects without changing the scroll target.
                     // CGEvent dereferences to the borrowed native event. The
                     // existing binding does not wrap CGEventSetLocation.
-                    unsafe { CGEventSetLocation(std::ptr::from_ref(&*cg_event).cast_mut().cast(),self.pointer_position()); }
+                    unsafe { CGEventSetLocation(std::ptr::from_ref(&*cg_event).cast_mut().cast(),position); }
                     self.post(&cg_event, deadline);
                 }
             }
@@ -911,13 +915,12 @@ mod deadline_tests {
         native.display_id=Some(id);
         *native.target_pointer.lock().unwrap()=Some(point);
         native.post_observer=Some(Arc::new(move|event| {
-            if event.get_type() as u32==CGEventType::ScrollWheel as u32 {
-                let position=event.location();sink.lock().unwrap().push((position.x,position.y));
-            }
+            let position=event.location();
+            sink.lock().unwrap().push((event.get_type() as u32,position.x,position.y));
         }));
         // The observer records the real CGEvent and prevents every OS post.
         input.inject(InputEvent::MouseScroll{delta_x:7,delta_y:42},None);
-        assert_eq!(*seen.lock().unwrap(),vec![(expected.x,expected.y)]);
+        assert_eq!(*seen.lock().unwrap(),vec![(CGEventType::ScrollWheel as u32,expected.x,expected.y)]);
     }
     #[test]
     fn fresh_deadline_posts_and_cleans_only_the_accepted_key() {

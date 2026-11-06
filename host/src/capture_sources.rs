@@ -15,6 +15,18 @@ fn mac_window_is_shareable(layer: i32, on_screen: bool) -> bool {
     layer == 0 || on_screen
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn mac_window_catalog_title(title: Option<String>, application: &str, layer: i32, on_screen: bool) -> Option<String> {
+    if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+        return Some(title);
+    }
+    // Some real application windows (including Gemini) intentionally have no
+    // title. Their WindowServer ID remains the capture identity. Do not turn
+    // unnamed hidden menu surfaces or floating helpers into application sources.
+    (layer == 0 && on_screen && !application.trim().is_empty())
+        .then(|| application.to_owned())
+}
+
 #[cfg(target_os = "macos")]
 fn window_pixel_size(
     window: &screencapturekit::shareable_content::SCWindow,
@@ -170,7 +182,9 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
                 || app.bundle_identifier() == "com.apple.WindowManager" {
                 continue;
             }
-            let Some(title) = window.title().filter(|title| !title.trim().is_empty()) else {
+            let Some(title) = mac_window_catalog_title(
+                window.title(), &app.application_name(), window.window_layer(), window.is_on_screen(),
+            ) else {
                 continue;
             };
             let frame = window.frame();
@@ -195,7 +209,7 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
         Ok(sources)
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    Ok(vec![CaptureSourceInfo {
+    let desktop = CaptureSourceInfo {
         source: CaptureSource::MainDisplay,
         title: "Desktop".into(),
         application: String::new(),
@@ -209,7 +223,18 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
             { true }
         },
         camera: None,
-    }])
+    };
+    #[cfg(target_os = "linux")]
+    {
+        let mut sources = vec![desktop];
+        match crate::linux_kwin::list() {
+            Ok(windows) => sources.extend(windows),
+            Err(error) => eprintln!("KWin window catalog unavailable: {error}"),
+        }
+        Ok(sources)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(vec![desktop])
 }
 
 #[cfg(target_os = "macos")]
@@ -263,7 +288,16 @@ pub(crate) fn filter(
 
 #[cfg(test)]
 mod transformed_window_tests {
-    use super::{mac_window_is_shareable, window_is_transformed};
+    use super::{mac_window_catalog_title, mac_window_is_shareable, window_is_transformed};
+    #[test]
+    fn untitled_visible_application_windows_keep_their_application_name() {
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, true).as_deref(), Some("Gemini"));
+        assert_eq!(mac_window_catalog_title(Some("  ".into()), "Gemini", 0, true).as_deref(), Some("Gemini"));
+        assert_eq!(mac_window_catalog_title(Some("Document".into()), "Editor", 0, false).as_deref(), Some("Document"));
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 0, false), None);
+        assert_eq!(mac_window_catalog_title(None, "Gemini", 3, true), None);
+        assert_eq!(mac_window_catalog_title(None, "", 0, true), None);
+    }
     #[test]
     fn hidden_auxiliary_panels_are_not_capture_sources() {
         assert!(!mac_window_is_shareable(3, false));
