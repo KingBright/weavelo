@@ -256,3 +256,16 @@ Studio、Book、cube 已正式升级142（`743aec1`）；两台Mac分别保留�
 Book142 的两个接收窗口实际创建 Gemini／ChatGPT 独立 Dock helper；原生进程 localizedName 与 Dock AXTitle 对应，停止后进程和临时 bundle 均已清理。旧 ChatGPT Dock 缓存条目无进程、路径不存在，未修改用户 Dock 配置。自动隐藏 Dock 的截图未拍到气泡，最小化属性写入后仍读回0，所以可见悬停外观、侧边／最小化窗口图标仍未通过实机验收。
 
 Android99 正式构建已完成，努比亚与红米均已安装，独立拉回 base.apk 核对 SHA 均为 `656c36458de837097bf2561fa4cf26f002c608249be9fe237b76a179b5408448`，原有无障碍启用列表未改变；helper API4/version99。NAS 当前版本99和公开下载亦已核对。红米实际设备页截图 `android99-redmi-device-cards.png` 已显示努比亚手机图标；其余电脑尚在142/143，未声称其新分类图标已验收。Compose 仪器测试源码补充编译通过（修正 assertExists 成员方法的错误导入，`3130c60`），尚未运行设备仪器测试。
+
+
+## Desktop144 正式升级、Linux应用首帧与 Android 图标实机 · 2026-11-06
+
+四台电脑已安装 Desktop144，运行时来源 `2d9b934`。Studio 和 Book 保留各自原签名；Windows、Linux 正式升级完成。NAS 三平台包已发布并独立下载核对 SHA；两部手机继续运行已核对的 Android99。Linux 另应用 `348d0e0` 的启动入口迁移修复：真实旧入口使用名称 Weavelo 和0600权限，现改为规范可执行路径及KWin接口声明，保留原权限与SELinux标签。所有改动已推送main。
+
+- Linux后台实际列出6个窗口及1个屏幕；Studio来源选择器实拍可见Firefox与Bazzite Portal真实图标，按应用分组。证据 `native144-linux-repaired-sources.json`、`native144-linux-source-picker.png`。
+- Studio144接收Linux Bazzite Portal独立窗口，2帧、0解码错误且UI提交；`native144-linux-application-visible.png`实际显示该应用内容。第一版通用检查要求超过3帧，因此对静止窗口返回false；随后按首帧要求独立截图核验，未把这个阈值失败伪装成持续动态帧验收。Linux该独立窗口仍明确不支持控制，整屏控制不受此能力标志影响。自建流均已关闭。
+- Book144→Studio144 ChatGPT独立窗口复测11帧、0错误、UI提交成功，测试流已关闭；Book `native144-book-studio-chatgpt.json`。未重新宣称本轮完成全部平台输入或物理显示时延验收。
+- 红米99实拍五台对端分别显示MacBook、Linux、Mac Studio、手机、Windows类别图标，证据 `android99-redmi-all144-badges.png`。
+- Book原生Dock截图显示ChatGPT与Gemini图标、正确悬停气泡名称及MacStudio角标；源PNG为 `codex-book142-dock-edge-47e1366d306c460db2d3ae91c27e597e-{ChatGPT,Gemini}.png`。测试输出JSON曾因CGPoint序列化失败，但图片已存在且逐张查看；Stop确认无残留流。侧边收起窗口／Stage Manager图标仍未验收。
+
+最新发布回归1052项、25项跳过；Linux来源合并原生测试2项和程序编译检查通过。公开包核对见 `native144-nas-verified.json`。持续滚动、完整多平台控制、实际端到端时延及先前未完事项继续保留，不能用本节代替完整六设备验收。
