@@ -214,7 +214,9 @@ class RemoteControlService : AccessibilityService() {
                         android.util.Log.w("Weavelo","App text target unavailable display=${target.displayId} windows=${windows.size} roots=${roots.size} focused=${focused.size}")
                         done(false);return
                     }
-                    val before=node.text?.toString() ?: ""
+                    // Accessibility exposes a placeholder through text as well.
+                    // It is not editor content and must never be copied into it.
+                    val before=if(node.isShowingHintText) "" else node.text?.toString() ?: ""
                     val edit=RemoteTextEdit.insert(before,node.textSelectionStart,node.textSelectionEnd,text)
                     if(edit==null || !node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                             Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,edit.text) })) {

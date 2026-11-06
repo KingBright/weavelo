@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteTextEditTest {
+    @Test fun emptyEditorWithoutCursorAcceptsTheFirstCommitOnly() {
+        assertEquals(RemoteTextEdit.Edit("abc你好🙂",7,7),RemoteTextEdit.insert("",-1,-1,"abc你好🙂"))
+        assertNull(RemoteTextEdit.insert("existing",-1,-1,"new"))
+        assertNull(RemoteTextEdit.insert("",-1,0,"new"))
+        assertNull(RemoteTextEdit.insert("",-1,-1,"x".repeat(1025)))
+    }
     @Test fun committedTextTargetsTheSelectionWithoutSplittingEmoji() {
         assertEquals(RemoteTextEdit.Edit("a你好🙂z",5,5),RemoteTextEdit.insert("aXXz",3,1,"你好🙂"))
         assertNull(RemoteTextEdit.insert("a🙂z",2,2,"x"))

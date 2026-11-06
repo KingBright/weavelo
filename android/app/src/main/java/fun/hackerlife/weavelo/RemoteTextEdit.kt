@@ -13,6 +13,9 @@ internal object RemoteTextEdit {
         0x2B to ",<",0x2C to "/?",0x2F to ".>",0x31 to "  ",0x32 to "`~")
     fun baseCharacter(code: Int): Char? = letters[code] ?: symbols[code]?.first()
     fun insert(text: String, start: Int, end: Int, committed: String): Edit? {
+        // An empty focused editor can report no cursor yet. Zero is its only
+        // possible insertion position; never infer a position in existing text.
+        if(text.isEmpty() && start == -1 && end == -1) return insert(text,0,0,committed)
         if(text.length>65536 || committed.toByteArray(Charsets.UTF_8).size !in 1..1024 ||
             start !in 0..text.length || end !in 0..text.length) return null
         fun boundary(index: Int)=index==0 || index==text.length ||
