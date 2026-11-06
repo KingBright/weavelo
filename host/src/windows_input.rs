@@ -13,6 +13,28 @@ fn check_deadline(deadline: Option<Instant>) -> InputResult {
     }
     Ok(())
 }
+fn fresh_window_intent(event: &InputEvent, current_modifiers: u8) -> bool {
+    matches!(
+        event,
+        InputEvent::MouseScroll { .. }
+            | InputEvent::Text(_)
+            | InputEvent::Key { pressed: true, .. }
+            | InputEvent::KeyDown(_)
+    ) || matches!(event, InputEvent::ModifiersChanged(modifiers)
+        if modifiers & !current_modifiers & 0x0f != 0)
+}
+fn pointer_activation_intent(event: &InputEvent) -> bool {
+    matches!(event, InputEvent::MouseMoveAbsolute { .. } | InputEvent::MouseDown(_))
+}
+fn window_release_event(event: &InputEvent, current_modifiers: u8) -> bool {
+    matches!(
+        event,
+        InputEvent::MouseUp(_)
+            | InputEvent::KeyUp(_)
+            | InputEvent::Key { pressed: false, .. }
+    ) || matches!(event, InputEvent::ModifiersChanged(modifiers)
+        if modifiers & !current_modifiers & 0x0f == 0)
+}
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
@@ -146,17 +168,43 @@ impl WindowsInputInjector {
             width:unsafe{GetSystemMetrics(SM_CXVIRTUALSCREEN)}.try_into()?,height:unsafe{GetSystemMetrics(SM_CYVIRTUALSCREEN)}.try_into()?};
         if source.window {
             let hwnd=source.handle as usize as HWND;
-            let pointer=matches!(&event,InputEvent::MouseMoveAbsolute{..}|InputEvent::MouseDown(_)|InputEvent::MouseUp(_));
             if unsafe{GetAncestor(GetForegroundWindow(),GA_ROOT)}!=hwnd {
-                if !pointer{return Err("The selected window is not focused".into());}
-                check_deadline(deadline)?;
-                // Windows may reject background activation. A hit-tested native
-                // click can still activate this window; motion must not revoke
-                // control. Keyboard and wheel input still require actual focus.
-                unsafe{SetForegroundWindow(hwnd)};
-                // Raise only the selected window without moving, resizing or
-                // changing its topmost policy. The hit test below remains final.
-                unsafe{SetWindowPos(hwnd,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)};
+                let pointer = pointer_activation_intent(&event);
+                let current_modifiers = self.modifiers.load(Ordering::Relaxed);
+                let fresh = fresh_window_intent(
+                    &event,
+                    current_modifiers,
+                );
+                if pointer || fresh {
+                    check_deadline(deadline)?;
+                    // Windows may reject foreground activation. Raise only the
+                    // selected HWND, without moving, resizing, or changing its
+                    // topmost policy. Pointer events still rely on the strict
+                    // hit test below; fresh keyboard/text/scroll events also
+                    // require that the HWND actually became foreground.
+                    unsafe { SetForegroundWindow(hwnd) };
+                    check_deadline(deadline)?;
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            HWND_TOP,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        )
+                    };
+                    check_deadline(deadline)?;
+                    if fresh
+                        && !pointer
+                        && unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) } != hwnd
+                    {
+                        return Err("The selected window is not focused".into());
+                    }
+                } else if !window_release_event(&event, current_modifiers) {
+                    return Err("The selected window is not focused".into());
+                }
             }
             if let InputEvent::MouseMoveAbsolute{x,y}=&event {
                 let (vx,vy)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,*x,*y)?;

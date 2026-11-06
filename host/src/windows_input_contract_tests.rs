@@ -25,7 +25,7 @@ mod windows_sources {
         pub fn current_bounds(&self)->Result<Rect,String>{Ok(self.bounds)}
         pub fn same_size(&self)->Result<Rect,String>{Ok(self.bounds)}
     }
-    pub fn resolve(source:CaptureSource)->Result<Selection,String>{Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle:1,window:matches!(source,CaptureSource::Window(_))})}
+    pub fn resolve(source:CaptureSource)->Result<Selection,String>{let handle=match source{CaptureSource::Window(88)=>3,_=>1};Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle,window:matches!(source,CaptureSource::Window(_))})}
     pub struct PhysicalCoordinates;
     impl PhysicalCoordinates {pub fn enter()->Result<Self,String>{Ok(Self)}}
 }
@@ -49,6 +49,10 @@ struct Calls {
     wheel_lines: Option<u32>,
     wheel_chars: Option<u32>,
     fail_wheel_settings: bool,
+    foreground_window: usize,
+    pointer_window: usize,
+    activation_attempts: Vec<usize>,
+    raise_attempts: Vec<usize>,
 }
 static CALLS: Mutex<Calls> = Mutex::new(Calls {
     attempts: 0,
@@ -63,6 +67,10 @@ static CALLS: Mutex<Calls> = Mutex::new(Calls {
     wheel_lines: Some(3),
     wheel_chars: Some(3),
     fail_wheel_settings: false,
+    foreground_window: 1,
+    pointer_window: 0,
+    activation_attempts: Vec::new(),
+    raise_attempts: Vec::new(),
 });
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -152,15 +160,16 @@ mod recording_api {
                 pub const HWND_TOP:HWND=core::ptr::null_mut();
                 pub const SWP_NOMOVE:u32=2;pub const SWP_NOSIZE:u32=1;pub const SWP_NOACTIVATE:u32=16;
                 pub unsafe fn GetSystemMetrics(index:i32)->i32{match index{78=>1920,79=>1080,_=>0}}
-                pub unsafe fn GetForegroundWindow()->HWND {if super::super::super::super::CALLS.lock().unwrap().foreground_blocked {2usize as HWND}else{1usize as HWND}}
+                pub unsafe fn GetForegroundWindow()->HWND {let calls=super::super::super::super::CALLS.lock().unwrap();if calls.foreground_blocked {2usize as HWND}else{calls.foreground_window.max(1) as HWND}}
                 pub unsafe fn GetAncestor(window:HWND,_flags:u32)->HWND {window}
-                pub unsafe fn SetForegroundWindow(_window:HWND)->i32{if super::super::super::super::CALLS.lock().unwrap().foreground_blocked {0}else{1}}
+                pub unsafe fn SetForegroundWindow(window:HWND)->i32{let mut calls=super::super::super::super::CALLS.lock().unwrap();let window=window as usize;calls.activation_attempts.push(window);if calls.foreground_blocked {0}else{calls.foreground_window=window;1}}
                 pub unsafe fn SetWindowPos(_window:HWND,_after:HWND,_x:i32,_y:i32,_w:i32,_h:i32,flags:u32)->i32{
                     assert_eq!(flags,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
                     let mut calls=super::super::super::super::CALLS.lock().unwrap();
+                    calls.raise_attempts.push(_window as usize);
                     if calls.raise_uncovers{calls.covered=false;}1
                 }
-                pub unsafe fn WindowFromPoint(_point:POINT)->HWND {if super::super::super::super::CALLS.lock().unwrap().covered {2usize as HWND}else{1usize as HWND}}
+                pub unsafe fn WindowFromPoint(_point:POINT)->HWND {let calls=super::super::super::super::CALLS.lock().unwrap();if calls.covered {2usize as HWND}else if calls.pointer_window!=0 {calls.pointer_window as HWND}else{1usize as HWND}}
                 pub unsafe fn GetCursorPos(point:*mut POINT)->i32 {unsafe{(*point).x=0;(*point).y=0;}1}
                 pub const SPI_GETWHEELSCROLLLINES:u32=104;
                 pub const SPI_GETWHEELSCROLLCHARS:u32=108;
@@ -215,6 +224,145 @@ fn selected_window_can_be_raised_without_requiring_foreground_activation() {
     input.inject_input(InputEvent::MouseDown(0)).unwrap();
     input.inject_input(InputEvent::MouseUp(0)).unwrap();
     assert_eq!(CALLS.lock().unwrap().posted.len(),3);
+}
+
+#[test]
+fn fresh_keyboard_text_and_wheel_input_activate_the_exact_selected_window() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls::default();
+    let window_a = actual::WindowsInputInjector::for_source(
+        protocol::session::CaptureSource::Window(77),
+        (1920, 1080),
+        (1920, 1080),
+    )
+    .unwrap();
+    let window_b = actual::WindowsInputInjector::for_source(
+        protocol::session::CaptureSource::Window(88),
+        (1920, 1080),
+        (1920, 1080),
+    )
+    .unwrap();
+
+    window_a.inject_input(InputEvent::KeyDown(0x41)).unwrap();
+    window_b.inject_input(InputEvent::KeyDown(0x42)).unwrap();
+    let text = protocol::interaction::CommittedText::new("中".into()).unwrap();
+    window_b.inject_input(InputEvent::Text(text)).unwrap();
+    window_a.inject_input(InputEvent::KeyDown(0x43)).unwrap();
+    CALLS.lock().unwrap().pointer_window = 3;
+    window_b
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 0,
+            delta_y: 40,
+        })
+        .unwrap();
+
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(calls.activation_attempts, vec![3, 1, 3]);
+    assert_eq!(calls.raise_attempts, vec![3, 1, 3]);
+    assert_eq!(calls.foreground_window, 3);
+    assert_eq!(
+        calls.posted,
+        vec![
+            Posted::Key(0x41, true),
+            Posted::Key(0x42, true),
+            Posted::Unicode('中' as u16, true),
+            Posted::Unicode('中' as u16, false),
+            Posted::Key(0x43, true),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, 40),
+        ]
+    );
+}
+
+#[test]
+fn refused_foreground_handoff_sends_no_keyboard_text_or_wheel_input() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls {
+        foreground_blocked: true,
+        ..Default::default()
+    };
+    let input = actual::WindowsInputInjector::for_source(
+        protocol::session::CaptureSource::Window(88),
+        (1920, 1080),
+        (1920, 1080),
+    )
+    .unwrap();
+
+    assert!(input.inject_input(InputEvent::KeyDown(0x41)).is_err());
+    assert!(input
+        .inject_input(InputEvent::Text(
+            protocol::interaction::CommittedText::new("中".into()).unwrap()
+        ))
+        .is_err());
+    assert!(input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 0,
+            delta_y: 40,
+        })
+        .is_err());
+
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(calls.activation_attempts, vec![3, 3, 3]);
+    assert_eq!(calls.raise_attempts, vec![3, 3, 3]);
+    assert_eq!(calls.attempts, 0);
+    assert!(calls.posted.is_empty());
+}
+
+#[test]
+fn key_mouse_and_modifier_cleanup_do_not_reactivate_an_old_window() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls::default();
+    let window_a = actual::WindowsInputInjector::for_source(
+        protocol::session::CaptureSource::Window(77),
+        (1920, 1080),
+        (1920, 1080),
+    )
+    .unwrap();
+    let window_b = actual::WindowsInputInjector::for_source(
+        protocol::session::CaptureSource::Window(88),
+        (1920, 1080),
+        (1920, 1080),
+    )
+    .unwrap();
+
+    window_a
+        .inject_input(InputEvent::ModifiersChanged(
+            input_modifiers::SHIFT | input_modifiers::CONTROL,
+        ))
+        .unwrap();
+    window_a.inject_input(InputEvent::KeyDown(0x41)).unwrap();
+    window_a
+        .inject_input(InputEvent::MouseMoveAbsolute { x: 32768, y: 32768 })
+        .unwrap();
+    window_a.inject_input(InputEvent::MouseDown(0)).unwrap();
+    window_b.inject_input(InputEvent::KeyDown(0x42)).unwrap();
+
+    window_a.inject_input(InputEvent::KeyUp(0x41)).unwrap();
+    window_a.inject_input(InputEvent::MouseUp(0)).unwrap();
+    window_a
+        .inject_input(InputEvent::ModifiersChanged(input_modifiers::SHIFT))
+        .unwrap();
+    window_a.inject_input(InputEvent::ModifiersChanged(0)).unwrap();
+
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(calls.activation_attempts, vec![3]);
+    assert_eq!(calls.raise_attempts, vec![3]);
+    assert_eq!(calls.foreground_window, 3);
+    assert_eq!(
+        calls.posted.iter().filter(|event| **event == Posted::Key(0x41, false)).count(),
+        1
+    );
+    assert_eq!(
+        calls.posted.iter().filter(|event| **event == Posted::Mouse(4, 0)).count(),
+        1
+    );
+    assert_eq!(
+        calls.posted.iter().filter(|event| **event == Posted::Key(0xA0, false)).count(),
+        1
+    );
+    assert_eq!(
+        calls.posted.iter().filter(|event| **event == Posted::Key(0xA2, false)).count(),
+        1
+    );
 }
 
 #[test]
