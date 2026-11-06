@@ -1779,7 +1779,10 @@ async fn inject_fresh(
                 // compositor lease to clear its state without a second up RPC.
                 capture.revoke_source();
             }
-            result.map_err(|e|Box::new(e) as Box<dyn Error+Send+Sync>)
+            result.map_err(|e| -> Box<dyn Error+Send+Sync> {
+                if e==crate::linux_portal::runtime::PortalInputError::Expired {Box::new(remote_core::InputExpired("before Linux portal dispatch"))}
+                else {Box::new(e)}
+            })
         },
         None => injector.inject_target_before(target, event,deadline),
     };
@@ -1816,6 +1819,7 @@ async fn input_error(
             .is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
     {
         s.last_input_error = Some(Instant::now());
+        eprintln!("WEAVELO_INPUT_ERROR subscription={id} reason={reason}");
         send_session(
             udp,
             addr,

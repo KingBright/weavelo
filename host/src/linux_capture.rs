@@ -64,6 +64,8 @@ pub struct LinuxVideoCapturer {
     frame_rx: mpsc::Receiver<LinuxVideoFrame>,
     run: Option<CaptureRun>,
     native: Option<Arc<FrameMailbox>>,
+    pacer: remote_core::frame_pacer::FramePacer,
+    resources: Option<Arc<crate::lifecycle::Resources>>,
 }
 
 /// Owns cancellation even when stop/start is itself cancelled while awaiting
@@ -131,6 +133,10 @@ async fn receive_native_frame(
 }
 
 impl LinuxVideoCapturer {
+    pub(crate) fn with_resources(mut self,resources:Arc<crate::lifecycle::Resources>)->Self {
+        resources.capture_target_fps.store(u64::from(self.target_fps),Ordering::Relaxed);
+        self.resources=Some(resources);self
+    }
     pub(crate) fn snapshot(&self)->Option<OwnedFrame>{self.native.as_ref()?.snapshot()}
     pub(crate) fn accepted_snapshot(&self,stamp:crate::linux_frame::FrameStamp){if let Some(mailbox)=&self.native{mailbox.accepted_snapshot(stamp);}}
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, Box<dyn Error + Send + Sync>> {
@@ -140,11 +146,13 @@ impl LinuxVideoCapturer {
         Ok(Self {
             target_width: width,
             target_height: height,
-            target_fps: fps.clamp(15, 120),
+            target_fps: fps.clamp(1, 120),
             running: Arc::new(AtomicBool::new(false)),
             frame_rx,
             run: None,
             native: None,
+            pacer: remote_core::frame_pacer::FramePacer::new(fps.clamp(1,120)),
+            resources: None,
         })
     }
 
@@ -163,7 +171,9 @@ impl LinuxVideoCapturer {
         fps: u32,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.target_height = height;
-        self.target_fps = fps.clamp(15, 120);
+        let fps=fps.clamp(1,120);
+        if fps!=self.target_fps {self.pacer.reset(fps);self.target_fps=fps;}
+        if let Some(resources)=&self.resources {resources.capture_target_fps.store(u64::from(fps),Ordering::Relaxed);}
         Ok(())
     }
 
@@ -210,6 +220,7 @@ impl VideoCapturer for LinuxVideoCapturer {
             return Ok(());
         }
         self.retire_run().await;
+        self.pacer.reset(self.target_fps);
         let (cancelled, mut cancel_rx) = watch::channel(false);
         self.running.store(true, Ordering::SeqCst);
         let mut run = CaptureRun {
@@ -316,7 +327,14 @@ impl VideoCapturer for LinuxVideoCapturer {
         };
         let mut cancelled = run.cancelled.subscribe();
         if let Some(mailbox) = &self.native {
-            return receive_native_frame(mailbox, &mut cancelled).await;
+            loop {
+                let frame=receive_native_frame(mailbox,&mut cancelled).await?;
+                if let Some(resources)=&self.resources {resources.raw_capture_samples.fetch_add(1,Ordering::Relaxed);}
+                if self.pacer.admit(frame.timing.capture_ts_us) {return Ok(frame);}
+                // Drop only uncoded raw frames. The mailbox retains the latest
+                // native buffer; compressed reference frames never enter here.
+                if let Some(resources)=&self.resources {resources.capture_pacing_skips.fetch_add(1,Ordering::Relaxed);}
+            }
         }
         // The trait already requires &mut self. No receiver lock is needed,
         // and teardown never joins a task while holding one.
@@ -637,6 +655,32 @@ mod lifecycle_tests {
             !*cancelled.borrow(),
             "pause/resume must keep the native run epoch"
         );
+    }
+
+    #[tokio::test]
+    async fn native_display_rate_is_capped_before_encoding_and_updates_live() {
+        let mailbox=Arc::new(FrameMailbox::new(1).unwrap());
+        let resources=Arc::new(crate::lifecycle::Resources::default());
+        let mut capture=LinuxVideoCapturer::from_owned_mailbox(mailbox.clone(),30).unwrap().with_resources(resources.clone());
+        capture.start().await.unwrap();
+        let mut sequence=0u64;
+        for fps in [30,7,47] {
+            capture.update_resolution_and_fps(720,fps).unwrap();
+            let mut emitted=0;
+            for _ in 0..600 {
+                let mut frame=crate::linux_raw_encode::tests::frame(crate::linux_frame::PixelFormat::Nv12,
+                    crate::linux_raw_encode::tests::known_color(),1);
+                frame.stamp.generation=1;frame.stamp.sequence=Some(sequence);
+                frame.stamp.arrival_ts_us=1_000_000+sequence*1_000_000/60;
+                sequence+=1;
+                assert!(mailbox.publish(frame));
+                let next=capture.capture_frame();tokio::pin!(next);
+                emitted+=poll_fn(|cx|Poll::Ready(matches!(next.as_mut().poll(cx),Poll::Ready(Ok(_))))).await as u32;
+            }
+            assert!(emitted.abs_diff(fps*10)<=1,"{fps}: emitted {emitted}");
+            assert_eq!(resources.capture_target_fps.load(Ordering::Relaxed),u64::from(fps));
+        }
+        assert!(resources.capture_pacing_skips.load(Ordering::Relaxed)>0);
     }
 
     #[tokio::test]

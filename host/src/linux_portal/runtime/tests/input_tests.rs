@@ -28,7 +28,7 @@ async fn expired_native_input_neither_posts_a_press_nor_creates_a_cleanup_releas
     let fixture=Fixture::new(Behavior::EarlyResponse,1).await;
     let capture=control(&fixture).await;
     let deadline=std::time::Instant::now()-std::time::Duration::from_millis(1);
-    assert_eq!(capture.inject_input_before(InputEvent::KeyDown(0),Some(deadline)).await,Err(PortalInputError::InvalidEvent));
+    assert_eq!(capture.inject_input_before(InputEvent::KeyDown(0),Some(deadline)).await,Err(PortalInputError::Expired));
     capture.release_input().await.unwrap();
     assert_eq!(fixture.calls.count("key_down"),0);
     assert_eq!(fixture.calls.count("key_up"),0);
@@ -244,6 +244,14 @@ async fn resize_epoch_disables_old_mapping_and_releases_keys_without_stopping_vi
     let mut next = frame(capture.generation());
     next.stamp.format_revision += 1;
     next.stamp.sequence = Some(2);
+    // Renegotiating the pixel format alone must not invalidate coordinates.
+    capture.publish_owned(next.clone()).unwrap();
+    assert!(capture.source_info().supports_input);
+    assert!(!fixture.calls.target.lock().unwrap().keys.is_empty());
+    next.width=640;next.height=360;
+    next.source_format.width=640;next.source_format.height=360;
+    next.planes=vec![vec![0;640*360],vec![128;640*360/2]].into();
+    next.stamp.format_revision += 1;next.stamp.sequence=Some(3);
     capture.publish_owned(next).unwrap();
     assert!(!capture.is_revoked(), "video resize must remain available");
     assert!(!capture.source_info().supports_input);

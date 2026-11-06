@@ -171,3 +171,16 @@ Android91 产品源码为 `6eb30da`，桌面138为 `8f98bd6`，均已推送 main
 证据均在各机 `.rust-storage/validation-logs/weavelo-gui-20261102/`：`android91-*-installed-proof.json`、`android91-native-artwork-after.log`、`android91-nubia-artwork-relay.{json,png}`、`android91-nubia-app-artwork-native.png`、`android91-redmi-filemanager-app-artwork-native.png`、`android91-redmi-screen-catalog.{json,err}`、`native138-phone-dock-item-{1,2}.png`、`native138-phone-dock-final-cleanup.json`、`matrix137-all-desktop-summary.json`、`android91-public-download-verified.json`、`native138-nas-verified.json` 及各平台升级记录。
 
 继续项：努比亚本人恢复无障碍后验证独立应用标准编辑器、源绑定键鼠和多指；红米测试APK安装限制；应用旋转／输入法／恢复／自动音频；HO5解锁后的真实PipeWire与同Wi-Fi延迟；当前六设备文件、摄像头、音频及通知矩阵；白板与教学规划。Octendra分工的本次建议见 [Android自有显示方案](../plans/ANDROID-OWNED-DISPLAYS.md)，尚未进行跨项目归属迁移。
+
+
+## 共用遥测与 Linux 帧率、输入修复 · 2026-11-06（待实机升级）
+
+用户新报告涉及码率／帧率超限、拖动中断和遥测低估，按跨平台共用链路排查。已确认并修正：Linux 原生 PipeWire 采集漏用目标帧率；HostTelemetry 和 PipelineTelemetry 串到同一连接的其它窗口；静止画面停止发送遥测；Linux 将过期输入误报为不支持事件，及像素格式重新协商误判为几何变化。保留真实几何变化、来源撤销和过期输入取消；不重放旧输入。
+
+遥测改为每秒按订阅上报，静止时明确显示零活动；去除编码耗时100ms上限。原生GPUI首次提交每帧时记录等待时间，HUD展示采集到UI提交估计值并标注时钟不确定性。GPU完成、显示器扫描和物理glass-to-glass仍未测量，不以此宣称达到5／20ms。码率的实际约束仍须原生编码和真实链路验证，尚不能仅凭修复帧率宣布完成。
+
+检查通过：Linux capture20项（1跳过）、Linux portal input13项、host input96项、remote_core telemetry10项（包含实际UDP双窗口隔离）、protocol telemetry1项、GUI telemetry10项和presenter2项；签名发布回归1047项通过、19项跳过。当前四台电脑仍运行138，HO5处于锁屏；本段不是139部署或真实拖动验收。
+
+Android93已安装努比亚，独立核对base.apk SHA为`8711da23f92d2507825d1cc800dafb8a1a4be8f6be4ac2f42a3efa859edf0eac`，保留既有签名及用户恢复的无障碍。真实独立编辑器出画、触摸到达，但文字出现“text input owner changed”，接收端原生文件仍为空；继续定位，未标记为修复。93增加异步64px真实应用目录图标，界面验收和红米升级待完成。Linux真实应用列表与图标仍未实现；已确认KWin只读窗口目录可用，正确采集绑定待完成。
+
+证据：各机同一任务目录`native139-*`、`linux139-reported-journal.log`、`android93-nubia-installed-proof.json`、`android93-native-independent-input.json`、`android93-restored-nubia-text-native.png`。

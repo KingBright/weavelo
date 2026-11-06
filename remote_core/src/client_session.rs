@@ -452,7 +452,7 @@ pub fn spawn_client_session_receiver(
         let clock_sender = spawn_clock_control_sender(recovery_sender.clone());
         let mut media_handler = MediaPacketHandler::new(
             stats,
-            active_session_id,
+            active_session_id.clone(),
             host_stats.clone(),
             audio_tx,
             decode_tx,
@@ -590,11 +590,13 @@ pub fn spawn_client_session_receiver(
                     // Legacy wall-clock Pong data never authorizes a mapping or RTT update.
                     protocol::ControlMessage::Pong { .. } => {}
                     protocol::ControlMessage::HostTelemetry {
+                        session_id: reported_id,
                         fps,
                         encode_latency_ms,
                         jitter_ms,
                         bitrate_kbps,
                     } => {
+                        if reported_id!=active_session_id.load(Relaxed) {continue;}
                         host_stats.apply_host_telemetry(
                             fps,
                             encode_latency_ms,
@@ -615,7 +617,7 @@ pub fn spawn_client_session_receiver(
                         }
                     }
                     protocol::ControlMessage::PipelineTelemetry(report) => {
-                        host_stats.set_pipeline_report(*report);
+                        if report.session_id==active_session_id.load(Relaxed) {host_stats.set_pipeline_report(*report);}
                     }
                     protocol::ControlMessage::Session(command) => {
                         if let Some(tx) = &session_event_tx {
@@ -1312,6 +1314,7 @@ mod tests {
         sender
             .send_control(
                 &ControlMessage::HostTelemetry {
+                    session_id: 0,
                     fps: 60.0,
                     encode_latency_ms: 4.0,
                     jitter_ms: 1.0,

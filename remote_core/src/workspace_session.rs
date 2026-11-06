@@ -77,6 +77,42 @@ mod peer_health_tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     #[tokio::test]
+    async fn telemetry_stays_with_its_window_including_idle_and_unknown_sources() {
+        let server=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target=server.local_addr().unwrap();let (sender,receiver)=server.split();
+        let peer=tokio::spawn(async move {
+            let mut count=0;
+            loop {
+                let MultiplexedPacket::Control(ControlMessage::Session(command),addr)=receiver.recv().await.unwrap() else{continue;};
+                match *command {
+                    SessionCommand::Open{connection_id,version}=>sender.send_control(&ControlMessage::Session(Box::new(
+                        SessionCommand::Opened{connection_id,version,max_subscriptions:8,files:false,clipboard:false,window_capture:true})),addr).await.unwrap(),
+                    SessionCommand::Subscribe(_)=>{
+                        count+=1;
+                        if count==2 {
+                            for (session_id,fps) in [(7,30.0),(8,47.0),(7,0.0),(999,99.0)] {
+                                sender.send_control(&ControlMessage::HostTelemetry{session_id,fps,encode_latency_ms:fps,jitter_ms:0.0,bitrate_kbps:(fps*100.0) as u32},addr).await.unwrap();
+                            }
+                        }
+                    },
+                    _=>{},
+                }
+            }
+        });
+        let (connection,_events)=WorkspaceConnection::connect_media(target).await.unwrap();
+        let a=Arc::new(SharedHostStats::default());let b=Arc::new(SharedHostStats::default());
+        for (id,stats) in [(7,a.clone()),(8,b.clone())] {
+            let (tx,_rx)=crate::video_queue::channel(2);
+            connection.subscribe(SubscriptionRequest{id,source:CaptureSource::MainDisplay,width:1280,height:720,fps:30,bitrate_kbps:2000,audio:false},tx,Statistics::new(),stats).await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2),async {
+            loop {if a.snapshot().updated_at.is_some()&&b.snapshot().fps==47.0&&a.snapshot().fps==0.0 {break;}tokio::time::sleep(Duration::from_millis(10)).await;}
+        }).await.unwrap();
+        assert_eq!(a.snapshot().bitrate_kbps,0);assert_eq!(b.snapshot().bitrate_kbps,4700);
+        drop(connection);peer.abort();
+    }
+
+    #[tokio::test]
     async fn session_and_telemetry_traffic_remain_live_without_clock_replies() {
         assert!(crate::session_crypto::load_session_psk().is_none());
         let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
@@ -96,7 +132,7 @@ mod peer_health_tests {
                     SessionCommand::DeliveryOffer {request_id, revision, ..} => {
                         count.fetch_add(1, Ordering::Relaxed);
                         if mode.load(Ordering::Relaxed) {
-                            ControlMessage::HostTelemetry {fps:30.0, encode_latency_ms:1.0, jitter_ms:0.0, bitrate_kbps:1000}
+                            ControlMessage::HostTelemetry {session_id:1,fps:30.0, encode_latency_ms:1.0, jitter_ms:0.0, bitrate_kbps:1000}
                         } else {ControlMessage::Session(Box::new(SessionCommand::DeliveryReceipt {
                             request_id, revision, state:DeliveryState::Receiving, reason:String::new()}))}
                     }
@@ -1235,13 +1271,13 @@ impl Actor {
                         Ok(MultiplexedPacket::Control(ControlMessage::Pong { .. }, addr)) if addr==self.target && self.sender.peer_session_id(self.target).is_none()=>{
                             self.note_peer_response(&mut last_pong);
                         },
-                        Ok(MultiplexedPacket::Control(ControlMessage::HostTelemetry { fps, encode_latency_ms, jitter_ms, bitrate_kbps }, addr)) if addr == self.target => {
+                        Ok(MultiplexedPacket::Control(ControlMessage::HostTelemetry { session_id, fps, encode_latency_ms, jitter_ms, bitrate_kbps }, addr)) if addr == self.target => {
                             self.note_peer_response(&mut last_pong);
-                            for view in self.subscriptions.values() { view.host_stats.apply_host_telemetry(fps,encode_latency_ms,jitter_ms,bitrate_kbps); }
+                            if let Some(view)=self.subscriptions.get(&session_id) {view.host_stats.apply_host_telemetry(fps,encode_latency_ms,jitter_ms,bitrate_kbps);}
                         },
                         Ok(MultiplexedPacket::Control(ControlMessage::PipelineTelemetry(report), addr)) if addr == self.target => {
                             self.note_peer_response(&mut last_pong);
-                            for view in self.subscriptions.values() { view.host_stats.set_pipeline_report((*report).clone()); }
+                            if let Some(view)=self.subscriptions.get(&report.session_id) {view.host_stats.set_pipeline_report(*report);}
                         },
                         Ok(MultiplexedPacket::Data(envelope, addr)) if addr == self.target => self.envelope(envelope).await,
                         Ok(MultiplexedPacket::DataWithTiming(mut envelope, timing, addr)) if addr == self.target => { envelope.transport_timing = timing.or(envelope.transport_timing); self.envelope(envelope).await; },

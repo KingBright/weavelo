@@ -4578,7 +4578,6 @@ fn host_stats_available(stats: &HostStats) -> bool {
         && stats.updated_at.is_some_and(|updated_at| {
             Instant::now().saturating_duration_since(updated_at) <= HOST_TELEMETRY_STALE_AFTER
         })
-        && (stats.fps > 0.0 || stats.latency > 0.0 || stats.jitter > 0.0 || stats.bitrate_kbps > 0)
 }
 
 fn compact_telemetry_label(stats: Option<&UiHostStats>) -> String {
@@ -4586,9 +4585,9 @@ fn compact_telemetry_label(stats: Option<&UiHostStats>) -> String {
         || "Awaiting telemetry".to_string(),
         |stats| {
             format!(
-                "{:.0} FPS / capture→receive {} / enc {:.1} ms",
+                "{:.0} FPS / capture→UI {} / enc {:.1} ms",
                 stats.fps,
-                stats.capture_receive.value(),
+                stats.capture_submit.value(),
                 stats.latency
             )
         },
@@ -5063,17 +5062,17 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .gap_6()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
-                    .id("capture_receive_hud_metric")
-                    .tooltip(tooltip(stats.capture_receive.detail()).build())
+                    .id("capture_submit_hud_metric")
+                    .tooltip(tooltip(stats.capture_submit.submission_detail()).build())
                     .child(
                         div()
                             .text_color(theme.content.tertiary)
-                            .child("Capture → receive"),
+                            .child("Capture → UI submit"),
                     )
                     .child(
                         div()
                             .text_color(color_accent_emerald())
-                            .child(stats.capture_receive.value()),
+                            .child(stats.capture_submit.value()),
                     ),
             )
             .child(
@@ -6333,6 +6332,8 @@ mod input_tests {
             ..Default::default()
         };
         assert!(host_stats_available(&stats));
+        stats.fps=0.0;stats.latency=0.0;stats.jitter=0.0;stats.bitrate_kbps=0;
+        assert!(host_stats_available(&stats),"A fresh idle-stream sample is valid telemetry");
 
         stats.updated_at = Instant::now().checked_sub(Duration::from_secs(6));
         assert!(!host_stats_available(&stats));

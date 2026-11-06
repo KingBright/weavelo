@@ -1079,6 +1079,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             let _ = udp_sender
                 .send_control(
                     &protocol::ControlMessage::HostTelemetry {
+                        session_id,
                         fps: 0.0,
                         encode_latency_ms: 0.0,
                         jitter_ms: 0.0,
@@ -1132,7 +1133,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         }
         Some(_) => return Err("native capture source does not match the subscription".into()),
         None => LinuxVideoCapturer::new(width, height, fps)?,
-    }};
+    }}.with_resources(resources.clone());
     #[cfg(target_os = "linux")]
     let mut video_encoder = if let Some(camera)=&camera_capture {
         LinuxVideoEncoder::from_hardware_frames(camera.native.generation,width,height,fps,bitrate_kbps,
@@ -1183,8 +1184,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut resume_capture_after_us = 0_u64;
     let mut awaiting_resume_keyframe = false;
     let mut reported_settings=(width,height,fps,bitrate_kbps);
-    let mut paused_telemetry = tokio::time::interval(Duration::from_secs(5));
-    paused_telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut telemetry_tick = tokio::time::interval(Duration::from_secs(1));
+    telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     #[cfg(any(target_os="macos",target_os="linux"))]
     let mut viewport_ticks=tokio::time::interval(remote_core::viewport::DEMAND_INTERVAL);
     #[cfg(any(target_os="macos",target_os="linux"))]
@@ -1227,10 +1228,20 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             _ = cancel_rx.recv() => {
                 break;
             }
-            _ = paused_telemetry.tick(), if paused => {
-                let _ = telemetry_udp_sender.send_control(&protocol::ControlMessage::HostTelemetry {
-                    fps: 0.0, encode_latency_ms: 0.0, jitter_ms: 0.0, bitrate_kbps: 0,
-                }, client_addr).await;
+            _ = telemetry_tick.tick() => {
+                let now=std::time::Instant::now();
+                let elapsed=now.duration_since(last_fps_update).as_secs_f32();
+                if elapsed>=0.5 {
+                    let active=frames_since_update>0;
+                    let _=telemetry_udp_sender.send_control(&protocol::ControlMessage::HostTelemetry {
+                        session_id,
+                        fps:frames_since_update as f32/elapsed,
+                        encode_latency_ms:if active {current_latency_ms}else{0.0},
+                        jitter_ms:if active {current_jitter_ms}else{0.0},
+                        bitrate_kbps:(bytes_since_update as f64*8.0/1000.0/f64::from(elapsed)) as u32,
+                    },client_addr).await;
+                    last_fps_update=now;frames_since_update=0;bytes_since_update=0;
+                }
             }
             settings_changed = async {
                 if let Some(rx) = &mut stream_settings_rx {
@@ -1344,8 +1355,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
 
                 // 真实的单帧平滑耗时（EMA指数平滑，初始值为首帧耗时）
-                if chunk.encode_cost_ms>0.0 {
-                let cost = chunk.encode_cost_ms.clamp(0.1, 100.0);
+                if chunk.encode_cost_ms.is_finite() && chunk.encode_cost_ms>0.0 {
+                let cost = chunk.encode_cost_ms;
                 if current_latency_ms <= 0.01 {
                     current_latency_ms = cost;
                 } else {
@@ -1355,24 +1366,6 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 current_jitter_ms = current_jitter_ms * 0.9 + d * 0.1;
                 }
                 frames_since_update += 1;
-
-                let now_instant = std::time::Instant::now();
-                let elapsed = now_instant.duration_since(last_fps_update).as_secs_f32();
-                if elapsed >= 1.0 {
-                    let current_fps = frames_since_update as f32 / elapsed;
-                    let current_bitrate_kbps = ((bytes_since_update as f32 * 8.0) / 1000.0 / elapsed) as u32;
-                    frames_since_update = 0;
-                    bytes_since_update = 0;
-                    last_fps_update = now_instant;
-
-                    let msg = protocol::ControlMessage::HostTelemetry {
-                        fps: current_fps,
-                        encode_latency_ms: current_latency_ms,
-                        jitter_ms: current_jitter_ms,
-                        bitrate_kbps: current_bitrate_kbps,
-                    };
-                    let _ = telemetry_udp_sender.send_control(&msg, client_addr).await;
-                }
 
                 let mut timing = chunk.timing;
                 #[cfg(not(target_os="windows"))]

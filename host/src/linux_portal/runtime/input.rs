@@ -23,6 +23,7 @@ pub enum PortalInputError {
     FrameBinding,
     SessionClosed,
     InvalidEvent,
+    Expired,
     Transport,
 }
 impl std::fmt::Display for PortalInputError {
@@ -35,6 +36,7 @@ impl std::fmt::Display for PortalInputError {
             Self::FrameBinding => "Linux stream geometry changed or has not been validated; select the source again for control",
             Self::SessionClosed => "The local Linux sharing session was cancelled or revoked",
             Self::InvalidEvent => "Input event is unsupported for this Linux source; no desktop fallback was used",
+            Self::Expired => "Input event expired before native dispatch",
             Self::Transport => "Linux portal input failed; release and select the source again",
         })
     }
@@ -44,7 +46,6 @@ type Result<T> = std::result::Result<T, PortalInputError>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FrameBinding {
-    revision: u64,
     width: u32,
     height: u32,
 }
@@ -60,7 +61,6 @@ fn frame_binding(frame: &OwnedFrame) -> Option<FrameBinding> {
         return None;
     }
     Some(FrameBinding {
-        revision: frame.stamp.format_revision,
         width: frame.width,
         height: frame.height,
     })
@@ -175,7 +175,7 @@ impl PortalInput {
             )
             .await
             .map_err(|_| PortalInputError::Transport)?;
-            if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return Err(PortalInputError::InvalidEvent);}
+            if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return Err(PortalInputError::Expired);}
             portal
                 .call::<_, _, ()>(name, body)
                 .await
@@ -195,7 +195,7 @@ impl PortalInput {
             "NotifyKeyboardKeycode",
             &(&self.session, options(), key, u32::from(pressed)),held.deadline,
         ).await;
-        if result==Err(PortalInputError::InvalidEvent) {
+        if result==Err(PortalInputError::Expired) {
             // Definitely not dispatched: retain an earlier owned down for cleanup.
             if pressed {held.keys.remove(&key);} else {held.keys.insert(key);}
         }
@@ -208,7 +208,7 @@ impl PortalInput {
         } else if !held.keysyms.remove(&sym) {return Ok(());}
         let result=self.notify("NotifyKeyboardKeysym",
             &(&self.session,options(),sym,u32::from(pressed)),held.deadline).await;
-        if result==Err(PortalInputError::InvalidEvent) {
+        if result==Err(PortalInputError::Expired) {
             if pressed {held.keysyms.remove(&sym);} else {held.keysyms.insert(sym);}
         }
         result
@@ -222,7 +222,7 @@ impl PortalInput {
             "NotifyPointerButton",
             &(&self.session, options(), button, u32::from(pressed)),held.deadline,
         ).await;
-        if result==Err(PortalInputError::InvalidEvent) {
+        if result==Err(PortalInputError::Expired) {
             // Definitely not dispatched: retain an earlier owned down for cleanup.
             if pressed {held.buttons.remove(&button);} else {held.buttons.insert(button);}
         }
@@ -258,7 +258,7 @@ impl PortalInput {
     pub(super) async fn inject_before(&self, event: InputEvent, deadline:Option<std::time::Instant>) -> Result<()> {
         let mut held = self.held.lock().await;
         held.deadline=deadline;
-        if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return Err(PortalInputError::InvalidEvent);}
+        if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return Err(PortalInputError::Expired);}
         self.status()?;
         let result = async {
             match event {

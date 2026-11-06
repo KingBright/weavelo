@@ -64,16 +64,24 @@ pub(crate) fn mark_ui_frame_submission(
 pub(crate) struct UiHostStats {
     host: HostStats,
     pub(crate) capture_receive: CaptureReceiveDisplay,
+    pub(crate) capture_submit: CaptureReceiveDisplay,
 }
 
 impl UiHostStats {
     pub(crate) fn read(shared: &SharedHostStats) -> Self {
+        let host = shared.snapshot();
+        let clock = shared.clock_estimate();
         Self {
-            host: shared.snapshot(),
+            capture_submit: CaptureReceiveDisplay::from_measurements(
+                host.latest_timing.filter(|timing|timing.render_submit_ts_us>0 && timing.recv_ts_us>0)
+                    .map(|timing|timing.render_submit_ts_us as f32/1000.0),
+                clock.clone(),
+            ),
             capture_receive: CaptureReceiveDisplay::from_measurements(
                 shared.estimated_e2e_latency_ms(),
-                shared.clock_estimate(),
+                clock,
             ),
+            host,
         }
     }
 }
@@ -121,8 +129,13 @@ impl CaptureReceiveDisplay {
         }
     }
 
+    pub(crate) fn submission_detail(&self) -> String {
+        self.explain("Host capture to UI scene submission estimate, including transport, decode and UI waiting. GPU completion and physical display remain unmeasured.")
+    }
     pub(crate) fn detail(&self) -> String {
-        let scope = "Host capture to client receive estimate; excludes decoding and display.";
+        self.explain("Host capture to client receive estimate; excludes decoding and display.")
+    }
+    fn explain(&self,scope:&str) -> String {
         if self.latency_ms.is_some() {
             let uncertainty = self.uncertainty_ms.map_or_else(
                 || "Model clock uncertainty unavailable.".to_string(),

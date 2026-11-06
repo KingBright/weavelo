@@ -1018,6 +1018,7 @@ pub enum ControlMessage {
     ForceFeedback,
     /// Sent at 1Hz from host to client with host-side telemetry
     HostTelemetry {
+        session_id: u32,
         fps: f32,
         encode_latency_ms: f32,
         jitter_ms: f32,
@@ -1688,6 +1689,7 @@ mod tests {
     #[test]
     fn host_telemetry_control_message_roundtrips() {
         let decoded = roundtrip_control(ControlMessage::HostTelemetry {
+            session_id: 42,
             fps: 59.94,
             encode_latency_ms: 4.5,
             jitter_ms: 1.25,
@@ -1696,11 +1698,13 @@ mod tests {
 
         match decoded {
             ControlMessage::HostTelemetry {
+                session_id,
                 fps,
                 encode_latency_ms,
                 jitter_ms,
                 bitrate_kbps,
             } => {
+                assert_eq!(session_id, 42);
                 assert_eq!(fps, 59.94);
                 assert_eq!(encode_latency_ms, 4.5);
                 assert_eq!(jitter_ms, 1.25);

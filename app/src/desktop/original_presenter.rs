@@ -83,6 +83,11 @@ pub(crate) fn acknowledge_paint(
         let Some(native)=&frame.native_linux else{return false;};
         if !native.frame.was_submitted() || native.frame.stats().last_error.lock().unwrap().is_some(){return false;}
     }
+    if session.uploaded_at!=Some(frame.decoded_at) {
+        let mut timing=frame.timing;
+        crate::telemetry_display::mark_ui_frame_submission(&mut timing,frame.decoded_at.elapsed());
+        session.host_stats.set_latest_timing(timing);
+    }
     session.uploaded_at = Some(frame.decoded_at);
     session.uploaded_epoch = Some(frame.video_epoch);
     true
