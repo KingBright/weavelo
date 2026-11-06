@@ -291,10 +291,10 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
         if pid == std::process::id() as i32 {
             continue;
         }
-        let Some(width) = value_i32(&info, "width").filter(|size| *size > 1) else {
+        let Some(width) = value_dimension(&info, "width") else {
             continue;
         };
-        let Some(height) = value_i32(&info, "height").filter(|size| *size > 1) else {
+        let Some(height) = value_dimension(&info, "height") else {
             continue;
         };
         let caption = clean_label(&title)
@@ -318,8 +318,8 @@ async fn discover() -> Result<Vec<CatalogEntry>, String> {
                     title,
                     application,
                     process_id: Some(pid),
-                    width: width as u32,
-                    height: height as u32,
+                    width,
+                    height,
                     // KWin's stream is scoped to one real UUID. Input remains
                     // disabled until an OS-authorized exact-window injector exists.
                     supports_input: false,
@@ -364,6 +364,16 @@ fn value_i32(properties: &HashMap<String, OwnedValue>, key: &str) -> Option<i32>
         .try_clone()
         .ok()
         .and_then(|value| i32::try_from(value).ok())
+}
+
+fn value_dimension(properties: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
+    let value = properties.get(key)?.try_clone().ok()?;
+    let dimension = f64::try_from(value.try_clone().ok()?)
+        .ok()
+        .or_else(|| i32::try_from(value).ok().map(f64::from))?;
+    let rounded = dimension.round();
+    (rounded.is_finite() && (2.0..=f64::from(u32::MAX)).contains(&rounded))
+        .then_some(rounded as u32)
 }
 
 fn uuid_from_runner_id(id: &str) -> Option<String> {
@@ -1241,6 +1251,27 @@ mod tests {
         )
         .unwrap();
         assert!(::protocol::interaction::validate_icon_container(&icon.png).is_ok());
+    }
+
+    #[test]
+    fn kwin_fractional_double_dimensions_are_rounded_and_bounded() {
+        let mut properties = HashMap::new();
+        properties.insert("width".into(), OwnedValue::from(2648.28_f64));
+        properties.insert("height".into(), OwnedValue::from(1444.14_f64));
+        assert_eq!(value_dimension(&properties, "width"), Some(2648));
+        assert_eq!(value_dimension(&properties, "height"), Some(1444));
+        properties.insert("width".into(), OwnedValue::from(3840_i32));
+        assert_eq!(value_dimension(&properties, "width"), Some(3840));
+        for invalid in [
+            f64::NAN,
+            f64::INFINITY,
+            -2.0,
+            1.4,
+            f64::from(u32::MAX) + 1.0,
+        ] {
+            properties.insert("width".into(), OwnedValue::from(invalid));
+            assert_eq!(value_dimension(&properties, "width"), None, "{invalid}");
+        }
     }
 
     #[test]
