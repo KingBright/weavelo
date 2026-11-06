@@ -149,7 +149,11 @@ def legacy_desktop_entry(home, *, with_kwin_interface=False):
 
 
 def legacy_desktop_entries(home):
-    return (legacy_desktop_entry(home), legacy_desktop_entry(home, with_kwin_interface=True))
+    entries = (legacy_desktop_entry(home), legacy_desktop_entry(home, with_kwin_interface=True))
+    # Earlier branded installs used the product name without the Desktop suffix.
+    # Match only that exact known variant; arbitrary edited shortcuts stay intact.
+    return entries + tuple(entry.replace(b'Name=Weavelo Desktop\n', b'Name=Weavelo\n', 1)
+                           for entry in entries)
 
 
 def payloads(home, archive):

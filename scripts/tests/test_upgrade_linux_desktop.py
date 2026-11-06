@@ -585,6 +585,17 @@ class UpgradeTests(unittest.TestCase):
         current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
         self.assertEqual(self.paths['desktop'].read_bytes(),edited)
 
+    def test_current_update_migrates_branded_legacy_desktop_entry(self):
+        legacy=up.fresh.legacy_desktop_entry(self.home).replace(b'Name=Weavelo Desktop\n',b'Name=Weavelo\n')
+        self.paths['desktop'].write_bytes(legacy)
+        self.entries['desktop']=(b'canonical binary Exec with KWin interface',0o644)
+        current=up.CurrentUpgrade(self.home,self.control)
+        plan=current.plan(self.archive,self.pins)
+        self.assertEqual(plan['startup_entry_compatibility']['desktop'],'migrate-known-legacy-desktop-entry')
+        result=current.apply(plan,up.gate.digest(up.gate.canonical(plan)))
+        self.assertTrue(result['desktop_entry_updated'])
+        self.assertEqual(self.paths['desktop'].read_bytes(),self.entries['desktop'][0])
+
     def test_current_update_can_retry_legacy_entry_migration_after_committed_binary(self):
         self.prepare_legacy_desktop_entry_migration()
         current=up.CurrentUpgrade(self.home,self.control)
