@@ -51,7 +51,7 @@ References:
 - https://developer.apple.com/documentation/coregraphics/cgevent
 - https://developer.apple.com/documentation/applicationservices/1462091-axuielementperformaction
 
-Status: requirement recorded; native feasibility/behavior investigation pending.
+Status: foreground switching verified on owned native fixtures; general background interaction remains unimplemented.
 No claim of implemented or deployed independent background input.
 
 ## Native foreground-path verification, 2026-11-06
@@ -76,3 +76,21 @@ background probe's nil text container could not verify typing. Also, run the
 native test binary through a small owned app bundle: CoreFoundation's initial
 bundle search in the large Cargo dependency directory added seconds unrelated
 to the installed app. Keep these failed attempts distinct from product evidence.
+
+
+## Controlled background comparison, 2026-11-06
+
+After a successful real-editor HID baseline, a second owned application covered
+the same target point. Process-targeted events constructed through AppKit, with
+Quartz screen coordinates and public window fields, produced no target callbacks
+and no editor text change for click, scroll, committed Unicode, or Return. The
+covering editor also received no callbacks. Read-only snapshots confirmed the
+unchanged text. Evidence: task `native142-input-acceptance`, report
+`native-posttopid-5d4c600380454d8ab0dde2eafd13a47b-REPORT.md`.
+
+This rules out that tested process-posting path as a working implementation on
+this machine; it is not a proof that every macOS background technique is impossible.
+Do not ship an event-post success as successful background control. The tested
+foreground adapter remains the current working path. Exact-window accessibility
+or application-specific adapters need independent control-level acceptance before
+claiming equivalent text, scrolling, composition, or shortcuts.
