@@ -22,6 +22,9 @@ const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
 const REL_WHEEL: u16 = 0x08;
 const REL_HWHEEL: u16 = 0x06;
+const REL_WHEEL_HI_RES: u16 = 0x0b;
+const REL_HWHEEL_HI_RES: u16 = 0x0c;
+const SCROLL_PIXELS_PER_DETENT: i64 = 120;
 
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
@@ -88,6 +91,37 @@ pub struct LinuxUinputInjector {
     pressed_buttons: AtomicU8,
     active_modifiers: AtomicU8,
     pressed_keys: Mutex<BTreeSet<u16>>,
+    scroll_remainders: Mutex<ScrollRemainders>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ScrollRemainders {
+    horizontal_pixels: i32,
+    vertical_pixels: i32,
+}
+
+fn append_scroll_axis(
+    batch: &mut Vec<(u16, u16, i32)>,
+    delta_pixels: i32,
+    hi_res_code: u16,
+    legacy_code: u16,
+    remainder_pixels: &mut i32,
+) {
+    if delta_pixels == 0 {
+        return;
+    }
+
+    // Linux GPUI emits three scroll lines for a wheel detent; at 40 pixels
+    // per line, the viewer sends 120 pixels per detent. Linux hi-res wheel
+    // events also use 120 units per detent, so the delta maps one-to-one.
+    batch.push((EV_REL, hi_res_code, delta_pixels));
+
+    let accumulated = i64::from(*remainder_pixels) + i64::from(delta_pixels);
+    let detents = accumulated / SCROLL_PIXELS_PER_DETENT;
+    *remainder_pixels = (accumulated % SCROLL_PIXELS_PER_DETENT) as i32;
+    if detents != 0 {
+        batch.push((EV_REL, legacy_code, detents as i32));
+    }
 }
 
 unsafe impl Send for LinuxUinputInjector {}
@@ -136,6 +170,8 @@ impl LinuxUinputInjector {
             ioctl(fd, UI_SET_RELBIT, REL_Y as c_ulong);
             ioctl(fd, UI_SET_RELBIT, REL_WHEEL as c_ulong);
             ioctl(fd, UI_SET_RELBIT, REL_HWHEEL as c_ulong);
+            ioctl(fd, UI_SET_RELBIT, REL_WHEEL_HI_RES as c_ulong);
+            ioctl(fd, UI_SET_RELBIT, REL_HWHEEL_HI_RES as c_ulong);
 
             // Enable absolute movement (for absolute mouse coordinates)
             ioctl(fd, UI_SET_ABSBIT, ABS_X as c_ulong);
@@ -175,6 +211,7 @@ impl LinuxUinputInjector {
             pressed_buttons: AtomicU8::new(0),
             active_modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
+            scroll_remainders: Mutex::new(ScrollRemainders::default()),
         })
     }
 
@@ -323,15 +360,28 @@ impl LinuxUinputInjector {
                     }
                 }
             }
-            InputEvent::MouseScroll { delta_x, delta_y } => {
+            InputEvent::MouseScroll {
+                delta_x, delta_y, ..
+            } => {
+                let mut remainders = self.scroll_remainders.lock().unwrap();
+                let mut next_remainders = *remainders;
                 let mut batch = Vec::new();
-                if delta_y != 0 {
-                    batch.push((EV_REL, REL_WHEEL, delta_y.signum()));
-                }
-                if delta_x != 0 {
-                    batch.push((EV_REL, REL_HWHEEL, delta_x.signum()));
-                }
+                append_scroll_axis(
+                    &mut batch,
+                    delta_y,
+                    REL_WHEEL_HI_RES,
+                    REL_WHEEL,
+                    &mut next_remainders.vertical_pixels,
+                );
+                append_scroll_axis(
+                    &mut batch,
+                    delta_x,
+                    REL_HWHEEL_HI_RES,
+                    REL_HWHEEL,
+                    &mut next_remainders.horizontal_pixels,
+                );
                 self.write_events(&batch, deadline)?;
+                *remainders = next_remainders;
             }
             InputEvent::KeyDown(code) | InputEvent::KeyUp(code) => {
                 let down = matches!(event, InputEvent::KeyDown(_));
@@ -372,6 +422,7 @@ impl InputInjector for LinuxUinputInjector {
         self.inject_before(event, Some(deadline))
     }
     fn release_all_input(&self) {
+        *self.scroll_remainders.lock().unwrap() = ScrollRemainders::default();
         let keys = std::mem::take(&mut *self.pressed_keys.lock().unwrap());
         for key in keys {
             let _ = self.write_event(EV_KEY, key, 0, None);
@@ -478,6 +529,7 @@ mod deadline_tests {
             pressed_buttons: AtomicU8::new(0),
             active_modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
+            scroll_remainders: Mutex::new(ScrollRemainders::default()),
             record: Some(Arc::new(move |events| {
                 let mut calls = sink.lock().unwrap();
                 let first = calls.is_empty();
@@ -492,6 +544,130 @@ mod deadline_tests {
         };
         (Arc::new(input), calls)
     }
+
+    #[test]
+    fn standard_three_line_wheel_detent_maps_to_120_hi_res_units() {
+        let (input, calls) = fixture(None);
+        input.inject_input(InputEvent::scroll(0, 120)).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (EV_REL, REL_WHEEL_HI_RES, 120),
+                (EV_REL, REL_WHEEL, 1),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn scroll_remainders_are_per_axis_and_reverse_with_direction() {
+        let (input, calls) = fixture(None);
+        input.inject_input(InputEvent::scroll(40, 60)).unwrap();
+        input.inject_input(InputEvent::scroll(40, 0)).unwrap();
+        input.inject_input(InputEvent::scroll(40, 0)).unwrap();
+        input.inject_input(InputEvent::scroll(0, 60)).unwrap();
+        input.inject_input(InputEvent::scroll(-120, -60)).unwrap();
+        input.inject_input(InputEvent::scroll(0, -60)).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (EV_REL, REL_WHEEL_HI_RES, 60),
+                (EV_REL, REL_HWHEEL_HI_RES, 40),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_HWHEEL_HI_RES, 40),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_HWHEEL_HI_RES, 40),
+                (EV_REL, REL_HWHEEL, 1),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_WHEEL_HI_RES, 60),
+                (EV_REL, REL_WHEEL, 1),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_WHEEL_HI_RES, -60),
+                (EV_REL, REL_HWHEEL_HI_RES, -120),
+                (EV_REL, REL_HWHEEL, -1),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_WHEEL_HI_RES, -60),
+                (EV_REL, REL_WHEEL, -1),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn extreme_scroll_values_emit_single_hi_res_events_and_legacy_detents() {
+        let (input, calls) = fixture(None);
+        input.inject_input(InputEvent::scroll(0, i32::MAX)).unwrap();
+        input.inject_input(InputEvent::scroll(0, i32::MIN)).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (EV_REL, REL_WHEEL_HI_RES, i32::MAX),
+                (EV_REL, REL_WHEEL, 17_895_697),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_WHEEL_HI_RES, i32::MIN),
+                (EV_REL, REL_WHEEL, -17_895_697),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_scroll_write_does_not_advance_legacy_remainder() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let accepted = Arc::new(AtomicBool::new(false));
+        let should_accept = accepted.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let input = LinuxUinputInjector {
+            file: Mutex::new(None),
+            pressed_buttons: AtomicU8::new(0),
+            active_modifiers: AtomicU8::new(0),
+            pressed_keys: Mutex::new(BTreeSet::new()),
+            scroll_remainders: Mutex::new(ScrollRemainders::default()),
+            record: Some(Arc::new(move |events| {
+                if !should_accept.load(Ordering::Relaxed) {
+                    return -1;
+                }
+                recorded
+                    .lock()
+                    .unwrap()
+                    .extend(events.iter().map(|e| (e.r#type, e.code, e.value)));
+                std::mem::size_of_val(events) as isize
+            })),
+        };
+
+        assert!(input.inject_input(InputEvent::scroll(0, 119)).is_err());
+        accepted.store(true, Ordering::Relaxed);
+        input.inject_input(InputEvent::scroll(0, 1)).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(EV_REL, REL_WHEEL_HI_RES, 1), (EV_SYN, SYN_REPORT, 0),]
+        );
+    }
+
+    #[test]
+    fn release_all_input_clears_scroll_remainders_between_owners() {
+        let (input, calls) = fixture(None);
+        input.inject_input(InputEvent::scroll(0, 119)).unwrap();
+        input.release_all_input();
+        input.inject_input(InputEvent::scroll(0, 1)).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (EV_REL, REL_WHEEL_HI_RES, 119),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_REL, REL_WHEEL_HI_RES, 1),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+        );
+    }
+
     #[test]
     fn modifier_chord_posts_control_before_c_and_cleans_accepted_keys() {
         let (input, calls) = fixture(None);

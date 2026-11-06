@@ -296,7 +296,7 @@ impl PortalInput {
                 InputEvent::MouseUp(button) => {
                     self.button(&mut held, button_code(button)?, false).await
                 }
-                InputEvent::MouseScroll { delta_x, delta_y } => {
+                InputEvent::MouseScroll { delta_x, delta_y, .. } => {
                     self.notify(
                         "NotifyPointerAxis",
                         &(

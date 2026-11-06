@@ -13,6 +13,28 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
+// CoreGraphics CGEventTypes.h: these values differ from AppKit NSEventPhase.
+const SCROLL_PHASE_FIELD: u32 = 99;
+const MOMENTUM_PHASE_FIELD: u32 = 123;
+fn native_scroll_phases(gesture: protocol::ScrollGesture) -> (i64, i64) {
+    use protocol::{MomentumPhase, ScrollPhase};
+    let phase = match gesture.phase {
+        ScrollPhase::None => 0,
+        ScrollPhase::MayBegin => 128,
+        ScrollPhase::Began => 1,
+        ScrollPhase::Changed => 2,
+        ScrollPhase::Ended => 4,
+        ScrollPhase::Cancelled => 8,
+    };
+    let momentum = match gesture.momentum {
+        MomentumPhase::None => 0,
+        MomentumPhase::Began => 1,
+        MomentumPhase::Changed => 2,
+        MomentumPhase::Ended => 3,
+    };
+    (phase, momentum)
+}
+
 pub struct MacInputInjector {
     source: CGEventSource,
     #[cfg(test)]
@@ -23,6 +45,7 @@ pub struct MacInputInjector {
     pressed_buttons: AtomicU8,
     active_modifiers: AtomicU8,
     pressed_keys: Mutex<BTreeSet<u16>>,
+    scroll_gesture: Mutex<protocol::ScrollGesture>,
 }
 
 unsafe impl Send for MacInputInjector {}
@@ -50,6 +73,7 @@ impl MacInputInjector {
             pressed_buttons: AtomicU8::new(0),
             active_modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
+            scroll_gesture: Mutex::new(protocol::ScrollGesture::default()),
         })
     }
 
@@ -68,6 +92,7 @@ impl MacInputInjector {
             pressed_buttons: AtomicU8::new(0),
             active_modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
+            scroll_gesture: Mutex::new(protocol::ScrollGesture::default()),
         })
     }
     fn post(&self, event: &CGEvent, deadline: Option<Instant>) -> bool {
@@ -119,6 +144,15 @@ impl MacInputInjector {
         }
         current_pointer_location(&self.source)
     }
+    fn obsolete_scroll_continuation(&self, event: &InputEvent) -> bool {
+        if !matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
+            if !gesture.can_take_control(*delta_x, *delta_y)) { return false; }
+        let Some(window) = &self.window else { return false; };
+        let point = *self.target_pointer.lock().expect("source pointer lock");
+        // An old viewer's gesture cleanup must neither activate its window nor
+        // send a terminal gesture to a different app now under the pointer.
+        point.is_none_or(|(x, y)| window.check_pointer(x, y).is_err())
+    }
     fn prepare_window_event(&self, event: &InputEvent, deadline: Option<Instant>) -> Result<(), Box<dyn Error + Send + Sync>> {
         let Some(window) = &self.window else {
             display_bounds(self.display_id.ok_or("Input display is not bound")?)?;
@@ -144,6 +178,13 @@ impl MacInputInjector {
             }
             return Ok(());
         };
+        if matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
+            if !gesture.can_take_control(*delta_x, *delta_y)) {
+            let (x, y) = self.target_pointer.lock().expect("source pointer lock")
+                .ok_or("Pointer position missing")?;
+            window.check_pointer(x, y)?;
+            return Ok(());
+        }
         let click = matches!(event, InputEvent::MouseDown(_)
             | InputEvent::Touch { action: protocol::TouchAction::Down, .. });
         // A click checks live bounds before activation and again in its hit test.
@@ -333,7 +374,7 @@ impl MacInputInjector {
             InputEvent::MouseUp(button) => {
                 self.post_mouse_button(button, false, deadline);
             }
-            InputEvent::MouseScroll { delta_x, delta_y } => {
+            InputEvent::MouseScroll { delta_x, delta_y, gesture } => {
                 let position = self.pointer_position();
                 if let Ok(cg_event) = CGEvent::new_scroll_event(
                     self.source.clone(),
@@ -349,7 +390,12 @@ impl MacInputInjector {
                     // CGEvent dereferences to the borrowed native event. The
                     // existing binding does not wrap CGEventSetLocation.
                     unsafe { CGEventSetLocation(std::ptr::from_ref(&*cg_event).cast_mut().cast(),position); }
-                    self.post(&cg_event, deadline);
+                    let (phase, momentum) = native_scroll_phases(gesture);
+                    cg_event.set_integer_value_field(SCROLL_PHASE_FIELD, phase);
+                    cg_event.set_integer_value_field(MOMENTUM_PHASE_FIELD, momentum);
+                    if self.post(&cg_event, deadline) {
+                        *self.scroll_gesture.lock().expect("scroll gesture lock") = gesture;
+                    }
                 }
             }
             // macOS advertises no native touchscreen capability. Never convert
@@ -397,7 +443,19 @@ impl MacInputInjector {
         }
     }
 
+    fn cancel_scroll(&self) {
+        let gesture = std::mem::take(&mut *self.scroll_gesture.lock().expect("scroll gesture lock"));
+        let Some(gesture) = gesture.cancellation() else { return; };
+        if let Some(window) = &self.window {
+            let point = *self.target_pointer.lock().expect("source pointer lock");
+            if point.is_none_or(|(x, y)| window.check_pointer(x, y).is_err()) { return; }
+        } else if self.display_id.is_some_and(|id| display_bounds(id).is_err()) { return; }
+        // End only this owner's native sequence; never raise a displaced window.
+        self.inject(InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }, None);
+    }
+
     pub fn release_all_input(&self) {
+        self.cancel_scroll();
         let pressed_keys = {
             let mut keys = self.pressed_keys.lock().expect("pressed keys lock");
             std::mem::take(&mut *keys)
@@ -732,6 +790,7 @@ impl InputInjector for MacInputInjector {
         // real error through INPUT_UNAVAILABLE before changing held state or
         // posting events; CGEvent::post itself has no success return value.
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
+        if self.obsolete_scroll_continuation(&event) { return Ok(()); }
         self.prepare_window_event(&event, None)?;
         if let InputEvent::Text(text) = &event { return self.commit_text(text, None); }
         self.inject(event, None);
@@ -749,6 +808,7 @@ impl InputInjector for MacInputInjector {
         let started = Instant::now();
         require_post_event_access(unsafe { CGPreflightPostEventAccess() })?;
         let access_checked = Instant::now();
+        if self.obsolete_scroll_continuation(&event) { return Ok(()); }
         self.prepare_window_event(&event, Some(deadline))?;
         // AX focus/identity validation may have waited; check after it as well.
         if std::time::Instant::now() >= deadline {
@@ -893,6 +953,7 @@ mod deadline_tests {
             pressed_buttons: AtomicU8::new(0),
             active_modifiers: AtomicU8::new(0),
             pressed_keys: Mutex::new(BTreeSet::new()),
+            scroll_gesture: Mutex::new(protocol::ScrollGesture::default()),
             post_observer: Some(Arc::new(move |event| {
                 let mut calls = sink.lock().unwrap();
                 calls.push((
@@ -925,8 +986,58 @@ mod deadline_tests {
             sink.lock().unwrap().push((event.get_type() as u32,position.x,position.y));
         }));
         // The observer records the real CGEvent and prevents every OS post.
-        input.inject(InputEvent::MouseScroll{delta_x:7,delta_y:42},None);
+        input.inject(InputEvent::scroll(7,42),None);
         assert_eq!(*seen.lock().unwrap(),vec![(CGEventType::ScrollWheel as u32,expected.x,expected.y)]);
+    }
+    #[test]
+    fn release_closes_native_touch_and_momentum_once() {
+        use protocol::{ScrollGesture, ScrollPhase as P, MomentumPhase as M};
+        for (gesture, expected) in [
+            (ScrollGesture { phase:P::Changed, momentum:M::None }, vec![(2,0),(8,0)]),
+            (ScrollGesture { phase:P::None, momentum:M::Changed }, vec![(0,2),(0,3)]),
+        ] {
+            let (mut input, _) = fixture(None);
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            Arc::get_mut(&mut input).unwrap().post_observer = Some(Arc::new(move |event| {
+                if event.get_type() as u32 == CGEventType::ScrollWheel as u32 {
+                    sink.lock().unwrap().push((event.get_integer_value_field(SCROLL_PHASE_FIELD),
+                        event.get_integer_value_field(MOMENTUM_PHASE_FIELD)));
+                }
+            }));
+            input.inject(InputEvent::MouseScroll { delta_x:0, delta_y:8, gesture }, None);
+            input.release_all_input();
+            input.release_all_input();
+            assert_eq!(*seen.lock().unwrap(), expected);
+        }
+    }
+    #[test]
+    fn native_scroll_preserves_gesture_and_momentum_including_zero_end() {
+        use protocol::{ScrollGesture, ScrollPhase, MomentumPhase};
+        let (mut input, _) = fixture(None);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        Arc::get_mut(&mut input).unwrap().post_observer = Some(Arc::new(move |event| {
+            sink.lock().unwrap().push((
+                event.get_integer_value_field(SCROLL_PHASE_FIELD),
+                event.get_integer_value_field(MOMENTUM_PHASE_FIELD),
+            ));
+        }));
+        for (phase, momentum) in [
+            (ScrollPhase::MayBegin, MomentumPhase::None),
+            (ScrollPhase::Began, MomentumPhase::None),
+            (ScrollPhase::Changed, MomentumPhase::None),
+            (ScrollPhase::Ended, MomentumPhase::None),
+            (ScrollPhase::None, MomentumPhase::Began),
+            (ScrollPhase::None, MomentumPhase::Changed),
+            (ScrollPhase::None, MomentumPhase::Ended),
+            (ScrollPhase::Cancelled, MomentumPhase::None),
+        ] {
+            input.inject(InputEvent::MouseScroll {
+                delta_x: 0, delta_y: 0, gesture: ScrollGesture { phase, momentum },
+            }, None);
+        }
+        assert_eq!(*seen.lock().unwrap(), vec![(128,0),(1,0),(2,0),(4,0),(0,1),(0,2),(0,3),(8,0)]);
     }
     #[test]
     fn fresh_deadline_posts_and_cleans_only_the_accepted_key() {

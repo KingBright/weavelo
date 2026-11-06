@@ -7,7 +7,7 @@ use protocol::{
     AudioStreamConfig, ContentKind, FrameTimingCheckpoints, PayloadType, PipelineTelemetryReport,
     RtpPacket, remote_microphone_audio_stream_id, remote_system_audio_stream_id,
 };
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -91,8 +91,20 @@ struct HostStatsExtra {
     pipeline_report: Option<PipelineTelemetryReport>,
     latest_timing: Option<FrameTimingCheckpoints>,
     latest_host_timing: Option<FrameTimingCheckpoints>,
+    latest_ui_submission: Option<(FrameTimingCheckpoints, Instant)>,
     clock_estimate: Option<ClockEstimate>,
+    rtt_samples: VecDeque<crate::clock_sync::ClockSample>,
     e2e_is_valid: bool,
+}
+
+/// Display statistics only: raw clock probes and the clock fit remain unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RttSummary {
+    pub median_ms: f32,
+    pub latest_ms: f32,
+    pub min_ms: f32,
+    pub max_ms: f32,
+    pub samples: usize,
 }
 
 // Cached estimates are refreshed by the receiver/workspace actor. This is a
@@ -317,6 +329,23 @@ impl SharedHostStats {
 
     pub fn set_clock_estimate(&self, estimate: Option<ClockEstimate>) {
         if let Ok(mut extra) = self.extra.lock() {
+            if let Some(estimate) = estimate {
+                let sample = estimate.latest_sample;
+                let distinct = extra.rtt_samples.back().is_none_or(|last|
+                    (last.probe_id, last.client_send_us) != (sample.probe_id, sample.client_send_us));
+                if (distinct && estimate.sample_count == 1)
+                    || extra.rtt_samples.back().is_some_and(|last| sample.client_recv_us < last.client_recv_us) {
+                    extra.rtt_samples.clear();
+                    extra.latest_ui_submission = None;
+                }
+                if distinct {
+                    extra.rtt_samples.push_back(sample);
+                    while extra.rtt_samples.len() > 5 { extra.rtt_samples.pop_front(); }
+                }
+            } else {
+                extra.rtt_samples.clear();
+                extra.latest_ui_submission = None;
+            }
             extra.clock_estimate = estimate;
             if !estimate
                 .as_ref()
@@ -326,6 +355,24 @@ impl SharedHostStats {
                 self.e2e_latency_ms.store(0, Relaxed);
             }
         }
+    }
+
+    pub fn rtt_summary(&self) -> Option<RttSummary> {
+        self.rtt_summary_at(crate::timing::quanta_now_us())
+    }
+
+    fn rtt_summary_at(&self, now_us: u64) -> Option<RttSummary> {
+        let extra = self.extra.lock().unwrap_or_else(|error| error.into_inner());
+        let mut values = extra.rtt_samples.iter()
+            .filter(|sample| now_us >= sample.client_recv_us
+                && now_us - sample.client_recv_us <= MAX_CLOCK_SAMPLE_AGE_US)
+            .map(|sample| sample.network_rtt_us as f32 / 1000.0)
+            .collect::<Vec<_>>();
+        let latest_ms = *values.last()?;
+        values.sort_by(f32::total_cmp);
+        let n = values.len();
+        let median_ms = (values[(n-1)/2] + values[n/2]) / 2.0;
+        Some(RttSummary { median_ms, latest_ms, min_ms: values[0], max_ms: values[n-1], samples: n })
     }
 
     /// Cross-machine latency is always an estimate, and unavailable without a
@@ -368,7 +415,39 @@ impl SharedHostStats {
     pub fn set_latest_timing(&self, timing: FrameTimingCheckpoints) {
         if let Ok(mut extra) = self.extra.lock() {
             extra.latest_timing = Some(timing);
+            // Decode updates and paint acknowledgements arrive independently.
+            // A newer decoded frame must not erase the last measured submission.
+            if timing.capture_ts_us > 0 && timing.recv_ts_us > 0
+                && timing.decode_done_ts_us >= timing.recv_ts_us
+                && timing.render_submit_ts_us >= timing.decode_done_ts_us
+                && timing.render_submit_ts_us > 0
+            {
+                extra.latest_ui_submission = Some((timing, Instant::now()));
+            }
         }
+    }
+
+    pub fn clear_video_timing(&self) {
+        if let Ok(mut extra) = self.extra.lock() {
+            extra.latest_timing = None;
+            extra.latest_host_timing = None;
+            extra.latest_ui_submission = None;
+            extra.e2e_is_valid = false;
+        }
+    }
+
+    /// Last completed UI submission sample, independent of in-flight decode.
+    /// Do not keep a stopped stream's measurement looking live indefinitely.
+    pub fn latest_ui_submission(&self) -> Option<FrameTimingCheckpoints> {
+        self.latest_ui_submission_at(Instant::now())
+    }
+
+    fn latest_ui_submission_at(&self, now: Instant) -> Option<FrameTimingCheckpoints> {
+        let extra = self.extra.lock().unwrap_or_else(|error| error.into_inner());
+        let (timing, sampled_at) = extra.latest_ui_submission?;
+        now.checked_duration_since(sampled_at)
+            .filter(|age| *age <= std::time::Duration::from_secs(5))
+            .map(|_| timing)
     }
 
     pub fn reset(&self) {
@@ -866,7 +945,7 @@ impl MediaPacketHandler {
         self.smooth_e2e_ms = 0.0;
         self.needs_keyframe = true;
         self.last_keyframe_request = None;
-        self.stats_net.video_recovery.reset_source(|| ());
+        self.stats_net.video_recovery.reset_source(|| self.host_stats.clear_video_timing());
     }
 
     fn recovery_wait(&self) -> Option<Duration> {
@@ -1394,6 +1473,64 @@ mod tests {
             received_timing.jitter_enter_ts_us,
             received_timing.recv_ts_us
         );
+    }
+
+    #[test]
+    fn rtt_summary_deduplicates_probes_preserves_spikes_and_expires() {
+        let stats = SharedHostStats::default();
+        let mut sync = ClockSynchronizer::new();
+        for (index, rtt) in [20_000_u64, 20_000, 60_000, 20_000, 20_000].into_iter().enumerate() {
+            let id = index as u64 + 1;
+            let sent = id * 1_000_000;
+            sync.begin_probe(id, sent).unwrap();
+            sync.complete_probe(id, sent, sent + rtt / 2, sent + rtt / 2 + 100, sent + rtt + 100).unwrap();
+            let estimate = sync.estimate(sent + rtt + 100);
+            stats.set_clock_estimate(estimate);
+            stats.set_clock_estimate(estimate); // heartbeat reads do not add samples
+        }
+        let summary = stats.rtt_summary_at(5_020_100).unwrap();
+        assert_eq!(summary, RttSummary { median_ms: 20., latest_ms: 20., min_ms: 20., max_ms: 60., samples: 5 });
+        assert_eq!(stats.rtt_summary_at(15_020_101), None);
+        // A clock/path discontinuity can reacquire without an intermediate None.
+        sync.reset();
+        sync.begin_probe(9, 6_000_000).unwrap();
+        sync.complete_probe(9, 6_000_000, 6_040_000, 6_040_100, 6_080_100).unwrap();
+        stats.set_clock_estimate(sync.estimate(6_080_100));
+        assert_eq!(stats.rtt_summary_at(6_080_100).unwrap().samples, 1);
+        assert_eq!(stats.rtt_summary_at(6_080_100).unwrap().median_ms, 80.);
+        stats.set_clock_estimate(None);
+        assert_eq!(stats.rtt_summary_at(5_020_100), None);
+    }
+
+    #[test]
+    fn ui_submission_survives_decode_updates_but_expires_and_resets() {
+        let stats = SharedHostStats::default();
+        let mut submitted = FrameTimingCheckpoints::new(1_000_000);
+        submitted.recv_ts_us = 20_000;
+        submitted.decode_done_ts_us = 23_000;
+        submitted.render_submit_ts_us = 25_000;
+        stats.set_latest_timing(submitted);
+        let sampled_at = stats.extra.lock().unwrap().latest_ui_submission.unwrap().1;
+        let mut decoded = submitted;
+        decoded.capture_ts_us += 16_667;
+        decoded.render_submit_ts_us = 0;
+        stats.set_latest_timing(decoded);
+        assert_eq!(stats.snapshot().latest_timing, Some(decoded));
+        assert_eq!(stats.latest_ui_submission_at(sampled_at), Some(submitted));
+        assert_eq!(stats.latest_ui_submission_at(sampled_at + Duration::from_secs(5)), Some(submitted));
+        assert_eq!(stats.latest_ui_submission_at(sampled_at + Duration::from_millis(5001)), None);
+        decoded.render_submit_ts_us = 19_000;
+        stats.set_latest_timing(decoded);
+        assert_eq!(stats.latest_ui_submission_at(sampled_at), Some(submitted));
+        stats.clear_video_timing();
+        assert_eq!(stats.latest_ui_submission(), None);
+        assert_eq!(stats.snapshot().latest_timing, None);
+        stats.set_latest_timing(submitted);
+        stats.set_clock_estimate(None);
+        assert_eq!(stats.latest_ui_submission(), None);
+        stats.set_latest_timing(submitted);
+        stats.reset();
+        assert_eq!(stats.latest_ui_submission(), None);
     }
 
     #[test]

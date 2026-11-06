@@ -207,6 +207,9 @@ pub trait ClipboardProvider {
     /// A stable native change counter, when the platform supplies one.
     fn clipboard_revision(&self) -> Option<u64> { None }
 
+    /// Generation of the last successful native read or write, when tracked.
+    fn clipboard_observation_epoch(&self) -> Option<u64> { None }
+
     async fn read_clipboard(
         &mut self,
         policy: ClipboardSyncPolicy,
@@ -232,6 +235,7 @@ impl ClipboardFileReference {
 
 #[async_trait]
 pub trait ClipboardFileReferenceProvider {
+    fn clipboard_observation_epoch(&self) -> Option<u64> { None }
     fn platform(&self) -> PlatformKind {
         PlatformKind::current()
     }

@@ -7,10 +7,11 @@ use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ClipboardSyncRunnerConfig {
     pub endpoint: ClipboardSyncConfig,
     pub poll_interval: Duration,
+    pub observation: Option<std::sync::Arc<crate::clipboard_file_runtime::ClipboardObservation>>,
 }
 
 impl Default for ClipboardSyncRunnerConfig {
@@ -18,6 +19,7 @@ impl Default for ClipboardSyncRunnerConfig {
         Self {
             endpoint: ClipboardSyncConfig::default(),
             poll_interval: Duration::from_millis(500),
+            observation: None,
         }
     }
 }
@@ -63,17 +65,39 @@ impl From<ScheduledDataSendError> for ClipboardSyncRunnerError {
 pub async fn run_clipboard_sync<P>(
     provider: P,
     data_sender: ScheduledDataSender,
-    mut inbound_rx: mpsc::Receiver<DataEnvelope>,
-    mut cancel_rx: broadcast::Receiver<()>,
+    inbound_rx: mpsc::Receiver<DataEnvelope>,
+    cancel_rx: broadcast::Receiver<()>,
     config: ClipboardSyncRunnerConfig,
 ) -> Result<(), ClipboardSyncRunnerError>
 where
     P: ClipboardProvider + Send + 'static,
 {
+    run_clipboard_sync_inner(provider, data_sender, inbound_rx, cancel_rx, config, None, Default::default()).await
+}
+
+pub async fn run_owned_clipboard_sync<P>(
+    provider: P, data_sender: ScheduledDataSender, inbound_rx: mpsc::Receiver<DataEnvelope>,
+    cancel_rx: broadcast::Receiver<()>, config: ClipboardSyncRunnerConfig,
+    gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    history: std::sync::Arc<tokio::sync::Mutex<crate::clipboard_sync::ClipboardSyncHistory>>,
+) -> Result<(), ClipboardSyncRunnerError>
+where P: ClipboardProvider + Send + 'static {
+    run_clipboard_sync_inner(provider, data_sender, inbound_rx, cancel_rx, config, Some(gate), history).await
+}
+
+async fn run_clipboard_sync_inner<P>(
+    provider: P, data_sender: ScheduledDataSender, mut inbound_rx: mpsc::Receiver<DataEnvelope>,
+    mut cancel_rx: broadcast::Receiver<()>, config: ClipboardSyncRunnerConfig,
+    gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    history: std::sync::Arc<tokio::sync::Mutex<crate::clipboard_sync::ClipboardSyncHistory>>,
+) -> Result<(), ClipboardSyncRunnerError>
+where P: ClipboardProvider + Send + 'static {
     let mut endpoint = ClipboardSyncEndpoint::new(provider, config.endpoint);
+    endpoint.set_observation(config.observation.clone());
     let mut poll_interval = tokio::time::interval(config.poll_interval);
     let delivery = crate::file_delivery::FileDeliveryTracker::default();
     let mut outgoing = tokio::task::JoinSet::new();
+    let mut outgoing_crc = None;
 
     // Tokio intervals tick immediately; skip that so startup does not instantly resend stale state.
     poll_interval.tick().await;
@@ -81,20 +105,57 @@ where
     loop {
         tokio::select! {
             _ = cancel_rx.recv() => {
+                if !outgoing.is_empty() {
+                    let mut history = history.lock().await;
+                    endpoint.restore_history(*history);
+                    if let Some(crc) = outgoing_crc.take() { endpoint.retry_outgoing_if(crc); }
+                    *history = endpoint.history();
+                }
                 return Ok(());
             }
             result = outgoing.join_next(), if !outgoing.is_empty() => {
-                if !matches!(result, Some(Ok(Ok(())))) { endpoint.retry_outgoing(); }
+                let mut history = history.lock().await;
+                endpoint.restore_history(*history);
+                if let Some(crc) = outgoing_crc.take() {
+                    if matches!(result, Some(Ok(Ok(())))) { endpoint.outgoing_succeeded(crc); }
+                    else { endpoint.retry_outgoing_if(crc); }
+                }
+                *history = endpoint.history();
             }
             _ = poll_interval.tick(), if outgoing.is_empty() => {
-                if let Some(transfer) = endpoint.poll_outgoing(now_ms()).await? {
+                if gate.as_ref().is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::Acquire)) { continue; }
+                let transfer = {
+                    let mut history = history.lock().await;
+                    endpoint.restore_history(*history);
+                    let transfer = match endpoint.poll_outgoing(now_ms()).await {
+                        Ok(transfer) => transfer,
+                        Err(crate::clipboard_sync::ClipboardSyncError::Provider(error)) if error.is::<crate::clipboard_file_runtime::ClipboardOwnershipRevoked>() => return Ok(()),
+                        Err(error) => return Err(error.into()),
+                    };
+                    *history = endpoint.history();
+                    transfer
+                };
+                if let Some(transfer) = transfer {
+                    if gate.as_ref().is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::Acquire)) {
+                        let mut history = history.lock().await;
+                        endpoint.restore_history(*history);
+                        endpoint.retry_outgoing_if(transfer.content_crc32);
+                        *history = endpoint.history();
+                        continue;
+                    }
+                    outgoing_crc = Some(transfer.content_crc32);
                     let sender = data_sender.clone();
                     let tracker = delivery.clone();
+                    let gate = gate.clone();
                     outgoing.spawn(async move {
                         let object = transfer.envelopes.first().and_then(|e| e.header.chunk.as_ref()).ok_or("missing clipboard identity")?.object_id;
                         let mut window = tracker.window([object, u64::MAX]);
-                        for envelope in transfer.envelopes { window.send(envelope, &sender, || false).await?; }
-                        window.flush(&sender, || false).await?;
+                        let cancelled = || gate.as_ref().is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::Acquire));
+                        for envelope in transfer.envelopes {
+                            if cancelled() { return Err("clipboard ownership changed".to_string()); }
+                            if !window.send(envelope, &sender, cancelled).await? { return Err("clipboard ownership changed".to_string()); }
+                        }
+                        if !window.flush(&sender, cancelled).await? { return Err("clipboard ownership changed".to_string()); }
                         Ok::<(), String>(())
                     });
                 }
@@ -103,13 +164,20 @@ where
                 let Some(mut envelope) = maybe_envelope else {
                     return Ok(());
                 };
+                if gate.as_ref().is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::Acquire)) { continue; }
 
                 if envelope.header.kind == ContentKind::ClipboardControl {
                     envelope.header.kind = ContentKind::FileControl;
                     if let Ok(control) = crate::file_transfer::control_from_envelope(&envelope) { delivery.route(control); }
                 } else if envelope.header.kind == ContentKind::ClipboardBundle {
                     let identity = envelope.header.chunk.as_ref().map(|c| (c.object_id, c.chunk_index));
-                    let result = endpoint.receive_envelope(envelope).await;
+                    let result = {
+                        let mut history = history.lock().await;
+                        endpoint.restore_history(*history);
+                        let result = endpoint.receive_envelope(envelope).await;
+                        *history = endpoint.history();
+                        result
+                    };
                     if let Some((object_id, chunk_index)) = identity {
                         let control = match result {
                             Ok(_) => protocol::FileTransferControl::ChunkAccepted { object_id, chunk_index },
@@ -236,7 +304,7 @@ mod tests {
             source_sender,
             source_in_rx,
             rx,
-            config,
+            config.clone(),
         ));
         let receiving = tokio::spawn(run_clipboard_sync(
             RecordingClipboard(writes.clone()),

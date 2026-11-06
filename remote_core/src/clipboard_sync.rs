@@ -37,6 +37,14 @@ pub struct ClipboardOutgoingTransfer {
     pub envelopes: Vec<DataEnvelope>,
 }
 
+/// Per-peer content history survives foreground ownership changes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ClipboardSyncHistory {
+    sent: Option<u32>,
+    applied: Option<u32>,
+    observed_epoch: u64,
+}
+
 #[derive(Debug)]
 pub enum ClipboardSyncError {
     Provider(Box<dyn Error + Send + Sync>),
@@ -93,10 +101,32 @@ pub struct ClipboardSyncEndpoint<P> {
     last_sent_content_crc32: Option<u32>,
     last_applied_content_crc32: Option<u32>,
     last_read_revision: Option<u64>,
+    observation: Option<std::sync::Arc<crate::clipboard_file_runtime::ClipboardObservation>>,
+    observed_epoch: u64,
     completed: std::collections::VecDeque<(u64, u32, u64, Option<u32>)>,
 }
 
 impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
+    pub fn history(&self) -> ClipboardSyncHistory {
+        ClipboardSyncHistory { sent: self.last_sent_content_crc32, applied: self.last_applied_content_crc32, observed_epoch: self.observed_epoch }
+    }
+    pub fn restore_history(&mut self, history: ClipboardSyncHistory) {
+        if self.last_sent_content_crc32 != history.sent || self.last_applied_content_crc32 != history.applied || self.observed_epoch != history.observed_epoch {
+            self.last_read_revision = None;
+        }
+        self.last_sent_content_crc32 = history.sent;
+        self.last_applied_content_crc32 = history.applied;
+        self.observed_epoch = history.observed_epoch;
+    }
+    pub fn set_observation(&mut self, observation: Option<std::sync::Arc<crate::clipboard_file_runtime::ClipboardObservation>>) { self.observation = observation; }
+    fn adopt_epoch(&mut self, epoch: u64) {
+        if self.observed_epoch != epoch {
+            self.last_sent_content_crc32 = None;
+            self.last_applied_content_crc32 = None;
+            self.last_read_revision = None;
+            self.observed_epoch = epoch;
+        }
+    }
     pub fn new(provider: P, config: ClipboardSyncConfig) -> Self {
         Self {
             provider,
@@ -105,6 +135,8 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
             last_sent_content_crc32: None,
             last_applied_content_crc32: None,
             last_read_revision: None,
+            observation: None,
+            observed_epoch: 0,
             completed: std::collections::VecDeque::new(),
         }
     }
@@ -128,6 +160,12 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
         self.last_sent_content_crc32 = None;
         self.last_read_revision = None;
     }
+    pub fn retry_outgoing_if(&mut self, content_crc32: u32) {
+        if self.last_sent_content_crc32 == Some(content_crc32) { self.retry_outgoing(); }
+    }
+    pub fn outgoing_succeeded(&mut self, content_crc32: u32) {
+        if self.last_sent_content_crc32 == Some(content_crc32) { self.last_applied_content_crc32 = None; }
+    }
 
     pub fn last_applied_content_crc32(&self) -> Option<u32> {
         self.last_applied_content_crc32
@@ -138,6 +176,7 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
         timestamp_ms: u64,
     ) -> Result<Option<ClipboardOutgoingTransfer>, ClipboardSyncError> {
         let revision = self.provider.clipboard_revision();
+        if self.observation.as_ref().is_some_and(|tracker| tracker.epoch() != self.observed_epoch) { self.last_read_revision = None; }
         if revision.is_some() && revision == self.last_read_revision {
             return Ok(None);
         }
@@ -147,15 +186,23 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
             .await
             .map_err(ClipboardSyncError::Provider)?
         else {
+            // A real non-text/image clipboard invalidates the prior content
+            // history so the same item can be copied again later.
+            self.last_sent_content_crc32 = None;
+            self.last_applied_content_crc32 = None;
+            self.last_read_revision = None;
             return Ok(None);
         };
 
+        if let Some(tracker) = &self.observation {
+            let Some(epoch) = self.provider.clipboard_observation_epoch() else { return Ok(None) };
+            if tracker.epoch() != epoch { return Ok(None); }
+            self.adopt_epoch(epoch);
+        }
         let content_crc32 = clipboard_content_crc32(&bundle)?;
         // Delayed rendering may itself change the counter during a read.
         self.last_read_revision = revision.filter(|revision| Some(*revision) == self.provider.clipboard_revision());
-        if Some(content_crc32) == self.last_sent_content_crc32
-            || Some(content_crc32) == self.last_applied_content_crc32
-        {
+        if Some(content_crc32) == self.last_sent_content_crc32.or(self.last_applied_content_crc32) {
             return Ok(None);
         }
 
@@ -239,10 +286,9 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
             .expect("complete clipboard assembler should still be present");
         let bundle = assembler.finish()?;
         let content_crc32 = clipboard_content_crc32(&bundle)?;
+        if let Some(tracker) = &self.observation { self.adopt_epoch(tracker.epoch()); }
 
-        if Some(content_crc32) == self.last_sent_content_crc32
-            || Some(content_crc32) == self.last_applied_content_crc32
-        {
+        if Some(content_crc32) == self.last_sent_content_crc32.or(self.last_applied_content_crc32) {
             self.remember_completed(identity);
             return Ok(None);
         }
@@ -251,7 +297,13 @@ impl<P: ClipboardProvider> ClipboardSyncEndpoint<P> {
             .write_clipboard(&bundle, self.config.policy)
             .await
             .map_err(ClipboardSyncError::Provider)?;
+        if let Some(tracker) = &self.observation {
+            let Some(epoch) = self.provider.clipboard_observation_epoch() else { self.remember_completed(identity); return Ok(Some(bundle)); };
+            if tracker.epoch() != epoch { self.remember_completed(identity); return Ok(Some(bundle)); }
+            self.adopt_epoch(epoch);
+        }
         self.last_applied_content_crc32 = Some(content_crc32);
+        self.last_sent_content_crc32 = None;
         self.remember_completed(identity);
         Ok(Some(bundle))
     }
@@ -275,6 +327,146 @@ mod tests {
     use crate::clipboard_provider::MemoryClipboardProvider;
     use crate::traits::ClipboardProvider;
     use protocol::{ClipboardImage, ClipboardItem, ClipboardText};
+
+    #[tokio::test]
+    async fn revoked_write_does_not_mark_content_applied_and_can_retry() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        use crate::clipboard_file_runtime::{ClipboardOwnershipRevoked, OwnedClipboardProvider};
+        let bundle = text_bundle(1, "retry");
+        let mut source = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(bundle), ClipboardSyncConfig::default());
+        let transfer = source.poll_outgoing(1).await.unwrap().unwrap();
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut revoked = ClipboardSyncEndpoint::new(OwnedClipboardProvider::new(MemoryClipboardProvider::new(), gate), ClipboardSyncConfig::default());
+        for envelope in &transfer.envelopes {
+            let result = revoked.receive_envelope(envelope.clone()).await;
+            if let Err(error) = result {
+                assert!(matches!(error, ClipboardSyncError::Provider(error) if error.is::<ClipboardOwnershipRevoked>()));
+            }
+        }
+        let mut retry = ClipboardSyncEndpoint::new(MemoryClipboardProvider::new(), ClipboardSyncConfig::default());
+        retry.restore_history(revoked.history());
+        let mut applied = false;
+        for envelope in transfer.envelopes { applied |= retry.receive_envelope(envelope).await.unwrap().is_some(); }
+        assert!(applied);
+    }
+
+    #[tokio::test]
+    async fn peer_history_suppresses_refocus_echo_but_allows_copy_to_another_peer() {
+        for bundle in [text_bundle(1, "from A"), image_bundle(2)] {
+            let mut source = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(bundle.clone()), ClipboardSyncConfig::default());
+            let transfer = source.poll_outgoing(1).await.unwrap().unwrap();
+            let mut receiver = ClipboardSyncEndpoint::new(MemoryClipboardProvider::new(), ClipboardSyncConfig::default());
+            for envelope in transfer.envelopes { receiver.receive_envelope(envelope).await.unwrap(); }
+            let mut refocused = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(bundle.clone()), ClipboardSyncConfig::default());
+            refocused.restore_history(receiver.history());
+            assert!(refocused.poll_outgoing(2).await.unwrap().is_none());
+            let mut another_peer = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(bundle), ClipboardSyncConfig::default());
+            assert!(another_peer.poll_outgoing(2).await.unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn previous_content_can_return_after_opposite_direction_content() {
+        for x in [text_bundle(1, "X"), image_bundle(1)] {
+            let y = text_bundle(2, "Y");
+            let mut local = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(x.clone()), ClipboardSyncConfig::default());
+            let mut remote = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(y.clone()), ClipboardSyncConfig::default());
+            assert!(local.poll_outgoing(1).await.unwrap().is_some());
+            let incoming_y = remote.poll_outgoing(1).await.unwrap().unwrap();
+            for envelope in incoming_y.envelopes { local.receive_envelope(envelope).await.unwrap(); }
+            local.provider_mut().write_clipboard(&x, ClipboardSyncPolicy::default()).await.unwrap();
+            assert!(local.poll_outgoing(2).await.unwrap().is_some(), "sent X must be reusable after received Y");
+            // Increment the remote transfer identity before deliberately copying Y again.
+            remote.provider_mut().write_clipboard(&x, ClipboardSyncPolicy::default()).await.unwrap();
+            remote.poll_outgoing(2).await.unwrap().unwrap();
+            remote.provider_mut().write_clipboard(&y, ClipboardSyncPolicy::default()).await.unwrap();
+            let incoming_y = remote.poll_outgoing(3).await.unwrap().unwrap();
+            let mut applied = false;
+            for envelope in incoming_y.envelopes { applied |= local.receive_envelope(envelope).await.unwrap().is_some(); }
+            assert!(applied, "received Y must be reusable after sent X");
+            assert!(local.poll_outgoing(3).await.unwrap().is_none(), "the current received content must not echo");
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_send_retains_previous_echo_history_and_retries_new_content() {
+        let x = text_bundle(1, "X");
+        let y = text_bundle(2, "Y");
+        let mut source = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(x.clone()), ClipboardSyncConfig::default());
+        let mut local = ClipboardSyncEndpoint::new(MemoryClipboardProvider::new(), ClipboardSyncConfig::default());
+        for envelope in source.poll_outgoing(1).await.unwrap().unwrap().envelopes { local.receive_envelope(envelope).await.unwrap(); }
+        local.provider_mut().write_clipboard(&y, ClipboardSyncPolicy::default()).await.unwrap();
+        let pending = local.poll_outgoing(2).await.unwrap().unwrap();
+        local.retry_outgoing_if(pending.content_crc32);
+        local.provider_mut().write_clipboard(&x, ClipboardSyncPolicy::default()).await.unwrap();
+        assert!(local.poll_outgoing(3).await.unwrap().is_none(), "failure must retain the last applied content");
+        local.provider_mut().write_clipboard(&y, ClipboardSyncPolicy::default()).await.unwrap();
+        assert!(local.poll_outgoing(4).await.unwrap().is_some(), "failed content must remain retryable");
+    }
+
+    #[tokio::test]
+    async fn text_copy_after_unsupported_clipboard_is_sent_again() {
+        for original in [text_bundle(1, "X"), image_bundle(2)] {
+            let mut endpoint = ClipboardSyncEndpoint::new(MemoryClipboardProvider::with_bundle(original.clone()), ClipboardSyncConfig::default());
+            assert!(endpoint.poll_outgoing(1).await.unwrap().is_some());
+            endpoint.provider_mut().clear();
+            assert!(endpoint.poll_outgoing(2).await.unwrap().is_none());
+            endpoint.provider_mut().write_clipboard(&original, ClipboardSyncPolicy::default()).await.unwrap();
+            assert!(endpoint.poll_outgoing(3).await.unwrap().is_some(), "the same content is a new copy after an unsupported clipboard");
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_read_preserves_prior_clipboard_history() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use crate::clipboard_file_runtime::{ClipboardOwnershipRevoked, OwnedClipboardProvider};
+        let gate = Arc::new(AtomicBool::new(true));
+        let provider = OwnedClipboardProvider::new(MemoryClipboardProvider::with_bundle(text_bundle(1, "X")), gate.clone());
+        let mut endpoint = ClipboardSyncEndpoint::new(provider, ClipboardSyncConfig::default());
+        assert!(endpoint.poll_outgoing(1).await.unwrap().is_some());
+        let old = endpoint.last_sent_content_crc32();
+        gate.store(false, Ordering::Release);
+        assert!(matches!(endpoint.poll_outgoing(2).await, Err(ClipboardSyncError::Provider(error)) if error.is::<ClipboardOwnershipRevoked>()));
+        assert_eq!(endpoint.last_sent_content_crc32(), old);
+    }
+
+    #[tokio::test]
+    async fn ownership_revoked_during_empty_read_does_not_clear_history() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use crate::clipboard_file_runtime::{ClipboardOwnershipRevoked, OwnedClipboardProvider};
+        struct DelayedNone { entered: Arc<tokio::sync::Notify>, release: Arc<tokio::sync::Semaphore> }
+        #[async_trait::async_trait]
+        impl ClipboardProvider for DelayedNone {
+            fn capabilities(&self) -> crate::traits::ClipboardBackendCapabilities { Default::default() }
+            async fn read_clipboard(&mut self, _: ClipboardSyncPolicy) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+                Ok(None)
+            }
+            async fn write_clipboard(&mut self, _: &ClipboardBundle, _: ClipboardSyncPolicy) -> Result<(), Box<dyn Error + Send + Sync>> { Ok(()) }
+        }
+        let observation = Arc::new(crate::clipboard_file_runtime::ClipboardObservation::default());
+        let gate = Arc::new(AtomicBool::new(true));
+        let mut seed = ClipboardSyncEndpoint::new(OwnedClipboardProvider::new(MemoryClipboardProvider::with_bundle(text_bundle(1, "X")), gate.clone()).with_observation(observation.clone()), ClipboardSyncConfig::default());
+        seed.set_observation(Some(observation.clone()));
+        assert!(seed.poll_outgoing(1).await.unwrap().is_some());
+        let previous = seed.history();
+        let previous_epoch = observation.epoch();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut endpoint = ClipboardSyncEndpoint::new(OwnedClipboardProvider::new(DelayedNone { entered: entered.clone(), release: release.clone() }, gate.clone()).with_observation(observation.clone()), ClipboardSyncConfig::default());
+        endpoint.set_observation(Some(observation.clone()));
+        endpoint.restore_history(previous);
+        let task = tokio::spawn(async move { let result = endpoint.poll_outgoing(2).await; (endpoint, result) });
+        entered.notified().await;
+        gate.store(false, Ordering::Release);
+        release.add_permits(1);
+        let (endpoint, result) = task.await.unwrap();
+        assert!(matches!(result, Err(ClipboardSyncError::Provider(error)) if error.is::<ClipboardOwnershipRevoked>()));
+        assert_eq!(endpoint.history().sent, previous.sent);
+        assert_eq!(endpoint.history().applied, previous.applied);
+        assert_eq!(observation.epoch(), previous_epoch);
+    }
 
     struct RevisionProvider {
         inner: MemoryClipboardProvider,

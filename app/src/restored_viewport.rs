@@ -163,7 +163,7 @@ impl RestoredDashboard {
             state.target(self.bound_source,target);
             let cancel=state.take_cancel();(state.request(Instant::now()),cancel)
         };
-        if cancel{for event in self.pointer_input.release_events(){self.owner.queue_viewing_input(event);}}
+        if cancel{self.release_pointer_input();}
         if let Some((target,request,epoch))=request {
             let accepted=self.owner.queue_viewport(&target,request);
             self.viewport.lock().unwrap().sent(request,epoch,accepted,Instant::now());
@@ -176,6 +176,24 @@ impl RestoredDashboard {
             target.is_some_and(|target|self.owner.queue_viewport_input(&target,event))
         }else{self.owner.queue_viewing_input(event)};
         if queued && let Some(index)=counter {let mut counts=self.pointer_dispatch_counts.get();counts[index]=counts[index].saturating_add(1);self.pointer_dispatch_counts.set(counts);}
+        queued
+    }
+    pub(super) fn scroll_target(&self)->Option<ViewportTarget> {
+        let frame=self.current_frame.as_ref()?;
+        if let Some(geometry)=frame.frame_geometry {
+            let painted=self.viewport.lock().unwrap().painted()?;
+            if geometry.source_revision!=painted.geometry.source_revision
+                || [geometry.source_width,geometry.source_height]!=[painted.geometry.source_width,painted.geometry.source_height]
+                || !self.owner.viewport_target_is_current(&painted.target) {return None;}
+            Some(painted.target)
+        } else {
+            self.owner.viewport_target_for_frame(&self.presentation_frame,frame)
+        }
+    }
+    pub(super) fn queue_scroll_pointer(&self,target:&ViewportTarget,event:protocol::InputEvent)->bool {
+        let pointer=matches!(event,protocol::InputEvent::MouseMoveAbsolute{..});
+        let queued=self.owner.queue_viewport_input(target,event);
+        if queued && pointer {let mut counts=self.pointer_dispatch_counts.get();counts[0]=counts[0].saturating_add(1);self.pointer_dispatch_counts.set(counts);}
         queued
     }
     pub(super) fn change_view_zoom(&mut self,factor:f64,anchor:Option<Point<Pixels>>,cx:&mut Context<Self>) {
@@ -219,6 +237,7 @@ impl RestoredDashboard {
 #[cfg(test)]
 mod tests {
     use super::{State,ViewportTarget,FrameGeometry,SourceViewBinding};
+    use super::super::PointerInputTracker;
     use gpui::{Bounds,Pixels,point,px,size};
     use std::{sync::Arc,time::{Instant,Duration}};
     use remote_core::{net::{UdpMultiplexer,MultiplexedPacket},workspace_session::WorkspaceConnection};
@@ -250,6 +269,39 @@ mod tests {
         });
         let target=ViewportTarget{binding:SourceViewBinding::new(&connection,remote_core::shared_files::current_share_scope()),id:7,source_revision:0};
         Fixture{target,_connection:connection,server,_runtime:runtime}
+    }
+
+    #[test]
+    fn scroll_gesture_is_bound_to_accepted_source_and_focus_lifetime() {
+        use protocol::{InputEvent,ScrollGesture,ScrollPhase as P,MomentumPhase as M};
+        let fixture=fixture();
+        let target=fixture.target.clone();
+        let newer=ViewportTarget{source_revision:target.source_revision+1,..target.clone()};
+        let began=ScrollGesture{phase:P::Began,momentum:M::None};
+        let changed=ScrollGesture{phase:P::Changed,momentum:M::None};
+        let ended=ScrollGesture{phase:P::Ended,momentum:M::None};
+        let momentum=ScrollGesture{phase:P::None,momentum:M::Began};
+        let momentum_end=ScrollGesture{phase:P::None,momentum:M::Ended};
+        let mut tracker=PointerInputTracker::default();
+        assert!(tracker.accepts_scroll(began,&target));
+        tracker.scrolled((0.,0.),began);
+        assert!(!tracker.accepts_scroll(changed,&target),"an unqueued begin must not arm the gesture");
+        tracker.scroll_queued(began,target.clone());
+        assert!(tracker.accepts_scroll(changed,&target));
+        assert!(!tracker.accepts_scroll(changed,&newer),"late input must not follow a source switch");
+        tracker.scroll_queued(changed,target.clone());
+        let (cancel_target,cancel)=tracker.cancel_scroll().unwrap();
+        assert!(cancel_target.same_target(&target));
+        assert_eq!(cancel,InputEvent::MouseScroll{delta_x:0,delta_y:0,gesture:ScrollGesture{phase:P::Cancelled,momentum:M::None}});
+        assert!(!tracker.accepts_scroll(changed,&target),"focus cancellation disarms continuation");
+        tracker.scroll_queued(began,target.clone());
+        tracker.scroll_queued(ended,target.clone());
+        assert!(tracker.accepts_scroll(momentum,&target),"momentum belongs to the preceding touch gesture");
+        tracker.scroll_queued(momentum,target.clone());
+        assert!(tracker.accepts_scroll(momentum_end,&target));
+        tracker.scroll_queued(momentum_end,target.clone());
+        assert!(!tracker.accepts_scroll(momentum,&target));
+        assert!(tracker.cancel_scroll().is_none());
     }
     fn geometry()->FrameGeometry {FrameGeometry{source_revision:0,demand_revision:0,revision:1,source_width:4000,source_height:3000,
         crop:protocol::viewport::PixelRect{x:0,y:0,width:4000,height:3000},width:128,height:72}}

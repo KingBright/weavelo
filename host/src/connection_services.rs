@@ -1,7 +1,8 @@
 use super::*;
 
 pub(super) struct ConnectionServicesConfig {
-    pub(super) clipboard_enabled: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) clipboard_owner: remote_core::clipboard_file_runtime::ClipboardOwnerSlot,
+    pub(super) clipboard_owner_rx: watch::Receiver<Option<remote_core::clipboard_file_runtime::ClipboardOwnership>>,
     pub(super) session_id: u32,
     pub(super) scheduled_sender: ScheduledDataSender,
     pub(super) cancel_rx: broadcast::Receiver<()>,
@@ -18,7 +19,8 @@ pub(super) struct ConnectionServicesConfig {
 pub(super) async fn run(config: ConnectionServicesConfig) -> Result<(), String> {
     let mut tasks = tokio::task::JoinSet::new();
     let ConnectionServicesConfig {
-        clipboard_enabled,
+        clipboard_owner,
+        mut clipboard_owner_rx,
         session_id,
         scheduled_sender,
         mut cancel_rx,
@@ -36,27 +38,63 @@ pub(super) async fn run(config: ConnectionServicesConfig) -> Result<(), String> 
             let (command_tx, command_rx) = mpsc::channel(16);
             let (event_tx, mut event_rx) = mpsc::unbounded_channel();
             let (forward_tx, forward_rx) = mpsc::unbounded_channel();
-            #[cfg(target_os = "macos")]
-            let file_clipboard_provider = MacClipboardProvider::new();
-            #[cfg(target_os = "windows")]
-            let file_clipboard_provider = WindowsClipboardProvider::new();
-            #[cfg(target_os = "linux")]
-            let file_clipboard_provider = LinuxClipboardProvider::new();
             let clipboard_commands = command_tx.clone();
-            let clipboard_cancel = cancel_rx.resubscribe();
+            let mut clipboard_cancel = cancel_rx.resubscribe();
+            let bridge_owner = clipboard_owner.clone();
             tasks.spawn(async move {
-                let _ = remote_core::clipboard_file_runtime::run_clipboard_file_sync(
-                    file_clipboard_provider,
-                    clipboard_commands,
-                    event_rx,
-                    Some(forward_tx),
-                    clipboard_cancel,
-                    remote_core::clipboard_file_runtime::ClipboardFileSyncConfig {
-                        enabled: Some(clipboard_enabled),
-                        ..Default::default()
-                    },
-                )
-                .await;
+                let state = Arc::new(std::sync::Mutex::new(remote_core::clipboard_file_runtime::ClipboardFileSyncState::default()));
+                let mut bridge: Option<(remote_core::clipboard_file_runtime::ClipboardOwnership, mpsc::UnboundedSender<FileTransferEvent>, broadcast::Sender<()>)> = None;
+                let mut pending = Vec::new();
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = clipboard_cancel.recv() => break,
+                        changed = clipboard_owner_rx.changed() => {
+                            if changed.is_err() { break; }
+                            if let Some((_, _, cancel)) = bridge.take() { let _ = cancel.send(()); }
+                            pending.retain(|event| matches!(event, FileTransferEvent::IncomingClipboardReady { ownership: Some(token), .. } if token.current()));
+                            let owner = clipboard_owner_rx.borrow_and_update().clone();
+                            if let Some(owner) = owner.filter(|owner| owner.current()) {
+                                #[cfg(target_os = "macos")]
+                                let provider = MacClipboardProvider::new();
+                                #[cfg(target_os = "windows")]
+                                let provider = WindowsClipboardProvider::new();
+                                #[cfg(target_os = "linux")]
+                                let provider = LinuxClipboardProvider::new();
+                                let (tx, rx) = mpsc::unbounded_channel();
+                                let (cancel, cancel_rx) = broadcast::channel(1);
+                                for event in pending.drain(..) {
+                                    if matches!(&event, FileTransferEvent::IncomingClipboardReady { ownership: Some(token), .. } if token == &owner && token.current()) { let _ = tx.send(event); }
+                                }
+                                bridge = Some((owner.clone(), tx, cancel));
+                                let commands = clipboard_commands.clone();
+                                let state = state.clone();
+                                tokio::spawn(async move {
+                                    let gate = owner.0;
+                                    let observation = remote_core::clipboard_file_runtime::process_clipboard_observation();
+                                    let _ = remote_core::clipboard_file_runtime::run_clipboard_file_sync(
+                                        remote_core::clipboard_file_runtime::OwnedClipboardProvider::new(provider, gate.clone()).with_observation(observation.clone()),
+                                        commands, rx, None, cancel_rx,
+                                        remote_core::clipboard_file_runtime::ClipboardFileSyncConfig { enabled: Some(gate), state: Some(state), observation: Some(observation), ..Default::default() },
+                                    ).await;
+                                });
+                            }
+                        }
+                        event = event_rx.recv() => {
+                            let Some(event) = event else { break };
+                            if let FileTransferEvent::IncomingClipboardReady { ownership: Some(owner), .. } = &event {
+                                if owner.current() {
+                                    if let Some((current, tx, _)) = &bridge {
+                                        if current == owner { let _ = tx.send(event.clone()); }
+                                        else { pending.push(event.clone()); }
+                                    } else { pending.push(event.clone()); }
+                                }
+                            }
+                            let _ = forward_tx.send(event);
+                        }
+                    }
+                }
+                if let Some((_, _, cancel)) = bridge { let _ = cancel.send(()); }
             });
             event_rx = forward_rx;
             let _file_clipboard_enabled = env_flag_enabled("WEAVELO_FILE_CLIPBOARD");
@@ -72,6 +110,7 @@ pub(super) async fn run(config: ConnectionServicesConfig) -> Result<(), String> 
                     runtime_cancel_rx,
                     FileTransferRuntimeConfig {
                         receive_dir,
+                        clipboard_owner: Some(bridge_owner),
                         ..FileTransferRuntimeConfig::default()
                     },
                 )
@@ -152,6 +191,9 @@ pub(super) async fn run(config: ConnectionServicesConfig) -> Result<(), String> 
 
 pub(super) fn start_clipboard(
     sender: ScheduledDataSender,
+    gate: Arc<std::sync::atomic::AtomicBool>,
+    history: Arc<tokio::sync::Mutex<remote_core::clipboard_sync::ClipboardSyncHistory>>,
+    serial: Arc<tokio::sync::Mutex<()>>,
 ) -> (
     mpsc::Sender<DataEnvelope>,
     broadcast::Sender<()>,
@@ -160,18 +202,23 @@ pub(super) fn start_clipboard(
     let (inbound_tx, inbound_rx) = mpsc::channel(256);
     let (cancel, cancel_rx) = broadcast::channel(2);
     let task = tokio::spawn(async move {
+        let _serial = serial.lock().await;
+        if !gate.load(std::sync::atomic::Ordering::Acquire) { return; }
         #[cfg(target_os = "macos")]
         let provider = MacClipboardProvider::new();
         #[cfg(target_os = "linux")]
         let provider = LinuxClipboardProvider::new();
         #[cfg(target_os = "windows")]
         let provider = WindowsClipboardProvider::new();
-        if let Err(error) = run_clipboard_sync(
-            provider,
+        let observation = remote_core::clipboard_file_runtime::process_clipboard_observation();
+        if let Err(error) = remote_core::clipboard_runtime::run_owned_clipboard_sync(
+            remote_core::clipboard_file_runtime::OwnedClipboardProvider::new(provider, gate.clone()).with_observation(observation.clone()),
             sender,
             inbound_rx,
             cancel_rx,
-            ClipboardSyncRunnerConfig::default(),
+            ClipboardSyncRunnerConfig { observation: Some(observation), ..Default::default() },
+            gate,
+            history,
         )
         .await
         {

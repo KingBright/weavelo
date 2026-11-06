@@ -67,6 +67,7 @@ enum Command {
         Arc<SharedHostStats>,
     ),
     Clipboard(Option<Arc<dyn EnvelopeIngress>>),
+    Barrier(tokio::sync::oneshot::Sender<Result<(), String>>),
 }
 
 #[cfg(test)]
@@ -178,11 +179,13 @@ pub struct WorkspaceConnection {
     pub files_available: bool,
     pub clipboard_available: bool,
     settings_revision: std::sync::atomic::AtomicU64,
+    clipboard_revision: std::sync::atomic::AtomicU64,
     pub id: u32,
     pub sender: UdpSender,
     pub target: SocketAddr,
     pub file_commands: mpsc::Sender<FileTransferCommand>,
     pub file_activity: Arc<std::sync::atomic::AtomicBool>,
+    pub clipboard_file_owner: crate::clipboard_file_runtime::ClipboardOwnerSlot,
     commands: mpsc::Sender<Command>,
     cancel: broadcast::Sender<()>,
     task: tokio::task::JoinHandle<()>,
@@ -301,6 +304,7 @@ impl WorkspaceConnection {
         let (audio_tx, audio) = mpsc::channel(64);
         let (file_commands, command_files) = mpsc::channel(16);
         let file_activity = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let clipboard_file_owner = crate::clipboard_file_runtime::ClipboardOwnerSlot::default();
         let (files_tx, files_rx) = mpsc::channel(128);
         let (file_events, files) = mpsc::unbounded_channel();
         let (cancel, _) = broadcast::channel(4);
@@ -308,7 +312,7 @@ impl WorkspaceConnection {
         let workers = receive_dir.map(|receive_dir| {
             let (scheduled, worker) = ScheduledDataSender::spawn(sender.clone(), target, ScheduledDataSenderConfig::default());
             let runtime = tokio::spawn(run_file_transfer_runtime(scheduled, command_files, files_rx, file_events, cancel.subscribe(), FileTransferRuntimeConfig {
-                receive_dir, active: file_activity.clone(), ..Default::default()
+                receive_dir, active: file_activity.clone(), clipboard_owner: Some(clipboard_file_owner.clone()), ..Default::default()
             }));
             (runtime, worker)
         });
@@ -333,7 +337,7 @@ impl WorkspaceConnection {
             files_tx,
             subscriptions: HashMap::new(),
             pending: HashMap::new(),
-            clipboard: None, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
+            clipboard: None, latest_clipboard_revision: 0, acknowledged_clipboard_revision: 0, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
         };
         let shutdown = cancel.subscribe();
         let task = tokio::spawn(async move {
@@ -352,11 +356,13 @@ impl WorkspaceConnection {
                 files_available: files_available && allow_files,
                 clipboard_available,
                 settings_revision: std::sync::atomic::AtomicU64::new(0),
+                clipboard_revision: Default::default(),
                 id,
                 sender,
                 target,
                 file_commands,
                 file_activity,
+                clipboard_file_owner,
                 commands,
                 cancel,
                 task,
@@ -440,6 +446,9 @@ impl WorkspaceConnection {
         self.source_icons.lock().unwrap().appearances()
     }
     fn prepare_command(&self, mut command: SessionCommand, input: &mut InputState) -> Result<Command, String> {
+        if let SessionCommand::SetClipboard { revision, .. } = &mut command {
+            *revision = self.clipboard_revision.fetch_update(std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire, |value| value.checked_add(1)).map_err(|_| "clipboard revision exhausted")? + 1;
+        }
         if let SessionCommand::ListSources { known_icons, .. } = &mut command {
             *known_icons = self.source_icons.lock().unwrap().known_ids();
         }
@@ -518,6 +527,11 @@ impl WorkspaceConnection {
             .await
             .map_err(|_| "connection closed".into())
     }
+    pub async fn flush_controls(&self) -> Result<(), String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.commands.send(Command::Barrier(tx)).await.map_err(|_| "connection closed".to_string())?;
+        rx.await.map_err(|_| "connection closed".to_string())?
+    }
     pub async fn clipboard(&self, ingress: Option<Arc<dyn EnvelopeIngress>>) -> Result<(), String> {
         self.commands
             .send(Command::Clipboard(ingress))
@@ -559,6 +573,8 @@ struct Actor {
     subscriptions: HashMap<u32, View>,
     pending: HashMap<(u8, u32), Pending>,
     clipboard: Option<Arc<dyn EnvelopeIngress>>,
+    latest_clipboard_revision: u64,
+    acknowledged_clipboard_revision: u64,
     audio_groups: HashMap<u32, bool>,
     pending_audio_activity: std::collections::BTreeMap<u32, bool>,
 }
@@ -579,8 +595,8 @@ mod input_api_tests {
             pointer_queue:Default::default(),
             text_pending:Default::default(),source_icons:Default::default(),close_confirmed:Default::default(),
             last_response_rx,input:Arc::new(std::sync::Mutex::new(input)),max_subscriptions:1,
-            files_available:false,clipboard_available:false,settings_revision:Default::default(),id:1,sender,target,
-            file_commands,file_activity:Default::default(),commands,cancel:broadcast::channel(1).0,
+            files_available:false,clipboard_available:false,settings_revision:Default::default(),clipboard_revision:Default::default(),id:1,sender,target,
+            file_commands,file_activity:Default::default(),clipboard_file_owner:Default::default(),commands,cancel:broadcast::channel(1).0,
             task:tokio::spawn(async {}),
         },queued,binding)
     }
@@ -630,6 +646,17 @@ mod input_api_tests {
                 _=>{}
             }
         }
+    }
+
+    #[tokio::test]
+    async fn clipboard_revision_is_allocated_when_control_is_called() {
+        let (conn, mut queued, _) = motion_connection(4).await;
+        let old = conn.control(SessionCommand::SetClipboard { enabled: false, revision: 900 });
+        let new = conn.control(SessionCommand::SetClipboard { enabled: true, revision: 0 });
+        new.await.unwrap();
+        old.await.unwrap();
+        assert!(matches!(queued.recv().await, Some(Command::Control(SessionCommand::SetClipboard { enabled: true, revision: 2 }))));
+        assert!(matches!(queued.recv().await, Some(Command::Control(SessionCommand::SetClipboard { enabled: false, revision: 1 }))));
     }
 
     #[tokio::test]
@@ -689,8 +716,8 @@ mod input_api_tests {
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:input.clone(),max_subscriptions:8,files_available:false,clipboard_available:false,
-            settings_revision:std::sync::atomic::AtomicU64::new(0),id:1,sender,target,file_commands,
-            file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),commands,cancel,
+            settings_revision:std::sync::atomic::AtomicU64::new(0),clipboard_revision:Default::default(),id:1,sender,target,file_commands,
+            file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),clipboard_file_owner:Default::default(),commands,cancel,
             task:tokio::spawn(std::future::pending()),
         };
         let delayed=conn.control(SessionCommand::Input{id:7,event:protocol::InputEvent::MouseDown(0)});
@@ -800,6 +827,10 @@ impl Actor {
             .await;
     }
     async fn request(&mut self, command: SessionCommand) {
+        if let SessionCommand::SetClipboard { revision, .. } = &command {
+            if *revision <= self.latest_clipboard_revision { return; }
+            self.latest_clipboard_revision = *revision;
+        }
         if let SessionCommand::SwitchSource {id,..} = &command {
             self.pending.retain(|_,pending|!matches!(pending.command,SessionCommand::GetSourceAppearance {id:previous,..} if previous == *id));
         }
@@ -963,6 +994,7 @@ impl Actor {
                 None,
             );
             let current = match command {
+                SessionCommand::ClipboardState { revision, .. } => pending.is_some_and(|p| matches!(p.command, SessionCommand::SetClipboard { revision: expected, .. } if expected == *revision)),
                 SessionCommand::SourceAppearance {request_id,id,source,..} =>
                     self.subscriptions.get(id).is_some_and(|view|view.source==*source)
                     && pending.is_some_and(|pending|matches!(&pending.command,SessionCommand::GetSourceAppearance {request_id:expected,id:expected_id,source:expected_source} if expected==request_id && expected_id==id && expected_source==source)),
@@ -1006,6 +1038,7 @@ impl Actor {
                 view.handler.reset_video_source();
             }
             self.pending.remove(&key);
+            if let SessionCommand::ClipboardState { revision, .. } = command { self.acknowledged_clipboard_revision = *revision; }
         }
         if matches!(command, SessionCommand::Unsubscribed { .. }) {
             // The host can end capture without a local stop request. Retire its
@@ -1099,6 +1132,7 @@ impl Actor {
         let mut input_tick = tokio::time::interval(Duration::from_millis(protocol::realtime_input::INPUT_REFRESH_INTERVAL_MS));
         input_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut input_requests_at = Instant::now() - Duration::from_secs(1);
+        let mut clipboard_barriers: Vec<(u64, tokio::sync::oneshot::Sender<Result<(), String>>)> = Vec::new();
         let mut media = tokio::time::interval(Duration::from_millis(10));
         for interval in [&mut heartbeat, &mut retry, &mut media] {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1190,6 +1224,11 @@ impl Actor {
                         if let Some((packet,queued))=pending { self.realtime(packet,queued).await; }
                     }
                     Some(Command::Clipboard(ingress)) => self.clipboard = ingress,
+                    Some(Command::Barrier(done)) => {
+                        let revision = self.latest_clipboard_revision;
+                        if self.acknowledged_clipboard_revision >= revision { let _ = done.send(Ok(())); }
+                        else { clipboard_barriers.push((revision, done)); }
+                    },
                     Some(Command::Control(command)) => {
                         self.prepare_control(&command);
                         self.refresh_audio_activity();
@@ -1295,6 +1334,19 @@ impl Actor {
                         Err(error) => { let _ = self.control_tx.send(SessionCommand::Error { request_id: self.id, reason: error.to_string() }); }
                     }
                 }
+            }
+            let mut index = 0;
+            while index < clipboard_barriers.len() {
+                let revision = clipboard_barriers[index].0;
+                let result = if self.acknowledged_clipboard_revision >= revision {
+                    Some(Ok(()))
+                } else if !self.pending.get(&(5, 0)).is_some_and(|p| matches!(p.command, SessionCommand::SetClipboard { revision: pending, .. } if pending == revision)) {
+                    Some(Err("clipboard acknowledgement unavailable".into()))
+                } else { None };
+                if let Some(result) = result {
+                    let (_, done) = clipboard_barriers.swap_remove(index);
+                    let _ = done.send(result);
+                } else { index += 1; }
             }
         }
         self.send(&SessionCommand::Close {
@@ -1453,9 +1505,10 @@ mod tests {
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx, input: input.clone(), max_subscriptions: 1,
             files_available: false, clipboard_available: false,
-            settings_revision: std::sync::atomic::AtomicU64::new(0), id: 42,
+            settings_revision: std::sync::atomic::AtomicU64::new(0), clipboard_revision: Default::default(), id: 42,
             sender: actor.sender.clone(), target: actor.target, file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            clipboard_file_owner: Default::default(),
             commands, cancel: broadcast::channel(1).0, task: tokio::spawn(async {}),
         };
         let mut binding = protocol::realtime_input::InputBinding {
@@ -1503,8 +1556,8 @@ mod tests {
             pointer_queue:Default::default(),text_pending:Default::default(),source_icons:Default::default(),
             close_confirmed:Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:actor.input.clone(),max_subscriptions:1,files_available:false,clipboard_available:false,
-            settings_revision:std::sync::atomic::AtomicU64::new(0),id:82,sender:actor.sender.clone(),target:actor.target,
-            file_commands,file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),commands,cancel,
+            settings_revision:std::sync::atomic::AtomicU64::new(0),clipboard_revision:Default::default(),id:82,sender:actor.sender.clone(),target:actor.target,
+            file_commands,file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),clipboard_file_owner:Default::default(),commands,cancel,
             task:tokio::spawn(std::future::pending::<()>()),
         };
         tokio::time::timeout(Duration::from_secs(3),connection.close()).await
@@ -1527,8 +1580,8 @@ mod tests {
             source_icons:Default::default(),
             close_confirmed:Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_response_rx,input:actor.input.clone(),max_subscriptions:1,files_available:false,clipboard_available:false,
-            settings_revision:std::sync::atomic::AtomicU64::new(0),id:81,sender:actor.sender.clone(),target:actor.target,
-            file_commands,file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),commands,
+            settings_revision:std::sync::atomic::AtomicU64::new(0),clipboard_revision:Default::default(),id:81,sender:actor.sender.clone(),target:actor.target,
+            file_commands,file_activity:Arc::new(std::sync::atomic::AtomicBool::new(false)),clipboard_file_owner:Default::default(),commands,
             cancel:broadcast::channel(1).0,task,
         };
         assert!(connection.close_verified().await.is_err());
@@ -1581,12 +1634,81 @@ mod tests {
                 subscriptions: HashMap::new(),
                 pending: HashMap::new(),
                 clipboard: None,
+                latest_clipboard_revision: 0,
+                acknowledged_clipboard_revision: 0,
                 audio_groups: HashMap::new(),
                 pending_audio_activity: std::collections::BTreeMap::new(),
             },
             audio_rx,
         )
     }
+    #[tokio::test]
+    async fn clipboard_latest_revision_survives_reordered_requests_and_replies() {
+        let (mut actor, _) = source_switch_actor().await;
+        actor.request(SessionCommand::SetClipboard { enabled: true, revision: 1 }).await;
+        actor.request(SessionCommand::SetClipboard { enabled: false, revision: 2 }).await;
+        actor.request(SessionCommand::SetClipboard { enabled: true, revision: 3 }).await;
+        actor.request(SessionCommand::SetClipboard { enabled: false, revision: 2 }).await;
+        assert!(matches!(actor.pending.get(&(5, 0)).unwrap().command, SessionCommand::SetClipboard { enabled: true, revision: 3 }));
+        assert!(!actor.accept_control(&SessionCommand::ClipboardState { enabled: false, revision: 2 }));
+        assert!(actor.pending.contains_key(&(5, 0)));
+        assert!(actor.accept_control(&SessionCommand::ClipboardState { enabled: true, revision: 3 }));
+        actor.request(SessionCommand::SetClipboard { enabled: false, revision: 2 }).await;
+        assert!(!actor.pending.contains_key(&(5, 0)));
+    }
+
+    #[tokio::test]
+    async fn clipboard_revoke_is_sent_before_a_live_file_drain() {
+        let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target = server.local_addr().unwrap();
+        let (server_tx, server_rx) = server.split();
+        let (mut actor, _) = source_switch_actor().await;
+        actor.target = target;
+        let (commands, receiver) = mpsc::channel(8);
+        actor.commands = receiver;
+        let (cancel, _) = broadcast::channel(2);
+        let input = actor.input.clone();
+        let source_icons = actor.source_icons.clone();
+        let close_confirmed = actor.close_confirmed.clone();
+        let sender = actor.sender.clone();
+        let (file_commands, mut files) = mpsc::channel(2);
+        let (_, last_response_rx) = tokio::sync::watch::channel(Instant::now());
+        let shutdown = cancel.subscribe();
+        let task = tokio::spawn(async move { actor.run(shutdown).await; });
+        let conn = WorkspaceConnection {
+            pointer_queue: Default::default(), text_pending: Default::default(), source_icons, close_confirmed,
+            last_response_rx, input, max_subscriptions: 1, files_available: true, clipboard_available: true,
+            settings_revision: Default::default(), clipboard_revision: Default::default(), id: 1, sender, target,
+            file_commands, file_activity: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            clipboard_file_owner: Default::default(), commands, cancel, task,
+        };
+        conn.control(SessionCommand::SetClipboard { enabled: false, revision: 0 }).await.unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (packet, from) = tokio::time::timeout(Duration::from_secs(2), async {
+                loop { if let MultiplexedPacket::Control(ControlMessage::Session(command), from) = server_rx.recv().await.unwrap() { break (*command, from); } }
+            }).await.unwrap();
+            assert!(matches!(packet, SessionCommand::SetClipboard { enabled: false, revision: 1 }));
+            seen_tx.send(()).unwrap();
+            ack_rx.await.unwrap();
+            server_tx.send_control(&ControlMessage::Session(Box::new(SessionCommand::ClipboardState { enabled: false, revision: 1 })), from).await.unwrap();
+        });
+        let flush = conn.flush_controls();
+        tokio::pin!(flush);
+        tokio::select! {
+            _ = seen_rx => {},
+            result = &mut flush => panic!("revoke completed before acknowledgement: {result:?}"),
+        }
+        assert!(files.try_recv().is_err());
+        ack_tx.send(()).unwrap();
+        flush.await.unwrap();
+        server.await.unwrap();
+        conn.file_commands.send(FileTransferCommand::Drain).await.unwrap();
+        assert!(matches!(files.recv().await, Some(FileTransferCommand::Drain)));
+        assert!(!conn.task.is_finished(), "the file-owning connection remains alive during drain");
+    }
+
     fn source_switch_view(actor: &mut Actor, id: u32) -> crate::video_queue::VideoReceiver {
         let (decode_tx, decode_rx) = crate::video_queue::channel(8);
         let handler = MediaPacketHandler::new(
@@ -2381,7 +2503,7 @@ mod tests {
             files_tx,
             subscriptions: HashMap::from([(7, view)]),
             pending: HashMap::new(),
-            clipboard: None, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
+            clipboard: None, latest_clipboard_revision: 0, acknowledged_clipboard_revision: 0, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
         };
         let (cancel, _) = broadcast::channel(2);
         let cancel_rx = cancel.subscribe();
@@ -2508,7 +2630,7 @@ mod tests {
             files_tx,
             subscriptions: HashMap::new(),
             pending: HashMap::new(),
-            clipboard: None, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
+            clipboard: None, latest_clipboard_revision: 0, acknowledged_clipboard_revision: 0, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
         };
         let close_confirmed=actor.close_confirmed.clone();
         let (cancel, cancel_rx) = broadcast::channel(1);
@@ -2645,7 +2767,7 @@ mod rejected_datagram_tests {
             files_tx,
             subscriptions: HashMap::new(),
             pending: HashMap::new(),
-            clipboard: None, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
+            clipboard: None, latest_clipboard_revision: 0, acknowledged_clipboard_revision: 0, audio_groups: HashMap::new(), pending_audio_activity: std::collections::BTreeMap::new(),
         };
         let (cancel, _) = broadcast::channel(1);
         let cancel_rx = cancel.subscribe();

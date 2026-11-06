@@ -37,7 +37,7 @@ use crate::audio_player::{AudioPlayerEvent, AudioPlayerSettings};
 use protocol::DataEnvelope;
 use remote_core::client_session::{AudioIngressEvent, EnvelopeIngress};
 use remote_core::clipboard_file_runtime::{ClipboardFileSyncConfig, run_clipboard_file_sync};
-use remote_core::clipboard_runtime::{ClipboardSyncRunnerConfig, run_clipboard_sync};
+use remote_core::clipboard_runtime::ClipboardSyncRunnerConfig;
 use remote_core::discovery::{
     DEFAULT_PEER_TTL, DiscoveryAnnouncement, DiscoveryCapabilities, DiscoveryEvent,
     DiscoveryPeerSnapshot, DiscoveryRuntimeConfig, DiscoveryScope, WEAVELO_DISCOVERY_ENV,
@@ -104,27 +104,33 @@ pub enum ClientMediaRuntimeStatus {
 pub struct ClipboardRuntimeControl {
     command_tx: mpsc::UnboundedSender<ClipboardRuntimeCommand>,
     inbound_tx: Arc<Mutex<Option<mpsc::Sender<DataEnvelope>>>>,
+    requested_gate: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
 }
 
 #[derive(Debug, Clone)]
 enum ClipboardRuntimeCommand {
-    Start(SocketAddr, Option<Arc<std::sync::atomic::AtomicBool>>),
+    Start(SocketAddr, Arc<std::sync::atomic::AtomicBool>),
     Stop,
 }
 
 impl ClipboardRuntimeControl {
     pub fn start(&self, target: SocketAddr) {
-        let _ = self
-            .command_tx
-            .send(ClipboardRuntimeCommand::Start(target, None));
+        self.start_workspace(target, Arc::new(std::sync::atomic::AtomicBool::new(false)));
     }
     pub fn start_workspace(&self, target: SocketAddr, gate: Arc<std::sync::atomic::AtomicBool>) {
+        let mut requested = self.requested_gate.lock().unwrap();
+        if let Some(old) = requested.take() { old.store(false, std::sync::atomic::Ordering::Release); }
+        remote_core::clipboard_file_runtime::claim_clipboard_owner(&gate);
+        *requested = Some(gate.clone());
         let _ = self
             .command_tx
-            .send(ClipboardRuntimeCommand::Start(target, Some(gate)));
+            .send(ClipboardRuntimeCommand::Start(target, gate));
     }
 
     pub fn stop(&self) {
+        if let Some(gate) = self.requested_gate.lock().unwrap().take() {
+            gate.store(false, std::sync::atomic::Ordering::Release);
+        }
         let _ = self.command_tx.send(ClipboardRuntimeCommand::Stop);
     }
 
@@ -749,6 +755,7 @@ pub fn start_clipboard_runtime_control(
         ClipboardRuntimeControl {
             command_tx,
             inbound_tx: Arc::new(Mutex::new(None)),
+            requested_gate: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -1268,49 +1275,30 @@ fn start_talkback_runtime_controller(
 fn start_clipboard_runtime_controller(
     udp_sender: remote_core::net::UdpSender,
 ) -> ClipboardRuntimeControl {
-    type ClipboardOwner = (
-        broadcast::Sender<()>,
-        Option<Arc<std::sync::atomic::AtomicBool>>,
-    );
-    static OWNER: Mutex<Option<ClipboardOwner>> = Mutex::new(None);
     let (command_tx, mut command_rx) = mpsc::unbounded_channel();
     let inbound_tx: Arc<Mutex<Option<mpsc::Sender<DataEnvelope>>>> = Arc::new(Mutex::new(None));
     let controller_inbound_tx = inbound_tx.clone();
-
     spawn(async move {
-        let mut active_addr: Option<SocketAddr> = None;
         let mut active_cancel_tx: Option<broadcast::Sender<()>> = None;
-        let mut active_gate: Option<Arc<std::sync::atomic::AtomicBool>> = None;
+        let mut active_task: Option<tokio::task::JoinHandle<()>> = None;
+        let mut histories: std::collections::HashMap<SocketAddr, Arc<tokio::sync::Mutex<remote_core::clipboard_sync::ClipboardSyncHistory>>> = std::collections::HashMap::new();
 
         while let Some(command) = command_rx.recv().await {
             match command {
-                ClipboardRuntimeCommand::Start(target, _) if active_addr == Some(target) => {}
                 ClipboardRuntimeCommand::Start(target, gate) => {
+                    if !gate.load(std::sync::atomic::Ordering::Acquire) { continue; }
                     if let Some(cancel_tx) = active_cancel_tx.take() {
                         let _ = cancel_tx.send(());
                     }
                     *controller_inbound_tx.lock().unwrap() = None;
+                    if let Some(task) = active_task.take() { let _ = task.await; }
+                    if !gate.load(std::sync::atomic::Ordering::Acquire) { continue; }
 
                     let (inbound_tx, inbound_rx) = mpsc::channel(1024);
                     *controller_inbound_tx.lock().unwrap() = Some(inbound_tx);
 
                     let (cancel_tx, cancel_rx) = broadcast::channel(1);
-                    if let Some((previous, previous_gate)) = OWNER
-                        .lock()
-                        .unwrap()
-                        .replace((cancel_tx.clone(), gate.clone()))
-                    {
-                        let _ = previous.send(());
-                        if let Some(gate) = previous_gate {
-                            gate.store(false, std::sync::atomic::Ordering::Relaxed);
-                        }
-                    }
-                    if let Some(gate) = &gate {
-                        gate.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    active_gate = gate;
                     active_cancel_tx = Some(cancel_tx);
-                    active_addr = Some(target);
 
                     let (scheduled_sender, _worker) = ScheduledDataSender::spawn(
                         udp_sender.clone(),
@@ -1319,8 +1307,9 @@ fn start_clipboard_runtime_controller(
                             ..ScheduledDataSenderConfig::default()
                         },
                     );
+                    let history = histories.entry(target).or_default().clone();
 
-                    spawn(async move {
+                    active_task = Some(spawn(async move {
                         #[cfg(target_os = "macos")]
                         let provider = MacClipboardProvider::new();
                         #[cfg(target_os = "linux")]
@@ -1328,27 +1317,26 @@ fn start_clipboard_runtime_controller(
                         #[cfg(target_os = "windows")]
                         let provider = WindowsClipboardProvider::new();
 
-                        if let Err(err) = run_clipboard_sync(
-                            provider,
+                        let observation = remote_core::clipboard_file_runtime::process_clipboard_observation();
+                        if let Err(err) = remote_core::clipboard_runtime::run_owned_clipboard_sync(
+                            remote_core::clipboard_file_runtime::OwnedClipboardProvider::new(provider, gate.clone()).with_observation(observation.clone()),
                             scheduled_sender,
                             inbound_rx,
                             cancel_rx,
-                            ClipboardSyncRunnerConfig::default(),
+                            ClipboardSyncRunnerConfig { observation: Some(observation), ..Default::default() },
+                            gate,
+                            history,
                         )
                         .await
                         {
                             eprintln!("Clipboard sync task error: {}", err);
                         }
-                    });
+                    }));
                 }
                 ClipboardRuntimeCommand::Stop => {
-                    if let Some(gate) = active_gate.take() {
-                        gate.store(false, std::sync::atomic::Ordering::Relaxed);
-                    }
                     if let Some(cancel_tx) = active_cancel_tx.take() {
                         let _ = cancel_tx.send(());
                     }
-                    active_addr = None;
                     *controller_inbound_tx.lock().unwrap() = None;
                 }
             }
@@ -1358,6 +1346,7 @@ fn start_clipboard_runtime_controller(
     ClipboardRuntimeControl {
         command_tx,
         inbound_tx,
+        requested_gate: Arc::new(Mutex::new(None)),
     }
 }
 
@@ -1434,13 +1423,15 @@ fn start_file_transfer_runtime_controller(
                                 let provider = MacClipboardProvider::new();
                                 #[cfg(target_os = "linux")]
                                 let provider = LinuxClipboardProvider::new();
+                                let observation = remote_core::clipboard_file_runtime::process_clipboard_observation();
+                                let gate = Arc::new(std::sync::atomic::AtomicBool::new(true));
                                 if let Err(err) = run_clipboard_file_sync(
-                                    provider,
+                                    remote_core::clipboard_file_runtime::OwnedClipboardProvider::new(provider, gate).with_observation(observation.clone()),
                                     bridge_command_tx,
                                     event_rx,
                                     Some(log_event_tx),
                                     bridge_cancel_rx,
-                                    ClipboardFileSyncConfig::default(),
+                                    ClipboardFileSyncConfig { observation: Some(observation), ..Default::default() },
                                 )
                                 .await
                                 {
@@ -1559,6 +1550,30 @@ fn start_file_transfer_runtime_controller(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_start_cannot_reclaim_clipboard_after_focus_retargets() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        fn control() -> (ClipboardRuntimeControl, mpsc::UnboundedReceiver<ClipboardRuntimeCommand>) {
+            let (command_tx, rx) = mpsc::unbounded_channel();
+            (ClipboardRuntimeControl { command_tx, inbound_tx: Arc::new(Mutex::new(None)), requested_gate: Arc::new(Mutex::new(None)) }, rx)
+        }
+        let (a, mut a_commands) = control();
+        let (b, mut b_commands) = control();
+        let target = "127.0.0.1:1000".parse().unwrap();
+        let a_gate = Arc::new(AtomicBool::new(false));
+        let b_gate = Arc::new(AtomicBool::new(false));
+        a.start_workspace(target, a_gate.clone());
+        b.start_workspace(target, b_gate.clone());
+        let ClipboardRuntimeCommand::Start(_, queued_a) = a_commands.try_recv().unwrap() else { panic!() };
+        let ClipboardRuntimeCommand::Start(_, queued_b) = b_commands.try_recv().unwrap() else { panic!() };
+        assert!(!queued_a.load(Ordering::Acquire), "a delayed old start must be rejected");
+        assert!(queued_b.load(Ordering::Acquire));
+        a.stop();
+        assert!(b_gate.load(Ordering::Acquire), "stopping the old session cannot revoke its successor");
+        b.stop();
+        assert!(!b_gate.load(Ordering::Acquire));
+    }
 
     #[test]
     fn file_transfer_runtime_settings_build_receive_config() {

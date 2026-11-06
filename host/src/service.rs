@@ -352,7 +352,11 @@ struct Connection {
     sender: ScheduledDataSender,
     clipboard: Option<mpsc::Sender<DataEnvelope>>,
     clipboard_cancel: Option<broadcast::Sender<()>>,
-    clipboard_enabled: Arc<std::sync::atomic::AtomicBool>,
+    clipboard_owner: remote_core::clipboard_file_runtime::ClipboardOwnerSlot,
+    clipboard_owner_tx: watch::Sender<Option<remote_core::clipboard_file_runtime::ClipboardOwnership>>,
+    clipboard_revision: u64,
+    clipboard_history: Arc<tokio::sync::Mutex<remote_core::clipboard_sync::ClipboardSyncHistory>>,
+    clipboard_serial: Arc<tokio::sync::Mutex<()>>,
     files: Option<mpsc::Sender<DataEnvelope>>,
     talkback: Option<mpsc::Sender<DataEnvelope>>,
     #[cfg(target_os = "macos")]
@@ -377,11 +381,25 @@ struct Connection {
     #[cfg(all(unix, any(test, target_os = "linux")))]
     share_scope:remote_core::shared_files::ShareScope,
 }
+fn replace_clipboard_generation(
+    slot: &remote_core::clipboard_file_runtime::ClipboardOwnerSlot,
+    notify: &watch::Sender<Option<remote_core::clipboard_file_runtime::ClipboardOwnership>>,
+    enabled: bool,
+) -> Option<remote_core::clipboard_file_runtime::ClipboardOwnership> {
+    let mut slot = slot.lock().unwrap();
+    if let Some(old) = slot.take() { old.0.store(false, std::sync::atomic::Ordering::Release); }
+    let owner = enabled.then(|| remote_core::clipboard_file_runtime::ClipboardOwnership(Arc::new(std::sync::atomic::AtomicBool::new(true))));
+    *slot = owner.clone();
+    notify.send_replace(owner.clone());
+    owner
+}
+
 impl Drop for Connection {
     fn drop(&mut self) {
         if !self.terminal_reported {
             crate::lifecycle::publish(self.id, &self.resources, "drop_requested");
         }
+        if let Some(owner) = self.clipboard_owner.lock().unwrap().take() { owner.0.store(false, std::sync::atomic::Ordering::Release); }
         self.services_task.abort();
         self.sender_task.abort();
         for task in &self.retiring_tasks {
@@ -731,6 +749,7 @@ impl Connection {
     }
     async fn shutdown_owned(&mut self) -> Result<(), String> {
         let mut worker_failure = self.worker_failure;
+        self.set_clipboard(false);
         let _ = self.cancel.send(());
         if let Some(cancel) = self.clipboard_cancel.take() {
             let _ = cancel.send(());
@@ -944,10 +963,12 @@ impl Connection {
         #[cfg(not(target_os = "macos"))]
         let talkback_settings_rx = None;
         let reporter = crate::start_scheduled_sender_reporter(sender.clone(), cancel.subscribe());
-        let clipboard_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let clipboard_owner = remote_core::clipboard_file_runtime::ClipboardOwnerSlot::default();
+        let (clipboard_owner_tx, clipboard_owner_rx) = watch::channel(None);
         let services_task = tokio::spawn(crate::connection_services::run(
             crate::connection_services::ConnectionServicesConfig {
-                clipboard_enabled: clipboard_enabled.clone(),
+                clipboard_owner: clipboard_owner.clone(),
+                clipboard_owner_rx,
                 session_id: id,
                 scheduled_sender: sender.clone(),
                 cancel_rx,
@@ -972,7 +993,11 @@ impl Connection {
             sender,
             clipboard: None,
             clipboard_cancel: None,
-            clipboard_enabled,
+            clipboard_owner,
+            clipboard_owner_tx,
+            clipboard_revision: 0,
+            clipboard_history: Default::default(),
+            clipboard_serial: Default::default(),
             files,
             talkback,
             #[cfg(target_os = "macos")]
@@ -999,22 +1024,15 @@ impl Connection {
     }
 
     fn set_clipboard(&mut self, enabled: bool) {
-        self.clipboard_enabled
-            .store(enabled, std::sync::atomic::Ordering::Relaxed);
-        if self.clipboard.is_some() == enabled {
-            return;
-        }
-        if let Some(cancel) = self.clipboard_cancel.take() {
-            let _ = cancel.send(());
-        }
-        if let Some(task) = self.clipboard_task.take() {
-            task.abort();
-            self.retiring_tasks.push(task);
-        }
+        if self.clipboard.is_some() == enabled { return; }
+        let owner = replace_clipboard_generation(&self.clipboard_owner, &self.clipboard_owner_tx, enabled);
+        if let Some(cancel) = self.clipboard_cancel.take() { let _ = cancel.send(()); }
+        if let Some(task) = self.clipboard_task.take() { self.retiring_tasks.push(task); }
         self.clipboard = None;
         if enabled {
-            let (tx, cancel, task) =
-                crate::connection_services::start_clipboard(self.sender.clone());
+            let owner = owner.expect("enabled clipboard has an ownership generation");
+            let gate = owner.0.clone();
+            let (tx, cancel, task) = crate::connection_services::start_clipboard(self.sender.clone(), gate, self.clipboard_history.clone(), self.clipboard_serial.clone());
             self.clipboard = Some(tx);
             self.clipboard_cancel = Some(cancel);
             self.clipboard_task = Some(task);
@@ -1671,8 +1689,9 @@ async fn dispatch_realtime_input(
     let active_intent = match &packet.payload {
         InputPayload::Event(InputEvent::MouseDown(_) | InputEvent::KeyDown(_)
             | InputEvent::Key { pressed: true, .. }
-            | InputEvent::MouseMove { .. } | InputEvent::MouseMoveAbsolute { .. }
-            | InputEvent::MouseScroll { .. }) => true,
+            | InputEvent::MouseMove { .. } | InputEvent::MouseMoveAbsolute { .. }) => true,
+        InputPayload::Event(InputEvent::MouseScroll { delta_x, delta_y, gesture }) =>
+            gesture.can_take_control(*delta_x, *delta_y),
         InputPayload::Event(InputEvent::ModifiersChanged(mask)) =>
             mask & !previous_modifiers & 0x0f != 0,
         _ => false,
@@ -2025,6 +2044,21 @@ async fn shutdown_connections(
     if failed { Err("host input/native cleanup incomplete; stop is not confirmed".into()) } else { Ok(()) }
 }
 
+fn apply_clipboard_request(peers: &mut HashMap<SocketAddr, Connection>, addr: SocketAddr, enabled: bool, revision: u64, allowed: bool) -> Option<SessionCommand> {
+    if revision > peers.get(&addr)?.clipboard_revision {
+        let enabled = enabled && allowed;
+        if enabled { for (other, peer) in peers.iter_mut() { if *other != addr { peer.set_clipboard(false); } } }
+        let peer = peers.get_mut(&addr).unwrap();
+        peer.clipboard_revision = revision;
+        // A newer enable is a fresh ownership grant even when this peer is
+        // already enabled; earlier in-flight clipboard groups stay revoked.
+        if enabled { peer.set_clipboard(false); }
+        peer.set_clipboard(enabled);
+    }
+    let peer = &peers[&addr];
+    Some(SessionCommand::ClipboardState { enabled: peer.clipboard.is_some(), revision: peer.clipboard_revision })
+}
+
 pub async fn run_host_service(
     config: HostServiceConfig,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -2251,8 +2285,12 @@ async fn run_host_service_inner(
                         if authenticated.contains_key(&addr) && !closing.contains_key(&addr) {
                             if let Some(peer)=peers.get_mut(&addr) {
                                 peer.last_seen=Instant::now();
-                                let reply=protocol::session_auth::ClockReply{probe,host_recv_us:received_us,host_send_us:remote_core::timing::quanta_now_us()};
-                                let _=input_owner.during_control(&injector,udp_sender.send_control(&ControlMessage::ClockReply(reply),addr)).await;
+                                let _=input_owner.during_control(&injector, async {
+                                    // Timestamp after any expired input-owner cleanup,
+                                    // so that local cleanup is host processing, not RTT.
+                                    let reply=protocol::session_auth::ClockReply{probe,host_recv_us:received_us,host_send_us:remote_core::timing::quanta_now_us()};
+                                    udp_sender.send_control(&ControlMessage::ClockReply(reply),addr).await
+                                }).await;
                             }
                         }
                     }
@@ -2333,11 +2371,10 @@ async fn run_host_service_inner(
                                     };
                                     input_owner.during_control(&injector,send_session(&udp_sender,addr,reply)).await;
                                 }
-                                SessionCommand::SetClipboard { enabled } if peers.contains_key(&addr) => {
-                                    let enabled = enabled && config.enable_clipboard_sync;
-                                    if enabled { for (other, peer) in &mut peers { if *other != addr { peer.set_clipboard(false); } } }
-                                    peers.get_mut(&addr).unwrap().set_clipboard(enabled);
-                                    input_owner.during_control(&injector,send_session(&udp_sender, addr, SessionCommand::ClipboardState { enabled })).await;
+                                SessionCommand::SetClipboard { enabled, revision } if peers.contains_key(&addr) => {
+                                    if let Some(reply) = apply_clipboard_request(&mut peers, addr, enabled, revision, config.enable_clipboard_sync) {
+                                        input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await;
+                                    }
                                 }
                                 SessionCommand::Open { connection_id, version } => {
                                     #[cfg(target_os = "linux")]
@@ -2916,6 +2953,9 @@ mod failure_admission_tests {
     }
 
     async fn check_takeover_packet(payload: InputPayload, takes_over: bool) {
+        check_takeover_packet_with_renewal(payload, takes_over, takes_over).await;
+    }
+    async fn check_takeover_packet_with_renewal(payload: InputPayload, takes_over: bool, renew: bool) {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
         let (mut a, addr_a) = fixture_peer(31).await;
         let (mut b, _) = fixture_peer(32).await;
@@ -2953,7 +2993,7 @@ mod failure_admission_tests {
                 payload: InputPayload::Event(InputEvent::MouseDown(0)) }).await;
         assert!(held.load(SeqCst));
         assert_eq!(releases.load(SeqCst), 1);
-        let binding_a = if takes_over {
+        let binding_a = if renew {
             let SessionCommand::InputBinding { binding, .. } =
                 a.input_binding(31, 100, 10, 2).unwrap() else { panic!() };
             assert_ne!(binding, binding_a);
@@ -3004,6 +3044,21 @@ mod failure_admission_tests {
     }
 
     #[tokio::test]
+    async fn event_loop_scroll_continuation_with_renewed_lease_preserves_other_owner() {
+        use protocol::{ScrollGesture, ScrollPhase as P, MomentumPhase as M};
+        for (phase, momentum, delta_y) in [(P::MayBegin,M::None,0), (P::Changed,M::None,8),
+            (P::Ended,M::None,0), (P::Cancelled,M::None,0), (P::None,M::Began,3),
+            (P::None,M::Changed,4), (P::None,M::Ended,0)] {
+            check_takeover_packet_with_renewal(InputPayload::Event(InputEvent::MouseScroll {
+                delta_x: 0, delta_y, gesture: ScrollGesture { phase, momentum },
+            }), false, true).await;
+        }
+        check_takeover_packet_with_renewal(InputPayload::Event(InputEvent::MouseScroll {
+            delta_x: 0, delta_y: 0, gesture: ScrollGesture { phase:P::Began, momentum:M::None },
+        }), true, true).await;
+    }
+
+    #[tokio::test]
     async fn event_loop_retired_owner_cannot_resurrect_an_old_chord() {
         check_takeover_packet(InputPayload::Event(InputEvent::Key {
             key_code: 1, pressed: true, modifiers: 3,
@@ -3016,7 +3071,7 @@ mod failure_admission_tests {
             InputEvent::Key { key_code: 1, pressed: true, modifiers: 0 },
             InputEvent::MouseMove { dx: 1, dy: 0 },
             InputEvent::MouseMoveAbsolute { x: 10, y: 20 },
-            InputEvent::MouseScroll { delta_x: 0, delta_y: 1 },
+            InputEvent::scroll(0, 1),
             InputEvent::ModifiersChanged(7)] {
             check_takeover_packet(InputPayload::Event(event), true).await;
         }
@@ -3436,6 +3491,48 @@ mod failure_admission_tests {
         Ok(crypto.session_id())
     }
 
+
+    #[tokio::test]
+    async fn clipboard_control_reordering_preserves_current_owner_and_revokes_generation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (mut peer, addr) = fixture_peer(90740).await;
+        let old = Arc::new(AtomicBool::new(true));
+        *peer.clipboard_owner.lock().unwrap() = Some(remote_core::clipboard_file_runtime::ClipboardOwnership(old.clone()));
+        let (tx, _rx) = mpsc::channel(1);
+        peer.clipboard = Some(tx);
+        peer.clipboard_revision = 3;
+        let mut peers = HashMap::from([(addr, peer)]);
+        assert!(matches!(apply_clipboard_request(&mut peers, addr, false, 2, true), Some(SessionCommand::ClipboardState { enabled: true, revision: 3 })));
+        assert!(old.load(Ordering::Acquire));
+        assert!(matches!(apply_clipboard_request(&mut peers, addr, false, 4, true), Some(SessionCommand::ClipboardState { enabled: false, revision: 4 })));
+        assert!(!old.load(Ordering::Acquire));
+        let replacement = replace_clipboard_generation(&peers[&addr].clipboard_owner, &peers[&addr].clipboard_owner_tx, true).unwrap();
+        assert!(replacement.current());
+        assert!(!Arc::ptr_eq(&old, &replacement.0));
+        assert!(!old.load(Ordering::Acquire), "replacement must not revive a previous file group's gate");
+        replace_clipboard_generation(&peers[&addr].clipboard_owner, &peers[&addr].clipboard_owner_tx, false);
+        assert!(matches!(apply_clipboard_request(&mut peers, addr, true, 3, true), Some(SessionCommand::ClipboardState { enabled: false, revision: 4 })));
+        peers.remove(&addr).unwrap().shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn newer_enabled_clipboard_request_replaces_generation_before_late_disable() {
+        use std::sync::atomic::Ordering;
+        let (peer, addr) = fixture_peer(90741).await;
+        let mut peers = HashMap::from([(addr, peer)]);
+        assert!(matches!(apply_clipboard_request(&mut peers, addr, true, 1, true), Some(SessionCommand::ClipboardState { enabled: true, revision: 1 })));
+        // A clipboard group admitted here holds this exact generation.
+        let old_group = peers[&addr].clipboard_owner.lock().unwrap().clone().unwrap();
+        assert!(old_group.current());
+        assert!(matches!(apply_clipboard_request(&mut peers, addr, true, 3, true), Some(SessionCommand::ClipboardState { enabled: true, revision: 3 })));
+        let current = peers[&addr].clipboard_owner.lock().unwrap().clone().unwrap();
+        assert!(!old_group.0.load(Ordering::Acquire));
+        assert!(current.current());
+        assert!(!Arc::ptr_eq(&old_group.0, &current.0));
+        assert!(matches!(apply_clipboard_request(&mut peers, addr, false, 2, true), Some(SessionCommand::ClipboardState { enabled: true, revision: 3 })));
+        assert!(current.current());
+        peers.remove(&addr).unwrap().shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn file_authorization_uses_real_group_handshake_and_rejects_other_group() {

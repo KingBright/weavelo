@@ -297,7 +297,7 @@ impl TouchStateTracker {
                                     let delta_y = -(dy_px.round() as i32);
                                     if delta_x != 0 || delta_y != 0 {
                                         self.has_dragged = true;
-                                        events.push(InputEvent::MouseScroll { delta_x, delta_y });
+                                        events.push(InputEvent::scroll(delta_x, delta_y));
                                     }
                                 }
                                 self.last_two_finger_centroid = Some(cur_centroid);
@@ -462,7 +462,7 @@ impl TouchStateTracker {
                                     let delta_y = -(raw_dy.round() as i32);
                                     if delta_x != 0 || delta_y != 0 {
                                         self.has_dragged = true;
-                                        events.push(InputEvent::MouseScroll { delta_x, delta_y });
+                                        events.push(InputEvent::scroll(delta_x, delta_y));
                                     }
                                 }
                                 self.last_two_finger_centroid = Some(cur_centroid);

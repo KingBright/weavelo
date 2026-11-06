@@ -75,10 +75,11 @@ use super::{
 use crate::{
     AnyWindowHandle, Bounds, Capslock, CursorStyle, DOUBLE_CLICK_INTERVAL, DevicePixels, DisplayId,
     FileDropEvent, ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keystroke, LinuxCommon,
-    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
-    PlatformInput, PlatformKeyboardLayout, Point, ResultExt as _, SCROLL_LINES, ScrollDelta,
-    ScrollWheelEvent, Size, TouchPhase, WindowParams, point, profiler, px, size,
+    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MomentumPhase, MouseButton,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels,
+    PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, ResultExt as _, SCROLL_LINES,
+    ScrollDelta, ScrollPhase, ScrollWheelEvent, Size, TouchPhase, WindowParams, point, profiler,
+    px, size,
 };
 use crate::{
     RunnableVariant, TaskTiming,
@@ -1869,6 +1870,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 delta: ScrollDelta::Pixels(continuous),
                                 modifiers: state.modifiers,
                                 touch_phase: TouchPhase::Moved,
+                                scroll_phase: ScrollPhase::None,
+                                momentum_phase: MomentumPhase::None,
                             });
                             drop(state);
                             window.handle_input(input);
@@ -1881,6 +1884,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                             delta: ScrollDelta::Lines(discrete),
                             modifiers: state.modifiers,
                             touch_phase: TouchPhase::Moved,
+                            scroll_phase: ScrollPhase::None,
+                            momentum_phase: MomentumPhase::None,
                         });
                         drop(state);
                         window.handle_input(input);

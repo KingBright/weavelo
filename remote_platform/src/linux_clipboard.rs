@@ -151,6 +151,7 @@ impl ClipboardProvider for LinuxClipboardProvider {
         if self.backend.is_none() {
             return Ok(None);
         }
+        if !self.read_clipboard_file_references().await?.is_empty() { return Ok(None); }
         let mut items = Vec::new();
         if policy.allow_images
             && let Some(bytes) = self.read("image/png", policy.max_image_bytes).await?

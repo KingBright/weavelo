@@ -3919,6 +3919,7 @@ impl PointerInputTracker {
             Some(protocol::InputEvent::MouseScroll {
                 delta_x: quantized.0,
                 delta_y: quantized.1,
+                gesture: Default::default(),
             })
         }
     }
@@ -4446,7 +4447,8 @@ mod input_tests {
             tracker.scrolled((0.4, -0.4)),
             Some(InputEvent::MouseScroll {
                 delta_x: 1,
-                delta_y: -1
+                delta_y: -1,
+                ..
             })
         ));
     }

@@ -8,10 +8,12 @@ pub mod interaction;
 pub mod session_auth;
 pub mod realtime_input;
 pub mod touch;
+pub mod scroll;
 pub mod shared_files;
 pub mod timing;
 pub mod viewport;
 
+pub use scroll::{MomentumPhase, ScrollGesture, ScrollPhase};
 pub use timing::{
     FRAME_TIMING_CHECKPOINTS_WIRE_LEN, FrameTimingCheckpoints, HOST_TIMING_WIRE_LEN,
     PipelineTelemetryReport, StageId, StageLatencyStats, TimingCodecError, TraceSpan,
@@ -1154,6 +1156,7 @@ pub enum InputEvent {
     MouseScroll {
         delta_x: i32,
         delta_y: i32,
+        gesture: ScrollGesture,
     },
     Touch {
         action: TouchAction,
@@ -1166,6 +1169,17 @@ pub enum InputEvent {
     Text(crate::interaction::CommittedText),
     /// Simultaneous native contacts, owned by the existing realtime input lease.
     TouchFrame(Vec<crate::touch::Contact>),
+}
+
+impl InputEvent {
+    /// Construct a scroll delta without native gesture-phase metadata.
+    pub fn scroll(delta_x: i32, delta_y: i32) -> Self {
+        Self::MouseScroll {
+            delta_x,
+            delta_y,
+            gesture: ScrollGesture::default(),
+        }
+    }
 }
 
 pub mod input_modifiers {
@@ -1279,6 +1293,18 @@ mod tests {
     fn roundtrip_control(message: ControlMessage) -> ControlMessage {
         let encoded = message.encode().expect("control message should encode");
         ControlMessage::decode(&encoded).expect("control message should decode")
+    }
+
+    #[test]
+    fn scroll_constructor_defaults_gesture_phases() {
+        assert_eq!(
+            InputEvent::scroll(-3, 7),
+            InputEvent::MouseScroll {
+                delta_x: -3,
+                delta_y: 7,
+                gesture: ScrollGesture::default(),
+            }
+        );
     }
 
     fn roundtrip_envelope(envelope: DataEnvelope) -> DataEnvelope {
@@ -1798,6 +1824,10 @@ mod tests {
             ControlMessage::Input(InputEvent::MouseScroll {
                 delta_x: -11,
                 delta_y: 23,
+                gesture: ScrollGesture {
+                    phase: ScrollPhase::Changed,
+                    momentum: MomentumPhase::Ended,
+                },
             }),
         ];
 
@@ -1868,11 +1898,17 @@ mod tests {
                     ControlMessage::Input(InputEvent::MouseScroll {
                         delta_x: expected_x,
                         delta_y: expected_y,
+                        gesture: expected_gesture,
                     }),
-                    ControlMessage::Input(InputEvent::MouseScroll { delta_x, delta_y }),
+                    ControlMessage::Input(InputEvent::MouseScroll {
+                        delta_x,
+                        delta_y,
+                        gesture,
+                    }),
                 ) => {
                     assert_eq!(delta_x, expected_x);
                     assert_eq!(delta_y, expected_y);
+                    assert_eq!(gesture, expected_gesture);
                 }
                 (expected, actual) => {
                     panic!("roundtrip mismatch: expected {expected:?}, got {actual:?}")

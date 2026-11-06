@@ -168,14 +168,16 @@ impl WorkspaceView {
                     tokio::spawn(async move {
                         let (cancel, cancel_rx) = tokio::sync::broadcast::channel(1);
                         let _cancel = cancel;
+                        let observation = remote_core::clipboard_file_runtime::process_clipboard_observation();
                         let _ = remote_core::clipboard_file_runtime::run_clipboard_file_sync(
-                            remote_platform::MacClipboardProvider::new(),
+                            remote_core::clipboard_file_runtime::OwnedClipboardProvider::new(remote_platform::MacClipboardProvider::new(), enabled.clone()).with_observation(observation.clone()),
                             commands,
                             files,
                             Some(forward_tx),
                             cancel_rx,
                             remote_core::clipboard_file_runtime::ClipboardFileSyncConfig {
                                 enabled: Some(enabled),
+                                observation: Some(observation),
                                 ..Default::default()
                             },
                         )
@@ -482,7 +484,7 @@ impl WorkspaceView {
             tokio::spawn(async move {
                 let _ = connection.clipboard(None).await;
                 let _ = connection
-                    .control(SessionCommand::SetClipboard { enabled: false })
+                    .control(SessionCommand::SetClipboard { enabled: false, revision: 0 })
                     .await;
             });
         } else {
@@ -494,7 +496,7 @@ impl WorkspaceView {
             {
                 tokio::spawn(async move {
                     let _ = previous
-                        .control(SessionCommand::SetClipboard { enabled: false })
+                        .control(SessionCommand::SetClipboard { enabled: false, revision: 0 })
                         .await;
                     let _ = previous.clipboard(None).await;
                 });
@@ -513,7 +515,7 @@ impl WorkspaceView {
             tokio::spawn(async move {
                 let _ = connection.clipboard(Some(Arc::new(control))).await;
                 let _ = connection
-                    .control(SessionCommand::SetClipboard { enabled: true })
+                    .control(SessionCommand::SetClipboard { enabled: true, revision: 0 })
                     .await;
             });
         }
@@ -818,10 +820,7 @@ impl Render for WorkspaceView {
                                     let delta = event.delta.pixel_delta(px(40.));
                                     this.input(
                                         id,
-                                        protocol::InputEvent::MouseScroll {
-                                            delta_x: f32::from(delta.x).round() as i32,
-                                            delta_y: f32::from(delta.y).round() as i32,
-                                        },
+                                        protocol::InputEvent::scroll(f32::from(delta.x).round() as i32, f32::from(delta.y).round() as i32),
                                     );
                                 },
                             ))

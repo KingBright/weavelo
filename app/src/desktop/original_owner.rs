@@ -63,6 +63,12 @@ pub(crate) struct ViewportTarget {
     pub id:u32,
     pub source_revision:u32,
 }
+impl ViewportTarget {
+    pub(crate) fn same_target(&self, other: &Self) -> bool {
+        self.id == other.id && self.source_revision == other.source_revision
+            && self.binding.same_connection(&other.binding)
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct FileViewBinding {
@@ -163,7 +169,7 @@ impl super::computer_use::InputPort for ComputerUseInput<'_> {
             }
             Event::Scroll { delta_x, delta_y } => self
                 .connection
-                .try_bound_input(self.binding, Some(InputEvent::MouseScroll { delta_x, delta_y })),
+                .try_bound_input(self.binding, Some(InputEvent::scroll(delta_x, delta_y))),
         };
         if let Some(admit)=self.admit{admit(true,&mut enqueue)}else{enqueue()}
     }
@@ -408,14 +414,18 @@ impl OriginalOwner {
         let selected = pool.tabs.selected_index();
         let mut retired: [Option<Arc<MacDecodedVideoFrame>>; 8] = std::array::from_fn(|_| None);
         let transitioning = pool.tabs.connecting().is_some();
+        // Revoke the old owner before any new selected session can claim it.
         for (index, entry) in pool.sessions.iter_mut().enumerate() {
-            entry.session.set_view_selected(!transitioning && index == selected);
+            if transitioning || index != selected { entry.session.set_view_selected(false); }
+        }
+        for (index, entry) in pool.sessions.iter_mut().enumerate() {
             entry
                 .session
                 .set_presentation_hidden(transitioning || index != selected
                     || !self.presentation_visible.load(std::sync::atomic::Ordering::Acquire));
             entry.session.set_input_focused(!transitioning && index == selected
                 && self.input_focused.load(std::sync::atomic::Ordering::Acquire));
+            entry.session.set_view_selected(!transitioning && index == selected);
             entry.session.poll();
             let s = &mut entry.session;
             if entry.sources.as_ref() != &s.sources {
@@ -657,8 +667,10 @@ impl OriginalOwner {
         let mut p = self.pool.lock().unwrap();
         self.revoke_computer_use();
         if let Some(index) = p.sessions.iter().position(|e| e.session.conn.id == id) {
+            if p.tabs.connecting().is_none() && p.tabs.selected_index() == index { return; }
             if let Some(e) = p.active_mut() {
                 e.session.release_input();
+                e.session.set_view_selected(false);
             }
             if let Some((_, c)) = p.talkback.take() {
                 c.stop();
@@ -666,6 +678,12 @@ impl OriginalOwner {
             let key = p.sessions[index].session.key.clone();
             let count = p.sessions.len();
             p.tabs.select(index, &key, count);
+            let visible = self.presentation_visible.load(std::sync::atomic::Ordering::Acquire);
+            let focused = self.input_focused.load(std::sync::atomic::Ordering::Acquire);
+            let session = &mut p.sessions[index].session;
+            session.set_presentation_hidden(!visible);
+            session.set_input_focused(focused);
+            session.set_view_selected(true);
         }
     }
     pub fn close_session(&self, id: u32) {
@@ -1004,6 +1022,7 @@ impl OriginalOwner {
         };
         let mut session =
             OriginalGuiSession::new(key.into(), device.display_name, route, conn, events);
+        session.set_view_selected(false);
         if let Some(proof) = &receive_claim {
             session.source = *proof.sources.first().ok_or("Delivery has no selected source")?;
             session.request.source = session.source;
@@ -1035,6 +1054,7 @@ impl OriginalOwner {
         let previous = p.tabs.selected_index();
         if selected && let Some(e) = p.sessions.get_mut(previous) {
             e.session.release_input();
+            e.session.set_view_selected(false);
         }
         if let Some(binding) = p.directed_receive.as_mut() { binding.connection = Some(session.conn.id); }
         let source_seen = session.source;
@@ -1048,6 +1068,15 @@ impl OriginalOwner {
         });
         let count = p.sessions.len();
         p.tabs.attached(completion, count);
+        if selected {
+            let visible = self.presentation_visible.load(std::sync::atomic::Ordering::Acquire);
+            let focused = self.input_focused.load(std::sync::atomic::Ordering::Acquire);
+            if let Some(entry) = p.active_mut() {
+                entry.session.set_presentation_hidden(!visible);
+                entry.session.set_input_focused(focused);
+                entry.session.set_view_selected(true);
+            }
+        }
         Ok(())
     }
     pub async fn disconnect_active(&self) -> Result<(), Error> {
@@ -1113,6 +1142,17 @@ impl OriginalOwner {
             binding:SourceViewBinding::new(&session.conn,remote_core::shared_files::current_share_scope()),
             id:session.video_id,source_revision:session.source_revision(),
         })
+    }
+    /// Bind a geometry-free displayed frame only while its slot still belongs
+    /// to the active session and the frame belongs to its current video epoch.
+    pub(crate) fn viewport_target_for_frame(&self, slot:&FrameSlot, frame:&Arc<MacDecodedVideoFrame>)->Option<ViewportTarget> {
+        let pool=self.pool.lock().unwrap();
+        let entry=pool.active()?;
+        let session=&entry.session;
+        if !Arc::ptr_eq(&entry.frame,slot) || !session.current_video_frame(frame.video_epoch,frame.decoded_at)
+            || !session.connected || matches!(session.source,CaptureSource::Camera(_)) {return None;}
+        Some(ViewportTarget { binding:SourceViewBinding::new(&session.conn,remote_core::shared_files::current_share_scope()),
+            id:session.video_id,source_revision:session.source_revision() })
     }
     /// None retires a stale target; false leaves the latest demand queued for retry.
     pub(crate) fn queue_viewport(&self,target:&ViewportTarget,demand:protocol::viewport::ViewportDemand)->Option<bool> {
@@ -1790,6 +1830,7 @@ impl OriginalOwner {
             self.revoke_computer_use();
         }
         if let Some(e) = p.active_mut() {
+            if !visible || !focused { e.session.set_input_focused(false); }
             e.session.set_presentation_hidden(!visible);
             e.session.set_input_focused(focused);
         }
@@ -1813,11 +1854,8 @@ impl OriginalOwner {
     pub fn set_clipboard_sync_enabled(&self, enabled: bool) -> bool {
         let mut p = self.pool.lock().unwrap();
         p.clipboard_preference = enabled;
-        if let Some(e) = p.active_mut() {
-            e.session.set_clipboard(enabled);
-            return e.session.clipboard_enabled == enabled;
-        }
-        false
+        for e in &mut p.sessions { e.session.set_clipboard(enabled); }
+        p.active().is_some_and(|e| e.session.conn.clipboard_available)
     }
     pub fn supports_file_transfer(&self) -> bool {
         let p = self.pool.lock().unwrap();

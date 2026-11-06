@@ -1,7 +1,9 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_VERSION: u32 = 9;
+// Scroll gesture metadata is part of the current input payload. Reject older
+// session layouts before admitting input; authentication and device keys stay unchanged.
+pub const SESSION_VERSION: u32 = 10;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -119,9 +121,12 @@ pub enum SessionCommand {
     },
     SetClipboard {
         enabled: bool,
+        #[serde(default)]
+        revision: u64,
     },
     ClipboardState {
         enabled: bool,
+        revision: u64,
     },
     Open {
         connection_id: u32,

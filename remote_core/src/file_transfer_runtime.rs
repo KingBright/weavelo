@@ -29,6 +29,7 @@ pub struct FileTransferRuntimeConfig {
     pub receive_dir: PathBuf,
     /// True while queued sends or incomplete incoming objects need the connection.
     pub active: Arc<AtomicBool>,
+    pub clipboard_owner: Option<crate::clipboard_file_runtime::ClipboardOwnerSlot>,
 }
 
 impl Default for FileTransferRuntimeConfig {
@@ -45,6 +46,7 @@ impl Default for FileTransferRuntimeConfig {
             receive_policy: FileReceivePolicy::default(),
             receive_dir: std::env::temp_dir().join("weavelo-received-files"),
             active: Arc::new(AtomicBool::new(false)),
+            clipboard_owner: None,
         }
     }
 }
@@ -67,6 +69,10 @@ pub enum FileTransferCommand {
     },
     SendClipboardFiles {
         files: Vec<FileTransferGroupFile>,
+    },
+    SendOwnedClipboardFiles {
+        files: Vec<FileTransferGroupFile>,
+        admission: crate::clipboard_file_runtime::ClipboardFileAdmission,
     },
     CancelTransfer {
         transfer_id: u64,
@@ -94,6 +100,7 @@ pub enum FileTransferEvent {
         response: protocol::shared_files::SharedFileResponse,
     },
     IncomingClipboardReady {
+        ownership: Option<crate::clipboard_file_runtime::ClipboardOwnership>,
         group_id: u64,
         paths: Vec<PathBuf>,
     },
@@ -305,6 +312,10 @@ impl FileTransferCancelState {
     }
 }
 
+fn clipboard_command_admitted(command: &FileTransferCommand) -> bool {
+    !matches!(command, FileTransferCommand::SendOwnedClipboardFiles { admission, .. } if !admission.ownership.current())
+}
+
 pub async fn run_file_transfer_runtime(
     data_sender: ScheduledDataSender,
     mut command_rx: mpsc::Receiver<FileTransferCommand>,
@@ -316,6 +327,7 @@ pub async fn run_file_transfer_runtime(
     let allocator = FileTransferIdAllocator::new(&config);
     let cancel_state = FileTransferCancelState::default();
     let mut inbound = InboundFileTransfers::new(config.receive_dir.clone(), config.receive_policy);
+    inbound.clipboard_owner = config.clipboard_owner.clone();
     let mut send_tasks = tokio::task::JoinSet::new();
     struct ClearActivity(Arc<AtomicBool>);
     impl Drop for ClearActivity {
@@ -363,12 +375,20 @@ pub async fn run_file_transfer_runtime(
                 let Some(command) = maybe_command else {
                     return Ok(());
                 };
-                if send_tasks.len() >= 4 && matches!(&command, FileTransferCommand::SendFile { .. } | FileTransferCommand::SendFileGroup { .. } | FileTransferCommand::SendClipboardFiles { .. }) {
+                if !clipboard_command_admitted(&command) {
+                    if let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } = &command { admission.reject(); }
+                    continue;
+                }
+                if send_tasks.len() >= 4 && matches!(&command, FileTransferCommand::SendFile { .. } | FileTransferCommand::SendFileGroup { .. } | FileTransferCommand::SendClipboardFiles { .. } | FileTransferCommand::SendOwnedClipboardFiles { .. }) {
+                    if let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } = &command { admission.reject(); }
                     emit_event(&event_tx, FileTransferEvent::Error { transfer_id: None,
                         message: "Four file transfers are already active; wait for one to finish".into() });
                     continue;
                 }
-                let clipboard = matches!(&command, FileTransferCommand::SendClipboardFiles { .. });
+                if let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } = &command {
+                    if !admission.accept() { continue; }
+                }
+                let clipboard = matches!(&command, FileTransferCommand::SendClipboardFiles { .. } | FileTransferCommand::SendOwnedClipboardFiles { .. });
                 match command {
                     FileTransferCommand::Drain => { draining = true; }
                     FileTransferCommand::SharedRequest { request_id, request } => { exchange.request(request_id, request).await?; }
@@ -388,7 +408,7 @@ pub async fn run_file_transfer_runtime(
                         }
                         .spawn(&mut send_tasks);
                     }
-                    FileTransferCommand::SendFileGroup { files } | FileTransferCommand::SendClipboardFiles { files } => {
+                    FileTransferCommand::SendFileGroup { files } | FileTransferCommand::SendClipboardFiles { files } | FileTransferCommand::SendOwnedClipboardFiles { files, .. } => {
                         let group_id = allocator.next_group_id();
                         SendFileGroupTask {
                             clipboard,
@@ -987,7 +1007,8 @@ fn assign_sequence_number(envelope: &mut DataEnvelope, sequence_number: u64) {
 }
 
 struct InboundFileTransfers {
-    clipboard_groups: HashSet<u64>,
+    clipboard_groups: HashMap<u64, Option<crate::clipboard_file_runtime::ClipboardOwnership>>,
+    clipboard_owner: Option<crate::clipboard_file_runtime::ClipboardOwnerSlot>,
     receive_dir: PathBuf,
     receive_policy: FileReceivePolicy,
     manifest_assemblers: HashMap<u64, FileManifestAssembler>,
@@ -1004,7 +1025,8 @@ struct InboundFileTransfers {
 impl InboundFileTransfers {
     fn new(receive_dir: PathBuf, receive_policy: FileReceivePolicy) -> Self {
         Self {
-            clipboard_groups: HashSet::new(),
+            clipboard_groups: HashMap::new(),
+            clipboard_owner: None,
             receive_dir,
             receive_policy,
             manifest_assemblers: HashMap::new(),
@@ -1217,12 +1239,12 @@ impl InboundFileTransfers {
     ) -> Result<(), FileTransferError> {
         match control_from_envelope(&envelope)? {
             FileTransferControl::ClipboardGroup { group_id } => {
-                if self.clipboard_groups.len() >= 32 && !self.clipboard_groups.contains(&group_id) {
+                if self.clipboard_groups.len() >= 32 && !self.clipboard_groups.contains_key(&group_id) {
                     return Err(FileTransferError::InvalidChunk {
                         reason: "too many pending clipboard groups",
                     });
                 }
-                self.clipboard_groups.insert(group_id);
+                self.clipboard_groups.entry(group_id).or_insert_with(|| self.clipboard_owner.as_ref().and_then(|slot| slot.lock().unwrap().clone()));
             }
             FileTransferControl::CancelTransfer {
                 transfer_id,
@@ -1366,14 +1388,17 @@ impl InboundFileTransfers {
                 });
             }
             let paths = completed.paths();
-            if self.clipboard_groups.remove(&group.group_id) {
+            if let Some(ownership) = self.clipboard_groups.remove(&group.group_id) {
+                if self.clipboard_owner.is_none() || ownership.as_ref().is_some_and(|token| token.current()) {
                 emit_event(
                     event_tx,
                     FileTransferEvent::IncomingClipboardReady {
+                        ownership,
                         group_id: group.group_id,
                         paths: paths.clone(),
                     },
                 );
+                }
             }
             emit_event(
                 event_tx,
@@ -1675,6 +1700,28 @@ mod tests {
             },
             payload: vec![sequence_number as u8; 64],
         }
+    }
+
+    #[tokio::test]
+    async fn clipboard_group_keeps_admission_generation_and_queued_send_checks_it() {
+        use std::sync::atomic::Ordering;
+        use crate::clipboard_file_runtime::ClipboardOwnership;
+        let a = Arc::new(AtomicBool::new(true));
+        let slot = Arc::new(Mutex::new(Some(ClipboardOwnership(a.clone()))));
+        let mut inbound = InboundFileTransfers::new(PathBuf::from("/tmp"), FileReceivePolicy::default());
+        inbound.clipboard_owner = Some(slot.clone());
+        let (events, _rx) = mpsc::unbounded_channel();
+        let marker = control_to_envelope(&FileTransferControl::ClipboardGroup { group_id: 42 }, 0, 2, 0, 0).unwrap();
+        inbound.handle_control(marker.clone(), &events).await.unwrap();
+        a.store(false, Ordering::Release);
+        let replacement = Arc::new(AtomicBool::new(true));
+        *slot.lock().unwrap() = Some(ClipboardOwnership(replacement));
+        inbound.handle_control(marker, &events).await.unwrap();
+        let admitted = inbound.clipboard_groups.get(&42).unwrap().as_ref().unwrap();
+        assert!(Arc::ptr_eq(&admitted.0, &a));
+        let command = FileTransferCommand::SendOwnedClipboardFiles { files: vec![], admission: crate::clipboard_file_runtime::ClipboardFileAdmission::new(admitted.clone()) };
+        assert!(!clipboard_command_admitted(&command));
+        assert!(clipboard_command_admitted(&FileTransferCommand::SendFileGroup { files: vec![] }));
     }
 
     #[test]

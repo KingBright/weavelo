@@ -140,10 +140,7 @@ async fn consented_session_binds_absolute_coordinates_and_changes_target_text() 
         );
     }
     capture
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: 12,
-            delta_y: -24,
-        })
+        .inject_input(InputEvent::scroll(12, -24))
         .await
         .unwrap();
     assert_eq!(fixture.calls.target.lock().unwrap().scroll, (12.0, -24.0));

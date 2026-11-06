@@ -9,7 +9,10 @@ use gpui::{
     KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext, WindowAppearance,
     point, px, size,
 };
-use protocol::{ControlMessage, InputEvent, session::SessionCommand};
+use protocol::{
+    ControlMessage, InputEvent, MomentumPhase as ProtocolMomentumPhase, ScrollGesture,
+    ScrollPhase as ProtocolScrollPhase, session::SessionCommand,
+};
 use remote_core::VideoFrame;
 use remote_core::{
     net::{MultiplexedPacket, UdpMultiplexer},
@@ -65,6 +68,19 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
                                         files: false,
                                         clipboard: false,
                                         window_capture: false,
+                                    })),
+                                    from,
+                                )
+                                .await
+                                .unwrap();
+                        } else if let SessionCommand::Subscribe(request) = *cmd {
+                            sender
+                                .send_control(
+                                    &ControlMessage::Session(Box::new(SessionCommand::Subscribed {
+                                        id: request.id,
+                                        audio_owner: None,
+                                        supports_input: true,
+                                        max_touch_points: 0,
                                     })),
                                     from,
                                 )
@@ -131,12 +147,21 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
         );
         session.media =
             Some(client::ClientMediaRuntime::start_video_only(session.stats.clone()).unwrap());
+        let recovery = session.stats.clone();
+        let initial_source = recovery.video_recovery.snapshot().epoch.source;
         let (video,_)=remote_core::video_queue::channel(1);
         session.conn.subscribe(session.request.clone(),video,session.stats.clone(),session.host_stats.clone()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2),async {
             while !session.conn.input_ready(session.video_id,0) {tokio::time::sleep(Duration::from_millis(5)).await;}
         }).await.unwrap();
-        let recovery = session.stats.clone();
+        // The input grant is independent of the video-subscription receipt.
+        // Wait for the fake host's Subscribed response to establish the decoder
+        // source epoch before enqueuing its synthetic frame.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while recovery.video_recovery.snapshot().epoch.source == initial_source {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.expect("synthetic host did not accept the video subscription");
         // Decode the first access unit of the existing synthetic HEVC fixture so pointer mapping uses a
         // real native frame and its dimensions. This is neither screen capture
         // nor physical presentation; attach_recorder_session supplies the test
@@ -150,16 +175,32 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
                 crop:protocol::viewport::PixelRect{x:0,y:0,width:2304,height:1296},width:128,height:72}.write_header(&mut payload);
         }
         payload.extend_from_slice(include_bytes!("../tests/fixtures/input-first-frame.h265"));
-        media.decode_tx.try_send((protocol::RtpPacket {
+        let decode_queue = media.decode_tx.try_send((protocol::RtpPacket {
             header: protocol::RtpHeader { version: 2, payload_type: 96,
                 sequence_number: 1, timestamp: 100, ssrc: 7 },
             payload,
         }, Default::default(), recovery.video_recovery.snapshot().epoch.source)).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        assert!(decode_queue.accepted, "synthetic native HEVC fixture was not accepted by the decoder queue: {decode_queue:?}");
+        let decoded = tokio::time::timeout(Duration::from_secs(60), async {
             while media.shared_frame().lock().unwrap().is_none() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        }).await.expect("synthetic native frame did not decode");
+        }).await;
+        if decoded.is_err() {
+            let recovery_snapshot = recovery.video_recovery.snapshot();
+            let decode_status = media.decode_status.lock().unwrap().clone();
+            panic!(
+                "synthetic native frame did not decode: timeout; decode_status={decode_status:?}; \
+                 decoder_queue_push={decode_queue:?}; decoded={}; decode_errors={}; queue_dropped={}; \
+                 reference_gaps={}; reference_skipped={}; keyframe_requests={}; recovery={recovery_snapshot:?}",
+                recovery.video_frames_decoded.load(std::sync::atomic::Ordering::Relaxed),
+                recovery.video_decode_errors.load(std::sync::atomic::Ordering::Relaxed),
+                recovery.video_decode_queue_dropped.load(std::sync::atomic::Ordering::Relaxed),
+                recovery.video_decoder_reference_gaps.load(std::sync::atomic::Ordering::Relaxed),
+                recovery.video_decoder_reference_skipped.load(std::sync::atomic::Ordering::Relaxed),
+                recovery.video_keyframe_requests.load(std::sync::atomic::Ordering::Relaxed),
+            );
+        }
         (runtime, session, recorder, recovery)
     });
     cx.update(|cx| {
@@ -268,20 +309,108 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
             .any(|c| matches!(c, SessionCommand::ReleaseInput { .. })),
         "Render cycle released held input before the up event"
     );
-    // Trackpad scrolling has its own position, even without a preceding move.
+    // Trackpad scrolling has its own position and preserves phase-only gesture
+    // boundaries through the production root handler and realtime input path.
     output.lock().unwrap().clear();
     let scroll_pos=point(px(620.),px(430.));
     let scroll_pointer=view.read_with(cx,|v,_|v.pointer_event_at(scroll_pos)).unwrap();
+    let scroll_samples = [
+        (0.0, 0.0, gpui::ScrollPhase::Began, gpui::MomentumPhase::None),
+        (0.0, 42.0, gpui::ScrollPhase::Changed, gpui::MomentumPhase::None),
+        (0.0, 0.0, gpui::ScrollPhase::Ended, gpui::MomentumPhase::None),
+        (0.0, 0.0, gpui::ScrollPhase::None, gpui::MomentumPhase::Began),
+        (0.0, -7.0, gpui::ScrollPhase::None, gpui::MomentumPhase::Changed),
+        (0.0, 0.0, gpui::ScrollPhase::None, gpui::MomentumPhase::Ended),
+    ];
+    let expected_scroll = |delta_x, delta_y, phase, momentum| InputEvent::MouseScroll {
+        delta_x,
+        delta_y,
+        gesture: ScrollGesture { phase, momentum },
+    };
+    let expected_scrolls = [
+        expected_scroll(0, 0, ProtocolScrollPhase::Began, ProtocolMomentumPhase::None),
+        expected_scroll(0, 42, ProtocolScrollPhase::Changed, ProtocolMomentumPhase::None),
+        expected_scroll(0, 0, ProtocolScrollPhase::Ended, ProtocolMomentumPhase::None),
+        expected_scroll(0, 0, ProtocolScrollPhase::None, ProtocolMomentumPhase::Began),
+        expected_scroll(0, -7, ProtocolScrollPhase::None, ProtocolMomentumPhase::Changed),
+        expected_scroll(0, 0, ProtocolScrollPhase::None, ProtocolMomentumPhase::Ended),
+    ];
+    for (delta_x, delta_y, scroll_phase, momentum_phase) in scroll_samples {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll_pos,
+            delta: gpui::ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
+            modifiers: Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+            scroll_phase,
+            momentum_phase,
+        });
+    }
+    // A default zero-delta event is not a gesture boundary and should be omitted.
     cx.simulate_event(gpui::ScrollWheelEvent {
-        position:scroll_pos,delta:gpui::ScrollDelta::Pixels(point(px(0.),px(42.))),
-        modifiers:Modifiers::none(),touch_phase:gpui::TouchPhase::Moved,
+        position: scroll_pos,
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(0.))),
+        modifiers: Modifiers::none(),
+        touch_phase: gpui::TouchPhase::Moved,
+        ..Default::default()
     });
     std::thread::sleep(Duration::from_millis(100));
     let scroll_trace=output.lock().unwrap().iter().filter_map(|command|match command {
         SessionCommand::Input{event,..}|SessionCommand::SourceInput{event,..}=>Some(event.clone()),_=>None,
     }).collect::<Vec<_>>();
-    let scroll=scroll_trace.iter().position(|event|matches!(event,InputEvent::MouseScroll{delta_x:0,delta_y:42})).expect("trackpad scroll must reach the host");
-    assert!(scroll>0 && scroll_trace[scroll-1]==scroll_pointer,"scroll must follow its own inverse-transformed position");
+    let scrolls = scroll_trace
+        .iter()
+        .filter(|event| matches!(event, InputEvent::MouseScroll { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(scrolls, expected_scrolls.to_vec(), "scroll deltas and phase-only boundaries must retain order");
+    let scroll=scroll_trace.iter().position(|event|matches!(event,InputEvent::MouseScroll{delta_x:0,delta_y:42,..})).expect("trackpad scroll must reach the host");
+    assert!(scroll>0 && scroll_trace[0]==scroll_pointer,"gesture starts at its inverse-transformed position");
+    assert_eq!(scroll_trace.iter().filter(|event| matches!(event, InputEvent::MouseMoveAbsolute { .. })).count(), 1,
+        "continuation and cleanup must not enqueue takeover-capable pointer moves");
+    output.lock().unwrap().clear();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll_pos, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(0.))),
+        modifiers: Modifiers::none(), touch_phase: gpui::TouchPhase::Moved,
+        scroll_phase: gpui::ScrollPhase::Began, momentum_phase: gpui::MomentumPhase::None,
+    });
+    view.update(cx, |v, _| v.reset_pointer_scroll());
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll_pos, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(19.))),
+        modifiers: Modifiers::none(), touch_phase: gpui::TouchPhase::Moved,
+        scroll_phase: gpui::ScrollPhase::Changed, momentum_phase: gpui::MomentumPhase::None,
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let interrupted=output.lock().unwrap().iter().filter_map(|command|match command {
+        SessionCommand::Input{event: event @ InputEvent::MouseScroll{..},..}
+        | SessionCommand::SourceInput{event: event @ InputEvent::MouseScroll{..},..}=>Some(event.clone()),_=>None,
+    }).collect::<Vec<_>>();
+    assert_eq!(interrupted, vec![
+        expected_scroll(0,0,ProtocolScrollPhase::Began,ProtocolMomentumPhase::None),
+        expected_scroll(0,0,ProtocolScrollPhase::Cancelled,ProtocolMomentumPhase::None),
+    ], "focus cancellation must reach the bound source and reject its late continuation");
+    output.lock().unwrap().clear();
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll_pos, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(0.))),
+        modifiers: Modifiers::none(), touch_phase: gpui::TouchPhase::Moved,
+        scroll_phase: gpui::ScrollPhase::Began, momentum_phase: gpui::MomentumPhase::None,
+    });
+    // Simulate the gesture's source becoming stale while the current view uses
+    // a different source revision. The old cancellation must not reach it.
+    view.update(cx, |v, _| {
+        v.pointer_input.scroll_binding.as_mut().expect("begin must arm the gesture").source_revision += 1;
+    });
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position: scroll_pos, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(19.))),
+        modifiers: Modifiers::none(), touch_phase: gpui::TouchPhase::Moved,
+        scroll_phase: gpui::ScrollPhase::Changed, momentum_phase: gpui::MomentumPhase::None,
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let stale=output.lock().unwrap().iter().filter_map(|command|match command {
+        SessionCommand::Input{event: event @ InputEvent::MouseScroll{..},..}
+        | SessionCommand::SourceInput{event: event @ InputEvent::MouseScroll{..},..}=>Some(event.clone()),_=>None,
+    }).collect::<Vec<_>>();
+    assert_eq!(stale,vec![expected_scroll(0,0,ProtocolScrollPhase::Began,ProtocolMomentumPhase::None)],
+        "a stale source gesture must not send continuation or cancellation to the current source");
     // The current stream's local panel owns clicks and keyboard input.
     view.update(cx, |v, cx| {
         v.open_stream_panel(StreamPanel::Control, cx);
@@ -369,7 +498,7 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
         view.update(cx,|view,cx|{view.viewport.lock().unwrap().toggle_navigation();view.poll_viewport();cx.notify();});cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(60));output.lock().unwrap().clear();
         cx.simulate_event(gpui::ScrollWheelEvent{position:pos,delta:gpui::ScrollDelta::Pixels(point(px(0.),px(42.))),
-            modifiers:Modifiers::none(),touch_phase:gpui::TouchPhase::Moved});
+            modifiers:Modifiers::none(),touch_phase:gpui::TouchPhase::Moved,..Default::default()});
         cx.simulate_mouse_down(pos,MouseButton::Left,Modifiers::none());
         cx.simulate_mouse_move(point(px(575.),px(350.)),Some(MouseButton::Left),Modifiers::none());
         cx.simulate_mouse_move(point(px(650.),px(350.)),Some(MouseButton::Left),Modifiers::none());

@@ -514,6 +514,8 @@ impl WindowsWindowInner {
             }),
             modifiers,
             touch_phase: TouchPhase::Moved,
+            scroll_phase: ScrollPhase::None,
+            momentum_phase: MomentumPhase::None,
         });
         let handled = !func(input).propagate;
         self.state.callbacks.input.set(Some(func));
@@ -552,6 +554,8 @@ impl WindowsWindowInner {
             }),
             modifiers: current_modifiers(),
             touch_phase: TouchPhase::Moved,
+            scroll_phase: ScrollPhase::None,
+            momentum_phase: MomentumPhase::None,
         });
         let handled = !func(event).propagate;
         self.state.callbacks.input.set(Some(func));

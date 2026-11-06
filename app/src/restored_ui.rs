@@ -209,6 +209,7 @@ fn open_restored_window_for(
                 // The management presentation does not own the GUI service,
                 // transfers or any stream. ManagementRoot keeps its coordinator.
                 let _ = weak.update(cx, |this, _| {
+                    this.reset_pointer_scroll();
                     this.owner.release_input();
                     this.window_active = false;
                     this.window_visible = Some(false);
@@ -218,6 +219,7 @@ fn open_restored_window_for(
                 // Closing a receive window ends only this logical stream and
                 // its PiPs. A sending control window keeps its retained sender.
                 let _ = weak.update(cx, |this, cx| {
+                    this.reset_pointer_scroll();
                     this.prepare_stream_close(cx);
                     this.owner.release_input();
                     this.pointer_input = PointerInputTracker::default();
@@ -828,6 +830,7 @@ impl RestoredDashboard {
             }
             this.window_visible = window.is_window_visible();
             if !this.window_active {
+                this.reset_pointer_scroll();
                 this.owner.release_input();
                 this.pointer_input = PointerInputTracker::default();
             }
@@ -835,6 +838,7 @@ impl RestoredDashboard {
             cx.notify();
         }).detach();
         cx.observe_window_bounds(window, |this, _, _| {
+            this.reset_pointer_scroll();
             this.owner.release_input();
             this.pointer_input = PointerInputTracker::default();
         }).detach();
@@ -898,6 +902,7 @@ impl RestoredDashboard {
         let state = self.owner.snapshot();
         let identity = state.connection_id.zip(state.source_epoch);
         if identity != self.bound_source {
+            self.reset_pointer_scroll();
             self.owner.release_input();
             self.pointer_input = PointerInputTracker::default();
             self.current_frame = None;
@@ -1432,9 +1437,7 @@ impl RestoredDashboard {
             return false;
         }
         let ticket = self.source_commands.begin();
-        for event in self.pointer_input.release_events() {
-            self.owner.queue_viewing_input(event);
-        }
+        self.release_pointer_input();
         self.show_apps_menu = false;
         self.toolbar_revealed = true;
         self.toolbar_hovered = false;
@@ -1601,7 +1604,19 @@ impl RestoredDashboard {
         }
     }
 
-    fn queue_pointer_scroll(&mut self, position:Point<Pixels>, delta: ScrollDelta) {
+    fn reset_pointer_scroll(&mut self) {
+        if let Some((target,event)) = self.pointer_input.cancel_scroll() {
+            self.owner.queue_viewport_input(&target,event);
+        }
+        self.pointer_input.reset_pointer();
+    }
+
+    fn release_pointer_input(&mut self) {
+        self.reset_pointer_scroll();
+        for event in self.pointer_input.release_events() { self.owner.queue_viewing_input(event); }
+    }
+
+    fn queue_pointer_scroll(&mut self, event: &ScrollWheelEvent) {
         if self.input_locked
             || !self.capture_supports_input
             || self.drawer_open
@@ -1609,13 +1624,27 @@ impl RestoredDashboard {
         {
             return;
         }
-        if !self.queue_pointer_move(position, false) { return; }
-        let delta = delta.pixel_delta(px(40.0));
+        let delta = event.delta.pixel_delta(px(40.0));
+        let gesture = protocol_scroll_gesture(event);
+        let Some(target) = self.scroll_target() else { self.reset_pointer_scroll(); return; };
+        if !self.pointer_input.accepts_scroll(gesture, &target) { self.reset_pointer_scroll(); return; }
+        if gesture.phase == protocol::ScrollPhase::Began
+            || (gesture == protocol::ScrollGesture::default() && self.pointer_input.scroll_binding.is_some()) {
+            self.reset_pointer_scroll();
+        }
+        let event_position = event.position;
         if let Some(event) = self
             .pointer_input
-            .scrolled((f32::from(delta.x), f32::from(delta.y)))
+            .scrolled((f32::from(delta.x), f32::from(delta.y)), gesture)
         {
-            self.queue_view_pointer(event);
+            if let protocol::InputEvent::MouseScroll { delta_x, delta_y, gesture } = &event
+                && gesture.can_take_control(*delta_x, *delta_y) {
+                let Some(pointer) = self.pointer_event_at(event_position) else { self.reset_pointer_scroll(); return; };
+                if !self.queue_scroll_pointer(&target,pointer) { self.reset_pointer_scroll(); return; }
+            }
+            let accepted = self.queue_scroll_pointer(&target,event);
+            if accepted { self.pointer_input.scroll_queued(gesture, target); }
+            else { self.reset_pointer_scroll(); }
         }
     }
 
@@ -1672,9 +1701,7 @@ impl RestoredDashboard {
         let visible = !self.pause_when_inactive || self.window_visible.unwrap_or(true) || self.pip_visible;
         self.owner.set_view_demand(visible, self.window_active);
         if paused || self.drawer_open {
-            for event in self.pointer_input.release_events() {
-                self.owner.queue_viewing_input(event);
-            }
+            self.release_pointer_input();
         }
         self.owner.set_media_paused(paused);
     }
@@ -2199,9 +2226,7 @@ impl RestoredDashboard {
     fn set_input_locked(&mut self, locked: bool) {
         if !locked && self.exit_group.stopping.load(Ordering::Acquire) { return; }
         if locked && !self.input_locked {
-            for event in self.pointer_input.release_events() {
-                self.owner.queue_viewing_input(event);
-            }
+            self.release_pointer_input();
         }
         self.owner.set_input_locked(locked);
         self.input_locked = locked;
@@ -2302,7 +2327,8 @@ impl Render for PopoutStreamView {
         let snapshot = self.owner.snapshot();
         let bitmap=matches!(snapshot.active_source,protocol::session::CaptureSource::Window(_))
             .then(||snapshot.source_icons.get(&snapshot.active_source)).flatten();
-        self.native_window_artwork.sync(window,cx,bitmap.map(AsRef::as_ref));
+        self.native_window_artwork.sync_viewer(window,cx,bitmap.map(AsRef::as_ref),
+            snapshot.source_appearances.get(&snapshot.active_source).map(AsRef::as_ref));
         if let Some((_, frame)) = self.owner.frame_binding() { self.presentation_frame = frame; }
         else { self.presentation_frame.lock().unwrap().take(); }
         self.host_stats = self.owner.stats();
@@ -2327,7 +2353,7 @@ impl Render for PopoutStreamView {
             .as_ref()
             .map(|stats| UiHostStats::read(stats))
             .filter(|stats| host_stats_available(stats));
-        let network=NetworkQuality::from_session(snapshot.role.kind(),stats.as_deref());
+        let network=UiHostStats::network_quality(snapshot.role.kind(),stats.as_ref());
 
         let content = stream_video_canvas_surface(
             current_frame.as_deref(),
@@ -2417,7 +2443,7 @@ impl Render for PopoutStreamView {
                         command_button("expand_pip_hud_btn", ActionVariantKind::Neutral, cx)
                             .size(px(26.0))
                             .rounded_full()
-                            .tooltip(tooltip(format!("{} · Show telemetry",network.detail(stats.as_deref()))).build())
+                            .tooltip(tooltip(format!("{} · Show telemetry",UiHostStats::network_detail(network, stats.as_ref()))).build())
                             .on_click({
                                 let view = view.clone();
                                 move |_event, _window, cx| {
@@ -2434,10 +2460,13 @@ impl Render for PopoutStreamView {
                     .absolute()
                     .bottom(px(12.0))
                     .right(px(16.0))
+                    .w(px(244.0))
+                    .max_w(relative(0.95))
+                    .flex_none()
                     .flex()
                     .flex_col()
-                    .gap_1p5()
-                    .p_3()
+                    .gap_1()
+                    .p_2()
                     .bg(color_glass_card())
                     .border_1()
                     .border_color(color_border_fine())
@@ -2457,7 +2486,7 @@ impl Render for PopoutStreamView {
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(color_accent_cyan())
-                                    .child("LIVE TELEMETRY"),
+                                    .child("Network"),
                             )
                             .child(
                                 command_button(
@@ -2481,13 +2510,14 @@ impl Render for PopoutStreamView {
                                 .child(icon(IconName::Minimize).size(px(10.0))),
                             ),
                     )
-                    .child(telemetry_hud_metrics_list(stats.as_ref(), &theme))
+                    .child(telemetry_hud_metrics_list(stats.as_ref(), network, &theme))
             })
     }
 }
 
 impl Drop for RestoredDashboard {
     fn drop(&mut self) {
+        self.reset_pointer_scroll();
         self.owner.release_input();
         self.owner.close_received_window();
     }
@@ -2512,6 +2542,7 @@ impl Render for RestoredDashboard {
         if self.capture_error_seen != snapshot.capture_source_error {
             self.capture_error_seen = snapshot.capture_source_error.clone();
             if self.capture_error_seen.is_some() {
+                self.reset_pointer_scroll();
                 self.toolbar_revealed = true;
                 self.show_apps_menu = true;
                 self.last_toolbar_activity = Instant::now();
@@ -2720,9 +2751,13 @@ impl Render for RestoredDashboard {
             // Local window commands must also see the root focus itself. The
             // remote-input surface remains inside the scope and keeps its focus guard.
             .map(|tree| div().size_full()
+                .capture_any_mouse_down(cx.listener(|this, _event: &MouseDownEvent, _window, _cx| {
+                    this.reset_pointer_scroll();
+                }))
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     let Some(keystroke) = fresh_key_down(event) else { return; };
                     if keystroke.key == "f11" {
+                        this.reset_pointer_scroll();
                         this.owner.release_input();
                         this.pointer_input = PointerInputTracker::default();
                         window.toggle_fullscreen();
@@ -2844,7 +2879,7 @@ fn full_video_surface(
             .on_drag_move(cx.listener(|this,event:&DragMoveEvent<viewer_viewport::PanDrag>,_,cx|this.move_view_pan(event,cx))))
         .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
             if !hovered {
-                this.pointer_input.reset_pointer();
+                this.reset_pointer_scroll();
             }
         }))
         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
@@ -2894,25 +2929,25 @@ fn full_video_surface(
             cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
                 this.end_view_pan();
                 this.queue_pointer_button(MouseButton::Left, false);
-                this.pointer_input.reset_pointer();
+                this.reset_pointer_scroll();
             }),
         )
         .on_mouse_up_out(
             MouseButton::Right,
             cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
                 this.queue_pointer_button(MouseButton::Right, false);
-                this.pointer_input.reset_pointer();
+                this.reset_pointer_scroll();
             }),
         )
         .on_mouse_up_out(
             MouseButton::Middle,
             cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
                 this.queue_pointer_button(MouseButton::Middle, false);
-                this.pointer_input.reset_pointer();
+                this.reset_pointer_scroll();
             }),
         )
         .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-            if !this.view_scroll(event.position,event.delta,cx){this.queue_pointer_scroll(event.position,event.delta);}
+            if !this.view_scroll(event.position,event.delta,cx){this.queue_pointer_scroll(event);}
             cx.stop_propagation();
         }))
         .child(content)
@@ -3128,6 +3163,7 @@ fn display_switcher_control(
         .on_click(move |_event, _window, cx| {
             let _ = view.update(cx, |this, cx| {
                 let Some(binding) = binding.clone().filter(|binding| this.owner.source_binding_is_current(binding)) else { return; };
+                this.reset_pointer_scroll();
                 this.owner.release_input();
                 this.pointer_input = PointerInputTracker::default();
                 this.show_apps_menu = !this.show_apps_menu;
@@ -3489,6 +3525,7 @@ fn drawer_trigger_capsule(
         .rounded_full()
         .on_click(move |_event, _window, cx| {
             let _ = view.update(cx, |this, cx| {
+                this.reset_pointer_scroll();
                 this.drawer_open = !this.drawer_open;
                 cx.notify();
             });
@@ -4649,14 +4686,6 @@ fn drawer_network_telemetry_tab(
             .id("capture_receive_metric")
             .tooltip(tooltip(stats.capture_receive.detail()).build()),
         );
-        if stats.rtt_ms > 0.0 {
-            content = content.child(telemetry_metric_row(
-                "Network RTT",
-                format!("{:.1} ms", stats.rtt_ms),
-                color_accent_purple(),
-                cx,
-            ));
-        }
         content = content
             .child(telemetry_metric_row(
                 "Video frame rate",
@@ -4678,7 +4707,7 @@ fn drawer_network_telemetry_tab(
             ))
             .child(telemetry_metric_row(
                 "Network RTT",
-                format!("{:.1} ms", stats.rtt_ms),
+                stats.rtt_value(),
                 color_accent_cyan(),
                 cx,
             ))
@@ -4948,7 +4977,7 @@ fn telemetry_waterfall_overlay(
 ) -> Div {
     let theme = cx.theme().clone();
     let view = cx.weak_entity();
-    let network=NetworkQuality::from_session(role,host_stats.map(|stats|&**stats));
+    let network=UiHostStats::network_quality(role,host_stats);
 
     if collapsed {
         div()
@@ -4962,7 +4991,7 @@ fn telemetry_waterfall_overlay(
                 command_button("expand_hud_btn", ActionVariantKind::Neutral, cx)
                     .size(px(28.0))
                     .rounded_full()
-                    .tooltip(tooltip(format!("{} · Show telemetry",network.detail(host_stats.map(|stats|&**stats)))).build())
+                    .tooltip(tooltip(format!("{} · Show telemetry",UiHostStats::network_detail(network, host_stats))).build())
                     .on_click(move |_event, _window, cx| {
                         let _ = view.update(cx, |this, cx| {
                             this.telemetry_hud_collapsed = false;
@@ -4977,13 +5006,13 @@ fn telemetry_waterfall_overlay(
             .absolute()
             .bottom(px(12.0))
             .right(px(16.0))
-            .w(px(300.0))
+            .w(px(244.0))
             .max_w(relative(0.95))
             .flex_none()
             .flex()
             .flex_col()
-            .gap_1p5()
-            .p_3()
+            .gap_1()
+            .p_2()
             .bg(color_glass_card())
             .border_1()
             .border_color(color_border_fine())
@@ -5003,7 +5032,7 @@ fn telemetry_waterfall_overlay(
                             .text_size(px(10.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(color_accent_cyan())
-                            .child(network.label()),
+                            .child("Network"),
                     )
                     .child(
                         command_button("collapse_hud_btn", ActionVariantKind::Neutral, cx)
@@ -5021,11 +5050,11 @@ fn telemetry_waterfall_overlay(
                             .child(icon(IconName::Minimize).size(px(10.0))),
                     ),
             )
-            .child(telemetry_hud_metrics_list(host_stats, &theme))
+            .child(telemetry_hud_metrics_list(host_stats, network, &theme))
     }
 }
 
-fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -> Div {
+fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: NetworkQuality, theme: &Theme) -> Div {
     if let Some(stats) = host_stats {
         div()
             .flex()
@@ -5079,11 +5108,11 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .tooltip(tooltip(stats.capture_submit.submission_detail()).build())
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Capture → UI submit"),
+                            .child("Capture → UI"),
                     )
                     .child(
                         div()
@@ -5091,7 +5120,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                             .flex_1()
                             .text_right()
                             .text_color(color_accent_emerald())
-                            .child(stats.capture_submit.value()),
+                            .child(stats.capture_submit.compact_value()),
                     ),
             )
             .child(
@@ -5102,13 +5131,15 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
+                    .id("network_rtt_hud_metric")
+                    .tooltip(tooltip(stats.rtt_detail()).build())
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Network RTT"),
+                            .child("RTT"),
                     )
                     .child(
                         div()
@@ -5116,7 +5147,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                             .flex_1()
                             .text_right()
                             .text_color(theme.content.secondary)
-                            .child(format!("{:.1} ms", stats.rtt_ms)),
+                            .child(stats.rtt_value()),
                     ),
             )
             .child(
@@ -5129,8 +5160,8 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
                             .child("Encode"),
@@ -5154,8 +5185,8 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
                             .child("Decode"),
@@ -5179,8 +5210,8 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
                             .child("Packet loss"),
@@ -5208,8 +5239,8 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                     .font_family(crate::design_system::product_mono_font())
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
                             .child("Link"),
@@ -5219,15 +5250,19 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, theme: &Theme) -
                             .min_w_0()
                             .flex_1()
                             .text_right()
-                            .text_color(if stats.link_status.is_empty() {
-                                color_accent_emerald().into()
-                            } else {
-                                theme.content.primary
-                            })
-                            .child(if stats.link_status.is_empty() {
-                                "Healthy"
-                            } else {
-                                stats.link_status
+                            .flex()
+                            .justify_end()
+                            .items_center()
+                            .gap_1()
+                            .text_color(theme.content.primary)
+                            .child(network_quality_icon(network, theme).size(px(10.0)))
+                            .child(match network {
+                                NetworkQuality::Connecting => "Connecting",
+                                NetworkQuality::Disconnected => "Disconnected",
+                                NetworkQuality::Unknown => "Unknown",
+                                NetworkQuality::Good => "Good",
+                                NetworkQuality::Fair => "Fair",
+                                NetworkQuality::Poor => "Poor",
                             }),
                     ),
             )
@@ -5628,9 +5663,11 @@ fn compact_device_id(device_id: &str) -> String {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct PointerInputTracker {
     scroll_remainder: (f32, f32),
+    scroll_gesture: protocol::ScrollGesture,
+    scroll_binding: Option<crate::desktop::original_owner::ViewportTarget>,
     pressed_buttons: BTreeSet<u8>,
     pressed_keys: BTreeSet<u16>,
     modifiers: u8,
@@ -5639,6 +5676,20 @@ struct PointerInputTracker {
 impl PointerInputTracker {
     fn reset_pointer(&mut self) {
         self.scroll_remainder = (0.0, 0.0);
+        self.scroll_gesture = protocol::ScrollGesture::default();
+        self.scroll_binding = None;
+    }
+
+    fn accepts_scroll(&self, gesture: protocol::ScrollGesture, binding: &crate::desktop::original_owner::ViewportTarget) -> bool {
+        gesture == protocol::ScrollGesture::default() || gesture.phase == protocol::ScrollPhase::Began
+            || self.scroll_binding.as_ref().is_some_and(|old|old.same_target(binding))
+    }
+
+    fn scroll_queued(&mut self, gesture: protocol::ScrollGesture, binding: crate::desktop::original_owner::ViewportTarget) {
+        self.scroll_gesture = gesture;
+        if gesture.phase == protocol::ScrollPhase::Began { self.scroll_binding = Some(binding); }
+        if gesture == protocol::ScrollGesture::default() || gesture.phase == protocol::ScrollPhase::Cancelled
+            || gesture.momentum == protocol::MomentumPhase::Ended { self.scroll_binding = None; }
     }
 
     fn button_changed(&mut self, button: u8, pressed: bool) {
@@ -5655,6 +5706,12 @@ impl PointerInputTracker {
         } else {
             self.pressed_keys.remove(&key_code);
         }
+    }
+
+    fn cancel_scroll(&mut self) -> Option<(crate::desktop::original_owner::ViewportTarget,protocol::InputEvent)> {
+        let binding = self.scroll_binding.take()?;
+        let gesture = std::mem::take(&mut self.scroll_gesture).cancellation()?;
+        Some((binding,protocol::InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }))
     }
 
     fn release_events(&mut self) -> Vec<protocol::InputEvent> {
@@ -5679,7 +5736,7 @@ impl PointerInputTracker {
         events
     }
 
-    fn scrolled(&mut self, delta: (f32, f32)) -> Option<protocol::InputEvent> {
+    fn scrolled(&mut self, delta: (f32, f32), gesture: protocol::ScrollGesture) -> Option<protocol::InputEvent> {
         if !delta.0.is_finite() || !delta.1.is_finite() {
             return None;
         }
@@ -5692,14 +5749,35 @@ impl PointerInputTracker {
             accumulated.0 - quantized.0 as f32,
             accumulated.1 - quantized.1 as f32,
         );
-        if quantized == (0, 0) {
+        if quantized == (0, 0) && gesture == protocol::ScrollGesture::default() {
             None
         } else {
             Some(protocol::InputEvent::MouseScroll {
                 delta_x: quantized.0,
                 delta_y: quantized.1,
+                gesture,
             })
         }
+    }
+}
+
+fn protocol_scroll_gesture(event: &ScrollWheelEvent) -> protocol::ScrollGesture {
+    use protocol::{MomentumPhase, ScrollPhase};
+    protocol::ScrollGesture {
+        phase: match event.scroll_phase {
+            gpui::ScrollPhase::None => ScrollPhase::None,
+            gpui::ScrollPhase::MayBegin => ScrollPhase::MayBegin,
+            gpui::ScrollPhase::Began => ScrollPhase::Began,
+            gpui::ScrollPhase::Changed => ScrollPhase::Changed,
+            gpui::ScrollPhase::Ended => ScrollPhase::Ended,
+            gpui::ScrollPhase::Cancelled => ScrollPhase::Cancelled,
+        },
+        momentum: match event.momentum_phase {
+            gpui::MomentumPhase::None => MomentumPhase::None,
+            gpui::MomentumPhase::Began => MomentumPhase::Began,
+            gpui::MomentumPhase::Changed => MomentumPhase::Changed,
+            gpui::MomentumPhase::Ended => MomentumPhase::Ended,
+        },
     }
 }
 
@@ -6514,15 +6592,42 @@ mod input_tests {
     #[test]
     fn precise_scroll_accumulates_subpixel_deltas() {
         let mut tracker = PointerInputTracker::default();
-        assert_eq!(tracker.scrolled((0.4, -0.4)), None);
-        assert_eq!(tracker.scrolled((0.4, -0.4)), None);
+        assert_eq!(tracker.scrolled((0.4, -0.4), Default::default()), None);
+        assert_eq!(tracker.scrolled((0.4, -0.4), Default::default()), None);
         assert!(matches!(
-            tracker.scrolled((0.4, -0.4)),
+            tracker.scrolled((0.4, -0.4), Default::default()),
             Some(InputEvent::MouseScroll {
                 delta_x: 1,
-                delta_y: -1
+                delta_y: -1,
+                ..
             })
         ));
+    }
+
+    #[test]
+    fn precise_scroll_preserves_phase_only_boundaries_and_momentum() {
+        use protocol::{MomentumPhase as M, ScrollGesture, ScrollPhase as P};
+        let mut tracker = PointerInputTracker::default();
+        let gestures = [(P::Began, M::None), (P::Changed, M::None), (P::Ended, M::None),
+            (P::None, M::Began), (P::None, M::Changed), (P::None, M::Ended),
+            (P::Cancelled, M::None)];
+        for (phase, momentum) in gestures {
+            let gesture = ScrollGesture { phase, momentum };
+            assert_eq!(tracker.scrolled((0., 0.), gesture),
+                Some(InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }));
+        }
+        assert_eq!(tracker.scrolled((0., 0.), Default::default()), None);
+    }
+
+    #[test]
+    fn unqueued_scroll_never_emits_an_unbound_cancellation() {
+        use protocol::{ScrollGesture, ScrollPhase as P, MomentumPhase as M};
+        for gesture in [ScrollGesture {phase:P::Changed,momentum:M::None}, ScrollGesture {phase:P::None,momentum:M::Changed}] {
+            let mut tracker = PointerInputTracker::default();
+            tracker.scrolled((0.,8.),gesture);
+            assert!(tracker.cancel_scroll().is_none());
+            assert!(tracker.release_events().is_empty());
+        }
     }
 
     #[test]

@@ -92,6 +92,38 @@ pub enum TouchPhase {
     Ended,
 }
 
+/// The phase of a native scrolling gesture.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ScrollPhase {
+    /// No native scroll gesture phase is available.
+    #[default]
+    None,
+    /// The platform predicts that scrolling may begin.
+    MayBegin,
+    /// The native scroll gesture has begun.
+    Began,
+    /// The native scroll gesture is changing.
+    Changed,
+    /// The native scroll gesture has ended.
+    Ended,
+    /// The native scroll gesture was cancelled.
+    Cancelled,
+}
+
+/// The phase of native inertial scrolling after a gesture ends.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MomentumPhase {
+    /// No native momentum phase is available.
+    #[default]
+    None,
+    /// Inertial scrolling has begun.
+    Began,
+    /// Inertial scrolling is changing.
+    Changed,
+    /// Inertial scrolling has ended.
+    Ended,
+}
+
 /// A mouse down event from the platform
 #[derive(Clone, Debug, Default)]
 pub struct MouseDownEvent {
@@ -387,6 +419,12 @@ pub struct ScrollWheelEvent {
 
     /// The phase of the touch event.
     pub touch_phase: TouchPhase,
+
+    /// The phase of the native scrolling gesture, when available.
+    pub scroll_phase: ScrollPhase,
+
+    /// The phase of native inertial scrolling, when available.
+    pub momentum_phase: MomentumPhase,
 }
 
 impl Sealed for ScrollWheelEvent {}

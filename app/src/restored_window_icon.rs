@@ -27,6 +27,9 @@ impl Artwork {
     pub fn sync(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>) {
         self.sync_badged(window,cx,bitmap,None,false,None);
     }
+    pub fn sync_viewer(&mut self, window: &mut Window, cx: &App, bitmap: Option<&IconBitmap>, appearance: Option<&SourceAppearance>) {
+        self.sync_badged(window, cx, bitmap, appearance, true, None);
+    }
     fn sync_badged(&mut self,window:&mut Window,cx:&App,bitmap:Option<&IconBitmap>,appearance:Option<&SourceAppearance>,stream:bool,device_name:Option<&str>) {
         #[cfg(target_os = "macos")]
         let device_name=device_name.filter(|name|!name.trim().is_empty()).map(str::to_owned);
@@ -44,12 +47,7 @@ impl Artwork {
                 let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
                 window.set_window_icon(&icon).map_err(|e|e.to_string())?;
             } else if stream {
-                let (edge,mut pixels)=default_remote_pixels(cx)?;
-                if appearance.is_some() {
-                    let mut image=image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid remote window icon")?;
-                    overlay_device_badge(&mut image,&badge_pixels(cx,appearance)?);
-                    pixels=image.into_raw();
-                }
+                let (edge,mut pixels)=badged_default_pixels(cx,appearance)?;
                 #[cfg(target_os = "macos")]
                 if let Some(name)=device_name.as_deref() {
                     pixels=macos_dock::with_device_name(edge,&pixels,name)?;
@@ -103,12 +101,7 @@ impl Artwork {
                 let raw = if let Some(bitmap) = bitmap {
                     badge_pixels(cx,appearance).and_then(|badge| remote_application_pixels(bitmap, &badge, true))
                 } else {
-                    default_remote_pixels(cx).and_then(|(edge,pixels)| {
-                        if appearance.is_none() {return Ok((edge,pixels));}
-                        let mut image=image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid Dock fallback icon")?;
-                        overlay_device_badge(&mut image,&badge_pixels(cx,appearance)?);
-                        Ok((edge,image.into_raw()))
-                    })
+                    badged_default_pixels(cx,appearance)
                 };
                 match raw {
                     Ok(rgba) => Some(rgba),
@@ -243,7 +236,7 @@ fn default_remote_pixels(cx: &App) -> Result<(u32, Vec<u8>), String> {
     }
     let image = cx
         .svg_renderer()
-        .render_single_frame(include_bytes!("product_components/icons/remote-window.svg"), 1., false)
+        .render_single_frame(include_bytes!("../../assets/brand/weavelo/app-square.svg"), 2.56, false)
         .map_err(|e| e.to_string())?;
     let size = image.size(0);
     let rgba = image::RgbaImage::from_raw(
@@ -254,6 +247,13 @@ fn default_remote_pixels(cx: &App) -> Result<(u32, Vec<u8>), String> {
     .ok_or("Invalid window icon dimensions")?;
     let raw = image::imageops::resize(&rgba, EDGE, EDGE, image::imageops::FilterType::Triangle).into_raw();
     Ok((EDGE, DOCK_FALLBACK.get_or_init(|| raw).clone()))
+}
+
+fn badged_default_pixels(cx: &App, appearance: Option<&SourceAppearance>) -> Result<(u32, Vec<u8>), String> {
+    let (edge, pixels) = default_remote_pixels(cx)?;
+    let mut image = image::RgbaImage::from_raw(edge, edge, pixels).ok_or("Invalid remote window icon")?;
+    overlay_device_badge(&mut image, &badge_pixels(cx, appearance)?);
+    Ok((edge, image.into_raw()))
 }
 
 fn native_pixels(bitmap:&IconBitmap)->(u32,Vec<u8>) {
@@ -279,13 +279,8 @@ pub(super) fn apply(window:&mut Window,cx:&App) {
     let result=(||->Result<bool,String> {
         static ICON:OnceLock<WindowIcon>=OnceLock::new();
         let icon=if let Some(icon)=ICON.get() {icon.clone()}else{
-            let image=cx.svg_renderer().render_single_frame(
-                include_bytes!("product_components/icons/remote-window.svg"),1.,false).map_err(|e|e.to_string())?;
-            let size=image.size(0);
-            let rgba=image::RgbaImage::from_raw(size.width.0 as u32,size.height.0 as u32,
-                image.as_bytes(0).ok_or("Missing native window icon pixels")?.to_vec()).ok_or("Invalid window icon dimensions")?;
-            let rgba=image::imageops::resize(&rgba,64,64,image::imageops::FilterType::Triangle).into_raw();
-            let icon=WindowIcon::new(64,rgba).map_err(|e|e.to_string())?;
+            let (edge,pixels)=default_remote_pixels(cx)?;
+            let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
             ICON.get_or_init(||icon).clone()
         };
         window.set_window_icon(&icon).map_err(|e|e.to_string())
@@ -837,6 +832,23 @@ pub(crate) mod macos_dock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn fallback_stream_icon_has_a_device_badge_even_without_appearance(cx: &mut gpui::TestAppContext) {
+        cx.update(|app| {
+            let (edge, brand) = default_remote_pixels(app).unwrap();
+            let (badged_edge, default_badge) = badged_default_pixels(app, None).unwrap();
+            let appearance = SourceAppearance {
+                application: None, preset: protocol::appearance::DeviceBadgePreset::Linux, custom: None,
+            };
+            let (_, linux_badge) = badged_default_pixels(app, Some(&appearance)).unwrap();
+            assert_eq!((edge, badged_edge), (256, 256));
+            assert_ne!(brand, default_badge);
+            assert_ne!(default_badge, linux_badge);
+            assert_eq!(&brand[(200 * 256 + 200) * 4..], &default_badge[(200 * 256 + 200) * 4..]);
+            assert!(WindowIcon::new(edge, default_badge).is_ok());
+        });
+    }
+
     #[gpui::test]
     fn preset_badges_fit_native_window_and_dock_limits(cx: &mut gpui::TestAppContext) {
         use protocol::appearance::DeviceBadgePreset::*;

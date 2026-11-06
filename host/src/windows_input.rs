@@ -16,11 +16,12 @@ fn check_deadline(deadline: Option<Instant>) -> InputResult {
 fn fresh_window_intent(event: &InputEvent, current_modifiers: u8) -> bool {
     matches!(
         event,
-        InputEvent::MouseScroll { .. }
-            | InputEvent::Text(_)
+        InputEvent::Text(_)
             | InputEvent::Key { pressed: true, .. }
             | InputEvent::KeyDown(_)
-    ) || matches!(event, InputEvent::ModifiersChanged(modifiers)
+    ) || matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
+        if gesture.can_take_control(*delta_x, *delta_y))
+      || matches!(event, InputEvent::ModifiersChanged(modifiers)
         if modifiers & !current_modifiers & 0x0f != 0)
 }
 fn pointer_activation_intent(event: &InputEvent) -> bool {
@@ -160,9 +161,9 @@ impl WindowsInputInjector {
         })
     }
 
-    fn prepare_source(&self,event:InputEvent,deadline:Option<Instant>)->InputResult<InputEvent> {
+    fn prepare_source(&self,event:InputEvent,deadline:Option<Instant>)->InputResult<Option<InputEvent>> {
         use windows_sys::Win32::{Foundation::{HWND,POINT},UI::WindowsAndMessaging::*};
-        let Some((source,canvas))=&self.source else {return Ok(event);};
+        let Some((source,canvas))=&self.source else {return Ok(Some(event));};
         let bounds=source.same_size()?;
         let desktop=crate::windows_capture_plan::Rect{x:unsafe{GetSystemMetrics(SM_XVIRTUALSCREEN)},y:unsafe{GetSystemMetrics(SM_YVIRTUALSCREEN)},
             width:unsafe{GetSystemMetrics(SM_CXVIRTUALSCREEN)}.try_into()?,height:unsafe{GetSystemMetrics(SM_CYVIRTUALSCREEN)}.try_into()?};
@@ -202,6 +203,10 @@ impl WindowsInputInjector {
                     {
                         return Err("The selected window is not focused".into());
                     }
+                } else if matches!(&event, InputEvent::MouseScroll { .. }) {
+                    // A continuation cannot refocus a window or disable control
+                    // after another native app takes the foreground.
+                    return Ok(None);
                 } else if !window_release_event(&event, current_modifiers) {
                     return Err("The selected window is not focused".into());
                 }
@@ -214,6 +219,8 @@ impl WindowsInputInjector {
             } else if matches!(&event,InputEvent::MouseDown(_)|InputEvent::MouseUp(_)|InputEvent::MouseScroll{..}) {
                 let mut point=POINT{x:0,y:0};
                 if unsafe{GetCursorPos(&mut point)}==0 || unsafe{GetAncestor(WindowFromPoint(point),GA_ROOT)}!=hwnd {
+                    if matches!(&event, InputEvent::MouseScroll {delta_x,delta_y,gesture}
+                        if !gesture.can_take_control(*delta_x,*delta_y)) { return Ok(None); }
                     return Err("Pointer is no longer inside the selected window".into());
                 }
             } else if matches!(&event,InputEvent::MouseMove{..}) {
@@ -224,9 +231,9 @@ impl WindowsInputInjector {
         match event {
             InputEvent::MouseMoveAbsolute{x,y}=>{
                 let (x,y)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,x,y)?;
-                Ok(InputEvent::MouseMoveAbsolute{x:x.try_into()?,y:y.try_into()?})
+                Ok(Some(InputEvent::MouseMoveAbsolute{x:x.try_into()?,y:y.try_into()?}))
             }
-            event=>Ok(event),
+            event=>Ok(Some(event)),
         }
     }
 
@@ -345,7 +352,7 @@ impl WindowsInputInjector {
             return Err("Windows input cleanup is unconfirmed; new input is disabled".into());
         }
         let _coordinates=native_sources::PhysicalCoordinates::enter()?;
-        let event=match self.prepare_source(event,deadline) {Ok(event)=>event,Err(error)=>{self.release_all_input();return Err(error);}};
+        let event=match self.prepare_source(event,deadline) {Ok(Some(event))=>event,Ok(None)=>return Ok(()),Err(error)=>{self.release_all_input();return Err(error);}};
         match event {
             InputEvent::Text(text) => {
                 if self.modifiers.load(Ordering::Relaxed) & 0x0f != 0 {
@@ -412,7 +419,7 @@ impl WindowsInputInjector {
                     }
                 }
             }
-            InputEvent::MouseScroll { delta_x, delta_y } => {
+            InputEvent::MouseScroll { delta_x, delta_y, .. } => {
                 let preferences = wheel_scroll_preferences()?;
                 let (horizontal, vertical) = {
                     let mut remainder = self.scroll_remainders.lock().unwrap();

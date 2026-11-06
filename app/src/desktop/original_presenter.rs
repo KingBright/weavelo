@@ -86,7 +86,11 @@ pub(crate) fn acknowledge_paint(
     if session.uploaded_at!=Some(frame.decoded_at) {
         let mut timing=frame.timing;
         crate::telemetry_display::mark_ui_frame_submission(&mut timing,frame.decoded_at.elapsed());
-        session.host_stats.set_latest_timing(timing);
+        if session.stats.video_recovery.with_current(frame.video_epoch, || {
+            session.host_stats.set_latest_timing(timing);
+        }).is_none() {
+            return false;
+        }
     }
     session.uploaded_at = Some(frame.decoded_at);
     session.uploaded_epoch = Some(frame.video_epoch);

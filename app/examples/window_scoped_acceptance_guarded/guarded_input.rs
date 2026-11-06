@@ -175,7 +175,7 @@ async fn operation<L:Link>(link:&mut L, target:Target, budgets:Budgets, owned:&m
 fn suite_events() -> Vec<InputEvent> {
     let mut events=vec![InputEvent::MouseMoveAbsolute{x:16384,y:24576},InputEvent::MouseDown(0),
         InputEvent::MouseMoveAbsolute{x:32768,y:32768},InputEvent::MouseMoveAbsolute{x:49151,y:40960},
-        InputEvent::MouseUp(0),InputEvent::MouseScroll{delta_x:0,delta_y:-3}];
+        InputEvent::MouseUp(0),InputEvent::scroll(0, -3)];
     for key_code in [0,11,8] { // abc, physical macOS key codes, not arbitrary text injection.
         events.push(InputEvent::Key{key_code,pressed:true,modifiers:0});
         events.push(InputEvent::Key{key_code,pressed:false,modifiers:0});

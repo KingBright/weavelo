@@ -43,6 +43,7 @@ impl ClipboardProvider for NativeClipboardProvider {
         policy: ClipboardSyncPolicy,
     ) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
         let mut clipboard = arboard::Clipboard::new()?;
+        if available(clipboard.get().file_list())?.is_some_and(|files| !files.is_empty()) { return Ok(None); }
         let mut items = Vec::new();
         // Prefer the image over auxiliary text; each native write is atomic.
         if policy.allow_images

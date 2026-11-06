@@ -96,11 +96,19 @@ impl ClipboardFileReferenceProvider for MacClipboardProvider {
 fn read_clipboard_bundle(
     policy: ClipboardSyncPolicy,
 ) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
+    let pasteboard = unsafe { general_pasteboard()? };
+    read_clipboard_bundle_from(pasteboard, policy)
+}
+
+fn read_clipboard_bundle_from(
+    pasteboard: *mut Object,
+    policy: ClipboardSyncPolicy,
+) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
+    // File URL representations take precedence over accompanying text/image.
+    if !read_file_references_from(pasteboard)?.is_empty() { return Ok(None); }
     let mut items = Vec::new();
 
     unsafe {
-        let pasteboard = general_pasteboard()?;
-
         if policy.allow_text
             && let Some(text) = read_string_for_type(pasteboard, NSPASTEBOARD_TYPE_STRING)?
         {
@@ -161,10 +169,14 @@ fn write_clipboard_bundle(bundle: &ClipboardBundle) -> Result<(), Box<dyn Error 
 }
 
 fn read_file_references() -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
+    let pasteboard = unsafe { general_pasteboard()? };
+    read_file_references_from(pasteboard)
+}
+
+fn read_file_references_from(pasteboard: *mut Object) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
     let mut references = Vec::new();
 
     unsafe {
-        let pasteboard = general_pasteboard()?;
         let items: *mut Object = msg_send![pasteboard, pasteboardItems];
         if items.is_null() {
             return Ok(references);
@@ -445,6 +457,31 @@ fn next_bundle_id() -> u64 {
 mod tests {
     use super::*;
     use remote_core::{ClipboardFileReferenceProvider, ClipboardProvider};
+
+    #[test]
+    fn named_pasteboard_prefers_real_file_urls_over_auxiliary_text() {
+        with_autorelease_pool(|| unsafe {
+            let name = nsstring(&format!("weavelo.clipboard.fixture.{}", next_bundle_id()))?;
+            let pasteboard: *mut Object = msg_send![class!(NSPasteboard), pasteboardWithName: name];
+            assert!(!pasteboard.is_null());
+            let _: isize = msg_send![pasteboard, clearContents];
+            let item: *mut Object = msg_send![class!(NSPasteboardItem), new];
+            let file_type = nsstring(NSPASTEBOARD_TYPE_FILE_URL)?;
+            let file_url = nsstring("file:///tmp/weavelo-file-priority-fixture")?;
+            let text_type = nsstring(NSPASTEBOARD_TYPE_STRING)?;
+            let text = nsstring("auxiliary text")?;
+            let file_ok: BOOL = msg_send![item, setString: file_url forType: file_type];
+            let text_ok: BOOL = msg_send![item, setString: text forType: text_type];
+            assert!(file_ok != NO && text_ok != NO);
+            let array: *mut Object = msg_send![class!(NSArray), arrayWithObject: item];
+            let wrote: BOOL = msg_send![pasteboard, writeObjects: array];
+            assert!(wrote != NO);
+            assert_eq!(read_file_references_from(pasteboard)?.len(), 1);
+            assert!(read_clipboard_bundle_from(pasteboard, ClipboardSyncPolicy::default())?.is_none());
+            let _: () = msg_send![pasteboard, releaseGlobally];
+            Ok(())
+        }).unwrap();
+    }
 
     #[test]
     fn maps_supported_image_mime_types_to_pasteboard_types() {

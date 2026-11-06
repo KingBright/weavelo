@@ -61,9 +61,10 @@ use crate::platform::{
 };
 use crate::{
     AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
-    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, Pixels, Platform,
-    PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RequestFrameOptions,
-    ScrollDelta, Size, TouchPhase, WindowParams, X11Window, modifiers_from_xinput_info, point, px,
+    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MomentumPhase, MouseButton, Pixels,
+    Platform, PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RequestFrameOptions,
+    ScrollDelta, ScrollPhase, Size, TouchPhase, WindowParams, X11Window,
+    modifiers_from_xinput_info, point, px,
 };
 
 /// Value for DeviceId parameters which selects all devices.
@@ -2281,6 +2282,8 @@ fn make_scroll_wheel_event(
         delta: ScrollDelta::Lines(delta),
         modifiers,
         touch_phase: TouchPhase::default(),
+        scroll_phase: ScrollPhase::None,
+        momentum_phase: MomentumPhase::None,
     }
 }
 

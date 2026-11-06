@@ -202,7 +202,7 @@ fn blocked_background_activation_allows_hit_tested_click_but_never_unfocused_key
     input.inject_input(InputEvent::MouseDown(0)).unwrap();
     input.inject_input(InputEvent::MouseUp(0)).unwrap();
     assert!(input.inject_input(InputEvent::Key{key_code:0,pressed:true,modifiers:0}).is_err());
-    assert!(input.inject_input(InputEvent::MouseScroll{delta_x:0,delta_y:1}).is_err());
+    assert!(input.inject_input(InputEvent::scroll(0, 1)).is_err());
     assert_eq!(CALLS.lock().unwrap().posted.len(),3);
 }
 
@@ -250,10 +250,7 @@ fn fresh_keyboard_text_and_wheel_input_activate_the_exact_selected_window() {
     window_a.inject_input(InputEvent::KeyDown(0x43)).unwrap();
     CALLS.lock().unwrap().pointer_window = 3;
     window_b
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: 0,
-            delta_y: 40,
-        })
+        .inject_input(InputEvent::scroll(0, 40))
         .unwrap();
 
     let calls = CALLS.lock().unwrap();
@@ -271,6 +268,26 @@ fn fresh_keyboard_text_and_wheel_input_activate_the_exact_selected_window() {
             Posted::Mouse(MOUSEEVENTF_WHEEL, 40),
         ]
     );
+}
+
+#[test]
+fn scroll_continuations_do_not_activate_or_inject_into_a_background_window() {
+    use protocol::{ScrollGesture, ScrollPhase as P, MomentumPhase as M};
+    let _serial = SERIAL.lock().unwrap();
+    for foreground_window in [1, 3] {
+        *CALLS.lock().unwrap() = Calls { foreground_window, pointer_window: 1, ..Default::default() };
+        let input = actual::WindowsInputInjector::for_source(
+            protocol::session::CaptureSource::Window(88), (1920,1080), (1920,1080)).unwrap();
+        for (phase,momentum,delta_y) in [(P::Changed,M::None,40),(P::Ended,M::None,0),
+            (P::Cancelled,M::None,0),(P::None,M::Began,8),(P::None,M::Changed,4),(P::None,M::Ended,0)] {
+            input.inject_input(InputEvent::MouseScroll {delta_x:0,delta_y,
+                gesture:ScrollGesture{phase,momentum}}).unwrap();
+        }
+        let calls = CALLS.lock().unwrap();
+        assert!(calls.activation_attempts.is_empty());
+        assert!(calls.raise_attempts.is_empty());
+        assert!(calls.posted.is_empty());
+    }
 }
 
 #[test]
@@ -294,10 +311,7 @@ fn refused_foreground_handoff_sends_no_keyboard_text_or_wheel_input() {
         ))
         .is_err());
     assert!(input
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: 0,
-            delta_y: 40,
-        })
+        .inject_input(InputEvent::scroll(0, 40))
         .is_err());
 
     let calls = CALLS.lock().unwrap();
@@ -390,10 +404,7 @@ fn windows_scroll_maps_gpui_pixels_to_current_native_wheel_units_on_both_axes() 
     };
     let input = actual::WindowsInputInjector::new().unwrap();
     input
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: 40,
-            delta_y: 120,
-        })
+        .inject_input(InputEvent::scroll(40, 120))
         .unwrap();
 
     let calls = CALLS.lock().unwrap();
@@ -417,10 +428,7 @@ fn windows_scroll_preserves_disabled_and_page_preferences_with_bounded_native_de
     };
     let input = actual::WindowsInputInjector::new().unwrap();
     input
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: 40,
-            delta_y: 40,
-        })
+        .inject_input(InputEvent::scroll(40, 40))
         .unwrap();
     assert!(CALLS.lock().unwrap().posted.is_empty(), "zero means disabled");
 
@@ -430,16 +438,10 @@ fn windows_scroll_preserves_disabled_and_page_preferences_with_bounded_native_de
         ..Default::default()
     };
     input
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: 120,
-            delta_y: 120,
-        })
+        .inject_input(InputEvent::scroll(120, 120))
         .unwrap();
     input
-        .inject_input(InputEvent::MouseScroll {
-            delta_x: i32::MIN,
-            delta_y: i32::MAX,
-        })
+        .inject_input(InputEvent::scroll(i32::MIN, i32::MAX))
         .unwrap();
     assert_eq!(
         CALLS.lock().unwrap().posted,
@@ -463,10 +465,7 @@ fn fractional_wheel_units_accumulate_until_sendinput_can_represent_them() {
     let input = actual::WindowsInputInjector::new().unwrap();
     for _ in 0..8 {
         input
-            .inject_input(InputEvent::MouseScroll {
-                delta_x: 1,
-                delta_y: 1,
-            })
+            .inject_input(InputEvent::scroll(1, 1))
             .unwrap();
     }
 
@@ -493,10 +492,7 @@ fn missing_windows_scroll_preferences_reject_scroll_without_injecting() {
     let input = actual::WindowsInputInjector::new().unwrap();
     assert!(
         input
-            .inject_input(InputEvent::MouseScroll {
-                delta_x: 1,
-                delta_y: 1,
-            })
+            .inject_input(InputEvent::scroll(1, 1))
             .is_err()
     );
     let calls = CALLS.lock().unwrap();

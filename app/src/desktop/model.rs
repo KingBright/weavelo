@@ -59,6 +59,12 @@ pub struct SessionState<Texture, Pan: Default> {
     file_notices: tokio::sync::mpsc::Receiver<FileTransferEvent>,
     file_observers: tokio::sync::broadcast::Sender<FileTransferEvent>,
     file_task: Option<JoinHandle<()>>,
+    clipboard_file_events: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<FileTransferEvent>>>>,
+    clipboard_file_cancel: Option<tokio::sync::broadcast::Sender<()>>,
+    clipboard_file_state: Arc<Mutex<remote_core::clipboard_file_runtime::ClipboardFileSyncState>>,
+    clipboard_commands: tokio::sync::mpsc::UnboundedSender<(bool, Option<tokio::sync::oneshot::Sender<()>>)>,
+    clipboard_active: bool,
+    clipboard_gate: Option<Arc<AtomicBool>>,
     pub volume: u8,
     pub muted: bool,
     pub zoom: f32,
@@ -92,6 +98,10 @@ pub struct SessionState<Texture, Pan: Default> {
 pub(crate) type OriginalGuiSession =
     SessionState<Arc<client::MacDecodedVideoFrame>, gpui::Point<f32>>;
 
+fn clipboard_should_be_active(eligible: bool, owns: bool, focused: bool) -> bool {
+    eligible && (owns || focused)
+}
+
 impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     fn clear_transient_error(&mut self) {
         self.input_error = None;
@@ -110,6 +120,20 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     ) -> Self {
         let conn = Arc::new(conn);
         let clipboard = client::start_clipboard_runtime_control(conn.sender.clone());
+        let (clipboard_commands, mut clipboard_requests) = tokio::sync::mpsc::unbounded_channel::<(bool, Option<tokio::sync::oneshot::Sender<()>>)>() ;
+        let clipboard_conn = conn.clone();
+        let clipboard_ingress = clipboard.clone();
+        tokio::spawn(async move {
+            while let Some((enabled, done)) = clipboard_requests.recv().await {
+                let ingress = enabled.then(|| Arc::new(clipboard_ingress.clone()) as Arc<dyn remote_core::client_session::EnvelopeIngress>);
+                let _ = clipboard_conn.clipboard(ingress).await;
+                let _ = clipboard_conn.control(SessionCommand::SetClipboard { enabled, revision: 0 }).await;
+                if let Some(done) = done {
+                    let _ = clipboard_conn.flush_controls().await;
+                    let _ = done.send(());
+                }
+            }
+        });
         let transfers = Arc::new(Mutex::new(TransferCenterState::default()));
         let state = transfers.clone();
         let (_unused, empty) = tokio::sync::mpsc::unbounded_channel();
@@ -117,8 +141,15 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         let (notice_tx, file_notices) = tokio::sync::mpsc::channel(64);
         let (file_observers, _) = tokio::sync::broadcast::channel(64);
         let observers = file_observers.clone();
+        let clipboard_file_events: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<FileTransferEvent>>>> = Arc::new(Mutex::new(None));
+        let bridge_events = clipboard_file_events.clone();
         let file_task = tokio::spawn(async move {
             while let Some(event) = incoming.recv().await {
+                if matches!(event, FileTransferEvent::IncomingClipboardReady { .. }) {
+                    if let Some(bridge) = bridge_events.lock().unwrap().as_ref() {
+                        let _ = bridge.send(event.clone());
+                    }
+                }
                 {
                     let mut state = state.lock().unwrap();
                     state.apply_event(&event);
@@ -178,6 +209,12 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             file_notices,
             file_observers,
             file_task: Some(file_task),
+            clipboard_file_events,
+            clipboard_file_cancel: None,
+            clipboard_file_state: Default::default(),
+            clipboard_commands,
+            clipboard_active: false,
+            clipboard_gate: None,
             file_scope: remote_core::shared_files::current_share_scope(),
             volume: 100,
             muted: false,
@@ -373,15 +410,18 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     pub fn set_view_selected(&mut self, selected: bool) {
         if self.view_selected && !selected { self.release_input(); }
         self.view_selected = selected;
+        self.reconcile_clipboard();
         self.send_activity();
     }
     pub fn set_input_focused(&mut self, focused: bool) {
         if self.input_focused && !focused { self.release_input(); }
         self.input_focused = focused;
+        self.reconcile_clipboard();
     }
     pub fn set_presentation_hidden(&mut self, hidden: bool) {
         if self.presentation_hidden != hidden { self.release_input(); }
         self.presentation_hidden = hidden;
+        self.reconcile_clipboard();
         self.send_activity();
     }
     pub fn attach_consumer(&mut self, slot: u64, demand: remote_core::media_demand::MediaDemand)
@@ -452,23 +492,55 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         }
     }
     pub fn set_clipboard(&mut self, enabled: bool) {
-        if !self.conn.clipboard_available {
-            return;
-        }
         self.clipboard_enabled = enabled;
-        let conn = self.conn.clone();
-        let clip = self.clipboard.clone();
-        let gate = Arc::new(AtomicBool::new(true));
-        tokio::spawn(async move {
-            if enabled {
-                clip.start_workspace(conn.target, gate);
-                let _ = conn.clipboard(Some(Arc::new(clip))).await;
-            } else {
-                clip.stop();
-                let _ = conn.clipboard(None).await;
+        self.reconcile_clipboard();
+    }
+    fn reconcile_clipboard(&mut self) {
+        let eligible = self.clipboard_enabled && self.conn.clipboard_available && self.connected
+            && self.view_selected && !self.presentation_hidden;
+        let owns = self.clipboard_gate.as_ref().is_some_and(|gate| gate.load(std::sync::atomic::Ordering::Acquire));
+        // Losing focus to a local application retains the last remote owner.
+        // Only a focused session may claim ownership after another remote takes it.
+        let active = clipboard_should_be_active(eligible, owns, self.input_focused);
+        if self.clipboard_active == active && (!active || owns) { return; }
+        self.clipboard_active = active;
+        if let Some(cancel) = self.clipboard_file_cancel.take() { let _ = cancel.send(()); }
+        if active {
+            let gate = Arc::new(AtomicBool::new(false));
+            self.clipboard.start_workspace(self.conn.target, gate.clone());
+            self.clipboard_gate = Some(gate.clone());
+            *self.conn.clipboard_file_owner.lock().unwrap() = Some(remote_core::clipboard_file_runtime::ClipboardOwnership(gate.clone()));
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            if self.conn.files_available {
+                #[cfg(target_os = "macos")]
+                let provider = remote_platform::MacClipboardProvider::new();
+                #[cfg(target_os = "linux")]
+                let provider = remote_platform::LinuxClipboardProvider::new();
+                #[cfg(target_os = "windows")]
+                let provider = remote_platform::WindowsClipboardProvider::new();
+                let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (cancel, cancel_rx) = tokio::sync::broadcast::channel(1);
+                *self.clipboard_file_events.lock().unwrap() = Some(event_tx);
+                self.clipboard_file_cancel = Some(cancel);
+                let commands = self.conn.file_commands.clone();
+                let state = self.clipboard_file_state.clone();
+                tokio::spawn(async move {
+                    let observation = remote_core::clipboard_file_runtime::process_clipboard_observation();
+                    if let Err(error) = remote_core::clipboard_file_runtime::run_clipboard_file_sync(
+                        remote_core::clipboard_file_runtime::OwnedClipboardProvider::new(provider, gate.clone()).with_observation(observation.clone()),
+                        commands, event_rx, None, cancel_rx,
+                        remote_core::clipboard_file_runtime::ClipboardFileSyncConfig { enabled: Some(gate), state: Some(state), observation: Some(observation), ..Default::default() },
+                    ).await { eprintln!("File clipboard sync error: {error}"); }
+                });
             }
-            let _ = conn.control(SessionCommand::SetClipboard { enabled }).await;
-        });
+        } else {
+            self.clipboard.stop();
+            self.clipboard_gate = None;
+            *self.conn.clipboard_file_owner.lock().unwrap() = None;
+            *self.clipboard_file_events.lock().unwrap() = None;
+            if let Some(cancel) = self.clipboard_file_cancel.take() { let _ = cancel.send(()); }
+        }
+        let _ = self.clipboard_commands.send((active, None));
     }
     pub(crate) fn input_failed(&self) -> bool {
         self.input_error.is_some()
@@ -792,6 +864,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.camera_switch=None;self.pending=None;
                     self.release_input();
                     self.connected = false;
+                    self.reconcile_clipboard();
                     self.confirmed = false;
                     self.error = reason;
                 }
@@ -930,6 +1003,11 @@ impl<Texture, Pan: Default> Drop for SessionState<Texture, Pan> {
     fn drop(&mut self) {
         self.release_input();
         self.clipboard.stop();
+        *self.conn.clipboard_file_owner.lock().unwrap() = None;
+        *self.clipboard_file_events.lock().unwrap() = None;
+        if let Some(cancel) = self.clipboard_file_cancel.take() { let _ = cancel.send(()); }
+        let (revoke_done, revoke_wait) = tokio::sync::oneshot::channel();
+        let _ = self.clipboard_commands.send((false, Some(revoke_done)));
         if let Some(task) = self.file_task.take() {
             if self.conn.files_available && self.file_scope == remote_core::shared_files::current_share_scope() {
                 let conn = self.conn.clone();
@@ -939,6 +1017,7 @@ impl<Texture, Pan: Default> Drop for SessionState<Texture, Pan> {
                 // has dequeued but not yet started. No idle-time guess can
                 // safely replace that barrier.
                 tokio::spawn(async move {
+                    let _ = revoke_wait.await;
                     let drain = async {
                         if conn.file_commands.send(FileTransferCommand::Drain).await.is_ok() {
                             loop {
@@ -962,7 +1041,10 @@ impl<Texture, Pan: Default> Drop for SessionState<Texture, Pan> {
                     }
                     task.abort();
                 });
-            } else { task.abort(); }
+            } else {
+                task.abort();
+                tokio::spawn(async move { let _ = revoke_wait.await; });
+            }
         }
         if let Some(task) = self.audio_task.take() {
             task.abort();
@@ -1481,10 +1563,7 @@ pub(crate) mod static_input_tests {
             InputEvent::MouseMoveAbsolute { x: 32768, y: 32768 },
             InputEvent::MouseDown(0),
             InputEvent::MouseUp(0),
-            InputEvent::MouseScroll {
-                delta_x: 0,
-                delta_y: -2,
-            },
+            InputEvent::scroll(0, -2),
             InputEvent::Key {
                 key_code: 0,
                 pressed: true,
@@ -1754,5 +1833,17 @@ pub(crate) mod static_input_tests {
             true
         ));
         assert!(!current_input_frame(None, now, true));
+    }
+}
+
+#[cfg(test)]
+mod clipboard_focus_tests {
+    use super::clipboard_should_be_active;
+    #[test]
+    fn local_focus_retains_owner_but_only_focused_sessions_reclaim() {
+        assert!(clipboard_should_be_active(true, true, false));
+        assert!(!clipboard_should_be_active(true, false, false));
+        assert!(clipboard_should_be_active(true, false, true));
+        assert!(!clipboard_should_be_active(false, true, true));
     }
 }

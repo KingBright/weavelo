@@ -31,12 +31,6 @@ impl NetworkQuality {
         Self::Connecting=>"Connecting",Self::Disconnected=>"Not connected",Self::Unknown=>"Network unknown",
         Self::Good=>"Network good",Self::Fair=>"Network fair",Self::Poor=>"Network poor",
     }}
-    pub(crate) fn detail(self,stats:Option<&HostStats>)->String {
-        match (self,stats) {
-            (Self::Good|Self::Fair|Self::Poor,Some(stats))=>format!("{} · RTT {:.0} ms · loss {:.1}%",self.label(),stats.rtt_ms,stats.packet_loss_rate),
-            _=>self.label().into(),
-        }
-    }
 }
 
 /// Taking a decoded frame into the UI is only a submission estimate. No GPU
@@ -65,6 +59,7 @@ pub(crate) struct UiHostStats {
     host: HostStats,
     pub(crate) capture_receive: CaptureReceiveDisplay,
     pub(crate) capture_submit: CaptureReceiveDisplay,
+    pub(crate) rtt: Option<remote_core::client_session::RttSummary>,
 }
 
 impl UiHostStats {
@@ -72,8 +67,9 @@ impl UiHostStats {
         let host = shared.snapshot();
         let clock = shared.clock_estimate();
         Self {
+            rtt: shared.rtt_summary(),
             capture_submit: CaptureReceiveDisplay::from_measurements(
-                host.latest_timing.filter(|timing|timing.render_submit_ts_us>0 && timing.recv_ts_us>0)
+                shared.latest_ui_submission()
                     .map(|timing|timing.render_submit_ts_us as f32/1000.0),
                 clock.clone(),
             ),
@@ -84,6 +80,41 @@ impl UiHostStats {
             host,
         }
     }
+    pub(crate) fn network_quality(role: remote_core::role::RoleKind, stats: Option<&Self>) -> NetworkQuality {
+        if role == remote_core::role::RoleKind::Viewing && stats.is_none_or(|stats| stats.rtt.is_none()) {
+            if let Some(stats) = stats
+                && stats.updated_at.is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(5))
+                && stats.packet_loss_rate.is_finite() && stats.packet_loss_rate <= 100.0 {
+                if stats.packet_loss_rate >= 5.0 { return NetworkQuality::Poor; }
+                if stats.packet_loss_rate >= 1.0 { return NetworkQuality::Fair; }
+            }
+            return NetworkQuality::Unknown;
+        }
+        NetworkQuality::from_session(role, stats.map(|stats| &stats.host))
+    }
+
+    pub(crate) fn network_detail(quality: NetworkQuality, stats: Option<&Self>) -> String {
+        let Some(stats) = stats else { return quality.label().into(); };
+        match quality {
+            NetworkQuality::Good | NetworkQuality::Fair | NetworkQuality::Poor => {
+                let rtt = stats.rtt.map(|rtt| format!("{:.0} ms", rtt.latest_ms))
+                    .unwrap_or_else(|| "unavailable".into());
+                format!("{} · RTT {} · loss {:.1}%", quality.label(), rtt, stats.packet_loss_rate)
+            }
+            _ => quality.label().into(),
+        }
+    }
+
+    pub(crate) fn rtt_value(&self) -> String {
+        self.rtt.map(|rtt| format!("{:.1} ms", rtt.median_ms)).unwrap_or_else(|| "—".into())
+    }
+    pub(crate) fn rtt_detail(&self) -> String {
+        self.rtt.map(|rtt| format!(
+            "Median of {} recent probes. Latest {:.1} ms; range {:.1}–{:.1} ms. Excludes measured host processing; includes transport and send scheduling. Expires after 10 s.",
+            rtt.samples, rtt.latest_ms, rtt.min_ms, rtt.max_ms))
+            .unwrap_or_else(|| "No fresh round-trip measurement.".into())
+    }
+
 }
 
 impl Deref for UiHostStats {
@@ -129,8 +160,13 @@ impl CaptureReceiveDisplay {
         }
     }
 
+    pub(crate) fn compact_value(&self) -> String {
+        self.latency_ms.map(|latency| format!("≈ {latency:.1} ms"))
+            .unwrap_or_else(|| "—".into())
+    }
+
     pub(crate) fn submission_detail(&self) -> String {
-        self.explain("Host capture to UI scene submission estimate, including transport, decode and UI waiting. GPU completion and physical display remain unmeasured.")
+        self.explain("Latest completed host capture to UI scene submission sample (expires after 5 s), including transport, decode and UI waiting. GPU completion and physical display remain unmeasured.")
     }
     pub(crate) fn detail(&self) -> String {
         self.explain("Host capture to client receive estimate; excludes decoding and display.")
@@ -281,6 +317,21 @@ mod tests {
         let display = CaptureReceiveDisplay::from_measurements(Some(12.5), Some(clock));
         assert_eq!(display.value(), "≈ 12.5 ms");
         assert!(display.detail().contains("uncertainty unavailable"));
+    }
+
+    #[test]
+    fn missing_rtt_is_unknown_without_hiding_fresh_loss_warnings() {
+        let shared = SharedHostStats::default();
+        let mut display = UiHostStats::read(&shared);
+        display.host.updated_at = Some(std::time::Instant::now());
+        display.host.link_status = "healthy";
+        assert_eq!(display.rtt_value(), "—");
+        assert_eq!(UiHostStats::network_quality(remote_core::role::RoleKind::Viewing, Some(&display)), NetworkQuality::Unknown);
+        display.host.packet_loss_rate = 6.;
+        assert!(UiHostStats::network_detail(NetworkQuality::Poor, Some(&display)).contains("RTT unavailable"));
+        assert_eq!(UiHostStats::network_quality(remote_core::role::RoleKind::Viewing, Some(&display)), NetworkQuality::Poor);
+        display.host.updated_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+        assert_eq!(UiHostStats::network_quality(remote_core::role::RoleKind::Viewing, Some(&display)), NetworkQuality::Unknown);
     }
 
     #[test]
