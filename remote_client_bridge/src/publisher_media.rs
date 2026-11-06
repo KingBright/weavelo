@@ -1,5 +1,5 @@
 //! Independent source authorization, encoder demand and stale-frame rejection.
-use protocol::session::{CaptureSource, CaptureSourceInfo, SubscriptionRequest};
+use protocol::session::{CaptureSource, CaptureSourceInfo, SubscriptionRequest, SessionCommand};
 use remote_core::cameras::{CameraRegistry, NativeCamera};
 use std::collections::HashMap;
 use crate::publisher_viewport::{ScreenView,ScreenViewDemand};
@@ -35,6 +35,7 @@ pub(crate) struct Source {
     // Outer None is pending; Some(None) is a completed native read without an icon.
     pub artwork: Option<Option<protocol::interaction::ApplicationIcon>>,
     pub artwork_epoch: u64,
+    pub catalog_icon: Option<protocol::interaction::ApplicationIcon>,
 }
 pub(crate) struct ActiveRequest<'a> {
     pub stream: u64,
@@ -56,7 +57,7 @@ impl MediaSources {
         this.sources.insert(CaptureSource::MainDisplay,Source {
             info:CaptureSourceInfo {source:CaptureSource::MainDisplay,title:"Android selected screen or app".into(),
                 application:"MediaProjection".into(),process_id:None,width:1080,height:1920,supports_input:false,camera:None},
-            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},artwork:None,artwork_epoch:1,
+            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},artwork:None,artwork_epoch:1,catalog_icon:None,
         });this
     }
     fn next(&mut self)->u64 {
@@ -82,7 +83,7 @@ impl MediaSources {
                 existing.info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,catalog_icon:None,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }Ok(bindings)
     }
@@ -105,7 +106,7 @@ impl MediaSources {
                 let id=info.source;self.sources.get_mut(&id).unwrap().info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,catalog_icon:None,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }
         Ok(())
@@ -115,6 +116,31 @@ impl MediaSources {
             let mut info=source.info.clone();info.supports_input=screen_source(info.source)&&input_ready;info
         }).collect::<Vec<_>>();
         remote_core::source_picker::sort(&mut sources);sources
+    }
+    pub fn catalog_reply(&self, request_id:u32, input_ready:bool, known:&[[u8;32]]) -> SessionCommand {
+        let sources=self.catalog(input_ready);
+        let known=known.iter().copied().collect::<std::collections::HashSet<_>>();
+        let mut source_icons=Vec::new();let mut icons=Vec::new();let mut included=std::collections::HashSet::new();
+        for source in &sources {
+            if let Some(icon)=self.sources[&source.source].catalog_icon.as_ref() {
+                source_icons.push(protocol::interaction::SourceIconBinding{source:source.source,icon_id:icon.id});
+                if !known.contains(&icon.id)&&included.insert(icon.id){icons.push(icon.clone());}
+            }
+        }
+        SessionCommand::Sources{request_id,sources,source_icons,icons}
+    }
+    pub fn set_catalog_icons(&mut self, entries:Vec<(CaptureSource,protocol::interaction::ApplicationIcon)>)->Result<(),String> {
+        if entries.len()>protocol::interaction::MAX_APPLICATION_ICONS{return Err("Too many application icons".into());}
+        let mut ids=std::collections::HashSet::new();
+        for (source,icon) in &entries {
+            if !matches!(source,CaptureSource::Window(_)) || !ids.insert(*source) || !self.enabled(*source) {
+                return Err("Application icon source is no longer available".into());
+            }
+            remote_core::application_icons::decode_artwork(icon,false)?;
+        }
+        // Validate the complete batch before replacing any live directory asset.
+        for (source,icon) in entries {self.sources.get_mut(&source).unwrap().catalog_icon=Some(icon);}
+        Ok(())
     }
     pub fn enabled(&self,source:CaptureSource)->bool {self.sources.get(&source).is_some_and(|source|source.enabled)}
     pub fn demand(&self,source:CaptureSource)->CaptureDemand {self.sources.get(&source).map(|source|source.demand.clone()).unwrap_or_default()}
@@ -213,6 +239,28 @@ impl MediaSources {
 mod tests {
     use super::*;
     use protocol::session::CameraFacing;
+    #[test]
+    fn catalog_icons_are_cached_bound_and_never_replace_stream_grants() {
+        let mut media=MediaSources::new(true,false);
+        let source=CaptureSource::Window(7);
+        media.set_applications(vec![CaptureSourceInfo {source,title:"Calculator".into(),application:"Calculator".into(),
+            process_id:None,width:720,height:1280,supports_input:false,camera:None}]).unwrap();
+        let grant=media.sources[&source].grant;
+        let icon=remote_core::application_icons::encode_rgba(1,1,&[12,34,56,255]).unwrap();
+        media.set_catalog_icons(vec![(source,icon.clone())]).unwrap();
+        let SessionCommand::Sources{sources,source_icons,icons,..}=media.catalog_reply(1,false,&[]) else {panic!()};
+        assert_eq!(sources.len(),2);assert_eq!(source_icons[0].source,source);assert_eq!(icons.len(),1);
+        let SessionCommand::Sources{source_icons,icons,..}=media.catalog_reply(2,false,&[icon.id]) else {panic!()};
+        assert_eq!(source_icons.len(),1);assert!(icons.is_empty());
+        let mut corrupt=icon.clone();corrupt.png[0]^=1;
+        assert!(media.set_catalog_icons(vec![(source,corrupt)]).is_err());
+        assert!(media.set_catalog_icons(vec![(CaptureSource::Window(8),icon.clone())]).is_err());
+        assert_eq!(media.sources[&source].catalog_icon.as_ref().unwrap().id,icon.id);
+        assert_eq!(media.sources[&source].grant,grant);
+        media.set_applications(vec![]).unwrap();
+        let SessionCommand::Sources{source_icons,icons,..}=media.catalog_reply(3,false,&[]) else {panic!()};
+        assert!(source_icons.is_empty()&&icons.is_empty());
+    }
     #[test]
     fn independent_apps_keep_pixels_grants_and_paused_tasks_separate() {
         let mut media=MediaSources::new(true,false);

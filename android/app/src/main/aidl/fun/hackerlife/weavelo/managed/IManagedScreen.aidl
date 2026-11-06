@@ -7,7 +7,7 @@ interface IManagedScreen {
     String info();
     int createMirror(int width, int height, int density);
     String applications();
-    byte[] applicationIcon(String packageName);
+    byte[] applicationIcon(String packageName, int edge);
     int createApplication(String packageName, int width, int height, int density);
     boolean injectMotion(int id, in MotionEvent event);
     boolean injectKey(int id, in KeyEvent event);

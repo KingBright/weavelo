@@ -16,7 +16,7 @@ class ManagedApplicationArtworkTest {
         assumeTrue("An explicit installed test application is required",!packageName.isNullOrBlank())
         InstrumentationRegistry.getInstrumentation().getUiAutomation(android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
         val helper=checkNotNull(ManagedScreenBridge.attached()) {"Open the already authorized Weavelo helper first"}
-        val png=helper.applicationIcon(packageName!!)
+        val png=helper.applicationIcon(packageName!!,256)
         val dimensions=BitmapFactory.Options().apply {inJustDecodeBounds=true}
         BitmapFactory.decodeByteArray(png,0,png.size,dimensions)
         assertEquals(256,dimensions.outWidth)

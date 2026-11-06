@@ -197,6 +197,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 if value.len()>256*2048{return Err("App catalog is oversized".into());}
                 publisher.set_applications(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())
             }
+            46 => {
+                if value.len()>22*1024*1024 {return Err("Application icon directory is oversized".into());}
+                publisher.set_catalog_icons(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())
+            }
             44 => Ok(publisher.application_demands().to_string()),
             45 => {
                 #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]

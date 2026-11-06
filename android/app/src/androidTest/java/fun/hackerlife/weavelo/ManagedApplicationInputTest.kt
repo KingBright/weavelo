@@ -19,7 +19,7 @@ class ManagedApplicationInputTest {
         val events=mutableListOf<Pair<Int,Int>>()
         override fun info()="{}"
         override fun applications()="[]"
-        override fun applicationIcon(packageName:String)=byteArrayOf()
+        override fun applicationIcon(packageName:String,edge:Int)=byteArrayOf()
         override fun createMirror(width:Int,height:Int,density:Int)=error("No display creation in this test")
         override fun createApplication(packageName:String,width:Int,height:Int,density:Int)=error("No app launch in this test")
         override fun setSurface(id:Int,surface:Surface?)=error("No capture in this test")

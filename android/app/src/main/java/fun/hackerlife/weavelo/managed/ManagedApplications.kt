@@ -33,12 +33,36 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
     }
     private val workers = mutableMapOf<Long, Capture>()
     private val failed = mutableSetOf<Long>()
+    private val iconJobs = java.util.concurrent.LinkedBlockingQueue<Map<Long,App>>(1)
+    private val iconResult = java.util.concurrent.atomic.AtomicReference<Pair<Map<Long,App>,JSONArray>?>()
+    private val iconsAlive = AtomicBoolean(true)
+    private val iconThread = Thread({
+        try {
+            while (iconsAlive.get()) {
+                val catalog = iconJobs.take()
+                val icons = JSONArray()
+                for (app in catalog.values) {
+                    if (!iconsAlive.get() || iconJobs.isNotEmpty()) break
+                    runCatching { icon(host.applicationIcon(app.packageName,64)) }
+                        .onSuccess { icons.put(JSONArray().put(JSONObject().put("Window",app.id)).put(it)) }
+                        .onFailure { android.util.Log.w("Weavelo","Catalog icon unavailable: ${app.packageName}",it) }
+                }
+                if (iconsAlive.get() && iconJobs.isEmpty()) iconResult.set(catalog to icons)
+            }
+        } catch (_: InterruptedException) { /* closing */ }
+    }, "weavelo-app-icons")
+    private fun icon(png:ByteArray):JSONObject {
+        val digest=java.security.MessageDigest.getInstance("SHA-256").digest(png)
+        return JSONObject().put("id",JSONArray(digest.map { it.toInt() and 255 }))
+            .put("png",JSONArray(png.map { it.toInt() and 255 }))
+    }
     init {
         refreshCatalog()
         context.registerReceiver(packageUpdates,IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED);addAction(Intent.ACTION_PACKAGE_REMOVED)
             addAction(Intent.ACTION_PACKAGE_CHANGED);addDataScheme("package")
         },Context.RECEIVER_NOT_EXPORTED)
+        iconThread.start()
     }
     private fun refreshCatalog() {
         val list = JSONArray(host.applications())
@@ -50,16 +74,20 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
             App(id, packageName, item.getString("name"))
         }.associateBy { it.id }
         require(latest.size == list.length()) { "Independent app identity collision" }
-        if(latest==apps) return
         val catalog = JSONArray()
         latest.values.forEach { app -> catalog.put(JSONObject().put("source", JSONObject().put("Window", app.id))
             .put("title", app.name).put("application", app.name).put("process_id", JSONObject.NULL)
             .put("width", width).put("height", height).put("supports_input", false).put("camera", JSONObject.NULL)) }
-        PublisherClient.action(43, catalog.toString())
+        if(latest!=apps) PublisherClient.action(43, catalog.toString())
         apps=latest
+        iconJobs.clear();iconJobs.offer(latest)
     }
     fun update() {
         if(catalogChanged.getAndSet(false)) refreshCatalog()
+        iconResult.getAndSet(null)?.let { (catalog,icons) ->
+            if(catalog===apps) runCatching {PublisherClient.action(46,icons.toString())}
+                .onFailure {android.util.Log.w("Weavelo","Catalog artwork could not be published",it)}
+        }
         val list = JSONArray(PublisherClient.action(44))
         val subscribed = mutableSetOf<Long>()
         val streams = mutableSetOf<Long>()
@@ -113,11 +141,9 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
             var target: Target? = null
             try {
                 val icon=runCatching {
-                    val png=host.applicationIcon(app.packageName)
+                    val png=host.applicationIcon(app.packageName,256)
                     require(png.size in 1..256*1024)
-                    val digest=java.security.MessageDigest.getInstance("SHA-256").digest(png)
-                    JSONObject().put("id",JSONArray(digest.map { it.toInt() and 255 }))
-                        .put("png",JSONArray(png.map { it.toInt() and 255 }))
+                    icon(png)
                 }.onFailure { android.util.Log.w("Weavelo","Native application artwork unavailable",it) }.getOrNull()
                 var artworkEpoch = -1L
                 display = host.createApplication(app.packageName, width, height, density)
@@ -164,6 +190,7 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
     }
     override fun close() {
         context.unregisterReceiver(packageUpdates)
+        iconsAlive.set(false);iconJobs.clear();iconThread.interrupt();iconResult.set(null)
         workers.values.forEach { it.stop() }
         workers.values.forEach { runCatching { it.close() } };workers.clear()
         runCatching { PublisherClient.action(43,"[]") }

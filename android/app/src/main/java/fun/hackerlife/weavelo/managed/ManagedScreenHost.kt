@@ -58,7 +58,7 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
     }
     override fun info(): String = call {
         val size = metrics()
-        JSONObject().put("api", 3).put("width", size.widthPixels).put("height", size.heightPixels)
+        JSONObject().put("api", 4).put("width", size.widthPixels).put("height", size.heightPixels)
             .put("density", size.densityDpi).put("pid", android.os.Process.myPid())
             .put("version", `fun`.hackerlife.weavelo.BuildConfig.VERSION_CODE).toString()
     }
@@ -92,17 +92,17 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
             }
         }.toString()
     }
-    override fun applicationIcon(packageName: String): ByteArray {
+    override fun applicationIcon(packageName: String, edge: Int): ByteArray {
         check(Binder.getCallingUid() == appUid) { "Weavelo UID required" }
-        require(packageName.length in 1..255)
+        require(packageName.length in 1..255 && edge in listOf(64,256))
         val entry=checkNotNull(launchers().find { it.activityInfo.packageName==packageName }) { "App is not launchable" }
         // Read-only icon work stays off the display/input thread. It runs once
-        // for a selected application, never for every catalog entry or frame.
+        // for catalog changes or selected-app artwork, never on a media frame.
         val drawable=entry.loadIcon(context.packageManager)
-        val bitmap=android.graphics.Bitmap.createBitmap(256,256,android.graphics.Bitmap.Config.ARGB_8888)
+        val bitmap=android.graphics.Bitmap.createBitmap(edge,edge,android.graphics.Bitmap.Config.ARGB_8888)
         return try {
             bitmap.setHasAlpha(true)
-            drawable.setBounds(0,0,256,256)
+            drawable.setBounds(0,0,edge,edge)
             drawable.draw(android.graphics.Canvas(bitmap))
             val output=java.io.ByteArrayOutputStream()
             check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,output))
@@ -123,7 +123,7 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
                 else require(png[offset+4].toInt() and 32 != 0) {"Unsupported critical native PNG chunk"}
                 offset+=length+12
             }
-            normalized.toByteArray().also {require(it.size<=256*1024)}
+            normalized.toByteArray().also {require(it.size<=if(edge==64) 16*1024 else 256*1024)}
         } finally {bitmap.recycle()}
     }
     @android.annotation.SuppressLint("WrongConstant") // AOSP's documented hidden display flags above API 34.

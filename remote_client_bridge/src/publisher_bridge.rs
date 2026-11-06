@@ -191,7 +191,8 @@ async fn refresh_sources(peers:&mut HashMap<SocketAddr,Peer>,media:&Mutex<MediaS
     let ready=input.lock().unwrap().ready();
     let catalog=media.lock().unwrap().catalog(ready);
     capabilities.send_modify(|caps|caps.can_stream=!catalog.is_empty()&&alive.load(Ordering::Acquire));
-    for peer in peers.values(){reply(sender,peer.addr,SessionCommand::sources(0,catalog.clone())).await;}
+    let directory=media.lock().unwrap().catalog_reply(0,ready,&[]);
+    for peer in peers.values(){reply(sender,peer.addr,directory.clone()).await;}
 }
 impl Drop for Peer {
     fn drop(&mut self) {
@@ -604,10 +605,10 @@ impl MobilePublisher {
                                             } else {SessionCommand::SourceAppearance{request_id,id,source,appearance:Box::new(Err("Artwork source is no longer selected".into()))}};
                                             reply(&sender,addr,response).await;
                                         }
-                                        SessionCommand::ListSources{request_id,..} if peers.contains_key(&addr)=>{
+                                        SessionCommand::ListSources{request_id,known_icons} if peers.contains_key(&addr)=>{
                                             let ready=shared_input.lock().unwrap().ready();
-                                            let catalog=shared.lock().unwrap().catalog(ready);
-                                            reply(&sender,addr,SessionCommand::sources(request_id,catalog)).await;
+                                            let catalog=shared.lock().unwrap().catalog_reply(request_id,ready,&known_icons);
+                                            reply(&sender,addr,catalog).await;
                                         }
                                         SessionCommand::RequestCameraSwitch(request) if peers.contains_key(&addr) => {
                                             let peer=&peers[&addr];
@@ -802,6 +803,10 @@ impl MobilePublisher {
     pub fn set_applications(&self,infos:Vec<CaptureSourceInfo>)->Result<(),String> {
         self.media.lock().unwrap().set_applications(infos)?;
         self.input.lock().unwrap().revoke();
+        self.notify_sources();Ok(())
+    }
+    pub fn set_catalog_icons(&self,icons:Vec<(CaptureSource,protocol::interaction::ApplicationIcon)>)->Result<(),String> {
+        self.media.lock().unwrap().set_catalog_icons(icons)?;
         self.notify_sources();Ok(())
     }
     pub fn application_demands(&self)->serde_json::Value {

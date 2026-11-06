@@ -198,14 +198,19 @@ class RemoteControlService : AccessibilityService() {
                     // prove which display owns a committed text event. Resolve
                     // the editor from this exact owned display instead.
                     val target=native.target
-                    val node=windowsOnAllDisplays[target.displayId]?.asSequence()
-                        ?.mapNotNull { it.root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }
-                        ?.firstOrNull { it.packageName?.toString()==target.packageName && it.isEditable && !it.isPassword }
-                    if(node==null) { done(false);return }
+                    val windows=windowsOnAllDisplays[target.displayId].orEmpty()
+                    val roots=windows.mapNotNull {it.root}
+                    val focused=roots.mapNotNull {it.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)}
+                    val node=focused.firstOrNull { it.packageName?.toString()==target.packageName && it.isEditable && !it.isPassword }
+                    if(node==null) {
+                        android.util.Log.w("Weavelo","App text target unavailable display=${target.displayId} windows=${windows.size} roots=${roots.size} focused=${focused.size}")
+                        done(false);return
+                    }
                     val before=node.text?.toString() ?: ""
                     val edit=RemoteTextEdit.insert(before,node.textSelectionStart,node.textSelectionEnd,text)
                     if(edit==null || !node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
                             Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,edit.text) })) {
+                        android.util.Log.w("Weavelo","App text commit failed display=${target.displayId} selection=${node.textSelectionStart}:${node.textSelectionEnd} editable=${node.isEditable}")
                         done(false);return
                     }
                     done(node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION,Bundle().apply {
