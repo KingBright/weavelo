@@ -454,15 +454,15 @@ fun TouchIslandIconButton(
             .clip(RoundedCornerShape(9999.dp))
             .background(
                 when {
-                    isDestructive -> Color(0xFF3E1418)
-                    active -> Color(0xFF132832)
-                    else -> Color(0xFF22262E)
+                    isDestructive -> ColorDanger.copy(alpha = 0.22f)
+                    active -> ColorAccentCyan.copy(alpha = 0.18f)
+                    else -> ColorSurfaceElevated
                 }
             )
             .border(
                 1.dp,
                 when {
-                    isDestructive -> Color(0xFFFF5252)
+                    isDestructive -> ColorDanger.copy(alpha = 0.7f)
                     active -> ColorAccentCyan
                     else -> ColorBorderFine
                 },
@@ -470,12 +470,13 @@ fun TouchIslandIconButton(
             )
             .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
             color = when {
-                isDestructive -> Color(0xFFFF8A80)
+                isDestructive -> ColorDanger
                 active -> ColorAccentCyan
                 else -> ColorTextSecondary
             },
@@ -490,20 +491,20 @@ fun TouchIslandIconButton(
 fun VirtualKeyPill(name: String, active: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (active) Color(0xFF132832) else Color(0xFF1C1E24))
-            .border(1.dp, if (active) ColorAccentCyan else ColorBorderFine, RoundedCornerShape(6.dp))
-            .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) ColorAccentGold.copy(alpha = 0.2f) else ColorSurfaceCard)
+            .border(1.dp, if (active) ColorAccentGold else ColorBorderFine, RoundedCornerShape(8.dp))
+            .sizeIn(minWidth = 44.dp, minHeight = 40.dp)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = name,
-            color = ColorTextPrimary,
+            color = if (active) ColorAccentGold else ColorTextPrimary,
             fontSize = 10.sp,
             fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Medium
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium
         )
     }
 }

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Weavelo — Mobile Portrait Command Console</title>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "tertiary": "#56e5a9",
+            "on-background": "#e0e2eb",
+            "on-tertiary-fixed-variant": "#005236",
+            "on-tertiary": "#003824",
+            "surface-container": "#1d2026",
+            "surface-container-lowest": "#0b0e14",
+            "primary-container": "#38bdf8",
+            "on-surface-variant": "#bdc8d1",
+            "surface-container-highest": "#32353c",
+            "surface-tint": "#7bd0ff",
+            "secondary-fixed-dim": "#fabc4d",
+            "inverse-primary": "#00668a",
+            "surface-container-low": "#191c22",
+            "error": "#ffb4ab",
+            "surface-container-high": "#272a31",
+            "on-primary-container": "#004965",
+            "primary-fixed": "#c4e7ff",
+            "on-secondary-fixed-variant": "#604100",
+            "surface-dim": "#10131a",
+            "secondary-container": "#bd8718",
+            "secondary-fixed": "#ffdead",
+            "tertiary-fixed": "#6ffbbe",
+            "tertiary-container": "#30c88f",
+            "on-tertiary-fixed": "#002113",
+            "on-primary-fixed-variant": "#004c69",
+            "surface-bright": "#363940",
+            "outline-variant": "#3e484f",
+            "on-secondary": "#432c00",
+            "inverse-on-surface": "#2d3037",
+            "on-secondary-container": "#3a2600",
+            "surface-variant": "#32353c",
+            "on-secondary-fixed": "#281900",
+            "background": "#10131a",
+            "primary": "#8ed5ff",
+            "on-surface": "#e0e2eb",
+            "inverse-surface": "#e0e2eb",
+            "error-container": "#93000a",
+            "tertiary-fixed-dim": "#4edea3",
+            "on-error": "#690005",
+            "on-primary": "#00354a",
+            "on-error-container": "#ffdad6",
+            "surface": "#10131a",
+            "outline": "#87929a",
+            "on-primary-fixed": "#001e2c",
+            "secondary": "#fabc4d",
+            "on-tertiary-container": "#004e34",
+            "primary-fixed-dim": "#7bd0ff"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "gutter-dense": "0.25rem",
+            "margin": "0.75rem",
+            "space-xs": "0.125rem",
+            "space-xl": "1rem",
+            "margin-mobile": "0.5rem",
+            "space-sm": "0.25rem",
+            "space-lg": "0.75rem",
+            "space-md": "0.5rem",
+            "space-2xl": "1.5rem",
+            "gutter": "0.5rem"
+          },
+          "fontFamily": {
+            "headline-md": ["Space Grotesk"],
+            "micro-badge": ["JetBrains Mono"],
+            "headline-lg": ["Space Grotesk"],
+            "body-lg": ["Inter"],
+            "telemetry-md": ["JetBrains Mono"],
+            "telemetry-lg": ["JetBrains Mono"],
+            "body-sm": ["Inter"],
+            "telemetry-sm": ["JetBrains Mono"],
+            "headline-sm": ["Space Grotesk"],
+            "display": ["Space Grotesk"],
+            "body-md": ["Inter"]
+          },
+          "fontSize": {
+            "headline-md": ["18px", {"lineHeight": "24px", "letterSpacing": "-0.015em", "fontWeight": "500"}],
+            "micro-badge": ["9px", {"lineHeight": "10px", "letterSpacing": "0.08em", "fontWeight": "600"}],
+            "headline-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600"}],
+            "body-lg": ["14px", {"lineHeight": "22px", "letterSpacing": "-0.005em", "fontWeight": "400"}],
+            "telemetry-md": ["11px", {"lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+            "telemetry-lg": ["13px", {"lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "500"}],
+            "body-sm": ["12px", {"lineHeight": "16px", "letterSpacing": "0.005em", "fontWeight": "400"}],
+            "telemetry-sm": ["10px", {"lineHeight": "12px", "letterSpacing": "0.04em", "fontWeight": "400"}],
+            "headline-sm": ["15px", {"lineHeight": "20px", "letterSpacing": "-0.01em", "fontWeight": "500"}],
+            "display": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.03em", "fontWeight": "600"}],
+            "body-md": ["13px", {"lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400"}]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      line-height: 1;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    /* Specular Hairline Borders & Acoustic Surfaces */
+    .specular-border {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .specular-border-cyan {
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), 0 0 12px -2px rgba(56, 189, 248, 0.25);
+    }
+    .specular-border-gold {
+      border: 1px solid rgba(229, 169, 60, 0.45);
+      box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12), 0 0 10px -2px rgba(229, 169, 60, 0.25);
+    }
+    /* Acoustic Obsidian gradient */
+    .obsidian-panel {
+      background: linear-gradient(180deg, #111622 0%, #0b0e14 100%);
+    }
+    /* Pulse Ping */
+    @keyframes pulse-emerald {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.3); }
+    }
+    .ping-emerald {
+      animation: pulse-emerald 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    /* Custom Scrollbar for compact viewport */
+    ::-webkit-scrollbar {
+      width: 3px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0b0e14;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #3e484f;
+      border-radius: 2px;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-[#080B11] text-on-surface antialiased font-body-sm flex justify-center items-center min-h-screen p-0 sm:p-4 select-none">
+<!-- Mobile Portrait Shell (390 x 844 Exact Ratio Canvas) -->
+<div class="w-full max-w-[390px] h-[844px] bg-[#080B11] border border-outline-variant/30 sm:rounded-[36px] overflow-hidden flex flex-col relative shadow-[0_25px_60px_-15px_rgba(0,0,0,0.9)]">
+<!-- 1. System Status Bar & Glass Cockpit Top Header -->
+<header class="w-full shrink-0 z-40 bg-surface-container-lowest/80 backdrop-blur-xl border-b border-outline-variant/30">
+<!-- iOS / Mobile Status Bar -->
+<div class="h-8 px-5 flex items-center justify-between text-on-surface-variant font-telemetry-sm text-telemetry-sm pt-1">
+<span class="font-semibold text-on-surface">9:41</span>
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[13px]">signal_cellular_alt</span>
+<span class="font-telemetry-sm text-[9px] tracking-tighter px-0.5 bg-surface-container-high rounded text-primary">Wi-Fi 7</span>
+<span class="material-symbols-outlined text-[14px]">wifi</span>
+<div class="flex items-center gap-0.5 text-tertiary">
+<span class="text-[10px]">98%</span>
+<span class="material-symbols-outlined text-[15px] -rotate-90">battery_full</span>
+</div>
+</div>
+</div>
+<!-- Glass Cockpit Header Bar -->
+<div class="h-12 px-3 flex items-center justify-between">
+<!-- Brand & Mesh Capsule -->
+<div class="flex items-center gap-2">
+<span class="font-headline-md text-headline-md font-semibold tracking-tight text-primary drop-shadow-[0_0_8px_rgba(56,189,248,0.4)]">Weavelo</span>
+<!-- Live Mesh Status Pill -->
+<div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#10b981]/10 border border-[#10b981]/30">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary ping-emerald"></span>
+<span class="font-telemetry-sm text-[10px] text-tertiary tracking-tight">Mesh · 4 Peers · UDP</span>
+</div>
+</div>
+<!-- Trailing Action Icons -->
+<div class="flex items-center gap-1">
+<button class="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-variant/40 active:scale-95 transition-all" title="QR Scan Peer">
+<span class="material-symbols-outlined text-[18px]">qr_code_scanner</span>
+</button>
+<button class="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-secondary hover:bg-surface-variant/40 active:scale-95 transition-all" title="Matrix Router">
+<span class="material-symbols-outlined text-[18px]">hub</span>
+</button>
+<button class="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-variant/40 active:scale-95 transition-all" title="Conductor Console">
+<span class="material-symbols-outlined text-[18px]">tune</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Scrollable Main Work Environment -->
+<main class="flex-1 overflow-y-auto px-margin pb-24 pt-2.5 space-y-3">
+<!-- 2. Local Host Device Card ('This Device · Galaxy S25 Ultra') -->
+<section class="obsidian-panel rounded-xl specular-border p-3 relative overflow-hidden">
+<!-- Sub-surface specular glow line -->
+<div class="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-primary/50 to-transparent"></div>
+<!-- Header row -->
+<div class="flex items-center justify-between mb-2">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-primary-container/10 border border-primary/30 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[17px]">smartphone</span>
+</div>
+<div>
+<div class="flex items-center gap-1.5">
+<h2 class="font-headline-sm text-headline-sm text-on-surface font-semibold tracking-tight leading-none">This Device</h2>
+<span class="font-telemetry-sm text-[9px] px-1 py-0.2 rounded bg-tertiary/10 border border-tertiary/30 text-tertiary uppercase">Host &amp; Sensor Hub · Active</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant leading-tight">Galaxy S25 Ultra · Android 15 HyperOS</p>
+</div>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface p-1">
+<span class="material-symbols-outlined text-[16px]">more_vert</span>
+</button>
+</div>
+<!-- Telemetry Strip -->
+<div class="grid grid-cols-3 gap-1 bg-surface-container-lowest/80 border border-white/5 rounded p-1.5 mb-2.5 font-telemetry-sm text-telemetry-sm">
+<div class="flex flex-col">
+<span class="text-on-surface-variant text-[9px] uppercase tracking-wider">Touch Polling</span>
+<span class="text-primary font-medium">120Hz Fast</span>
+</div>
+<div class="flex flex-col border-l border-white/5 pl-1.5">
+<span class="text-on-surface-variant text-[9px] uppercase tracking-wider">Input DMA</span>
+<span class="text-tertiary font-medium">0.4ms Latency</span>
+</div>
+<div class="flex flex-col border-l border-white/5 pl-1.5">
+<span class="text-on-surface-variant text-[9px] uppercase tracking-wider">Carrier Link</span>
+<span class="text-secondary font-medium">Wi-Fi 7 (6GHz)</span>
+</div>
+</div>
+<!-- Active Broadcast State Notice -->
+<div class="flex items-center gap-2 px-2 py-1.5 rounded bg-surface-container/60 border border-white/5 mb-2.5">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="font-body-sm text-[11px] text-on-surface flex-1">Sharing Screen + Audio · Remote Control Ready</span>
+<span class="font-telemetry-sm text-[10px] text-primary bg-primary/10 px-1 py-0.5 rounded">60 FPS</span>
+</div>
+<!-- Quick Toggle Tactile Chips (2x2 Grid) -->
+<div class="grid grid-cols-2 gap-1.5">
+<!-- Screen Share (Active) -->
+<button class="flex items-center justify-between px-2.5 py-1.5 rounded bg-surface-container-high/60 border border-primary/40 text-left hover:border-primary transition-all group">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[15px] text-primary" style="font-variation-settings: 'FILL' 1;">screen_share</span>
+<span class="font-body-sm text-body-sm text-on-surface font-medium">Screen Share</span>
+</div>
+<span class="font-telemetry-sm text-[9px] text-tertiary font-semibold">ON</span>
+</button>
+<!-- Camera Lens (Ready) -->
+<button class="flex items-center justify-between px-2.5 py-1.5 rounded bg-surface-container-low/70 border border-white/5 text-left hover:border-white/20 transition-all">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[15px] text-on-surface-variant">photo_camera</span>
+<span class="font-body-sm text-body-sm text-on-surface-variant">Camera Lens</span>
+</div>
+<span class="font-telemetry-sm text-[9px] text-on-surface-variant">READY</span>
+</button>
+<!-- Accessibility Control (Locked) -->
+<button class="flex items-center justify-between px-2.5 py-1.5 rounded bg-surface-container-low/70 border border-white/5 text-left hover:border-white/20 transition-all">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[15px] text-secondary">pan_tool_alt</span>
+<span class="font-body-sm text-body-sm text-on-surface">Remote Touch</span>
+</div>
+<span class="font-telemetry-sm text-[9px] text-secondary font-semibold">SECURE</span>
+</button>
+<!-- File Receiver DMA -->
+<button class="flex items-center justify-between px-2.5 py-1.5 rounded bg-surface-container-high/60 border border-tertiary/40 text-left hover:border-tertiary transition-all">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[15px] text-tertiary">swap_driving_apps</span>
+<span class="font-body-sm text-body-sm text-on-surface font-medium">DMA Pipe</span>
+</div>
+<span class="font-telemetry-sm text-[9px] text-tertiary font-semibold">ACTIVE</span>
+</button>
+</div>
+</section>
+<!-- 3. Fast Mesh Onboarding & Pairing Strip -->
+<section class="grid grid-cols-2 gap-2">
+<button class="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-primary/10 border border-primary/50 text-primary font-headline-sm text-headline-sm hover:bg-primary hover:text-[#080B11] active:scale-[0.98] transition-all shadow-[0_0_12px_-2px_rgba(56,189,248,0.25)]">
+<span class="material-symbols-outlined text-[16px]">qr_code_scanner</span>
+<span class="font-medium">Scan QR Invite</span>
+</button>
+<button class="flex items-center justify-between py-1.5 px-2.5 rounded-lg bg-surface-container border border-outline-variant/40 hover:border-white/20 active:scale-[0.98] transition-all">
+<div class="flex items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined text-[15px] text-secondary">vpn_key</span>
+<span class="font-telemetry-sm text-[10px] text-on-surface">Pair Key</span>
+</div>
+<span class="font-telemetry-sm text-[10px] bg-[#0b0e14] px-1.5 py-0.5 rounded text-secondary border border-secondary/30 tracking-wider">WVL-882-901</span>
+</button>
+</section>
+<!-- 4. Discovered Workspace Peers Section -->
+<section class="space-y-2">
+<!-- Section Title and Telemetry count -->
+<div class="flex items-center justify-between pt-1 px-0.5">
+<div class="flex items-center gap-1.5">
+<span class="font-headline-sm text-[12px] font-semibold tracking-wider text-on-surface-variant uppercase">Active Workspace Peers</span>
+<span class="font-telemetry-sm text-[10px] text-primary bg-primary/10 px-1 rounded-full font-semibold">4 NODES</span>
+</div>
+<button class="flex items-center gap-0.5 font-telemetry-sm text-telemetry-sm text-on-surface-variant hover:text-primary">
+<span class="material-symbols-outlined text-[13px]">refresh</span>
+<span>Rescan (0.4s)</span>
+</button>
+</div>
+<!-- PEER CARD 1: Mac Studio M3 Ultra (Host Conductor) -->
+<div class="obsidian-panel rounded-xl specular-border-cyan p-3 relative space-y-2.5">
+<!-- Top Row: Icon + Names + Badge -->
+<div class="flex items-start justify-between">
+<div class="flex items-center gap-2">
+<div class="w-8 h-8 rounded-lg bg-surface-container-high border border-primary/30 flex items-center justify-center text-primary shadow-[0_0_8px_rgba(56,189,248,0.2)]">
+<span class="material-symbols-outlined text-[20px]">desktop_mac</span>
+</div>
+<div>
+<div class="flex items-center gap-1.5">
+<h3 class="font-headline-sm text-headline-sm font-semibold text-on-surface leading-none">Mac Studio M3 Ultra</h3>
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+</div>
+<p class="font-telemetry-sm text-[10px] text-on-surface-variant mt-0.5">Host Conductor · macOS 15.3 · 128GB RAM</p>
+</div>
+</div>
+<!-- Latency Pill -->
+<div class="flex flex-col items-end">
+<span class="font-telemetry-sm text-[10px] text-tertiary font-medium">0.9ms RTT</span>
+<span class="font-telemetry-sm text-[9px] text-on-surface-variant">LAN Fiber</span>
+</div>
+</div>
+<!-- Stream Information Capsule -->
+<div class="bg-surface-container-lowest/90 rounded border border-white/5 p-2 space-y-1 font-telemetry-sm">
+<div class="flex items-center justify-between text-telemetry-sm">
+<span class="text-on-surface-variant">Stream Pipeline:</span>
+<span class="text-primary font-medium">4K 120Hz Ultra-Low Latency</span>
+</div>
+<div class="flex items-center justify-between text-telemetry-sm">
+<span class="text-on-surface-variant">Active Surfaces:</span>
+<span class="text-on-surface flex items-center gap-1">
+<span class="w-1 h-1 rounded-full bg-secondary"></span> Logic Pro
+                <span class="text-outline-variant">·</span>
+<span class="w-1 h-1 rounded-full bg-primary"></span> Blender 4.2
+              </span>
+</div>
+</div>
+<!-- Bottom Action Suite -->
+<div class="flex items-center gap-1.5 pt-0.5">
+<!-- Primary Glowing Button -->
+<button class="flex-1 py-1.5 px-3 rounded bg-primary text-[#080B11] font-headline-sm text-headline-sm font-semibold flex items-center justify-center gap-1.5 shadow-[0_0_14px_rgba(56,189,248,0.4)] active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined text-[16px]">open_in_new</span>
+<span>Open Workspace</span>
+</button>
+<!-- Quick Icon Actions -->
+<button class="w-8 h-8 rounded bg-surface-container border border-white/10 flex items-center justify-center text-on-surface-variant hover:text-primary active:scale-95 transition-all" title="Send Screen">
+<span class="material-symbols-outlined text-[16px]">screen_share</span>
+</button>
+<button class="w-8 h-8 rounded bg-surface-container border border-white/10 flex items-center justify-center text-on-surface-variant hover:text-tertiary active:scale-95 transition-all" title="Audio Pipe">
+<span class="material-symbols-outlined text-[16px]">graphic_eq</span>
+</button>
+<button class="w-8 h-8 rounded bg-surface-container border border-white/10 flex items-center justify-center text-on-surface-variant hover:text-secondary active:scale-95 transition-all" title="DMA Send Files">
+<span class="material-symbols-outlined text-[16px]">folder_data</span>
+</button>
+</div>
+</div>
+<!-- PEER CARD 2: iPhone 16 Pro (Mobile Satellite) -->
+<div class="obsidian-panel rounded-xl specular-border p-3 space-y-2">
+<div class="flex items-start justify-between">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-surface-container-high border border-white/10 flex items-center justify-center text-secondary">
+<span class="material-symbols-outlined text-[17px]">phone_iphone</span>
+</div>
+<div>
+<div class="flex items-center gap-1.5">
+<h3 class="font-headline-sm text-headline-sm font-semibold text-on-surface leading-none">iPhone 16 Pro</h3>
+<span class="font-telemetry-sm text-[9px] px-1 bg-secondary/15 text-secondary border border-secondary/30 rounded">P2P STANDBY</span>
+</div>
+<p class="font-telemetry-sm text-[10px] text-on-surface-variant mt-0.5">Mobile Satellite · Direct Wi-Fi 7</p>
+</div>
+</div>
+<span class="font-telemetry-sm text-[10px] text-on-surface-variant">1.2ms RTT</span>
+</div>
+<div class="flex items-center justify-between text-[11px] font-body-sm text-on-surface-variant bg-surface-container-lowest/60 px-2 py-1 rounded border border-white/5">
+<span class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px] text-tertiary">draw</span>
+<span>Apple Pencil Digitizer Ready</span>
+</span>
+<span class="font-telemetry-sm text-[10px] text-tertiary">Ready</span>
+</div>
+<!-- Dual Quick Action Buttons -->
+<div class="flex items-center gap-2">
+<button class="flex-1 py-1 px-2 rounded border border-primary/40 text-primary font-headline-sm text-headline-sm hover:bg-primary/10 flex items-center justify-center gap-1 active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined text-[15px]">cast</span>
+<span>Mirror Display</span>
+</button>
+<button class="py-1 px-2.5 rounded bg-surface-container border border-white/10 text-on-surface-variant font-body-sm text-body-sm hover:text-on-surface flex items-center gap-1 active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined text-[14px]">mic</span>
+<span>Mic Pass</span>
+</button>
+<button class="py-1 px-2.5 rounded bg-surface-container border border-white/10 text-on-surface-variant font-body-sm text-body-sm hover:text-on-surface flex items-center gap-1 active:scale-[0.98] transition-all">
+<span class="material-symbols-outlined text-[14px]">cell_tower</span>
+<span>Handoff</span>
+</button>
+</div>
+</div>
+<!-- PEER CARD 3 (Compact): Gaming Rig RTX 4090 -->
+<div class="obsidian-panel rounded-xl specular-border p-2.5 flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-surface-container-high border border-white/10 flex items-center justify-center text-primary-container">
+<span class="material-symbols-outlined text-[17px]">developer_board</span>
+</div>
+<div>
+<div class="flex items-center gap-1.5">
+<h4 class="font-headline-sm text-headline-sm font-medium text-on-surface leading-none">Gaming Rig RTX 4090</h4>
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+</div>
+<p class="font-telemetry-sm text-[10px] text-on-surface-variant mt-0.5">NVENC 4:4:4 · 1.4ms · Unreal Engine 5</p>
+</div>
+</div>
+<div class="flex items-center gap-1.5">
+<span class="font-telemetry-sm text-[9px] text-secondary bg-secondary/10 px-1 py-0.5 rounded border border-secondary/20">BG Session</span>
+<button class="w-6 h-6 rounded flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-variant/40" title="Attach Node">
+<span class="material-symbols-outlined text-[16px]">chevron_right</span>
+</button>
+</div>
+</div>
+</section>
+</main>
+<!-- 5. Bottom Floating Glass Navigation Dock & Gesture Bar -->
+<div class="absolute bottom-0 left-0 right-0 z-50 pointer-events-none pb-2 px-3 pt-4 bg-gradient-to-t from-[#080B11] via-[#080B11]/90 to-transparent">
+<!-- Floating Dock -->
+<nav class="pointer-events-auto h-13 bg-surface-container-lowest/90 backdrop-blur-2xl rounded-full border border-white/10 px-3 py-1 flex items-center justify-between shadow-[0_12px_32px_rgba(0,0,0,0.85),0_0_1px_1px_rgba(255,255,255,0.08)]">
+<!-- Tab 1: Devices (Active) -->
+<button class="flex-1 flex flex-col items-center justify-center py-1 text-primary group active:scale-95 transition-all">
+<div class="relative">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">devices</span>
+<span class="absolute -top-0.5 -right-1 w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_6px_#38bdf8]"></span>
+</div>
+<span class="font-telemetry-sm text-[10px] font-semibold tracking-tight text-primary mt-0.5">Devices</span>
+</button>
+<!-- Tab 2: Mesh P2P -->
+<button class="flex-1 flex flex-col items-center justify-center py-1 text-on-surface-variant hover:text-on-surface group active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]">lan</span>
+<span class="font-telemetry-sm text-[10px] tracking-tight mt-0.5">Mesh P2P</span>
+</button>
+<!-- Tab 3: Sharing & Security -->
+<button class="flex-1 flex flex-col items-center justify-center py-1 text-on-surface-variant hover:text-on-surface group active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]">shield_lock</span>
+<span class="font-telemetry-sm text-[10px] tracking-tight mt-0.5">Security</span>
+</button>
+<!-- Tab 4: Settings -->
+<button class="flex-1 flex flex-col items-center justify-center py-1 text-on-surface-variant hover:text-on-surface group active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]">settings</span>
+<span class="font-telemetry-sm text-[10px] tracking-tight mt-0.5">Settings</span>
+</button>
+</nav>
+<!-- Android / iOS Navigation Gesture Indicator -->
+<div class="w-full flex justify-center pt-2">
+<div class="w-32 h-1 bg-on-surface-variant/40 rounded-full"></div>
+</div>
+</div>
+</div>
+</body></html>

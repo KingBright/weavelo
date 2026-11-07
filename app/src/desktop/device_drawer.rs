@@ -2,7 +2,7 @@ use super::device_list::{
     DeviceActivity, DeviceFilterKind, DeviceListAction, DeviceListState,
     DeviceListViewModel,
 };
-use crate::design_system::{color_accent_cyan, color_accent_emerald, color_border_fine};
+use crate::design_system::{color_accent_amber, color_accent_cyan, color_accent_emerald, color_border_fine};
 use crate::product_components::{component::tooltip,icon,IconName};
 use crate::product_components::theme::ActiveTheme;
 use ely_gpui_component::{
@@ -80,7 +80,7 @@ impl RenderOnce for DeviceDrawer {
                     .disabled(!enabled).on_click(move|_,_,cx|send(action.clone(),cx)));
             }
             let mut card=div().flex().flex_col().gap_1().px_2().py_1().rounded(px(10.))
-                .bg(if active {rgb(0x192830).into()}else{theme.surface.raised})
+                .bg(if active {rgb(0x132235).into()}else{theme.surface.raised})
                 .border_1().border_color(if active {color_accent_cyan()}else{color_border_fine()})
                 .child(div().min_h(px(42.)).flex().items_center().gap_2()
                     .child(div().size(px(7.)).flex_none().rounded_full().bg(if row.online {color_accent_emerald().into()}else{theme.content.disabled}))
@@ -92,13 +92,13 @@ impl RenderOnce for DeviceDrawer {
                             .tooltip(tooltip(row.display_name.clone()).build())
                             .on_click(move|_,_,cx|send(DeviceListAction::Details(detail_id.clone()),cx)))
                         .child(div().flex().items_center().gap_1().text_size(px(10.))
-                            .text_color(if activity.error.is_some(){rgb(0xf3b86b).into()}else{theme.content.secondary})
+                            .text_color(if activity.error.is_some(){color_accent_amber().into()}else{theme.content.secondary})
                             .when(active,|line|line.child(crate::product_components::component::icon(if activity.sharing>0 {crate::product_components::IconName::Sharing}else{crate::product_components::IconName::Receiving}).size(px(12.))))
                             .child(if !status.is_empty(){status}else{format!("{scope} · {}",if row.online {"Available"}else{"Offline"})})))
                     .child(actions));
             if self.state.more.as_ref()==Some(&id) || self.state.details.as_ref()==Some(&id) {
                 let mut more=div().flex().flex_col().gap_2().py_2();
-                if let Some(error)=activity.error.as_ref() {more=more.child(div().text_size(px(11.)).text_color(rgb(0xf3b86b)).child(error.clone()));}
+                if let Some(error)=activity.error.as_ref() {more=more.child(div().text_size(px(11.)).text_color(color_accent_amber()).child(error.clone()));}
                 let mut commands=div().flex().flex_wrap().gap_2();
                 for (key,label,enabled,action) in [
                     ("workspace","Open another source",row.can_open_workspace,DeviceListAction::OpenWorkspace(id.clone())),

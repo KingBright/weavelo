@@ -44,14 +44,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import `fun`.hackerlife.weavelo.SessionState
 
-// Obsidian Stream 统一设计系统色彩定义
-val ColorBaseBg = Color(0xFF101318)
-val ColorSurfaceCard = Color(0xFF191E26)
-val ColorBorderFine = Color(0x20FFFFFF)
-val ColorAccentCyan = Color(0xFF91D4EA)
-val ColorAccentEmerald = Color(0xFF93E6C1)
-val ColorTextPrimary = Color(0xFFEAF0F6)
-val ColorTextSecondary = Color(0xFF97A5B5)
+// Philharmonie Nocturne & Obsidian Stream 统一设计系统色彩定义
+val ColorBaseBg = Color(0xFF080B11)
+val ColorSurfaceCard = Color(0xFF111622)
+val ColorSurfaceElevated = Color(0xFF171F30)
+val ColorBorderFine = Color(0x24FFFFFF)
+val ColorAccentCyan = Color(0xFF38BDF8)
+val ColorAccentGold = Color(0xFFE5A93C)
+val ColorAccentEmerald = Color(0xFF10B981)
+val ColorDanger = Color(0xFFF43F5E)
+val ColorTextPrimary = Color(0xFFF8FAFC)
+val ColorTextSecondary = Color(0xFF94A3B8)
 
 @Composable
 fun MobileConsoleScreen(
@@ -119,9 +122,38 @@ fun MobileConsoleScreen(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
-                Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                MobileAction(MobileSymbol.Network, "Pair devices", nativeAvailable,
-                    modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(9999.dp))
+                            .background(ColorSurfaceElevated)
+                            .border(1.dp, if (nativeAvailable) ColorAccentEmerald.copy(alpha = 0.45f) else ColorBorderFine, RoundedCornerShape(9999.dp))
+                            .clickable(enabled = nativeAvailable) { activeTab = "Mesh P2P" }
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .background(if (nativeAvailable) ColorAccentEmerald else ColorTextSecondary, CircleShape)
+                        )
+                        Text(
+                            text = if (!nativeAvailable) "Offline" else "Mesh · ${devices.size} Peers",
+                            color = if (nativeAvailable) ColorAccentEmerald else ColorTextSecondary,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MobileAction(MobileSymbol.Scan, "Scan QR to join", nativeAvailable,
+                        modifier = Modifier.size(44.dp), onClick = onScanQr)
+                    MobileAction(MobileSymbol.Network, "Pair devices", nativeAvailable,
+                        modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
+                }
             }
             Spacer(Modifier.height(8.dp))
 
@@ -278,21 +310,36 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
     var sendMenu by remember(name) { mutableStateOf(false) }
     var expanded by remember(name) { mutableStateOf(false) }
     val badge = remember(deviceBadge) { DeviceArtwork.badge(deviceBadge).asImageBitmap() }
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-        .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-        .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 10.dp, vertical = 6.dp)) {
+    val isActiveStream = sending || onEnd != null || subtext.contains("Receiving") || subtext.contains("Sharing")
+    val cardBorder = when {
+        sending -> ColorAccentGold.copy(alpha = 0.65f)
+        isActiveStream -> ColorAccentCyan.copy(alpha = 0.65f)
+        else -> ColorBorderFine
+    }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+        .background(if (isActiveStream) ColorSurfaceElevated else ColorSurfaceCard)
+        .border(1.dp, cardBorder, RoundedCornerShape(14.dp))
+        .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Image(badge, contentDescription = "Device type: ${deviceBadge.displayName}",
                 modifier = Modifier.size(24.dp))
             Text(name, modifier = Modifier.weight(1f), color = ColorTextPrimary, fontSize = 15.sp,
                 lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(ColorBaseBg.copy(alpha = 0.65f))
+                    .border(0.5.dp, ColorBorderFine, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(tag, color = ColorAccentEmerald, fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(tag, color = ColorAccentEmerald, fontSize = 10.sp, lineHeight = 14.sp)
-                Text(subtext, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2,
-                    overflow = TextOverflow.Ellipsis)
+                Text(subtext, color = if (isActiveStream) ColorAccentCyan else ColorTextSecondary,
+                    fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             MobileAction(MobileSymbol.View, "Open device $name", enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
             Box {
@@ -342,14 +389,15 @@ fun NavTab(text: String, active: Boolean, onClick: () -> Unit = {}) {
         "Sharing" -> MobileSymbol.Permissions
         else -> MobileSymbol.Settings
     }
-    Column(modifier = Modifier.width(72.dp).heightIn(min = 48.dp)
+    Column(modifier = Modifier.width(76.dp).heightIn(min = 48.dp)
         .clip(RoundedCornerShape(18.dp))
-        .background(if (active) ColorAccentEmerald.copy(alpha = .1f) else Color.Transparent)
+        .background(if (active) ColorAccentCyan.copy(alpha = 0.14f) else Color.Transparent)
+        .border(if (active) 1.dp else 0.dp, if (active) ColorAccentCyan.copy(alpha = 0.45f) else Color.Transparent, RoundedCornerShape(18.dp))
         .clickable(onClick = onClick).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
         androidx.compose.material3.Icon(symbol.image, contentDescription = null,
-            tint = if (active) ColorAccentEmerald else ColorTextSecondary, modifier = Modifier.size(20.dp))
+            tint = if (active) ColorAccentCyan else ColorTextSecondary, modifier = Modifier.size(20.dp))
         Text(text, color = if (active) ColorTextPrimary else ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
     }

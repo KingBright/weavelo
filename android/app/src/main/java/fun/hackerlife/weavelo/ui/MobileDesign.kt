@@ -56,13 +56,14 @@ fun MobileAction(symbol: MobileSymbol, label: String, enabled: Boolean = true,
 }
 
 private val mobileColorScheme = darkColorScheme(
-        primary = ColorAccentEmerald, onPrimary = Color(0xFF10281F),
-        secondary = ColorAccentCyan, onSecondary = Color(0xFF10252D),
+        primary = ColorAccentCyan, onPrimary = Color(0xFF04070D),
+        secondary = ColorAccentEmerald, onSecondary = Color(0xFF052418),
+        tertiary = ColorAccentGold, onTertiary = Color(0xFF281900),
         background = ColorBaseBg, onBackground = ColorTextPrimary,
         surface = ColorSurfaceCard, onSurface = ColorTextPrimary,
-        surfaceVariant = Color(0xFF222A34), onSurfaceVariant = ColorTextSecondary,
-        outline = Color(0xFF3B4552), outlineVariant = ColorBorderFine,
-        error = Color(0xFFFFB4A9),
+        surfaceVariant = ColorSurfaceElevated, onSurfaceVariant = ColorTextSecondary,
+        outline = Color(0xFF334155), outlineVariant = ColorBorderFine,
+        error = Color(0xFFFF928A),
 )
 private val mobileShapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(18.dp),
     large = RoundedCornerShape(24.dp))

@@ -4,7 +4,7 @@ mod management;
 mod stream_windows;
 #[path="restored_stream_controls.rs"]
 mod stream_controls;
-use stream_controls::{DeviceFiles, StreamPanel};
+use stream_controls::{DeviceFiles, StreamPanel, ToolbarDock};
 #[path="restored_sending.rs"]
 mod sending;
 use sending::{SendActivity, SendingContext};
@@ -413,6 +413,24 @@ pub fn should_reveal_toolbar(cursor_y: f32) -> bool {
     (0.0..=TOOLBAR_TRIGGER_ZONE_HEIGHT_PX).contains(&cursor_y)
 }
 
+/// Zero-occlusion toolbar reveal guard:
+/// - Never pops up the toolbar while mouse buttons are held (e.g., dragging a remote window title bar or pulling down a mobile notification shade).
+/// - Never pops up on hover when the user explicitly collapsed the toolbar to the Maestro Micro-Rail (`collapsed_rail == true`).
+/// - Only triggers within the active `ToolbarDock` horizontal band so remote top-left tabs and top-right window buttons remain unobstructed.
+pub fn should_reveal_stream_toolbar(
+    cursor_x: f32,
+    cursor_y: f32,
+    viewport_width: f32,
+    dock: ToolbarDock,
+    buttons_held: bool,
+    collapsed_rail: bool,
+) -> bool {
+    !buttons_held
+        && !collapsed_rail
+        && should_reveal_toolbar(cursor_y)
+        && dock.contains_x(cursor_x, viewport_width)
+}
+
 pub fn should_auto_hide_toolbar(
     toolbar_hovered: bool,
     menu_open: bool,
@@ -620,6 +638,8 @@ struct RestoredDashboard {
     show_apps_menu: bool,
     toolbar_revealed: bool,
     toolbar_hovered: bool,
+    toolbar_dock: ToolbarDock,
+    toolbar_collapsed_rail: bool,
     last_toolbar_activity: Instant,
     capture_error_seen: Option<String>,
 }
@@ -820,6 +840,8 @@ impl RestoredDashboard {
             show_apps_menu: false,
             toolbar_revealed: true,
             toolbar_hovered: false,
+            toolbar_dock: ToolbarDock::Center,
+            toolbar_collapsed_rail: false,
             last_toolbar_activity: Instant::now(),
             capture_error_seen: None,
         }
@@ -1499,8 +1521,23 @@ impl RestoredDashboard {
     }
 
     fn queue_pointer_move(&mut self, position: Point<Pixels>, from_press: bool) -> bool {
+        let cursor_x = f32::from(position.x);
         let cursor_y = f32::from(position.y);
-        if should_reveal_toolbar(cursor_y) {
+        let viewport_width = self
+            .video_surface_bounds
+            .lock()
+            .expect("video surface bounds lock")
+            .map(|bounds| f32::from(bounds.size.width))
+            .unwrap_or(0.0);
+        let buttons_held = !self.pointer_input.pressed_buttons.is_empty() || from_press;
+        if should_reveal_stream_toolbar(
+            cursor_x,
+            cursor_y,
+            viewport_width,
+            self.toolbar_dock,
+            buttons_held,
+            self.toolbar_collapsed_rail,
+        ) {
             self.last_toolbar_activity = Instant::now();
             if !self.toolbar_revealed {
                 self.toolbar_revealed = true;
@@ -2767,11 +2804,15 @@ impl Render for RestoredDashboard {
             })
             .when(
                 !matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_))
-                    || self.toolbar_revealed
-                    || self.toolbar_hovered,
+                    || (!self.toolbar_collapsed_rail && (self.toolbar_revealed || self.toolbar_hovered)),
                 |this| {
                     this.child(self.stream_toolbar(&snapshot, is_fullscreen, compact, input_hint.as_deref(), cx))
                 },
+            )
+            .when(
+                matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_))
+                    && (self.toolbar_collapsed_rail || (!self.toolbar_revealed && !self.toolbar_hovered)),
+                |this| this.child(self.stream_micro_rail(cx)),
             )
             .child(self.paint_acknowledgement())
             .when(show_drawer, |tree| tree.child(self.stream_controls_panel(&snapshot, host_stats.as_ref(), cx)))
@@ -2816,6 +2857,7 @@ impl Render for RestoredDashboard {
                         && keystroke.modifiers.alt
                     {
                         this.set_input_locked(true);
+                        this.toolbar_collapsed_rail = false;
                         this.toolbar_revealed = true;
                         this.last_toolbar_activity = Instant::now();
                         cx.stop_propagation();
@@ -6081,11 +6123,11 @@ fn remote_input_hint(status: &str, eligible: bool, focused: bool, local_overlay:
 mod input_tests {
     use super::{
         ControlIslandVisibility, PointerInputTracker, TOOLBAR_AUTO_HIDE_DELAY,
-        TOOLBAR_TRIGGER_ZONE_HEIGHT_PX, ViewportScaleMode, absolute_pointer_event,
+        TOOLBAR_TRIGGER_ZONE_HEIGHT_PX, ToolbarDock, ViewportScaleMode, absolute_pointer_event,
         control_island_visibility, dashboard_refresh_interval, display_capture_sources,
         host_stats_available, is_shifted_macos_symbol, macos_key_code, product_window_appearance,
         protocol_key_event, protocol_modifiers, protocol_mouse_button, should_auto_hide_toolbar,
-        should_reveal_toolbar,
+        should_reveal_stream_toolbar, should_reveal_toolbar,
     };
     use crate::HostStats;
 
@@ -6394,6 +6436,17 @@ mod input_tests {
         assert!(should_reveal_toolbar(TOOLBAR_TRIGGER_ZONE_HEIGHT_PX));
         assert!(!should_reveal_toolbar(TOOLBAR_TRIGGER_ZONE_HEIGHT_PX + 0.5));
         assert!(!should_reveal_toolbar(100.0));
+
+        // 零遮挡防误触规则：按住鼠标拖拽、折叠为微导轨或不在当前停靠区水平范围内时绝不弹出工具栏
+        assert!(should_reveal_stream_toolbar(500.0, 6.0, 1000.0, ToolbarDock::Center, false, false));
+        assert!(!should_reveal_stream_toolbar(500.0, 6.0, 1000.0, ToolbarDock::Center, true, false));
+        assert!(!should_reveal_stream_toolbar(500.0, 6.0, 1000.0, ToolbarDock::Center, false, true));
+        assert!(!should_reveal_stream_toolbar(100.0, 6.0, 1000.0, ToolbarDock::Center, false, false));
+        assert!(should_reveal_stream_toolbar(100.0, 6.0, 1000.0, ToolbarDock::Left, false, false));
+        assert!(should_reveal_stream_toolbar(900.0, 6.0, 1000.0, ToolbarDock::Right, false, false));
+        assert_eq!(ToolbarDock::Center.next(), ToolbarDock::Right);
+        assert_eq!(ToolbarDock::Right.next(), ToolbarDock::Left);
+        assert_eq!(ToolbarDock::Left.next(), ToolbarDock::Center);
 
         let now = Instant::now();
         // 鼠标悬停在控制条上时，绝不自动隐藏

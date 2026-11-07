@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Weavelo — Symphonic Zero-Occlusion Remote Workspace</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Space Grotesk, Inter, JetBrains Mono -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Theme Configuration Verbatim -->
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-tertiary": "#003824",
+            "surface-dim": "#10131a",
+            "surface-container-lowest": "#0b0e14",
+            "on-background": "#e0e2eb",
+            "on-error-container": "#ffdad6",
+            "on-primary-fixed": "#001e2c",
+            "on-primary": "#00354a",
+            "primary-container": "#38bdf8",
+            "background": "#10131a",
+            "on-surface": "#e0e2eb",
+            "primary": "#8ed5ff",
+            "on-primary-container": "#004965",
+            "surface-bright": "#363940",
+            "tertiary": "#56e5a9",
+            "on-tertiary-fixed": "#002113",
+            "surface-variant": "#32353c",
+            "secondary-container": "#bd8718",
+            "on-tertiary-container": "#004e34",
+            "secondary-fixed": "#ffdead",
+            "surface-container-high": "#272a31",
+            "primary-fixed": "#c4e7ff",
+            "surface-container-highest": "#32353c",
+            "surface": "#10131a",
+            "tertiary-fixed": "#6ffbbe",
+            "inverse-surface": "#e0e2eb",
+            "tertiary-container": "#30c88f",
+            "surface-tint": "#7bd0ff",
+            "error-container": "#93000a",
+            "on-tertiary-fixed-variant": "#005236",
+            "outline-variant": "#3e484f",
+            "on-primary-fixed-variant": "#004c69",
+            "on-secondary": "#432c00",
+            "error": "#ffb4ab",
+            "primary-fixed-dim": "#7bd0ff",
+            "outline": "#87929a",
+            "on-secondary-fixed": "#281900",
+            "secondary": "#fabc4d",
+            "tertiary-fixed-dim": "#4edea3",
+            "surface-container-low": "#191c22",
+            "on-secondary-fixed-variant": "#604100",
+            "on-error": "#690005",
+            "inverse-primary": "#00668a",
+            "on-surface-variant": "#bdc8d1",
+            "inverse-on-surface": "#2d3037",
+            "on-secondary-container": "#3a2600",
+            "secondary-fixed-dim": "#fabc4d",
+            "surface-container": "#1d2026"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "margin": "0.75rem",
+            "space-xs": "0.125rem",
+            "space-2xl": "1.5rem",
+            "space-sm": "0.25rem",
+            "space-lg": "0.75rem",
+            "margin-mobile": "0.5rem",
+            "space-xl": "1rem",
+            "gutter": "0.5rem",
+            "gutter-dense": "0.25rem",
+            "space-md": "0.5rem"
+          },
+          "fontFamily": {
+            "headline-md": ["Space Grotesk"],
+            "body-sm": ["Inter"],
+            "headline-lg": ["Space Grotesk"],
+            "body-lg": ["Inter"],
+            "telemetry-lg": ["JetBrains Mono"],
+            "telemetry-md": ["JetBrains Mono"],
+            "display": ["Space Grotesk"],
+            "body-md": ["Inter"],
+            "micro-badge": ["JetBrains Mono"],
+            "telemetry-sm": ["JetBrains Mono"],
+            "headline-sm": ["Space Grotesk"]
+          },
+          "fontSize": {
+            "headline-md": ["18px", { "lineHeight": "24px", "letterSpacing": "-0.015em", "fontWeight": "500" }],
+            "body-sm": ["12px", { "lineHeight": "16px", "letterSpacing": "0.005em", "fontWeight": "400" }],
+            "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "body-lg": ["14px", { "lineHeight": "22px", "letterSpacing": "-0.005em", "fontWeight": "400" }],
+            "telemetry-lg": ["13px", { "lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "500" }],
+            "telemetry-md": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+            "display": ["32px", { "lineHeight": "40px", "letterSpacing": "-0.03em", "fontWeight": "600" }],
+            "body-md": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "micro-badge": ["9px", { "lineHeight": "10px", "letterSpacing": "0.08em", "fontWeight": "600" }],
+            "telemetry-sm": ["10px", { "lineHeight": "12px", "letterSpacing": "0.04em", "fontWeight": "400" }],
+            "headline-sm": ["15px", { "lineHeight": "20px", "letterSpacing": "-0.01em", "fontWeight": "500" }]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 20;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .material-symbols-fill {
+      font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+    }
+    /* Custom ultra-dense acoustic scrollbars */
+    ::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0b0e14;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #272a31;
+      border-radius: 2px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #38bdf8;
+    }
+    
+    @keyframes pulse-beam {
+      0%, 100% { opacity: 0.35; stroke-dashoffset: 0; }
+      50% { opacity: 1; stroke-dashoffset: -24; }
+    }
+    .beam-flow-cyan {
+      stroke-dasharray: 6 4;
+      animation: pulse-beam 2.4s linear infinite;
+    }
+    .beam-flow-gold {
+      stroke-dasharray: 4 4;
+      animation: pulse-beam 3.2s linear infinite;
+    }
+    
+    /* Micro-grid pattern overlay */
+    .mesh-stage-grid {
+      background-size: 32px 32px;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    }
+  </style>
+</head>
+<body class="bg-surface-container-lowest text-on-surface antialiased overflow-hidden select-none font-body-sm h-screen flex flex-col">
+<!-- ========================================================================= -->
+<!-- 1. GLASS COCKPIT HEADER (Shared Component: TopNavBar Anchor)               -->
+<!-- ========================================================================= -->
+<header class="bg-surface-container-lowest/80 backdrop-blur-xl border-b border-outline-variant/30 shadow-2xl shadow-black/80 flex justify-between items-center w-full px-margin h-12 shrink-0 select-none z-50">
+<!-- Brand Anchor & Identity -->
+<div class="flex items-center gap-space-lg">
+<div class="flex items-center gap-space-sm group cursor-pointer">
+<div class="w-6 h-6 rounded bg-primary/10 border border-primary/40 flex items-center justify-center text-primary group-hover:border-primary transition-colors shadow-[0_0_12px_rgba(56,189,248,0.25)]">
+<span class="material-symbols-outlined text-[15px]" data-icon="hub">hub</span>
+</div>
+<div class="flex items-baseline gap-space-xs">
+<span class="text-headline-md font-headline-md font-semibold tracking-tight text-primary">Weavelo</span>
+<span class="text-micro-badge font-micro-badge text-on-surface-variant/70 border border-outline-variant/40 rounded px-1 py-0.5 ml-1">v2.4.0-orchestrator</span>
+</div>
+</div>
+<!-- Network State Indicator Capsule -->
+<div class="hidden xl:flex items-center gap-1.5 px-2 py-0.5 rounded bg-tertiary/10 border border-tertiary/30 text-tertiary font-telemetry-sm text-telemetry-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary animate-pulse shadow-[0_0_8px_#56e5a9]"></span>
+<span>● 3 MESH NODES SYNCHRONIZED</span>
+</div>
+<!-- Navigation Links from Shared Components JSON (Active: Topology) -->
+<nav class="hidden lg:flex items-center gap-space-lg ml-space-md text-body-sm font-body-sm">
+<a class="text-primary border-b border-primary pb-1 font-medium flex items-center gap-1" href="#topology">
+<span class="material-symbols-outlined text-[14px]" data-icon="polyline">polyline</span>
+          Topology
+        </a>
+<a class="text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1 pb-1" href="#telemetry">
+          Telemetry
+        </a>
+<a class="text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1 pb-1" href="#matrix-router">
+          Matrix Router
+        </a>
+<a class="text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1 pb-1" href="#security-keys">
+          Security Keys
+        </a>
+</nav>
+</div>
+<!-- Global Cluster Real-Time Telemetry Chips -->
+<div class="hidden 2xl:flex items-center gap-space-sm font-telemetry-sm text-telemetry-sm">
+<!-- Aggregate RTT -->
+<div class="flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-low border border-outline-variant/30 text-on-surface">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+<span class="text-on-surface-variant">Aggregate RTT:</span>
+<span class="text-tertiary font-medium">1.8ms</span>
+</div>
+<!-- Total Bandwidth -->
+<div class="flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-low border border-outline-variant/30 text-on-surface">
+<span class="material-symbols-outlined text-[12px] text-primary" data-icon="speed">speed</span>
+<span class="text-on-surface-variant">Total Bandwidth:</span>
+<span class="text-primary font-medium">174.6 Mbps</span>
+</div>
+<!-- Zero-Occlusion Lock -->
+<div class="flex items-center gap-1.5 px-2 py-0.5 rounded bg-secondary/10 border border-secondary/40 text-secondary">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+<span class="text-on-surface-variant">Zero-Occlusion:</span>
+<span class="font-semibold tracking-wider">ENGAGED</span>
+</div>
+</div>
+<!-- Trailing Action Controls & Operator Avatar -->
+<div class="flex items-center gap-space-sm">
+<!-- Trailing Primary Action: Connect Node -->
+<button class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-primary/10 border border-primary/50 text-primary hover:bg-primary hover:text-on-primary-fixed transition-all text-body-sm font-medium shadow-[0_0_10px_rgba(56,189,248,0.2)] active:scale-[0.98]">
+<span class="material-symbols-outlined text-[15px]" data-icon="add_circle">add_circle</span>
+<span>Pair New Node (⌘N)</span>
+</button>
+<!-- Trailing Secondary Action: Broadcast Sync -->
+<button class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded bg-surface-container-high/40 border border-outline-variant/40 text-on-surface hover:text-primary hover:border-primary/40 transition-colors text-body-sm font-normal active:scale-[0.98]">
+<span class="material-symbols-outlined text-[15px]" data-icon="cell_tower">cell_tower</span>
+<span>Broadcast Sync</span>
+</button>
+<!-- Trailing Icon Cluster from JSON -->
+<div class="flex items-center gap-0.5 pl-space-xs border-l border-outline-variant/30 text-on-surface-variant">
+<button class="p-1.5 rounded hover:bg-surface-variant/40 hover:text-on-surface transition-colors" title="Matrix Tune">
+<span class="material-symbols-outlined" data-icon="tune">tune</span>
+</button>
+<button class="p-1.5 rounded hover:bg-surface-variant/40 hover:text-on-surface transition-colors relative" title="Notifications">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+<span class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-primary ring-2 ring-surface-container-lowest"></span>
+</button>
+<button class="p-1.5 rounded hover:bg-surface-variant/40 hover:text-on-surface transition-colors" title="Settings">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+</button>
+</div>
+<!-- Operator Key Avatar -->
+<div class="flex items-center gap-1.5 pl-space-xs border-l border-outline-variant/30">
+<div class="w-6 h-6 rounded bg-gradient-to-tr from-surface-container-highest to-outline-variant/60 border border-outline/40 flex items-center justify-center text-primary-fixed font-telemetry-sm text-[10px] ring-1 ring-white/10" title="Operator Admin Key Avatar">
+          OP
+        </div>
+</div>
+</div>
+</header>
+<!-- ========================================================================= -->
+<!-- MAIN WORKSPACE CONTAINER (Docked Left Sidebar + Center Topology & Cockpit) -->
+<!-- ========================================================================= -->
+<div class="flex-1 flex overflow-hidden relative">
+<!-- ======================================================================= -->
+<!-- 2. LEFT GLASS SIDEBAR (Shared Component: SideNavBar / Persistent Dock)   -->
+<!-- ======================================================================= -->
+<aside class="w-[380px] shrink-0 bg-surface-container-lowest border-r border-outline-variant/30 shadow-xl shadow-black/60 flex flex-col h-full select-none z-30 overflow-hidden">
+<!-- Sub-Dock Navigation Tabs from SideNavBar JSON -->
+<div class="flex items-center justify-between px-space-md py-1.5 bg-surface-container-low/50 border-b border-outline-variant/20 font-telemetry-sm text-telemetry-sm">
+<div class="flex items-center gap-1 text-primary">
+<span class="material-symbols-outlined text-[14px]" data-icon="devices">devices</span>
+<span class="font-medium">Device Matrix (3)</span>
+</div>
+<div class="flex items-center gap-2 text-on-surface-variant">
+<span class="hover:text-on-surface cursor-pointer flex items-center gap-0.5" title="Acoustic Pipes">
+<span class="material-symbols-outlined text-[13px]" data-icon="graphic_eq">graphic_eq</span>
+</span>
+<span class="hover:text-on-surface cursor-pointer flex items-center gap-0.5" title="Input Multiplex">
+<span class="material-symbols-outlined text-[13px]" data-icon="speed">speed</span>
+</span>
+<span class="hover:text-on-surface cursor-pointer flex items-center gap-0.5" title="Storage NVMe">
+<span class="material-symbols-outlined text-[13px]" data-icon="folder_data">folder_data</span>
+</span>
+<span class="hover:text-on-surface cursor-pointer flex items-center gap-0.5" title="Mesh Discovery">
+<span class="material-symbols-outlined text-[13px]" data-icon="lan">lan</span>
+</span>
+</div>
+</div>
+<!-- Scrollable Devices & Host Feed -->
+<div class="flex-1 overflow-y-auto p-space-md space-y-space-md">
+<!-- LOCAL HOST CARD (This Device) -->
+<div class="rounded bg-surface-container/60 border border-outline-variant/40 p-space-md shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]">
+<div class="flex items-center justify-between pb-1.5 border-b border-outline-variant/20">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-primary text-[16px]" data-icon="desktop_windows">desktop_windows</span>
+<span class="text-micro-badge font-micro-badge text-on-surface-variant uppercase tracking-wider">This Host Device</span>
+</div>
+<div class="flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+<span class="text-micro-badge font-micro-badge text-tertiary">HOST ORIGIN</span>
+</div>
+</div>
+<div class="mt-2">
+<h3 class="text-headline-sm font-headline-sm text-on-surface font-semibold tracking-tight">Mac Studio M3 Ultra</h3>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant/80 mt-0.5">macOS Sonoma 14.5 · 128GB Unified Memory · 10GbE LAN</p>
+</div>
+<!-- Live Permission Status Pills with Compact Toggles -->
+<div class="grid grid-cols-2 gap-1.5 mt-3 pt-2 border-t border-outline-variant/20">
+<!-- Screen Ready -->
+<div class="flex items-center justify-between p-1.5 rounded bg-surface-container-lowest/80 border border-outline-variant/30">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-tertiary text-[13px]" data-icon="check_circle">check_circle</span>
+<span class="text-telemetry-sm font-telemetry-sm text-on-surface">Screen Ready</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-tertiary px-1 bg-tertiary/10 rounded">ON</span>
+</div>
+<!-- Input Control Granted -->
+<div class="flex items-center justify-between p-1.5 rounded bg-surface-container-lowest/80 border border-secondary/30">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-secondary text-[13px]" data-icon="ads_click">ads_click</span>
+<span class="text-telemetry-sm font-telemetry-sm text-on-surface">Input Control</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-secondary px-1 bg-secondary/10 rounded">LOCK</span>
+</div>
+<!-- Audio Pipe 48kHz -->
+<div class="flex items-center justify-between p-1.5 rounded bg-surface-container-lowest/80 border border-primary/30">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-primary text-[13px]" data-icon="graphic_eq">graphic_eq</span>
+<span class="text-telemetry-sm font-telemetry-sm text-on-surface">Audio 48kHz</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-primary px-1 bg-primary/10 rounded">LIVE</span>
+</div>
+<!-- Camera Passthrough -->
+<div class="flex items-center justify-between p-1.5 rounded bg-surface-container-lowest/80 border border-outline-variant/30">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-on-surface-variant text-[13px]" data-icon="videocam">videocam</span>
+<span class="text-telemetry-sm font-telemetry-sm text-on-surface-variant">Camera Pass</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-on-surface-variant/70 px-1 bg-surface-container-high rounded">IDLE</span>
+</div>
+</div>
+</div>
+<!-- Search Bar with Monospace Shortcut -->
+<div class="relative">
+<span class="absolute inset-y-0 left-0 flex items-center pl-2.5 pointer-events-none text-outline">
+<span class="material-symbols-outlined text-[15px]" data-icon="search">search</span>
+</span>
+<input class="w-full bg-surface-container-lowest border border-outline-variant/40 rounded py-1.5 pl-8 pr-10 text-body-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/25 font-body-sm" placeholder="Search mesh peers, LAN hosts, or GPU nodes..." type="text"/>
+<span class="absolute inset-y-0 right-0 flex items-center pr-2 font-telemetry-sm text-telemetry-sm text-outline pointer-events-none">⌘K</span>
+</div>
+<!-- Filter Pills Bar -->
+<div class="flex items-center gap-1 text-telemetry-sm font-telemetry-sm pb-1">
+<button class="px-2 py-0.5 rounded bg-primary/15 border border-primary/40 text-primary font-medium">All (3)</button>
+<button class="px-2 py-0.5 rounded bg-surface-container-low border border-outline-variant/30 text-on-surface-variant hover:text-on-surface">LAN (1)</button>
+<button class="px-2 py-0.5 rounded bg-surface-container-low border border-outline-variant/30 text-on-surface-variant hover:text-on-surface">Direct P2P (1)</button>
+<button class="px-2 py-0.5 rounded bg-surface-container-low border border-outline-variant/30 text-on-surface-variant hover:text-on-surface">Relay (1)</button>
+</div>
+<!-- RICH DEVICE CARDS -->
+<!-- Card 1: Gaming Rig RTX 4090 (Active Focused Session) -->
+<div class="rounded bg-surface-container-low border border-primary/50 p-space-md relative overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.6)]">
+<!-- Active Glow Accent Top -->
+<div class="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-primary to-transparent"></div>
+<div class="flex items-start justify-between">
+<div class="flex items-center gap-1.5">
+<span class="px-1.5 py-0.5 rounded bg-surface-container-highest text-primary font-micro-badge text-micro-badge uppercase tracking-wider border border-primary/30">WORKSTATION</span>
+<span class="flex items-center gap-1 text-tertiary font-telemetry-sm text-telemetry-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary animate-pulse"></span>
+                LAN Direct UDP
+              </span>
+</div>
+<div class="font-telemetry-sm text-telemetry-sm text-primary font-semibold">
+              4K 120Hz · 1.8ms RTT
+            </div>
+</div>
+<div class="mt-2">
+<div class="flex items-center justify-between">
+<h4 class="text-headline-sm font-headline-sm text-on-surface font-semibold">Gaming Rig RTX 4090</h4>
+<span class="material-symbols-outlined text-primary text-[16px]" data-icon="videogame_asset">videogame_asset</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant/80 mt-0.5">Core i9-14900KS · NVIDIA RTX 4090 24GB · 10GbE direct fiber</p>
+</div>
+<!-- Active Feed Pill -->
+<div class="mt-2.5 p-1.5 rounded bg-surface-container-lowest/90 border border-primary/25 flex items-center justify-between text-telemetry-sm font-telemetry-sm">
+<div class="flex items-center gap-1.5 text-on-surface">
+<span class="w-1.5 h-1.5 rounded-full bg-primary"></span>
+<span class="text-on-surface-variant">Active Feed:</span>
+<span class="text-primary font-medium truncate max-w-[190px]">Unreal Engine 5.4 Virtual Studio</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-tertiary">STABLE</span>
+</div>
+<!-- Quick Action Icon Button Dock -->
+<div class="flex items-center gap-1.5 mt-3 pt-2 border-t border-outline-variant/30">
+<button class="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-primary/20 border border-primary/60 text-primary hover:bg-primary hover:text-on-primary-fixed text-body-sm font-medium transition-all shadow-[0_0_8px_rgba(56,189,248,0.25)]">
+<span class="material-symbols-outlined text-[14px]" data-icon="visibility">visibility</span>
+<span>View Screen</span>
+</button>
+<button class="p-1 rounded bg-surface-container-high/60 border border-outline-variant/30 hover:border-primary/40 text-on-surface-variant hover:text-on-surface transition-colors" title="Send Display">
+<span class="material-symbols-outlined text-[16px]" data-icon="send_to_mobile">send_to_mobile</span>
+</button>
+<button class="p-1 rounded bg-surface-container-high/60 border border-outline-variant/30 hover:border-primary/40 text-on-surface-variant hover:text-on-surface transition-colors" title="Mount NVMe Direct">
+<span class="material-symbols-outlined text-[16px]" data-icon="hard_drive">hard_drive</span>
+</button>
+<button class="p-1 rounded bg-surface-container-high/60 border border-secondary/40 text-secondary hover:bg-secondary/10 transition-colors" title="Input Lock Granted">
+<span class="material-symbols-outlined text-[16px]" data-icon="lock_open">lock_open</span>
+</button>
+<button class="p-1 rounded bg-surface-container-high/60 border border-outline-variant/30 hover:text-on-surface transition-colors" title="More Node Actions">
+<span class="material-symbols-outlined text-[16px]" data-icon="more_horiz">more_horiz</span>
+</button>
+</div>
+</div>
+<!-- Card 2: Pixel 9 Pro Fold -->
+<div class="rounded bg-surface-container-low border border-outline-variant/30 p-space-md hover:border-outline-variant/60 transition-colors">
+<div class="flex items-start justify-between">
+<div class="flex items-center gap-1.5">
+<span class="px-1.5 py-0.5 rounded bg-surface-container text-tertiary font-micro-badge text-micro-badge uppercase tracking-wider border border-outline-variant/30">PORTABLE</span>
+<span class="flex items-center gap-1 text-tertiary font-telemetry-sm text-telemetry-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+                Direct P2P · Wi-Fi 7
+              </span>
+</div>
+<div class="font-telemetry-sm text-telemetry-sm text-on-surface-variant">
+              120Hz HDR Touch
+            </div>
+</div>
+<div class="mt-2">
+<div class="flex items-center justify-between">
+<h4 class="text-headline-sm font-headline-sm text-on-surface font-semibold">Pixel 9 Pro Fold</h4>
+<span class="material-symbols-outlined text-on-surface-variant text-[16px]" data-icon="stay_current_portrait">stay_current_portrait</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant/80 mt-0.5">Receiving Display Stream 2 · Low Power Mode Off</p>
+</div>
+<div class="flex items-center gap-1.5 mt-3 pt-2 border-t border-outline-variant/20">
+<button class="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-surface-container-high/70 border border-outline-variant/40 text-on-surface hover:border-primary/40 hover:text-primary text-body-sm font-normal transition-colors">
+<span class="material-symbols-outlined text-[13px]" data-icon="draw">draw</span>
+<span>Mirror to Stylus</span>
+</button>
+<button class="px-2 py-1 rounded bg-surface-container-high/70 border border-outline-variant/40 text-on-surface-variant hover:text-on-surface text-body-sm transition-colors" title="Sync Clipboard Buffer">
+<span class="material-symbols-outlined text-[13px]" data-icon="content_paste">content_paste</span>
+</button>
+<button class="px-2 py-1 rounded bg-surface-container-high/70 border border-error/30 text-error hover:bg-error/10 text-body-sm transition-colors" title="Disconnect Session">
+<span class="material-symbols-outlined text-[13px]" data-icon="link_off">link_off</span>
+</button>
+</div>
+</div>
+<!-- Card 3: iPad Pro M4 -->
+<div class="rounded bg-surface-container-low border border-outline-variant/30 p-space-md hover:border-outline-variant/60 transition-colors">
+<div class="flex items-start justify-between">
+<div class="flex items-center gap-1.5">
+<span class="px-1.5 py-0.5 rounded bg-surface-container text-secondary font-micro-badge text-micro-badge uppercase tracking-wider border border-outline-variant/30">CREATIVE TABLET</span>
+<span class="flex items-center gap-1 text-on-surface-variant font-telemetry-sm text-telemetry-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+                Mesh Online · Tandem OLED
+              </span>
+</div>
+<div class="font-telemetry-sm text-telemetry-sm text-on-surface-variant">
+              2.1ms Touch Latency
+            </div>
+</div>
+<div class="mt-2">
+<div class="flex items-center justify-between">
+<h4 class="text-headline-sm font-headline-sm text-on-surface font-semibold">iPad Pro M4</h4>
+<span class="material-symbols-outlined text-on-surface-variant text-[16px]" data-icon="tablet_mac">tablet_mac</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant/80 mt-0.5">Apple Pencil Pro Hover Ready · Extended Color P3</p>
+</div>
+<div class="flex items-center gap-1.5 mt-3 pt-2 border-t border-outline-variant/20">
+<button class="flex-1 flex items-center justify-center gap-1 py-1 rounded bg-surface-container-high/70 border border-outline-variant/40 text-on-surface hover:border-secondary/40 hover:text-secondary text-body-sm font-normal transition-colors">
+<span class="material-symbols-outlined text-[13px]" data-icon="brush">brush</span>
+<span>Route Canvas</span>
+</button>
+<button class="px-2.5 py-1 rounded bg-surface-container-high/70 border border-outline-variant/40 text-on-surface-variant hover:text-on-surface text-body-sm transition-colors">
+              Sidecar P2P
+            </button>
+</div>
+</div>
+</div>
+<!-- Dock Footer Telemetry Links from SideNavBar JSON -->
+<div class="p-space-md border-t border-outline-variant/30 bg-surface-container-lowest flex items-center justify-between font-telemetry-sm text-telemetry-sm">
+<div class="flex items-center gap-1.5 text-on-surface-variant hover:text-primary cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-[14px]" data-icon="network_check">network_check</span>
+<span>Latency Probe</span>
+</div>
+<div class="flex items-center gap-1.5 text-on-surface-variant hover:text-secondary cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-[14px]" data-icon="shield_with_heart">shield_with_heart</span>
+<span>Conductor Console</span>
+</div>
+</div>
+</aside>
+<!-- ======================================================================= -->
+<!-- 3. MAIN STAGE CANVAS (Center Interactive Graph & Telemetry Waterfall)     -->
+<!-- ======================================================================= -->
+<main class="flex-1 flex flex-col h-full overflow-hidden bg-surface-dim relative">
+<!-- TOP BAR OF STAGE: Topology Controls & Matrix Heatmap Switcher -->
+<div class="h-10 px-margin bg-surface-container-lowest/90 border-b border-outline-variant/30 flex items-center justify-between shrink-0 font-telemetry-sm text-telemetry-sm">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-1.5 text-on-surface font-headline-sm text-headline-sm">
+<span class="material-symbols-outlined text-primary text-[16px]" data-icon="grain">grain</span>
+<span>SYNCHRONIC TOPOLOGY MAP</span>
+</div>
+<span class="text-on-surface-variant/40">/</span>
+<span class="text-secondary font-medium tracking-wide">ZERO-OCCLUSION MESH CLUSTER</span>
+<span class="px-1.5 py-0.2 rounded bg-surface-container-high text-tertiary font-micro-badge text-[9px] border border-tertiary/20">QUAD-CHANNEL SYNC</span>
+</div>
+<div class="flex items-center gap-space-sm">
+<button class="px-2 py-1 rounded bg-surface-container-low border border-outline-variant/40 text-on-surface hover:text-primary transition-colors flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]" data-icon="fullscreen">fullscreen</span>
+<span>Full Stage View (F)</span>
+</button>
+<button class="px-2 py-1 rounded bg-surface-container-low border border-outline-variant/40 text-on-surface hover:text-primary transition-colors flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]" data-icon="volume_off">volume_off</span>
+<span>Decouple Audio</span>
+</button>
+<button class="px-2 py-1 rounded bg-surface-container-low border border-secondary/40 text-secondary hover:bg-secondary/10 transition-colors flex items-center gap-1 font-medium">
+<span class="material-symbols-outlined text-[13px]" data-icon="radar">radar</span>
+<span>Latency Heatmap</span>
+</button>
+</div>
+</div>
+<!-- INTERACTIVE STAGE & GRAPH CANVAS -->
+<div class="flex-1 relative overflow-hidden mesh-stage-grid flex items-center justify-center p-margin">
+<!-- Ambient Atmospheric Optical Glows -->
+<div class="absolute w-[500px] h-[500px] rounded-full bg-primary/5 blur-[120px] pointer-events-none -top-20 -left-20"></div>
+<div class="absolute w-[450px] h-[450px] rounded-full bg-secondary/5 blur-[100px] pointer-events-none -bottom-10 right-20"></div>
+<!-- SVG Real-Time Connection Beams Overlay -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none z-0" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<lineargradient id="beamCyan" x1="0%" x2="100%" y1="0%" y2="0%">
+<stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8"></stop>
+<stop offset="100%" stop-color="#8ed5ff" stop-opacity="0.2"></stop>
+</lineargradient>
+<lineargradient id="beamGold" x1="0%" x2="100%" y1="0%" y2="100%">
+<stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8"></stop>
+<stop offset="100%" stop-color="#fabc4d" stop-opacity="0.4"></stop>
+</lineargradient>
+</defs>
+<!-- Host (Center-Left) -> RTX 4090 (Center-Right) Beam -->
+<line class="beam-flow-cyan" stroke="url(#beamCyan)" stroke-width="2.5" x1="32%" x2="68%" y1="46%" y2="35%"></line>
+<!-- Host (Center-Left) -> Pixel 9 Pro Fold (Bottom-Center) Beam -->
+<path class="beam-flow-gold" d="M 32% 46% Q 42% 70% 54% 75%" fill="none" stroke="url(#beamGold)" stroke-width="1.8"></path>
+</svg>
+<!-- STAGE NODES GRAPH (Interactive Elements) -->
+<div class="relative w-full h-full max-w-6xl max-h-[500px] flex items-center justify-between px-12 z-10">
+<!-- NODE 1: HOST ORIGIN (Mac Studio M3 Ultra) -->
+<div class="relative group cursor-pointer" style="margin-left: 2%;">
+<!-- Pulsing Origin Aura -->
+<div class="absolute -inset-1 rounded-xl bg-primary/20 blur-md group-hover:bg-primary/30 transition-all"></div>
+<div class="relative w-72 rounded bg-surface-container border border-primary/60 p-space-md shadow-2xl backdrop-blur-md">
+<div class="flex items-center justify-between pb-1 border-b border-outline-variant/30">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-primary animate-ping"></span>
+<span class="text-micro-badge font-micro-badge text-primary uppercase tracking-wider font-semibold">COCKPIT HUB · ORIGIN</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-tertiary">0.0ms (HOST)</span>
+</div>
+<div class="mt-2 flex items-center gap-3">
+<div class="w-10 h-10 rounded bg-primary/10 border border-primary/40 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined text-[24px]" data-icon="desktop_mac">desktop_mac</span>
+</div>
+<div>
+<h4 class="text-headline-sm font-headline-sm text-on-surface font-semibold">Mac Studio M3 Ultra</h4>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant">Conductor Arbitrator</p>
+</div>
+</div>
+<div class="mt-3 pt-2 border-t border-outline-variant/20 flex items-center justify-between font-telemetry-sm text-telemetry-sm">
+<span class="text-on-surface-variant">Active Pipes: <strong class="text-on-surface font-normal">3 Duplex</strong></span>
+<span class="text-tertiary">Direct NVLink Emulation</span>
+</div>
+</div>
+</div>
+<!-- NODE 2: FOCUSED WORKSTATION (RTX 4090) -->
+<div class="relative group cursor-pointer" style="margin-right: 5%; margin-top: -6%;">
+<div class="absolute -inset-1 rounded-xl bg-primary/25 blur-lg group-hover:bg-primary/40 transition-all"></div>
+<div class="relative w-84 rounded bg-surface-container border-2 border-primary p-space-md shadow-2xl backdrop-blur-md">
+<div class="flex items-center justify-between pb-1 border-b border-primary/30">
+<div class="flex items-center gap-1.5">
+<span class="px-1.5 py-0.2 rounded bg-primary text-on-primary-fixed text-micro-badge font-micro-badge font-semibold">PRIMARY TARGET</span>
+<span class="text-micro-badge font-micro-badge text-tertiary">LAN DIRECT FIBER</span>
+</div>
+<span class="font-telemetry-sm text-telemetry-sm text-primary font-bold">1.8ms RTT</span>
+</div>
+<div class="mt-2.5 flex items-center gap-3">
+<div class="w-11 h-11 rounded bg-primary/15 border border-primary/60 flex items-center justify-center text-primary shadow-[0_0_12px_rgba(56,189,248,0.3)]">
+<span class="material-symbols-outlined text-[26px]" data-icon="memory">memory</span>
+</div>
+<div>
+<div class="flex items-center gap-1.5">
+<h4 class="text-headline-md font-headline-md text-on-surface font-bold">Gaming Rig RTX 4090</h4>
+<span class="w-2 h-2 rounded-full bg-tertiary shadow-[0_0_8px_#56e5a9]"></span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-primary font-medium mt-0.5">4K @ 120 FPS · HEVC 4:4:4 · QP: 18</p>
+</div>
+</div>
+<!-- Stream Real-Time Metrics -->
+<div class="grid grid-cols-3 gap-1.5 mt-3 pt-2 border-t border-outline-variant/30 font-telemetry-sm text-telemetry-sm text-center">
+<div class="p-1 rounded bg-surface-container-lowest/80 border border-outline-variant/20">
+<div class="text-on-surface-variant text-[9px] uppercase">Bandwidth</div>
+<div class="text-primary font-semibold">48.2 Mbps</div>
+</div>
+<div class="p-1 rounded bg-surface-container-lowest/80 border border-outline-variant/20">
+<div class="text-on-surface-variant text-[9px] uppercase">Decode</div>
+<div class="text-tertiary font-semibold">1.2ms</div>
+</div>
+<div class="p-1 rounded bg-surface-container-lowest/80 border border-outline-variant/20">
+<div class="text-on-surface-variant text-[9px] uppercase">Loss Rate</div>
+<div class="text-tertiary font-semibold">0.00%</div>
+</div>
+</div>
+</div>
+</div>
+<!-- NODE 3: PERIPHERAL MOBILE / STYLUS NODE (Pixel 9 Pro Fold) -->
+<div class="absolute bottom-4 left-[46%] -translate-x-1/2 group cursor-pointer">
+<div class="w-68 rounded bg-surface-container border border-secondary/50 p-space-md shadow-xl backdrop-blur-md">
+<div class="flex items-center justify-between pb-1 border-b border-outline-variant/20">
+<span class="text-micro-badge font-micro-badge text-secondary uppercase tracking-wider font-medium">INPUT STYLUS LOOP</span>
+<span class="text-micro-badge font-micro-badge text-on-surface-variant">2.4ms P2P</span>
+</div>
+<div class="mt-1.5 flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary text-[20px]" data-icon="stylus">stylus</span>
+<div>
+<h5 class="text-headline-sm font-headline-sm text-on-surface font-medium">Pixel 9 Pro Fold</h5>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant">120Hz Sub-pixel Digitizer Sync</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- QUICK MESH PAIRING & INVITE STATION (Floating HUD Card) -->
+<div class="absolute top-4 right-4 w-76 rounded bg-surface-container-lowest/90 border border-outline-variant/40 p-space-md shadow-2xl backdrop-blur-xl z-20">
+<div class="flex items-center justify-between pb-1.5 border-b border-outline-variant/20">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-primary text-[15px]" data-icon="qr_code_2">qr_code_2</span>
+<span class="text-micro-badge font-micro-badge text-on-surface font-semibold uppercase tracking-wider">Fast Mesh Onboarding</span>
+</div>
+<span class="text-micro-badge font-micro-badge text-secondary font-medium">Expires in 14:32</span>
+</div>
+<div class="flex items-center gap-3 mt-2.5">
+<!-- Stylized SVG Matrix QR Mockup -->
+<div class="w-16 h-16 p-1 rounded bg-white flex items-center justify-center shrink-0 shadow-inner">
+<svg class="w-full h-full text-black" fill="currentColor" viewbox="0 0 24 24">
+<path d="M2 2h8v8H2V2zm2 2v4h4V4H4zm10-2h8v8h-8V2zm2 2v4h4V4h-4zM2 14h8v8H2v-8zm2 2v4h4v-4H4zm14 0h4v4h-4v-4zm-4 4h2v2h-2v-2zm0-4h2v2h-2v-2zm4 4v2h2v-2h-2zm-6-2h2v2h-2v-2zm8-6h2v2h-2v-2zm-2 2h2v2h-2v-2z"></path>
+</svg>
+</div>
+<!-- Code & One-Click Copy -->
+<div class="flex-1">
+<div class="text-telemetry-sm font-telemetry-sm text-on-surface-variant">Session Invite Key</div>
+<div class="flex items-center justify-between mt-0.5 px-2 py-1 rounded bg-surface-container border border-primary/30">
+<span class="font-telemetry-lg text-telemetry-lg text-primary font-bold tracking-wider">WVL-882-901</span>
+<button class="text-on-surface-variant hover:text-primary transition-colors" title="Copy Key to Clipboard">
+<span class="material-symbols-outlined text-[14px]" data-icon="content_copy">content_copy</span>
+</button>
+</div>
+</div>
+</div>
+<div class="mt-2.5 pt-2 border-t border-outline-variant/20 text-micro-badge font-micro-badge text-on-surface-variant/80 flex items-center gap-1">
+<span class="material-symbols-outlined text-tertiary text-[12px]" data-icon="lock">lock</span>
+<span>Noise Framework + WireGuard P2P Cryptokey</span>
+</div>
+</div>
+</div>
+<!-- ===================================================================== -->
+<!-- 5-LANE MULTIPLEXED NETWORK WATERFALL COCKPIT (Bottom Telemetry Rack)  -->
+<!-- ===================================================================== -->
+<section class="h-44 bg-surface-container-lowest border-t border-outline-variant/30 flex flex-col shrink-0 select-none z-20">
+<!-- Rack Header -->
+<div class="h-7 px-margin bg-surface-container-low/70 border-b border-outline-variant/20 flex items-center justify-between font-telemetry-sm text-telemetry-sm">
+<div class="flex items-center gap-2 text-on-surface">
+<span class="material-symbols-outlined text-primary text-[14px]" data-icon="analytics">analytics</span>
+<span class="font-semibold tracking-wide">MULTIPLEXED TELEMETRY COCKPIT</span>
+<span class="text-on-surface-variant">(120Hz REALTIME PROBE · 5 PARALLEL DMA CHANNELS)</span>
+</div>
+<div class="flex items-center gap-3 text-micro-badge font-micro-badge text-on-surface-variant">
+<span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-primary"></span> 120 FPS SYNCHRONIZED</span>
+<span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span> JITTER &lt;0.05ms</span>
+</div>
+</div>
+<!-- 5 Telemetry Waterfall Lanes Grid -->
+<div class="flex-1 grid grid-cols-5 divide-x divide-outline-variant/20 p-margin gap-0 overflow-x-auto">
+<!-- LANE 1: VIDEO PIPELINE -->
+<div class="px-2.5 flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between">
+<span class="text-body-sm font-semibold text-primary flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]" data-icon="videocam">videocam</span>
+                  Video Pipeline
+                </span>
+<span class="text-micro-badge font-micro-badge px-1 bg-primary/10 text-primary border border-primary/30 rounded">LANE 0</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant mt-1 leading-tight">
+                HEVC Main10 4:4:4 · 48.2 Mbps
+              </p>
+<div class="text-micro-badge font-micro-badge text-tertiary mt-0.5">
+                1.2ms decode · 0 frame drops · 120 FPS
+              </div>
+</div>
+<!-- Mini Sparkline / Gauge Bar -->
+<div class="mt-2 space-y-1">
+<div class="flex justify-between text-micro-badge font-micro-badge text-on-surface-variant">
+<span>Bandwidth Saturate</span>
+<span class="text-primary">82%</span>
+</div>
+<div class="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 82%"></div>
+</div>
+</div>
+</div>
+<!-- LANE 2: ACOUSTIC AUDIO -->
+<div class="px-2.5 flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between">
+<span class="text-body-sm font-semibold text-tertiary flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]" data-icon="volume_up">volume_up</span>
+                  Acoustic Audio
+                </span>
+<span class="text-micro-badge font-micro-badge px-1 bg-tertiary/10 text-tertiary border border-tertiary/30 rounded">LANE 1</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant mt-1 leading-tight">
+                Opus 48kHz 24-bit uncompressed
+              </p>
+<div class="text-micro-badge font-micro-badge text-tertiary mt-0.5">
+                128 kbps · 0.1ms jitter buffer · Phase Sync
+              </div>
+</div>
+<div class="mt-2 space-y-1">
+<div class="flex justify-between text-micro-badge font-micro-badge text-on-surface-variant">
+<span>Buffer Stability</span>
+<span class="text-tertiary">99.8%</span>
+</div>
+<div class="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-tertiary rounded-full" style="width: 98%"></div>
+</div>
+</div>
+</div>
+<!-- LANE 3: HUMAN INPUT CONTROL -->
+<div class="px-2.5 flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between">
+<span class="text-body-sm font-semibold text-secondary flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]" data-icon="mouse">mouse</span>
+                  Human Input Control
+                </span>
+<span class="text-micro-badge font-micro-badge px-1 bg-secondary/10 text-secondary border border-secondary/30 rounded">LANE 2</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant mt-1 leading-tight">
+                Zero-Occlusion Absolute Pointer Hook
+              </p>
+<div class="text-micro-badge font-micro-badge text-secondary mt-0.5">
+                0.4ms polling · Sub-pixel smoothing
+              </div>
+</div>
+<div class="mt-2 space-y-1">
+<div class="flex justify-between text-micro-badge font-micro-badge text-on-surface-variant">
+<span>Polling Hook</span>
+<span class="text-secondary">1000 Hz</span>
+</div>
+<div class="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-secondary rounded-full" style="width: 100%"></div>
+</div>
+</div>
+</div>
+<!-- LANE 4: VIRTUAL STORAGE / NVME -->
+<div class="px-2.5 flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between">
+<span class="text-body-sm font-semibold text-on-surface flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px] text-primary" data-icon="hard_drive">hard_drive</span>
+                  Storage / NVMe
+                </span>
+<span class="text-micro-badge font-micro-badge px-1 bg-surface-container-high text-on-surface-variant border border-outline-variant/30 rounded">LANE 3</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant mt-1 leading-tight">
+                Multipath Direct DMA Pipe
+              </p>
+<div class="text-micro-badge font-micro-badge text-primary mt-0.5">
+                125.4 MB/s burst · 14.2 GB cached
+              </div>
+</div>
+<div class="mt-2 space-y-1">
+<div class="flex justify-between text-micro-badge font-micro-badge text-on-surface-variant">
+<span>DMA Lane Load</span>
+<span class="text-primary">44%</span>
+</div>
+<div class="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-gradient-to-r from-surface-variant to-primary rounded-full" style="width: 44%"></div>
+</div>
+</div>
+</div>
+<!-- LANE 5: NODE DISCOVERY & MESH HEALTH -->
+<div class="px-2.5 flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between">
+<span class="text-body-sm font-semibold text-tertiary flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px]" data-icon="lan">lan</span>
+                  Mesh Integrity
+                </span>
+<span class="text-micro-badge font-micro-badge px-1 bg-tertiary/10 text-tertiary border border-tertiary/30 rounded">LANE 4</span>
+</div>
+<p class="text-telemetry-sm font-telemetry-sm text-on-surface-variant mt-1 leading-tight">
+                ICE STUN/TURN Direct P2P NAT Punch
+              </p>
+<div class="text-micro-badge font-micro-badge text-tertiary mt-0.5">
+                100% Signal Integrity · 0 Pkts Lost
+              </div>
+</div>
+<div class="mt-2 space-y-1">
+<div class="flex justify-between text-micro-badge font-micro-badge text-on-surface-variant">
+<span>Swarm Consensus</span>
+<span class="text-tertiary">3 / 3 OK</span>
+</div>
+<div class="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-tertiary rounded-full" style="width: 100%"></div>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+</div>
+</body></html>

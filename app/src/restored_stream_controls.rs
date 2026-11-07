@@ -1,7 +1,45 @@
 //! Device-bound controls and file contexts. These reuse the existing session and
 //! transfer owners; a window is only a presentation of the retained work.
 use super::*;
-use crate::design_system::color_accent_rose;
+use crate::design_system::{color_accent_amber, color_accent_rose};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolbarDock {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl ToolbarDock {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Left => Self::Center,
+            Self::Center => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Left => "Left",
+            Self::Center => "Center",
+            Self::Right => "Right",
+        }
+    }
+
+    pub fn contains_x(self, cursor_x: f32, viewport_width: f32) -> bool {
+        if !cursor_x.is_finite() || !viewport_width.is_finite() || viewport_width <= 0.0 {
+            return true;
+        }
+        let ratio = (cursor_x / viewport_width).clamp(0.0, 1.0);
+        match self {
+            Self::Left => ratio <= 0.38,
+            Self::Center => (0.28..=0.72).contains(&ratio),
+            Self::Right => ratio >= 0.62,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum StreamPanel {
@@ -398,6 +436,48 @@ impl RestoredDashboard {
                         cx.refresh_windows();
                     })),
             );
+        let dock_label = self.toolbar_dock.label();
+        row = row.child(
+            command_button("island_dock_cycle", ActionVariantKind::Neutral, cx)
+                .h(px(28.))
+                .px_1p5()
+                .text_size(px(10.))
+                .tooltip(
+                    tooltip(format!(
+                        "Dock position: {dock_label} (click to move island off remote tabs / mobile status bar)"
+                    ))
+                    .build(),
+                )
+                .child(match self.toolbar_dock {
+                    ToolbarDock::Left => "⇤",
+                    ToolbarDock::Center => "⇔",
+                    ToolbarDock::Right => "⇥",
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toolbar_dock = this.toolbar_dock.next();
+                    this.last_toolbar_activity = Instant::now();
+                    cx.notify();
+                })),
+        );
+        row = row.child(
+            command_button("island_collapse_rail", ActionVariantKind::Neutral, cx)
+                .size(px(28.))
+                .p_0()
+                .text_size(px(11.))
+                .tooltip(
+                    tooltip("Collapse to zero-occlusion micro-rail (prevents accidental hover pop-up over top tabs)")
+                        .build(),
+                )
+                .child("⌃")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.toolbar_collapsed_rail = true;
+                    this.toolbar_revealed = false;
+                    this.toolbar_hovered = false;
+                    this.drawer_open = false;
+                    this.show_apps_menu = false;
+                    cx.notify();
+                })),
+        );
         let cua_mode = snapshot.computer_use_status.mode;
         let cua_label = snapshot
             .computer_use_status
@@ -418,12 +498,16 @@ impl RestoredDashboard {
         div()
             .id("floating_auto_hide_toolbar_container")
             .absolute()
-            .top(px(12.))
+            .top(px(10.))
             .left_0()
             .right_0()
             .flex()
             .flex_col()
-            .items_center()
+            .map(|container| match self.toolbar_dock {
+                ToolbarDock::Left => container.items_start().pl_3(),
+                ToolbarDock::Center => container.items_center(),
+                ToolbarDock::Right => container.items_end().pr_3(),
+            })
             .gap_2()
             .child(row)
             .when_some(cua_mode, |tree, mode| {
@@ -483,6 +567,48 @@ impl RestoredDashboard {
                     cx,
                 ))
             })
+    }
+
+    pub(super) fn stream_micro_rail(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let rail_color = if !self.input_locked && self.capture_supports_input {
+            Hsla::from(color_accent_amber())
+        } else {
+            Hsla::from(color_accent_cyan())
+        };
+        div()
+            .id("floating_toolbar_micro_rail")
+            .occlude()
+            .absolute()
+            .top(px(2.))
+            .left_0()
+            .right_0()
+            .flex()
+            .map(|container| match self.toolbar_dock {
+                ToolbarDock::Left => container.justify_start().pl_6(),
+                ToolbarDock::Center => container.justify_center(),
+                ToolbarDock::Right => container.justify_end().pr_6(),
+            })
+            .child(
+                div()
+                    .id("floating_toolbar_micro_rail_pill")
+                    .w(px(88.))
+                    .h(px(6.))
+                    .rounded_full()
+                    .bg(color_glass_card())
+                    .border_1()
+                    .border_color(rail_color)
+                    .tooltip(
+                        tooltip("Click to expand Weavelo Control Island · Ctrl+Alt+Esc")
+                            .build(),
+                    )
+                    .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toolbar_collapsed_rail = false;
+                        this.toolbar_revealed = true;
+                        this.last_toolbar_activity = Instant::now();
+                        cx.notify();
+                    })),
+            )
     }
 
     pub(super) fn stream_controls_panel(
