@@ -46,6 +46,11 @@ fn compositor_fit_bounds(width: i32, height: i32) -> Option<Size<Pixels>> {
     (width > 0 && height > 0).then(|| size(px(width as f32), px(height as f32)))
 }
 
+fn surface_window_geometry(bounds: Bounds<Pixels>, inset: Pixels, tiling: Tiling) -> Bounds<i32> {
+    inset_by_tiling(bounds.map_origin(|_| px(0.)), inset, tiling)
+        .map(|v| v.0 as i32).map_size(|v| v.max(1))
+}
+
 #[cfg(test)]
 mod fit_bounds_tests {
     use super::*;
@@ -54,6 +59,14 @@ mod fit_bounds_tests {
         assert_eq!(compositor_fit_bounds(800, 600), Some(size(px(800.), px(600.))));
         assert_eq!(compositor_fit_bounds(0, 600), None);
         assert_eq!(compositor_fit_bounds(800, 0), None);
+    }
+    #[test]
+    fn resize_geometry_uses_local_logical_bounds() {
+        let geometry = surface_window_geometry(
+            Bounds::new(crate::point(px(80.), px(60.)), size(px(497.), px(1131.))),
+            px(0.), Tiling::default(),
+        );
+        assert_eq!(geometry, Bounds::new(crate::point(0, 0), size(497, 1131)));
     }
 }
 
@@ -582,13 +595,7 @@ impl WaylandWindowStatePtr {
             let mut state = self.state.borrow_mut();
             state.surface_state.ack_configure(serial);
 
-            let window_geometry = inset_by_tiling(
-                state.bounds.map_origin(|_| px(0.0)),
-                state.inset(),
-                state.tiling,
-            )
-            .map(|v| v.0 as i32)
-            .map_size(|v| if v <= 0 { 1 } else { v });
+            let window_geometry = surface_window_geometry(state.bounds, state.inset(), state.tiling);
 
             state.surface_state.set_geometry(
                 window_geometry.origin.x,
@@ -1071,13 +1078,18 @@ impl PlatformWindow for WaylandWindow {
     fn resize(&mut self, size: Size<Pixels>) {
         let state = self.borrow();
         let state_ptr = self.0.clone();
-        let dp_size = size.to_device_pixels(self.scale_factor());
-
+        // xdg window geometry is surface-local and expressed in logical pixels,
+        // just like the configure path. The renderer alone uses device pixels.
+        // A global origin or scaled extent clips the client surface after a
+        // programmatic resize, particularly on fractional-scale displays.
+        let geometry = surface_window_geometry(
+            Bounds::new(Point::default(), size), state.inset(), state.tiling,
+        );
         state.surface_state.set_geometry(
-            state.bounds.origin.x.0 as i32,
-            state.bounds.origin.y.0 as i32,
-            dp_size.width.0,
-            dp_size.height.0,
+            geometry.origin.x,
+            geometry.origin.y,
+            geometry.size.width,
+            geometry.size.height,
         );
 
         state
