@@ -120,4 +120,29 @@ class WorkspaceSessionOwnershipTest {
         assertFalse(state.retireEndedIncoming(filesBusy = false))
         assertEquals(incoming, state.visibleRequest())
     }
+    @Test fun manualAddressOpensOnlyTheAuthenticatedMainDisplayOnce() {
+        val intent = WorkspaceInitialSource()
+        val manual = WorkspaceSessionRequest("192.0.2.10:5001", "", "manual", openMainDisplay = true)
+        intent.bind(manual, sameSession = false)
+        assertFalse(intent.takeMainDisplay("manual", available = false))
+        assertFalse(intent.takeMainDisplay("different", available = true))
+        assertTrue(intent.takeMainDisplay("manual", available = true))
+        intent.bind(manual, sameSession = true)
+        assertFalse(intent.takeMainDisplay("manual", available = true))
+    }
+
+    @Test fun cancellingManualStartupCannotSelectAfterDisconnectOrReplacement() {
+        val intent = WorkspaceInitialSource()
+        val manual = WorkspaceSessionRequest("192.0.2.10:5001", "", "manual", openMainDisplay = true)
+        intent.bind(manual, sameSession = false)
+        intent.cancel("manual")
+        assertFalse(intent.takeMainDisplay("manual", available = true))
+        val ordinary = WorkspaceSessionRequest("192.0.2.11:5001", "", "ordinary")
+        intent.bind(ordinary, sameSession = false)
+        assertFalse(intent.takeMainDisplay("manual", available = true))
+        assertFalse(intent.takeMainDisplay("ordinary", available = true))
+        intent.bind(manual.copy(incomingId = "offer"), sameSession = false)
+        assertFalse(intent.takeMainDisplay("manual", available = true))
+    }
+
 }

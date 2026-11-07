@@ -34,6 +34,7 @@ object WorkspaceClient {
     private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val ownership = WorkspaceSessionOwnership()
+    private val initialSource = WorkspaceInitialSource()
     private val pendingStarts = java.util.concurrent.atomic.AtomicInteger()
     val starting: Boolean get() = pendingStarts.get() > 0
     private val mutable = MutableStateFlow(WorkspaceState())
@@ -122,6 +123,7 @@ object WorkspaceClient {
                 if (!ownerScope.isActive || !canOpenRequest(request)) return@guarded
                 val previous = ownership.request()
                 val sameSession = previous == request && mutable.value.sessionKey == request.sessionKey
+                initialSource.bind(request, sameSession)
                 val reuse = ownership.attach(owner, request, active && !asleep && !forceReconnect)
                 if (!reuse) {
                     closeNative()
@@ -170,6 +172,7 @@ object WorkspaceClient {
     fun disconnectSession(sessionKey: String) = guarded {
         val incoming = ownership.request()?.takeIf { it.sessionKey == sessionKey }?.incomingId
         if (!ownership.disconnect(sessionKey)) return@guarded
+        initialSource.cancel(sessionKey)
         incoming?.let { DirectedDelivery.finish(it) }
         closeNative()
         applicationIcons.clear()
@@ -222,6 +225,7 @@ object WorkspaceClient {
         val current = mutable.value
         if (!active || !current.connected || current.sessionKey != sessionKey || current.connectionGeneration != generation) return@guarded
         if (source !in current.sources) { mutable.value = current.copy(status = "Source list changed; choose the window again"); return@guarded }
+        initialSource.cancel(sessionKey)
         addNative(source)
     }
     private fun addNative(source: WorkspaceSource) {
@@ -603,6 +607,10 @@ object WorkspaceClient {
                     directory.firstOrNull { it.source.toString() == pane.source.source.toString() }?.let { pane.copy(source = it) } ?: pane
                 })
                 rotated.forEach { (pane,source)->replaceCameraView(pane,source) }
+                val mainDisplay = visible.firstOrNull { it.source.toString() == "MainDisplay" }
+                if (initialSource.takeMainDisplay(mutable.value.sessionKey, mainDisplay != null)) {
+                    addNative(checkNotNull(mainDisplay))
+                }
                 if (incoming != null && !incomingInitialized && !incomingEnded) {
                     incomingInitialized = true
                     if (expected.isNullOrEmpty() || expected.size > minOf(4, mutable.value.maxSubscriptions) || initialVisible.size != expected.size) {

@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, deviceId: String = "",
     incoming: WorkspaceSessionRequest? = null, fileToSend: File? = null,
-    onFileQueued: () -> Unit = {}, onClose: () -> Unit) {
+    onFileQueued: () -> Unit = {}, openMainDisplay: Boolean = false, onClose: () -> Unit) {
     val context = LocalContext.current
     var sourcePicker by remember { mutableStateOf(false) }
     var actionsOpen by remember { mutableStateOf(false) }
@@ -132,7 +132,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }
         }) { Text("Save") } })
     DisposableEffect(endpoint, deviceId, sessionKey) {
-        SessionConnectionService.openWorkspace(context, incoming ?: WorkspaceSessionRequest(endpoint, deviceId, sessionKey))
+        SessionConnectionService.openWorkspace(context, incoming ?: WorkspaceSessionRequest(endpoint, deviceId, sessionKey, openMainDisplay = openMainDisplay))
         val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }

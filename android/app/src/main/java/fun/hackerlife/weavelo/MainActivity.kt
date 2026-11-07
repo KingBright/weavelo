@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
             var sendFileOnConnect by remember { mutableStateOf(false) }
             val restoredWorkspace = remember { WorkspaceClient.visibleSession() }
             var workspaceDeviceId by remember { mutableStateOf(restoredWorkspace?.deviceId ?: "") }
+            var openMainDisplay by remember { mutableStateOf(restoredWorkspace?.openMainDisplay ?: false) }
             var scanningQr by remember { mutableStateOf(false) }
             var manualInvitationRequested by remember { mutableStateOf(false) }
             var workspaceEndpoint by remember { mutableStateOf(restoredWorkspace?.endpoint) }
@@ -183,6 +184,7 @@ class MainActivity : ComponentActivity() {
                                 incomingSession = incoming
                                 sendFileOnConnect = false
                                 workspaceFilePath = null
+                                openMainDisplay = false
                                 workspaceDeviceId = incoming.deviceId
                                 workspaceEndpoint = incoming.endpoint
                             }
@@ -200,7 +202,8 @@ class MainActivity : ComponentActivity() {
                     val shownDevice = workspaceDeviceId
                     val shownIncoming = incomingSession
                     `fun`.hackerlife.weavelo.ui.WorkspaceScreen(shownEndpoint, sendFileOnConnect, shownDevice, shownIncoming,
-                        fileToSend = workspaceFilePath?.let(::File), onFileQueued = { workspaceFilePath = null }) {
+                        fileToSend = workspaceFilePath?.let(::File), onFileQueued = { workspaceFilePath = null },
+                        openMainDisplay = openMainDisplay) {
                         if (workspaceEndpoint == shownEndpoint && workspaceDeviceId == shownDevice &&
                             incomingSession?.sessionKey == shownIncoming?.sessionKey) {
                             workspaceEndpoint = null; incomingSession = null; workspaceFilePath = null
@@ -239,11 +242,12 @@ class MainActivity : ComponentActivity() {
                         onCancelConnect = {
                             scope.launch(Dispatchers.IO) { WeaveloClient.disconnect() }
                         },
-                        onConnectHost = { deviceId, endpoint ->
-                            scope.launch(Dispatchers.IO) { WeaveloClient.connect(deviceId, endpoint) }
+                        onConnectAddress = { endpoint ->
+                            incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null
+                            workspaceDeviceId = ""; openMainDisplay = true; workspaceEndpoint = endpoint
                         },
-                        onConnectWorkspace = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
-                        onSendFiles = { deviceId, endpoint -> incomingSession = null; sendFileOnConnect = true; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onConnectWorkspace = { deviceId, endpoint -> openMainDisplay = false; incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onSendFiles = { deviceId, endpoint -> openMainDisplay = false; incomingSession = null; sendFileOnConnect = true; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         outgoing = outgoing,
                         onSendCamera = { target -> cameraTarget = target; if (!camera.enabled) requestCamera() },
                         onSendScreen = { deviceId ->
@@ -301,6 +305,7 @@ class MainActivity : ComponentActivity() {
                         receivedFileTargetPath = null
                         incomingSession = null
                         sendFileOnConnect = false
+                        openMainDisplay = false
                         workspaceDeviceId = device.id
                         workspaceEndpoint = device.endpoint
                     }) { androidx.compose.material3.Text(device.name) } }

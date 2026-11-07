@@ -66,7 +66,7 @@ fun MobileConsoleScreen(
     sessionError: String = "",
     sessionState: SessionState = SessionState.DISCONNECTED,
     onCancelConnect: () -> Unit = {},
-    onConnectHost: (String, String) -> Unit,
+    onConnectAddress: (String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit = { _, _ -> },
     onSendFiles: (String, String) -> Unit = { _, _ -> },
     outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState = `fun`.hackerlife.weavelo.OutgoingScreenState(),
@@ -181,7 +181,7 @@ fun MobileConsoleScreen(
                         onManualEndpointChange = { manualEndpoint = it },
                         advancedConnection = advancedConnection,
                         onToggleAdvanced = { advancedConnection = !advancedConnection },
-                        onConnectHost = onConnectHost,
+                        onConnectAddress = onConnectAddress,
                         onConnectWorkspace = onConnectWorkspace,
                         onSendFiles = onSendFiles,
                         localStatus = when {
@@ -366,7 +366,7 @@ private fun DevicesTabContent(
     onManualEndpointChange: (String) -> Unit,
     advancedConnection: Boolean,
     onToggleAdvanced: () -> Unit,
-    onConnectHost: (String, String) -> Unit,
+    onConnectAddress: (String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit,
     onSendFiles: (String, String) -> Unit,
     localStatus: String,
@@ -476,7 +476,7 @@ private fun DevicesTabContent(
                             disabledContentColor = ColorTextSecondary
                         ),
                         enabled = nativeAvailable && manualEndpoint.isNotBlank() && sessionState != SessionState.CONNECTING,
-                        onClick = { onConnectHost(manualEndpoint.trim(), manualEndpoint.trim()) }
+                        onClick = { onConnectAddress(manualEndpoint.trim()) }
                     ) { Text("Connect to address") }
 
                     TextButton(

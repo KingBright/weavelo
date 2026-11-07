@@ -2,7 +2,7 @@ package `fun`.hackerlife.weavelo
 
 /** Process-local intent, not credentials or a promise to survive force-stop. */
 data class WorkspaceSessionRequest(val endpoint: String, val deviceId: String, val sessionKey: String,
-    val incomingId: String? = null)
+    val incomingId: String? = null, val openMainDisplay: Boolean = false)
 
 /** A stale Service teardown must never close a replacement owner's connection. */
 class WorkspaceSessionOwnership {
@@ -16,7 +16,7 @@ class WorkspaceSessionOwnership {
     @Synchronized fun attach(token: Any, request: WorkspaceSessionRequest, backendActive: Boolean): Boolean {
         val reuse = backendActive && desired?.endpoint == request.endpoint &&
             desired?.deviceId == request.deviceId && desired?.sessionKey == request.sessionKey &&
-            desired?.incomingId == request.incomingId
+            desired?.incomingId == request.incomingId && desired?.openMainDisplay == request.openMainDisplay
         if (desired != request) endedIncoming = null
         owner = token
         desired = request
@@ -47,6 +47,24 @@ class WorkspaceSessionOwnership {
         owner = null
         desired = null
         endedIncoming = null
+        return true
+    }
+}
+
+/** One initial display request belongs to the session, not to UI recompositions. */
+internal class WorkspaceInitialSource {
+    private var sessionKey: String? = null
+    private var pending = false
+    fun bind(request: WorkspaceSessionRequest, sameSession: Boolean) {
+        if (!sameSession) {
+            sessionKey = request.sessionKey
+            pending = request.openMainDisplay && request.incomingId == null
+        }
+    }
+    fun cancel(key: String) { if (sessionKey == key) pending = false }
+    fun takeMainDisplay(key: String, available: Boolean): Boolean {
+        if (sessionKey != key || !pending || !available) return false
+        pending = false
         return true
     }
 }
