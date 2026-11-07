@@ -174,6 +174,20 @@ impl PublisherInput {
             return;
         }
         if events.is_empty() { return; }
+        // The accessibility consumer waits for each native gesture callback.
+        // A mouse can produce samples faster than that callback, just like a
+        // touch device. Keep the latest adjacent absolute position instead of
+        // queueing a stale drag (and eventually revoking it on overflow).
+        // Never cross a button, relative motion, text or other ordered edge.
+        if matches!(events.as_slice(), [InputEvent::MouseMoveAbsolute { .. }])
+            && let Some(previous) = self.queued.back_mut()
+            && matches!(previous.events.as_slice(), [InputEvent::MouseMoveAbsolute { .. }])
+        {
+            previous.events = events;
+            previous.sequence = packet.sequence;
+            previous.created = previous.created.min(packet.created_host_ms);
+            return;
+        }
         // Movement is replaceable; contact edges and text are not. Merge only
         // the adjacent unsent move sample, keeping every other finger's latest
         // position and the oldest retained deadline. No OS receipt is invented
@@ -352,6 +366,49 @@ mod tests {
             payload: InputPayload::Event(InputEvent::MouseMoveAbsolute { x: 100, y: 200 }),
         }
     }
+    #[test]
+    fn mouse_burst_during_native_callback_preserves_drag_and_latest_position() {
+        let (mut input,addr,binding)=fixture();
+        let packet=|sequence,event|RealtimeInput{binding,sequence,created_host_ms:now_ms(),payload:InputPayload::Event(event)};
+        input.admit(addr,&packet(1,InputEvent::MouseDown(0)));
+        let (generation,token)=take(&mut input);
+        for sequence in 2..502 {
+            input.admit(addr,&packet(sequence,InputEvent::MouseMoveAbsolute{x:sequence as u16,y:200}));
+        }
+        input.admit(addr,&packet(502,InputEvent::MouseUp(0)));
+        assert!(input.execution_valid(generation,token),"mouse samples must not overflow and cancel the held drag");
+        assert_eq!(input.queued.len(),2);
+        assert!(input.take_handled().is_empty());
+        input.complete(generation,token,true);
+        input.take_handled();
+        let Dispatch::Events{generation,token,events,..}=input.poll().unwrap() else{panic!()};
+        assert!(matches!(events.as_slice(),[InputEvent::MouseMoveAbsolute{x:501,y:200}]));
+        input.complete(generation,token,true);
+        assert_eq!(input.take_handled()[0].sequence,501);
+        let Dispatch::Events{events,..}=input.poll().unwrap() else{panic!()};
+        assert!(matches!(events.as_slice(),[InputEvent::MouseUp(0)]));
+    }
+    #[test]
+    fn mouse_coalescing_preserves_ordered_barriers_and_oldest_deadline() {
+        let (mut input,addr,binding)=fixture();
+        input.admit(addr,&movement(binding,1));
+        let oldest=now_ms().saturating_sub(20);
+        input.queued.back_mut().unwrap().created=oldest;
+        input.admit(addr,&movement(binding,2));
+        assert_eq!(input.queued.len(),1);
+        assert_eq!(input.queued[0].created,oldest);
+        for (sequence,event) in [(3,InputEvent::MouseDown(0)),(5,InputEvent::MouseMove{dx:1,dy:2}),
+            (7,InputEvent::MouseUp(0))] {
+            input.admit(addr,&RealtimeInput{binding,sequence,created_host_ms:now_ms(),payload:InputPayload::Event(event)});
+            input.admit(addr,&movement(binding,sequence+1));
+        }
+        input.admit_text(addr,&text(binding));
+        input.admit(addr,&movement(binding,9));
+        assert_eq!(input.queued.len(),9);
+        input.queued.front_mut().unwrap().created=now_ms().saturating_sub(MAX_INPUT_AGE_MS+1);
+        assert!(matches!(input.poll(),Some(Dispatch::Reset{..})));
+        assert!(input.owner.is_none());
+    }
     fn take(input: &mut PublisherInput) -> (u64, u64) {
         let Some(Dispatch::Events {
             generation, token, ..
@@ -465,7 +522,9 @@ mod tests {
     fn overflow_and_permission_revocation_clear_queued_and_executing_input() {
         let (mut input, addr, binding) = fixture();
         for seq in 1..=MAX_PENDING as u64 + 1 {
-            input.admit(addr, &movement(binding, seq));
+            let mut packet = movement(binding, seq);
+            packet.payload = InputPayload::Event(InputEvent::MouseMove { dx: 1, dy: 0 });
+            input.admit(addr, &packet);
         }
         assert!(input.owner.is_none());
         assert!(input.queued.is_empty());
