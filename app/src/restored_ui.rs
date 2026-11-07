@@ -2680,7 +2680,13 @@ impl Render for RestoredDashboard {
                     }
                 },
             ))
-            .child(div().absolute().top_0().left_0().w_full().h_full().child(
+            // Keep remote edge gestures inside the client area, away from
+            // native window resize hit targets. Video and input share this rect.
+            .child(div().absolute()
+                .top(px(if is_fullscreen { 0. } else { 8. }))
+                .bottom(px(if is_fullscreen { 0. } else { 8. }))
+                .left(px(if is_fullscreen { 0. } else { 8. }))
+                .right(px(if is_fullscreen { 0. } else { 8. })).child(
                 full_canvas_stream_viewport(
                     &role,
                     self.current_frame.clone(),
@@ -5010,7 +5016,7 @@ fn telemetry_waterfall_overlay(
     if collapsed {
         div()
             .absolute()
-            .bottom(px(12.0))
+            .bottom(px(48.0))
             .right(px(16.0))
             .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
                 cx.stop_propagation();
@@ -5032,7 +5038,7 @@ fn telemetry_waterfall_overlay(
     } else {
         div()
             .absolute()
-            .bottom(px(12.0))
+            .bottom(px(48.0))
             .right(px(16.0))
             .w(px(244.0))
             .max_w(relative(0.95))
