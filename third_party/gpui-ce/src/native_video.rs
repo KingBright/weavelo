@@ -12,7 +12,7 @@ mod copy_windows;
 #[cfg(target_os = "windows")]
 pub use copy_windows::{D3dVideoCopyPool, D3dVideoCopyStats, ReadyD3dVideoFrame};
 
-pub use crate::video_color::{ChromaLocation, Matrix, Range, VideoColor, VideoFormat};
+pub use crate::video_color::{ChromaLocation, Matrix, Range, SdrPrimaries, VideoColor, VideoFormat};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Clockwise rotation from source pixels to the displayed rectangle.
 pub enum Rotation {

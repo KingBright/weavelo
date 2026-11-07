@@ -1,6 +1,6 @@
 //! Immutable Linux-native video metadata and producer-frame ownership. Public
 //! construction retains FDs, never pixel bytes. The renderer owns GPU retirement.
-use super::{VideoColor, VideoFormat, VideoGeometry, VideoSurfaceStats};
+use super::{SdrPrimaries, VideoColor, VideoFormat, VideoGeometry, VideoSurfaceStats};
 use std::{
     any::Any,
     fs::File,
@@ -70,6 +70,7 @@ pub(crate) struct Frame {
     pub key: AllocationKey,
     pub geometry: VideoGeometry,
     pub color: VideoColor,
+    pub primaries: SdrPrimaries,
     pub format: VideoFormat,
     pub stats: Arc<VideoSurfaceStats>,
     pub submitted: AtomicBool,
@@ -103,6 +104,7 @@ impl DmaVideoFrame {
         geometry: VideoGeometry,
         format: VideoFormat,
         color: VideoColor,
+        primaries: SdrPrimaries,
         render_node: (i64, i64),
         lease: Arc<dyn Any + Send + Sync>,
         stats: Arc<VideoSurfaceStats>,
@@ -133,6 +135,7 @@ impl DmaVideoFrame {
             key,
             geometry,
             color,
+            primaries,
             format,
             stats,
             submitted: AtomicBool::new(false),
@@ -179,6 +182,7 @@ impl DmaVideoFrame {
                 geometry,
                 self.0.format,
                 self.0.color,
+                self.0.primaries,
                 self.0.key.render_node,
                 self.0._lease.clone(),
                 Arc::new(VideoSurfaceStats::default()),

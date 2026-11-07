@@ -262,7 +262,7 @@ impl NativeVideo {
                 } else {
                     0.
                 },
-                0.,
+                if frame.0.primaries == crate::native_video::SdrPrimaries::Bt470Bg { 1. } else { 0. },
             ],
         };
         let mut encoder = pass.with(self.pipeline.as_ref().unwrap());

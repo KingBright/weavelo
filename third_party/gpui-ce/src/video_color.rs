@@ -1,5 +1,37 @@
 //! Shared GPU YUV interpretation; never reads image pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Declared SDR primaries supported by the Linux native compositor.
+pub enum SdrPrimaries {
+    /// BT.709/sRGB primaries, already in the compositor's signal RGB space.
+    Bt709,
+    /// H.273 primaries 5, with the BT.709-equivalent transfer 1 or 6.
+    Bt470Bg,
+}
+impl SdrPrimaries {
+    /// No inferred metadata, HDR reduction, or unsupported gamut substitution.
+    pub fn from_cicp(primaries: i32, transfer: i32) -> Option<Self> {
+        match (primaries, transfer) {
+            (1, 1 | 13) => Some(Self::Bt709),
+            (5, 1 | 6) => Some(Self::Bt470Bg),
+            _ => None,
+        }
+    }
+}
+#[cfg(test)]
+mod sdr_tests {
+    use super::SdrPrimaries;
+    #[test]
+    fn accepts_declared_android_sdr_without_guessing_hdr_or_unknown_color() {
+        assert_eq!(SdrPrimaries::from_cicp(5, 6), Some(SdrPrimaries::Bt470Bg));
+        assert_eq!(SdrPrimaries::from_cicp(1, 13), Some(SdrPrimaries::Bt709));
+        assert_eq!(SdrPrimaries::from_cicp(1, 1), Some(SdrPrimaries::Bt709));
+        for (primaries, transfer) in [(2, 2), (5, 2), (5, 16), (9, 16), (9, 18), (12, 13)] {
+            assert_eq!(SdrPrimaries::from_cicp(primaries, transfer), None);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// GPU plane representation accepted by the native-video adapters.
 pub enum VideoFormat {
     /// 8-bit luma with an interleaved 4:2:0 chroma plane.

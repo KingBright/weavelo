@@ -321,6 +321,7 @@ fn publish(state: &State, raw: *mut c_void) -> Result<DmaVideoFrame, E> {
                 range: Range::Limited,
                 chroma,
             },
+            SdrPrimaries::Bt709,
             render_node,
             lease,
             state.stats.clone(),

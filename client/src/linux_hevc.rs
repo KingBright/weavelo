@@ -170,11 +170,10 @@ impl LinuxHevcDecoder {
         };
         // No automatic HDR/gamut reduction or inferred color matrix. These are actual
         // decoded stream fields; a unsupported/missing description remains visible.
-        ensure!(
-            i.primaries == 1 && matches!(i.transfer, 1 | 13),
-            "native video requires declared SDR BT.709/sRGB; decoded primaries={}, transfer={}, matrix={}, range={}",
+        let primaries = SdrPrimaries::from_cicp(i.primaries, i.transfer).with_context(|| format!(
+            "native video requires supported declared SDR color; decoded primaries={}, transfer={}, matrix={}, range={}",
             i.primaries, i.transfer, i.matrix, i.range
-        );
+        ))?;
         let matrix = match i.matrix {
             1 => Matrix::Bt709,
             5 | 6 => Matrix::Bt601,
@@ -245,6 +244,7 @@ impl LinuxHevcDecoder {
                     range,
                     chroma,
                 },
+                primaries,
                 self.node,
                 lease,
                 self.stats.clone(),
