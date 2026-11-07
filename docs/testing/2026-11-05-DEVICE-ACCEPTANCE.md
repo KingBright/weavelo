@@ -358,3 +358,28 @@ KDE图标变更通知、应用索引刷新及图标mtime刷新均未立即解决
 - 当前几何与实际绘制几何一致，source crop为完整720×1640。所有自建接收租约已停止，最终sharing/receiving均为0；自建ydotool进程按PID/命令行核对后停止，未更改系统鼠标加速度、无障碍授权或其他安全设置。
 
 检查包括窗口适配策略8项、原生Linux编译及macOS编译检查、发布回归1052项通过/25项跳过。小范围HUD位置调整由最终Linux原生编译和151实拍再次覆盖。可复核汇总位于任务证据目录 `.rust-storage/validation-logs/weavelo-gui-20261102/linux151-acceptance-evidence.json`，发布记录为 `linux151-publication-verified.json`。本节覆盖用户指定的Linux→小米整屏问题；不把该结果扩展为所有DPI、X11、多显示器、音频或跨平台物理延迟矩阵全部通过。
+
+
+## Android104/105：Linux 鼠标手势可靠性 · 2026-11-07
+
+用户再次实测指出151中桌面翻页和哔哩哔哩右侧上滑调音量仍基本不可用，并要求扩展检查同一链路的其他触摸场景。此前少量成功不能作为整体可靠性的证明。本轮保持Linux151，直接修复Android共享接收队列。
+
+- `205d65c`：接收端过去只合并TouchFrame移动，不合并MouseMoveAbsolute。Android等待每段无障碍手势回调期间，鼠标事件可填满32项队列并触发撤销。新增回归先复现失败，再验证按下执行期间500次移动能够合并、保留最新位置及松开；文字、相对移动和按键边界不跨越合并，原始过期保护保留。
+- `29f07e4`：零位移滚动阶段标记过去可被转为Android静止触摸路径，形成误点击；现在经过原有身份与序列校验后过滤零位移标记，真实滚动仍派发。回归先失败再通过。Android105包含两项修复。
+- 输入队列13项测试通过；发布回归1052项通过、25项跳过。代码均已推送main。
+
+Redmi2409BRN2CC实机对照（Linux实际GPUI窗口、ydotool鼠标事件、Android103→104原签名升级）：
+
+- 哔哩哔哩同一路径连续六次上下拖动：103音乐音量序列7→8→7→8→7→8→7，每次只有1格；104为7→12→5→10→4→9→3，每次5–7格。第一次上滑中间采样10不视为独立试次。用Android实际STREAM_MUSIC数值验证，不以Linux输入计数代替效果。
+- 手机桌面相同约0.21秒拖动，103未翻页；104连续三次左右翻页均成功，手机截图确认1→2、2→1、1→2。
+- 临时手机浏览器测试页记录真实可信TouchEvent：快速横拖、慢速横拖、按住约1.2秒后拖动、持续拖动、静止长按、离开画面后松开、按住时停止会话，七条序列均有touchstart/touchend，无touchcancel，最终held=0；另有一次实际按钮点击。鼠标按住后竖向拖动使列表scrollY到125。该页面用于观察原生触摸，不注入合成DOM事件。
+
+原始对照与事件证据位于任务目录的gesture152-{old,new}-volume-poll.json、gesture152-new-home-summary.json、gesture152-redmi-web-events.json。上述有限样本证明具体缺陷及修复效果，不代表所有应用、所有手势或物理延迟矩阵全部通过。
+
+最终Android105已通过正式入口发布并安装到两部手机：公开APK与两机独立拉回的base.apk SHA-256均为`763dc76cebbdaa779dc785deeb4cb1de566ef1b1a6fa2882e2e3bdbe3597118a`，原签名与系统无障碍授权列表保持一致。105上的小米七类TouchEvent复测仍通过；列表按住拖动scrollY由0到386.5，三个实际滚轮事件后到2280，按钮点击数保持1、held=0。
+
+努比亚交叉验证额外发现Linux原生视频仅接受BT.709/sRGB色原色，拒绝该机实际解码元数据primaries=5、transfer=6、matrix=5、range=1，导致无可显示画面及安全输入绑定。`27204ee`在现有原生GPU路径中支持明确声明的BT.470 B/G SDR色原色：采用其已声明的BT.601矩阵和范围，在线性光中转换到BT.709色原色；没有CPU像素转换、重写编码元数据或接受未知/HDR信息。标准依据为[ITU-T H.273](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.273-202407-I%21%21PDF-E&lang=e&type=items)。原有BT.709路径保持原行为。
+
+Linux152正式包源为`27204ee153fe5ade22d0a5687e4ab3f0afdf46b8`，SHA-256为`32df09dd76dc2e7dd2c51d5c2658c365a008cf1f01d58dabfee151ab7f30c841`，已通过正式升级入口安装并发布，其他桌面平台148发布条目未改。实际原生窗口显示努比亚Chrome整屏；手机记录七类相同测试的可信touchstart/touchend，无残留触点，tap=1、held=0，采样数9/63/14/64/2/23/2。截图linux152-nubia-frame.png和手机gesture152-nubia105-web-events.json分别验证显示与触摸，未把解码/提交计数当作物理呈现延迟。升级后通过真实源选择器恢复了原MacStudio Display14查看窗口。
+
+尚未关闭的系统限制：努比亚在结束会话并退到后台后约30秒从发现列表消失。独立系统检查确认手机Awake、接电、屏幕超时为1小时；Weavelo PID29004仍有ProjectionService与RemoteControlService前台服务且cached=false，但`isFrozen=true`。系统“电池优化→后台运行”当前为“自动”，已打开“允许”选择框等待用户亲自选择，没有代替用户更改系统例外。持续后台重连须在用户授权后复测，不能记为通过。后续列表尝试受发现离线及测试指针定位失败影响，也未记为努比亚列表通过；小米列表与滚轮结果不受此限制。Linux原MacStudio Display14会话已恢复且重新解码、输入可用，所有本轮定向测试租约已停止。
