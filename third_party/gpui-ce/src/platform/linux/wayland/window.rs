@@ -1030,8 +1030,9 @@ impl rwh::HasDisplayHandle for WaylandWindow {
 
 impl PlatformWindow for WaylandWindow {
     fn fit_work_area(&self) -> Option<Bounds<Pixels>> {
-        let state = self.borrow();
-        state.fit_bounds.map(|size| Bounds::new(state.bounds.origin, size))
+        // configure_bounds is a recommended size, not the remaining space
+        // below this surface. Wayland does not expose its desktop position.
+        None
     }
 
     fn fit_bounds_revision(&self) -> u64 {

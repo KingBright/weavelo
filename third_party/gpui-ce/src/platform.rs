@@ -475,8 +475,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn window_bounds(&self) -> WindowBounds;
     fn content_size(&self) -> Size<Pixels>;
     fn resize(&mut self, size: Size<Pixels>);
-    // Platform usable area for window fitting. Wayland exposes only a size;
-    // its implementation anchors that size at the current window origin.
+    // Desktop-coordinate usable area for window fitting, only when the
+    // platform also knows the window's position in those coordinates.
     fn fit_work_area(&self) -> Option<Bounds<Pixels>> { None }
     fn fit_bounds_revision(&self) -> u64 { 0 }
     fn scale_factor(&self) -> f32;

@@ -8,6 +8,7 @@ pub(super) struct WindowFit {
     auto: bool,
     explicit: bool,
     last_size: [f32; 2],
+    allocated_size: [f32; 2],
     pending: Option<([f32; 2], Instant)>,
     fitted_source: Option<FitKey>,
     special: bool,
@@ -15,7 +16,7 @@ pub(super) struct WindowFit {
 
 impl WindowFit {
     pub(super) fn new(size: [f32; 2]) -> Self {
-        Self { auto: true, explicit: false, last_size: size, pending: None, fitted_source: None, special: false }
+        Self { auto: true, explicit: false, last_size: size, allocated_size: size, pending: None, fitted_source: None, special: false }
     }
 
     pub(super) fn observe(&mut self, size: [f32; 2], special: bool) {
@@ -27,6 +28,7 @@ impl WindowFit {
         } else if changed {
             if !self.pending.is_some_and(|(target, _)| near(size, target)) {
                 self.auto = false;
+                self.allocated_size = size;
             }
             self.pending = None;
         }
@@ -108,8 +110,15 @@ pub(super) fn fit(window: &mut gpui::Window, cx: &gpui::App, state: &mut WindowF
     let work = window.fit_work_area();
     #[cfg(not(target_os = "linux"))]
     let work = Some(display.visible_bounds());
-    let Some(work) = work else { state.unavailable(key); return; };
     let viewport = window.viewport_size();
+    // Without a desktop position, growing toward a screen-wide work-area
+    // bound can run offscreen. Fit inside the compositor-allocated viewport.
+    let Some(work) = work else {
+        if let Some(target) = state.target(key, state.allocated_size, scale, now) {
+            window.resize(gpui::size(gpui::px(target[0]), gpui::px(target[1])));
+        }
+        return;
+    };
     let bounds = window.bounds();
     let width = f32::from(work.size.width) - (f32::from(bounds.origin.x) - f32::from(work.origin.x)).max(0.);
     let height = f32::from(work.size.height) - (f32::from(bounds.origin.y) - f32::from(work.origin.y)).max(0.);
@@ -130,6 +139,21 @@ pub(super) fn observe(window: &gpui::Window, state: &mut WindowFit) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn positionless_fit_preserves_allocated_budget_across_rotation() {
+        let now = Instant::now();
+        let mut fit = WindowFit::new([1280., 800.]);
+        let budget = fit.allocated_size;
+        let portrait = attempt(&mut fit, [720, 1640], budget, 1.5, false, true, now).unwrap();
+        assert_eq!(portrait, [351., 800.]);
+        fit.observe(portrait, false);
+        let budget = fit.allocated_size;
+        let landscape = attempt(&mut fit, [1640, 720], budget, 1.5, false, true, now).unwrap();
+        assert_eq!(landscape, [1093., 480.]);
+        fit.observe(landscape, false);
+        let budget = fit.allocated_size;
+        assert_eq!(attempt(&mut fit, [720, 1640], budget, 1.5, false, true, now), Some(portrait));
+    }
     fn attempt(fit: &mut WindowFit, source: [u32;2], area: [f32;2], scale: f32, special: bool, eligible: bool, now: Instant) -> Option<[f32;2]> {
         let key = WindowFit::key(source, [1440.,900.], scale, 0);
         fit.needs_fit(key, special, eligible, now).then(|| fit.target(key, area, scale, now)).flatten()
