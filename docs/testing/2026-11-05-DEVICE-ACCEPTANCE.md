@@ -321,3 +321,15 @@ Android 101 同源 `7f0ae2e` 已正式构建、发布并安装至努比亚 NX741
 源代码阶段发布回归1052项通过、25跳过。原生窗口图标8项通过，窗口适配策略及Linux可用区域已有独立复核；这些检查不替代真实窗口显示。Android取消事件的时间戳与取消标志经复核，新增仪器测试尚未在设备运行。真实旋转、旧按住状态取消、四角输入、手动外框与恢复按钮仍待正式包验收；当前记录不宣称148/102已安装或发布。
 
 补充检查发现，Android“按地址连接”旧播放器没有绘制几何回报，会被新的输入保护拒绝。本轮另以Android103将该入口接入已有工作区播放器；地址不冒充发现设备ID，取得来源目录后只自动打开一次MainDisplay，取消或另选来源即撤销待执行选择。“Open workspace”仍保留普通浏览行为。24项相关单元测试与Kotlin编译通过，真实连接与输入仍待验证。
+
+## Desktop148 / Android103 正式更新与窗口旋转实测 · 2026-11-07
+
+桌面源 `2231a7f`、Android源 `4e73f82` 均已提交推送。四台电脑正式安装148，两台Mac保留各自原签名；三平台桌面包已发布并独立下载核对SHA，证据 `native148-nas-verified.json`。两部手机正式安装103，公开APK和两机独立拉回的base.apk均为 `8fd03921dd715214033556be761d9105855dce4588dc578f16dc2254ee7c6e24`，原无障碍启用列表保持一致，helper API5/version103。努比亚安装后的证据写入路径曾因测试脚本替换版本号而出错，安装本身及SHA检查已完成；修正证据路径后独立复核，没有重复安装。证据 `android103-{nubia,redmi}-installed-proof.json`、`android103-public-proof.json`；努比亚原件在Book，另汇总于 `native148-book-rotation-cleanup-evidence.txt`。
+
+- Studio148接收努比亚102独立测试应用，实际截图确认0°竖向、90°和270°横向呈现。竖向源1216×2688，横向2688×1216；接收内容区域随之从367×811调整至1568×709。已观察角落点击对应源坐标，但本轮没有形成所有角落、所有方向的完整自动断言矩阵。证据 `native148-rotation-{portrait,landscape}.png`、`native148-normal270.png`。
+- 保持指针按下后旋转，应用收到ACTION_CANCEL，按下计数8、普通释放7、取消1；保持Enter按下后旋转，收到带FLAG_CANCELED的释放，取消1、激活0，保留downTime且eventTime更新。随后正常Enter可激活。原始记录在Book的 `rotation148-held-{pointer,enter}.json`，汇总副本同上。不能把取消测试当作物理显示时延测量。
+- 手动修改接收外框后，后续旋转保持手动窗口尺寸；点击“Fit window”后恢复按来源比例自动适配。实际截图 `native148-manual-size90.png`、`native148-fit-restored.png`，恢复后绘制几何与当前几何一致。Android整屏窗口实际显示设备图标和设备标题，见 `native148-main-display-icon.png`。
+- Book148原生测试窗口从480×640改为1100×500，Studio148实际接收内容区域从579×811变为1568×758；捕获范围包含远端标题区域，因此不是仅按应用内容尺寸计算。截图 `fit148-desktop-{portrait,landscape}.png`及两份status记录确认实际呈现和几何更新。此项为macOS接收macOS应用，不代表Windows/Linux工作区边界及多DPI矩阵全部验收。
+- 升级103后，Studio148分别接收努比亚和红米整屏，2帧与5帧、零解码错误且UI提交。证据 `android103-studio148-first-frame.json`。尚未实测Android103手动地址入口的实际输入；VLC测试停留在引导与本地文件打开失败，未将其记为视频全屏验收。
+
+本轮自建接收会话全部停止，Studio最终无接收或发送；Book桌面夹具通过自己的退出命令关闭，努比亚测试APK按安装收据和SHA核对后卸载，合成测试视频按SHA核对后移除。源代码发布回归1052项通过、25项跳过；本节只补充实际完成的窗口、旋转取消和部署证据，既有音频、多指、完整跨平台输入与物理延迟矩阵仍未完成。
