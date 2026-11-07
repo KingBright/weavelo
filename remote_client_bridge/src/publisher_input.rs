@@ -174,6 +174,12 @@ impl PublisherInput {
             return;
         }
         if events.is_empty() { return; }
+        // Android implements wheel deltas as finite touch swipes. A phase-only
+        // marker has no displacement: dispatching its stationary path would
+        // synthesize a tap (also for managed application displays).
+        if matches!(events.as_slice(), [InputEvent::MouseScroll { delta_x: 0, delta_y: 0, .. }]) {
+            return;
+        }
         // The accessibility consumer waits for each native gesture callback.
         // A mouse can produce samples faster than that callback, just like a
         // touch device. Keep the latest adjacent absolute position instead of
@@ -408,6 +414,21 @@ mod tests {
         input.queued.front_mut().unwrap().created=now_ms().saturating_sub(MAX_INPUT_AGE_MS+1);
         assert!(matches!(input.poll(),Some(Dispatch::Reset{..})));
         assert!(input.owner.is_none());
+    }
+    #[test]
+    fn scroll_phase_markers_never_become_android_taps() {
+        let (mut input,addr,binding)=fixture();
+        for (i,phase) in [protocol::ScrollPhase::MayBegin,protocol::ScrollPhase::Began,
+            protocol::ScrollPhase::Changed,protocol::ScrollPhase::Ended,protocol::ScrollPhase::Cancelled].into_iter().enumerate() {
+            input.admit(addr,&RealtimeInput{binding,sequence:i as u64+1,created_host_ms:now_ms(),
+                payload:InputPayload::Event(InputEvent::MouseScroll{delta_x:0,delta_y:0,
+                    gesture:protocol::ScrollGesture{phase,momentum:protocol::MomentumPhase::None}})});
+        }
+        assert!(input.poll().is_none(),"a phase-only marker must not dispatch a zero-length touch stroke");
+        assert_eq!(input.owner.as_ref().unwrap().lease.binding,binding);
+        input.admit(addr,&RealtimeInput{binding,sequence:6,created_host_ms:now_ms(),
+            payload:InputPayload::Event(InputEvent::scroll(0,-1))});
+        assert!(matches!(input.poll(),Some(Dispatch::Events{events,..}) if matches!(events.as_slice(),[InputEvent::MouseScroll{delta_y:-1,..}])));
     }
     fn take(input: &mut PublisherInput) -> (u64, u64) {
         let Some(Dispatch::Events {
