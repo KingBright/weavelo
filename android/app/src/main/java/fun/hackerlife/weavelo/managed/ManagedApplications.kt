@@ -16,7 +16,7 @@ import java.util.zip.CRC32
 @android.annotation.TargetApi(34)
 internal class ManagedApplications(private val host: IManagedScreen, private val context: Context) : AutoCloseable {
     internal data class Target(val host: IManagedScreen, val displayId: Int,
-        val packageName: String, val width: Int, val height: Int)
+        val packageName: String, val width: Int, val height: Int, val rotation: Int = 0)
     companion object {
         private val targets = ConcurrentHashMap<Long, Target>()
         fun target(source: Any?): Target? = (source as? JSONObject)?.optLong("Window")?.let(targets::get)
@@ -147,10 +147,38 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
                 }.onFailure { android.util.Log.w("Weavelo","Native application artwork unavailable",it) }.getOrNull()
                 var artworkEpoch = -1L
                 display = host.createApplication(app.packageName, width, height, density)
-                target = Target(host, display, app.packageName, width, height)
-                targets[app.id] = target
+                var geometryAt = 0L
+                var observed: Target? = null
                 while (alive.get()) {
                     val current = demand
+                    if (android.os.SystemClock.elapsedRealtime() >= geometryAt) {
+                        val dimensions = JSONObject(host.applicationGeometry(display))
+                        observed = Target(host,display,app.packageName,dimensions.getInt("width"),
+                            dimensions.getInt("height"),dimensions.getInt("rotation"))
+                        geometryAt = android.os.SystemClock.elapsedRealtime() + 50
+                    }
+                    val next = checkNotNull(observed)
+                    if (target != next) {
+                        target?.let { targets.remove(app.id,it) }
+                        target = null
+                        host.setSurface(display,null)
+                        publisher?.finish();publisher?.close();publisher=null
+                        // The source epoch may change concurrently with demand.
+                        // Retry only after the next demand poll, leaving input
+                        // disabled while capture geometry is unsettled.
+                        val configured = runCatching {
+                            PublisherClient.action(3,JSONObject().put("source",JSONObject().put("Window",app.id))
+                                .put("grant",current.getLong("grant")).put("epoch",current.getLong("epoch"))
+                                .put("width",next.width).put("height",next.height).put("rotation",next.rotation*90).toString())
+                            host.acceptApplicationGeometry(display,next.width,next.height,next.rotation)
+                        }
+                        configured.exceptionOrNull()?.let { failure ->
+                            val message = failure.message.orEmpty()
+                            if (!message.contains("Capture configuration changed") && !message.contains("Application geometry changed again")) throw failure
+                        }
+                        if (configured.isFailure) { Thread.sleep(16);continue }
+                        target=next;targets[app.id]=next
+                    }
                     if(artworkEpoch!=current.getLong("artwork_epoch")) {
                         artworkEpoch=current.getLong("artwork_epoch")
                         val payload=JSONObject().put("source",JSONObject().put("Window",app.id))
@@ -164,7 +192,7 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
                     val views = current.optJSONArray("views") ?: JSONArray()
                     if (views.length() > 0) {
                         if (publisher == null) {
-                            publisher = GpuScreenPublisher(width,height)
+                            publisher = GpuScreenPublisher(next.width,next.height,next.rotation)
                             host.setSurface(display,publisher.input)
                         }
                         publisher.update(views)

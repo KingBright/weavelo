@@ -463,6 +463,10 @@ impl WorkspaceConnection {
             other => Command::Control(other),
         })
     }
+    /// Record only the frontend's painted/rendered frame, never decoder submission.
+    pub fn presented_geometry(&self,id:u32,source_revision:u32,geometry_revision:u64) {
+        self.input.lock().unwrap().presented_geometry(id,source_revision,geometry_revision);
+    }
     pub fn input_ready(&self, id:u32, source_revision:u32) -> bool {
         self.input.lock().unwrap().ready(id,source_revision)
     }

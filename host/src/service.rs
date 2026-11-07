@@ -2333,7 +2333,7 @@ async fn run_host_service_inner(
                                     // Old unsequenced release cannot release a newer owner.
                                     input_owner.during_control(&injector,send_session(&udp_sender,addr,SessionCommand::Error{request_id:id,reason:"INPUT_UNAVAILABLE: protected input binding required".into()})).await;
                                 }
-                                SessionCommand::RequestInputBinding{connection_id,id,source_revision,request} => {
+                                SessionCommand::RequestInputBinding{connection_id,id,source_revision,request,..} => {
                                     if let Some(reply)=peers.get_mut(&addr).and_then(|peer|peer.input_binding(connection_id,id,source_revision,request)) {
                                         input_owner.during_control(&injector,send_session(&udp_sender,addr,reply)).await;
                                     }

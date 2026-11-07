@@ -55,6 +55,9 @@ class RemoteControlService : AccessibilityService() {
         override fun run() {
             pollScheduled = false
             if (!running) return
+            if (appInput != null && ManagedApplications.target(appSource) != appInput?.target) {
+                appInput?.release(); appInput=null; appSource=null
+            }
             if (!mutableConnected.value || PublisherClient.controlSize == null) {
                 if (generation != -1L) reset(-1)
                 schedulePoll(250)

@@ -395,6 +395,7 @@ impl MobileWorkspace {
         }
         let mut touches = self.touches.lock().unwrap();
         if let Some(touch) = touches.get_mut(&event.id) {
+            let was_current=touch.current_surface(event.token);
             let (release, events) = if event.phase == "alive" {
                 (touch.alive(event.token, std::time::Instant::now()), Vec::new())
             } else {
@@ -412,11 +413,26 @@ impl MobileWorkspace {
                     }
                 }
             }
+            if (event.phase=="begin" && touch.current_surface(event.token))
+                || (matches!(event.phase.as_str(),"reset"|"end") && was_current) {
+                self.connection.presented_geometry(event.id,touch.revision,0);
+            }
             if event.phase=="alive" {
                 if let Some(binding)=touch.healthy_binding(event.token){
                     if !self.connection.refresh_bound_input(binding){touch.cancel();self.connection.try_bound_input(binding,None);}
                 }
             }
+        }
+        Ok(())
+    }
+    pub fn presented(&self,json:&str)->Result<(),String> {
+        #[derive(serde::Deserialize)] struct Presented {id:u32,token:u64,geometry:protocol::viewport::FrameGeometry}
+        let event:Presented=serde_json::from_str(json).map_err(|e|e.to_string())?;
+        event.geometry.validate()?;
+        let mut touches=self.touches.lock().unwrap();
+        if let Some(touch)=touches.get_mut(&event.id).filter(|touch|touch.current_surface(event.token)&&touch.revision==event.geometry.source_revision) {
+            touch.presented_geometry(Some(event.geometry));
+            self.connection.presented_geometry(event.id,touch.revision,event.geometry.revision);
         }
         Ok(())
     }
@@ -480,7 +496,10 @@ impl MobileWorkspace {
                 return Err("The displayed source geometry changed".into());
             }
         }
-        touch.presented_geometry(event.geometry);
+        if !touch.matches_presented_geometry(event.geometry) {
+            if let Some(binding)=touch.cancel(){self.connection.try_bound_input(binding,None);}
+            return Err("The displayed source geometry changed".into());
+        }
         let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..})
             || matches!(&event.event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action==protocol::TouchAction::Down));
         let unavailable=touch.unavailable_reason(event.token,current);

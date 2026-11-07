@@ -23,7 +23,11 @@ data class RemoteAppearance(val application: Bitmap?, val preset: DeviceBadgePre
 /** Immutable assets, decoded once per source response; never on a video frame. */
 object DeviceArtwork {
     private var preferences: android.content.SharedPreferences? = null
-    fun initialize(context: Context) { preferences = context.getSharedPreferences("device_artwork", Context.MODE_PRIVATE) }
+    private var resourcesContext: Context? = null
+    fun initialize(context: Context) {
+        resourcesContext = context.applicationContext
+        preferences = context.getSharedPreferences("device_artwork", Context.MODE_PRIVATE)
+    }
     fun savedJson(): Any = org.json.JSONTokener(preferences?.getString("badge", "\"automatic\"") ?: "\"automatic\"").nextValue()
     fun save(value: Any) {
         val encoded = if (value is String) JSONObject.quote(value) else value.toString()
@@ -77,14 +81,19 @@ object DeviceArtwork {
     }
     fun badge(preset: DeviceBadgePreset, custom: Bitmap? = null): Bitmap {
         if (custom != null) return custom
-        val bitmap = Bitmap.createBitmap(128,128,Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap); val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val bitmap = Bitmap.createBitmap(256,256,Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap).apply { scale(2f,2f) }; val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         paint.color=Color.rgb(24,52,59); canvas.drawRoundRect(4f,4f,124f,124f,30f,30f,paint)
         paint.color=Color.rgb(139,228,229)
         when(preset) {
             DeviceBadgePreset.PHONE -> {
                 canvas.drawRoundRect(39f,22f,89f,107f,9f,9f,paint)
-                paint.color=Color.rgb(49,139,153); canvas.drawRoundRect(44f,28f,84f,94f,4f,4f,paint)
+                paint.color=Color.rgb(24,52,59); canvas.drawRoundRect(44f,28f,84f,94f,4f,4f,paint)
+                resourcesContext?.getDrawable(R.drawable.device_badge_android_robot)?.let { androidRobot ->
+                    androidRobot.setBounds(45,51,83,73)
+                    androidRobot.draw(canvas)
+                }
+                paint.color=Color.rgb(49,139,153)
                 canvas.drawRoundRect(55f,99f,73f,102f,1.5f,1.5f,paint)
             }
             DeviceBadgePreset.MAC_BOOK -> {
@@ -113,7 +122,7 @@ object DeviceArtwork {
     }
     fun task(activity: Activity, pane: WorkspacePane, device: String) {
         val appearance = pane.appearance
-        val app = appearance?.application ?: pane.source.icon
+        val app = if (pane.source.isWindow) appearance?.application ?: pane.source.icon else null
         val badge = badge(appearance?.preset ?: DeviceBadgePreset.COMPUTER, appearance?.custom)
         val icon = Bitmap.createBitmap(256,256,Bitmap.Config.ARGB_8888)
         val canvas = Canvas(icon); val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -121,12 +130,14 @@ object DeviceArtwork {
         val scale = 256f / maxOf(main.width, main.height)
         val w=main.width*scale; val h=main.height*scale
         canvas.drawBitmap(main,null,RectF((256-w)/2,(256-h)/2,(256+w)/2,(256+h)/2),paint)
-        if (app != null) canvas.drawBitmap(badge,null,RectF(158f,145f,250f,237f),paint)
-        paint.color=Color.rgb(24,52,59); canvas.drawRoundRect(144f,226f,254f,254f,9f,9f,paint)
-        paint.color=Color.WHITE; paint.textSize=16f; paint.typeface=Typeface.DEFAULT_BOLD; paint.textAlign=Paint.Align.CENTER
-        val label = android.text.TextUtils.ellipsize(device,android.text.TextPaint(paint),104f,android.text.TextUtils.TruncateAt.END).toString()
-        canvas.drawText(label,199f,246f,paint)
-        val title = if(pane.source.isWindow) pane.source.application.ifBlank {pane.source.title} else device
+        if (app != null) {
+            canvas.drawBitmap(badge,null,RectF(8f,8f,104f,104f),paint)
+            paint.color=Color.rgb(24,52,59); canvas.drawRoundRect(8f,226f,118f,254f,9f,9f,paint)
+            paint.color=Color.WHITE; paint.textSize=16f; paint.typeface=Typeface.DEFAULT_BOLD; paint.textAlign=Paint.Align.CENTER
+            val label=android.text.TextUtils.ellipsize(device,android.text.TextPaint(paint),104f,android.text.TextUtils.TruncateAt.END).toString()
+            canvas.drawText(label,63f,246f,paint)
+        }
+        val title=if(pane.source.isWindow) pane.source.application.ifBlank {pane.source.title} else device
         @Suppress("DEPRECATION")
         activity.setTaskDescription(ActivityManager.TaskDescription(title,icon,Color.rgb(24,52,59)))
     }

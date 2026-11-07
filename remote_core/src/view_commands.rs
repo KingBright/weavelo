@@ -50,6 +50,10 @@ impl<T, Scope: Copy + PartialEq> ViewConnectionBinding<T, Scope> {
     pub fn same_connection(&self, other:&Self)->bool {
         self.scope==other.scope && Weak::ptr_eq(&self.connection,&other.connection)
     }
+    /// Access the captured connection only while its process-local scope survives.
+    pub fn scoped_connection(&self,scope:Scope)->Option<Arc<T>> {
+        (self.scope==scope).then(||self.connection.upgrade()).flatten()
+    }
     /// The adapter must keep its session lock across this check and mutation.
     /// A rejected binding does not call the supplied action.
     pub fn apply<R>(&self, active: &Arc<T>, scope: Scope, action: impl FnOnce() -> R) -> Option<R> {

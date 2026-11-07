@@ -24,6 +24,7 @@ struct Slot {
     enabled: bool,
     revision: u32,
     request: u64,
+    presented_geometry_revision: u64,
     lease: Option<Lease>,
     owner: u64,
 }
@@ -65,10 +66,22 @@ impl InputState {
                 enabled: true,
                 revision,
                 request: 0,
+                presented_geometry_revision: 0,
                 lease: None,
                 owner: self.next_owner,
             },
         );
+    }
+    pub(crate) fn presented_geometry(&mut self,id:u32,source_revision:u32,geometry_revision:u64) {
+        if let Some(slot)=self.slots.get_mut(&id).filter(|slot|slot.revision==source_revision) {
+            if slot.presented_geometry_revision!=geometry_revision {
+                let regressed=geometry_revision<slot.presented_geometry_revision;
+                slot.presented_geometry_revision=geometry_revision;
+                // An outstanding grant is tied to the frame in its request.
+                slot.request=0;
+                if geometry_revision==0 || regressed {slot.lease=None;}
+            }
+        }
     }
     pub(crate) fn remove(&mut self, id: u32) {
         self.slots.remove(&id);
@@ -190,6 +203,7 @@ impl InputState {
                     connection_id: connection,
                     id: *id,
                     source_revision: slot.revision,
+                    presented_geometry_revision: slot.presented_geometry_revision,
                     request: slot.request,
                 })
             })
@@ -374,6 +388,24 @@ mod tests {
         let now=lease.host_ms+lease.received.elapsed().as_millis() as u64;
         assert!(now.saturating_sub(commits[0].created_host_ms)>=160);
         assert!(state.text_for_owner(owner,"expired",std::time::Duration::from_millis(251)).is_err());
+    }
+    #[test]
+    fn presented_revisions_fence_delayed_grants_and_keep_roi_lease() {
+        let mut state=InputState::default();state.source(7,0);
+        state.presented_geometry(7,0,1);grant(&mut state,1);
+        let lease=state.binding(7,0).unwrap();
+        let SessionCommand::RequestInputBinding{request,..}=state.requests(1).remove(0) else {panic!()};
+        state.presented_geometry(7,0,2);
+        state.grant(1,InputBinding{epoch:[2;16],..lease},request,100);
+        assert_eq!(state.binding(7,0),Some(lease),"ROI change keeps the current lease");
+        state.presented_geometry(7,0,1);
+        assert!(state.binding(7,0).is_none(),"an older painted frame cannot reuse a newer lease");
+        state.presented_geometry(7,1,9);
+        let SessionCommand::RequestInputBinding{presented_geometry_revision,..}=state.requests(1).remove(0) else {panic!()};
+        assert_eq!(presented_geometry_revision,1,"a foreign source revision cannot update presentation");
+        state.source(7,1);
+        let SessionCommand::RequestInputBinding{presented_geometry_revision,..}=state.requests(1).remove(0) else {panic!()};
+        assert_eq!(presented_geometry_revision,0,"source replacement forgets the prior frame");
     }
     #[test]
     fn composition_never_adopts_replaced_suspended_released_or_foreign_owners() {

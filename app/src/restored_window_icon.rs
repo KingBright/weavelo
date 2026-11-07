@@ -47,7 +47,7 @@ impl Artwork {
                 let icon=WindowIcon::new(edge,pixels).map_err(|e|e.to_string())?;
                 window.set_window_icon(&icon).map_err(|e|e.to_string())?;
             } else if stream {
-                let (edge,mut pixels)=badged_default_pixels(cx,appearance)?;
+                let (edge,mut pixels)=stream_device_pixels(cx,appearance)?;
                 #[cfg(target_os = "macos")]
                 if let Some(name)=device_name.as_deref() {
                     pixels=macos_dock::with_device_name(edge,&pixels,name)?;
@@ -101,7 +101,7 @@ impl Artwork {
                 let raw = if let Some(bitmap) = bitmap {
                     badge_pixels(cx,appearance).and_then(|badge| remote_application_pixels(bitmap, &badge, true))
                 } else {
-                    badged_default_pixels(cx,appearance)
+                    stream_device_pixels(cx,appearance)
                 };
                 match raw {
                     Ok(rgba) => Some(rgba),
@@ -206,7 +206,8 @@ fn badge_pixels(cx:&App,appearance:Option<&SourceAppearance>)->Result<image::Rgb
         let (edge,pixels)=native_pixels(custom);
         return image::RgbaImage::from_raw(edge,edge,pixels).ok_or("Invalid custom device badge".into());
     }
-    let image=cx.svg_renderer().render_single_frame(super::device_badges::preset_svg(appearance.preset),2.,false).map_err(|error|error.to_string())?;
+    // The renderer supersamples SVGs by 2: 32 intrinsic pixels × 4 × 2 = 256.
+    let image=cx.svg_renderer().render_single_frame(super::device_badges::preset_svg(appearance.preset),4.,false).map_err(|error|error.to_string())?;
     let size=image.size(0);
     image::RgbaImage::from_raw(size.width.0 as u32,size.height.0 as u32,image.as_bytes(0).ok_or("Missing device badge pixels")?.to_vec()).ok_or("Invalid device badge pixels".into())
 }
@@ -217,7 +218,7 @@ fn computer_badge(cx: &App) -> Result<&'static image::RgbaImage, String> {
         return Ok(badge);
     }
     let image = cx.svg_renderer().render_single_frame(
-        include_bytes!("product_components/icons/device-badge-computer.svg"), 1., false,
+        include_bytes!("product_components/icons/device-badge-computer.svg"), 4., false,
     ).map_err(|error| error.to_string())?;
     let size = image.size(0);
     let badge = image::RgbaImage::from_raw(
@@ -249,11 +250,11 @@ fn default_remote_pixels(cx: &App) -> Result<(u32, Vec<u8>), String> {
     Ok((EDGE, DOCK_FALLBACK.get_or_init(|| raw).clone()))
 }
 
-fn badged_default_pixels(cx: &App, appearance: Option<&SourceAppearance>) -> Result<(u32, Vec<u8>), String> {
-    let (edge, pixels) = default_remote_pixels(cx)?;
-    let mut image = image::RgbaImage::from_raw(edge, edge, pixels).ok_or("Invalid remote window icon")?;
-    overlay_device_badge(&mut image, &badge_pixels(cx, appearance)?);
-    Ok((edge, image.into_raw()))
+fn stream_device_pixels(cx: &App, appearance: Option<&SourceAppearance>) -> Result<(u32, Vec<u8>), String> {
+    const EDGE: u32 = 256;
+    let badge = badge_pixels(cx, appearance)?;
+    let icon = image::imageops::resize(&badge, EDGE, EDGE, image::imageops::FilterType::Triangle);
+    Ok((EDGE, icon.into_raw()))
 }
 
 fn native_pixels(bitmap:&IconBitmap)->(u32,Vec<u8>) {
@@ -833,18 +834,21 @@ pub(crate) mod macos_dock {
 mod tests {
     use super::*;
     #[gpui::test]
-    fn fallback_stream_icon_has_a_device_badge_even_without_appearance(cx: &mut gpui::TestAppContext) {
+    fn fallback_stream_icon_is_the_device_artwork_not_the_product_brand(cx: &mut gpui::TestAppContext) {
         cx.update(|app| {
             let (edge, brand) = default_remote_pixels(app).unwrap();
-            let (badged_edge, default_badge) = badged_default_pixels(app, None).unwrap();
+            let (fallback_edge, default_badge) = stream_device_pixels(app, None).unwrap();
+            let default_device = image::imageops::resize(
+                &badge_pixels(app, None).unwrap(), 256, 256, image::imageops::FilterType::Triangle,
+            ).into_raw();
             let appearance = SourceAppearance {
                 application: None, preset: protocol::appearance::DeviceBadgePreset::Linux, custom: None,
             };
-            let (_, linux_badge) = badged_default_pixels(app, Some(&appearance)).unwrap();
-            assert_eq!((edge, badged_edge), (256, 256));
+            let (_, linux_badge) = stream_device_pixels(app, Some(&appearance)).unwrap();
+            assert_eq!((edge, fallback_edge), (256, 256));
+            assert_eq!(default_badge, default_device);
             assert_ne!(brand, default_badge);
             assert_ne!(default_badge, linux_badge);
-            assert_eq!(&brand[(200 * 256 + 200) * 4..], &default_badge[(200 * 256 + 200) * 4..]);
             assert!(WindowIcon::new(edge, default_badge).is_ok());
         });
     }
@@ -857,7 +861,7 @@ mod tests {
                 let appearance=SourceAppearance{application:None,preset,custom:None};
                 let pixels=badge_pixels(app,Some(&appearance)).unwrap();
                 let edge=pixels.width();
-                assert_eq!(edge,pixels.height(),"{preset:?}");
+                assert_eq!(edge,256,"{preset:?}");
                 assert!(WindowIcon::new(edge,pixels.clone().into_raw()).is_ok(),"{preset:?}: {edge} px");
                 #[cfg(target_os="macos")]
                 assert!(macos_dock::encode_frame("Display","Device",(edge,pixels.as_raw())).is_ok());

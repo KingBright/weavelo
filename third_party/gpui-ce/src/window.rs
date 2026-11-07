@@ -1769,6 +1769,17 @@ impl Window {
         self.platform_window.resize(size);
     }
 
+    /// Usable area supplied by the native window manager for fitting this window.
+    /// On Wayland the origin is synthetic; only its size is compositor-provided.
+    pub fn fit_work_area(&self) -> Option<Bounds<Pixels>> {
+        self.platform_window.fit_work_area()
+    }
+
+    /// Changes when cached platform fit constraints change.
+    pub fn fit_bounds_revision(&self) -> u64 {
+        self.platform_window.fit_bounds_revision()
+    }
+
     /// Returns whether or not the window is currently fullscreen
     pub fn is_fullscreen(&self) -> bool {
         self.platform_window.is_fullscreen()

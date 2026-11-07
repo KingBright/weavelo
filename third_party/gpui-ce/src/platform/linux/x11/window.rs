@@ -19,6 +19,7 @@ use x11rb::{
     errors::ConnectionError,
     properties::WmSizeHints,
     protocol::{
+        randr::ConnectionExt as _,
         sync,
         xinput::{self, ConnectionExt as _},
         xproto::{self, ClientMessageEvent, ConnectionExt, TranslateCoordinatesReply},
@@ -81,6 +82,8 @@ x11rb::atom_manager! {
         _GTK_FRAME_EXTENTS,
         _GTK_EDGE_CONSTRAINTS,
         _NET_CLIENT_LIST_STACKING,
+        _NET_CURRENT_DESKTOP,
+        _NET_WORKAREA,
     }
 }
 
@@ -1146,7 +1149,99 @@ impl X11WindowStatePtr {
     }
 }
 
+// RandR uses root pixels while GPUI window bounds use scaled logical coordinates.
+// Pick the monitor covering most of this window, rather than the virtual root.
+fn x11_window_monitor(monitors: &[Bounds<Pixels>], window: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    monitors.iter().copied().filter(|monitor| monitor.intersects(&window))
+        .max_by(|a, b| {
+            let area = |monitor: &Bounds<Pixels>| {
+                let overlap = monitor.intersect(&window);
+                f32::from(overlap.size.width) * f32::from(overlap.size.height)
+            };
+            area(a).total_cmp(&area(b))
+        })
+}
+
+fn x11_active_monitor(xcb: &XCBConnection, root: xproto::Window, scale: f32, window: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    if !scale.is_finite() || scale <= 0. { return None; }
+    let version = xcb.randr_query_version(1, 5).ok()?.reply().ok()?;
+    let mut monitors = if version.major_version > 1 || (version.major_version == 1 && version.minor_version >= 5) {
+        xcb.randr_get_monitors(root, true).ok().and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.monitors.into_iter().filter(|m| m.width > 0 && m.height > 0)
+                .map(|m| Bounds::new(crate::point(px(m.x as f32 / scale), px(m.y as f32 / scale)),
+                    size(px(m.width as f32 / scale), px(m.height as f32 / scale))))
+                .collect::<Vec<_>>()).unwrap_or_default()
+    } else { Vec::new() };
+    if monitors.is_empty() {
+        let resources = xcb.randr_get_screen_resources_current(root).ok()?.reply().ok()?;
+        let timestamp = resources.config_timestamp;
+        monitors = resources.crtcs.into_iter().filter_map(|crtc| {
+            let info = xcb.randr_get_crtc_info(crtc, timestamp).ok()?.reply().ok()?;
+            if info.width == 0 || info.height == 0 || info.outputs.is_empty() { return None; }
+            Some(Bounds::new(crate::point(px(info.x as f32 / scale), px(info.y as f32 / scale)),
+                size(px(info.width as f32 / scale), px(info.height as f32 / scale))))
+        }).collect();
+    }
+    x11_window_monitor(&monitors, window)
+}
+
+fn x11_fit_work_area(values: &[u32], scale: f32, display: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    if values.len() != 4 || values[2] == 0 || values[3] == 0 || !scale.is_finite() || scale <= 0. {
+        return None;
+    }
+    let work = Bounds::new(
+        crate::point(px(values[0] as i32 as f32 / scale), px(values[1] as i32 as f32 / scale)),
+        size(px(values[2] as f32 / scale), px(values[3] as f32 / scale)),
+    );
+    if !work.intersects(&display) { return None; }
+    let clipped = work.intersect(&display);
+    (clipped.size.width > px(0.) && clipped.size.height > px(0.)).then_some(clipped)
+}
+
+#[cfg(test)]
+mod fit_work_area_tests {
+    use super::*;
+    #[test]
+    fn chooses_monitor_covering_most_of_a_window_and_clips_workarea() {
+        let left = Bounds::new(crate::point(px(0.), px(0.)), size(px(1920.), px(1080.)));
+        let right = Bounds::new(crate::point(px(1920.), px(0.)), size(px(1920.), px(1080.)));
+        let window = Bounds::new(crate::point(px(1800.), px(100.)), size(px(800.), px(700.)));
+        let monitor = x11_window_monitor(&[left, right], window).unwrap();
+        assert_eq!(monitor, right);
+        let work = x11_fit_work_area(&[0, 0, 3840, 1040], 1., monitor).unwrap();
+        assert_eq!(work.origin.x, px(1920.));
+        assert_eq!(work.size.width, px(1920.));
+        assert_eq!(work.size.height, px(1040.));
+        let outside = Bounds::new(crate::point(px(5000.), px(100.)), size(px(100.), px(100.)));
+        assert!(x11_window_monitor(&[left, right], outside).is_none());
+    }
+    #[test]
+    fn workarea_is_scaled_and_clipped_and_rejects_invalid_properties() {
+        let display = Bounds::new(crate::point(px(0.), px(0.)), size(px(1000.), px(800.)));
+        let area = x11_fit_work_area(&[0, 40, 2000, 1500], 2., display).unwrap();
+        assert_eq!(area.origin.y, px(20.));
+        assert_eq!(area.size.height, px(750.));
+        assert!(x11_fit_work_area(&[0, 0, 0, 100], 1., display).is_none());
+        assert!(x11_fit_work_area(&[0, 0, 100], 1., display).is_none());
+        assert!(x11_fit_work_area(&[3000, 0, 100, 100], 1., display).is_none());
+    }
+}
+
 impl PlatformWindow for X11Window {
+    fn fit_work_area(&self) -> Option<Bounds<Pixels>> {
+        let state = self.0.state.borrow();
+        let xcb = &self.0.xcb;
+        let desktop_reply = xcb.get_property(false, state.x_root_window, state.atoms._NET_CURRENT_DESKTOP,
+            xproto::AtomEnum::CARDINAL, 0, 1).ok()?.reply().ok()?;
+        let desktop = desktop_reply.value32().and_then(|mut values| values.next()).unwrap_or(0);
+        let offset = desktop.checked_mul(4)?;
+        let reply = xcb.get_property(false, state.x_root_window, state.atoms._NET_WORKAREA,
+            xproto::AtomEnum::CARDINAL, offset, 4).ok()?.reply().ok()?;
+        let values: Vec<u32> = reply.value32()?.collect();
+        let monitor = x11_active_monitor(xcb, state.x_root_window, state.scale_factor, state.bounds)?;
+        x11_fit_work_area(&values, state.scale_factor, monitor)
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.state.borrow().bounds
     }

@@ -150,6 +150,9 @@ impl WorkspaceTouch {
         if visible { None } else { self.invalidate() }
     }
     pub fn presented_geometry(&mut self,geometry:Option<protocol::viewport::FrameGeometry>) {self.geometry=geometry;}
+    pub fn matches_presented_geometry(&self,geometry:Option<protocol::viewport::FrameGeometry>)->bool {
+        self.geometry.is_none() || self.geometry==geometry
+    }
     pub fn surface(&mut self, token: u64, phase: &str) -> (Option<InputBinding>, Vec<InputEvent>) {
         if phase == "begin" {
             if token == 0 || token <= self.surface {
@@ -159,6 +162,7 @@ impl WorkspaceTouch {
             self.surface = token;
             self.attached = self.visible;
             self.frame_ready = false;
+            self.geometry = None;
             return (release, Vec::new());
         }
         if token != self.surface || !self.attached {
@@ -171,6 +175,7 @@ impl WorkspaceTouch {
             }
             "reset" => {
                 self.frame_ready = false;
+                self.geometry = None;
                 (self.cancel(), Vec::new())
             }
             "end" => (self.invalidate(), Vec::new()),

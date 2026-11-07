@@ -32,6 +32,7 @@ struct Frame {
     audio: bool,
     screen_stream: Option<u64>,
     timing: Option<protocol::FrameTimingCheckpoints>,
+    geometry_revision: u64,
 }
 #[derive(Clone,serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -503,7 +504,7 @@ impl MobilePublisher {
                     Some(frame)=frame_rx.recv()=>{
                         let grant={let media=shared.lock().unwrap();
                             let accepted=frame.screen_stream.map_or_else(||media.accepts_frame(frame.source,frame.epoch,frame.audio),
-                                |stream|media.accepts_screen_frame(stream,frame.epoch));
+                                |stream|media.accepts_screen_geometry(stream,frame.epoch,frame.geometry_revision));
                             if !accepted{continue;}
                             media.sources[&frame.source].grant
                         };
@@ -572,6 +573,9 @@ impl MobilePublisher {
                                             peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone(), peer_files.load(Ordering::Relaxed)));
                                             let window_capture=shared.lock().unwrap().sources.values().any(|source|source.enabled&&matches!(source.info.source,CaptureSource::Window(_)));
                                             reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:MAX_SUBSCRIPTIONS as u32, files:peers[&addr].files.is_some(), clipboard:false, window_capture }).await;
+                                        }
+                                        SessionCommand::Open { connection_id, .. } => {
+                                            reply(&sender,addr,SessionCommand::Error {request_id:connection_id,reason:"unsupported connection version".into()}).await;
                                         }
                                         SessionCommand::DeliveryOffer {request_id,source_device_id,target_device_id,ticket,revision,sources} if peers.contains_key(&addr) => {
                                             let peer=&peers[&addr];let (_,nonce,_)=authenticated[&addr];
@@ -723,10 +727,17 @@ impl MobilePublisher {
                                             if peer.subscriptions.remove(&id).is_some_and(|sub|screen_source(sub.request.source)){shared_input.lock().unwrap().revoke_peer(addr);}
                                             recompute(&peers,&shared);reply(&sender,addr,SessionCommand::Unsubscribed{id}).await;
                                         }
-                                        SessionCommand::RequestInputBinding {connection_id,id,source_revision:0,request}
+                                        SessionCommand::RequestInputBinding {connection_id,id,source_revision:0,presented_geometry_revision,request}
                                             if request != 0 && peers.get(&addr).is_some_and(|p|p.id==connection_id&&p.subscriptions.get(&id).is_some_and(MobileSubscription::input_allowed)) => {
-                                            let source=peers[&addr].subscriptions[&id].request.source;
-                                            let binding = shared_input.lock().unwrap().grant_source(addr,connection_id,id,source);
+                                            let sub=&peers[&addr].subscriptions[&id];
+                                            let source=sub.request.source;
+                                            // Hold geometry through grant: a capture reconfiguration must
+                                            // not slip between the floor check and lease creation.
+                                            let binding = {
+                                                let media=shared.lock().unwrap();
+                                                if !media.accepts_screen_geometry(sub.screen_stream,sub.grant,presented_geometry_revision) {continue;}
+                                                shared_input.lock().unwrap().grant_source(addr,connection_id,id,source)
+                                            };
                                             if let Some(binding) = binding {
                                                 reply(&sender,addr,SessionCommand::InputBinding {binding,request,host_time_ms:crate::publisher_input::now_ms()}).await;
                                             }
@@ -858,21 +869,24 @@ impl MobilePublisher {
     pub fn is_finished(&self)->bool{!self.alive.load(Ordering::Acquire)||self.task.is_finished()}
     pub fn source_grant(&self,source:CaptureSource)->Option<u64>{self.media.lock().unwrap().sources.get(&source).filter(|source|source.enabled).map(|source|source.grant)}
     pub fn configure_geometry(&self,source:CaptureSource,epoch:u64,width:u32,height:u32,rotation:u16)->Result<u64,String> {
-        let result=self.media.lock().unwrap().geometry(source,epoch,width,height,rotation)?;
-        if result!=epoch {if screen_source(source){self.input.lock().unwrap().revoke();}self.notify_sources();}
+        let mut media=self.media.lock().unwrap();
+        let result=media.geometry(source,epoch,width,height,rotation)?;
+        if result!=epoch && screen_source(source) {self.input.lock().unwrap().revoke();}
+        drop(media);
+        if result!=epoch {self.notify_sources();}
         Ok(result)
     }
     pub async fn frame_from(&self,source:CaptureSource,epoch:u64,bytes:Vec<u8>,_timestamp_us:i64,audio:bool)->bool {
         if (screen_source(source)&&!audio)||bytes.len()>8*1024*1024
             ||!self.media.lock().unwrap().accepts_frame(source,epoch,audio){return false;}
         // Backpressure the codec drain worker; never discard an encoded reference frame locally.
-        self.frames.send(Frame{source,epoch,bytes,timestamp:now_unix_ms() as u32,audio,screen_stream:None,timing:None}).await.is_ok()
+        self.frames.send(Frame{source,epoch,bytes,timestamp:now_unix_ms() as u32,audio,screen_stream:None,timing:None,geometry_revision:0}).await.is_ok()
     }
     pub async fn screen_frame(&self,metadata:ScreenFrameMetadata,bytes:Vec<u8>)->bool {
         if bytes.is_empty()||bytes.len()>8*1024*1024||metadata.geometry.validate().is_err()
             || metadata.geometry.source_revision!=0
             || !(bytes.starts_with(&[0,0,0,1])||bytes.starts_with(&[0,0,1]))
-            || !self.media.lock().unwrap().accepts_screen_frame(metadata.stream,metadata.grant){return false;}
+            || !self.media.lock().unwrap().accepts_screen_geometry(metadata.stream,metadata.grant,metadata.geometry.revision){return false;}
         let now=remote_core::timing::quanta_now_us();
         if metadata.capture_ts_us==0||metadata.capture_ts_us>metadata.admitted_at_us||metadata.admitted_at_us>now{return false;}
         let mut payload=Vec::with_capacity(protocol::viewport::FRAME_HEADER_LEN+bytes.len());
@@ -882,7 +896,7 @@ impl MobilePublisher {
         timing.encode_done_ts_us=now.saturating_sub(metadata.capture_ts_us).min(u64::from(u32::MAX)) as u32;
         let Some(source)=self.media.lock().unwrap().screen_frame_source(metadata.stream,metadata.grant) else {return false;};
         self.frames.send(Frame{source,epoch:metadata.grant,bytes:payload,
-            timestamp:(metadata.capture_ts_us/1000) as u32,audio:false,screen_stream:Some(metadata.stream),timing:Some(timing)}).await.is_ok()
+            timestamp:(metadata.capture_ts_us/1000) as u32,audio:false,screen_stream:Some(metadata.stream),timing:Some(timing),geometry_revision:metadata.geometry.revision}).await.is_ok()
     }
     pub async fn fail_screen_view(&self,stream:u64,grant:u64,reason:String)->Result<(),String> {
         if reason.len()>1024{return Err("Screen failure detail is too long".into());}
@@ -1526,9 +1540,13 @@ mod tests {
         publisher.set_input_service_available(true); publisher.set_input_capture_allowed(true);
         let (sender,receiver)=receiver_client(&publisher,&key).await;
         let (other,_other_receiver)=receiver_client(&publisher,&key).await;
+        command(&sender,publisher.address,SessionCommand::Open{connection_id:17,version:SESSION_VERSION-1}).await;
+        assert!(matches!(reply(&receiver).await,SessionCommand::Error{request_id:17,..}));
         command(&sender,publisher.address,SessionCommand::Subscribe(receiver_subscription(256))).await;
         loop { if matches!(reply(&receiver).await,SessionCommand::Subscribed {supports_input:true,..}) {break;} }
-        command(&sender,publisher.address,SessionCommand::RequestInputBinding {connection_id:17,id:256,source_revision:0,request:1}).await;
+        let old_view=publisher.demand().views.remove(0);
+        let presented=old_view.geometry.revision;
+        command(&sender,publisher.address,SessionCommand::RequestInputBinding {connection_id:17,id:256,source_revision:0,presented_geometry_revision:presented,request:1}).await;
         let binding=loop { if let SessionCommand::InputBinding {binding,..}=reply(&receiver).await {break binding;} };
         let packet=RealtimeInput {binding,sequence:1,created_host_ms:crate::publisher_input::now_ms(),payload:InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute {x:123,y:456})};
         // A file peer with the same connection ID cannot control this viewer.
@@ -1551,6 +1569,19 @@ mod tests {
         assert!(publisher.input.lock().unwrap().poll().is_none());
         publisher.configure_geometry(CaptureSource::MainDisplay,publisher.demand().epoch,1920,1080,0).unwrap();
         assert!(!publisher.input_execution_valid(job.0,job.1));
+        let now=remote_core::timing::quanta_now_us();
+        let stale=ScreenFrameMetadata{stream:old_view.stream,grant:old_view.grant,geometry:old_view.geometry,capture_ts_us:now,admitted_at_us:now};
+        assert!(!publisher.screen_frame(stale,vec![0,0,0,1,0x26,1,43]).await,"old encoded metadata must not re-enter after rotation");
+        let next=publisher.demand().views.remove(0);
+        assert!(next.geometry.revision>presented);
+        command(&sender,publisher.address,SessionCommand::RequestInputBinding {connection_id:17,id:256,source_revision:0,presented_geometry_revision:presented,request:2}).await;
+        assert!(tokio::time::timeout(Duration::from_millis(150),async {
+            loop {if matches!(reply(&receiver).await,SessionCommand::InputBinding{request:2,..}) {break;}}
+        }).await.is_err(),"old frame must not acquire a replacement lease");
+        command(&sender,publisher.address,SessionCommand::RequestInputBinding {connection_id:17,id:256,source_revision:0,presented_geometry_revision:next.geometry.revision,request:3}).await;
+        tokio::time::timeout(Duration::from_secs(2),async {
+            loop {if matches!(reply(&receiver).await,SessionCommand::InputBinding{request:3,..}) {break;}}
+        }).await.expect("newly rendered frame can renew control");
         publisher.set_capture_available(false,false);
         assert!(!publisher.input.lock().unwrap().ready());
     }
@@ -1976,6 +2007,7 @@ mod tests {
                 timestamp: 0,
                 audio: false,
                 screen_stream:None,
+                geometry_revision:0,
                 timing:None,
             })
             .await

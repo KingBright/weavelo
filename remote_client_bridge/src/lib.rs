@@ -2044,6 +2044,7 @@ mod tests {
                         id,
                         source_revision,
                         request,
+                        ..
                     } = *c
                     {
                         if connection_id
@@ -2097,7 +2098,7 @@ mod tests {
                     // within the same deadline, keeping the exact epoch check.
                     if let Ok(Some((ControlMessage::Session(command), target))) =
                         tokio::time::timeout(Duration::from_millis(1), rx.recv()).await
-                        && let SessionCommand::RequestInputBinding { connection_id, id, source_revision, request } = *command
+                        && let SessionCommand::RequestInputBinding { connection_id, id, source_revision, request, .. } = *command
                         && connection_id == binding.connection_id
                         && id == binding.subscription_id
                         && source_revision == binding.source_revision
@@ -2177,7 +2178,7 @@ mod tests {
             let (binding, request, peer) = loop {
                 let (message, peer) = next_control(&mut rx).await;
                 if let ControlMessage::Session(command) = message
-                    && let SessionCommand::RequestInputBinding { connection_id, id, source_revision, request } = *command {
+                    && let SessionCommand::RequestInputBinding { connection_id, id, source_revision, request, .. } = *command {
                     break (InputBinding { connection_id, subscription_id: id, source_revision, epoch: [9; 16] }, request, peer);
                 }
             };

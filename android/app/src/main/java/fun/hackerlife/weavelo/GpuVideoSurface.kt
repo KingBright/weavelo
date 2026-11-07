@@ -24,6 +24,7 @@ internal class GpuVideoSurface(
     sourceWidth: Int,
     sourceHeight: Int,
     private val captureClockUs: (() -> Long)? = null,
+    private val sourceRotation: Int = 0,
     private val onFrame: (VideoFrameGeometry?) -> Unit = {}
 ) : AutoCloseable {
     data class Presentation(val ready: Boolean = false, val geometry: VideoFrameGeometry? = null)
@@ -59,13 +60,20 @@ internal class GpuVideoSurface(
     val input: Surface get() = checkNotNull(producer)
     private var closed = false
     private val matrix = FloatArray(16)
+    private val sourceMatrix = FloatArray(16)
+    private val sourceTransform = when (sourceRotation) {
+        1 -> floatArrayOf(0f,-1f,0f,0f, 1f,0f,0f,0f, 0f,0f,1f,0f, 0f,1f,0f,1f)
+        2 -> floatArrayOf(-1f,0f,0f,0f, 0f,-1f,0f,0f, 0f,0f,1f,0f, 1f,1f,0f,1f)
+        3 -> floatArrayOf(0f,1f,0f,0f, -1f,0f,0f,0f, 0f,0f,1f,0f, 1f,0f,0f,1f)
+        else -> null
+    }
     private val quad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
         // Position and texture coordinates, both in normal OpenGL orientation.
         put(floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)); position(0)
     }
     init {
         try {
-            require(output?.isValid != false && sourceWidth > 1 && sourceHeight > 1)
+            require(output?.isValid != false && sourceWidth > 1 && sourceHeight > 1 && sourceRotation in 0..3)
             val configs = arrayOfNulls<android.opengl.EGLConfig>(1)
             val count = IntArray(1)
             val attrs = intArrayOf(EGL14.EGL_RED_SIZE,8,EGL14.EGL_GREEN_SIZE,8,EGL14.EGL_BLUE_SIZE,8,EGL14.EGL_ALPHA_SIZE,8,
@@ -96,7 +104,8 @@ internal class GpuVideoSurface(
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
             image = SurfaceTexture(texture).also { st ->
-                st.setDefaultBufferSize(sourceWidth,sourceHeight)
+                st.setDefaultBufferSize(if (sourceRotation % 2 == 0) sourceWidth else sourceHeight,
+                    if (sourceRotation % 2 == 0) sourceHeight else sourceWidth)
                 st.setOnFrameAvailableListener({ synchronized(signal) { available.set(true); signal.notifyAll() } },Handler(callbacks.looper))
                 producer = Surface(st)
             }
@@ -126,6 +135,7 @@ internal class GpuVideoSurface(
         if (!available.getAndSet(false)) return false
         check(EGL14.eglMakeCurrent(display,window,window,context))
         val st=checkNotNull(image);st.updateTexImage();st.getTransformMatrix(matrix)
+        sourceTransform?.let { android.opengl.Matrix.multiplyMM(sourceMatrix,0,matrix,0,it,0) }
         val timestamp=st.timestamp
         if (sourceTimestampNs == timestamp) return false
         check(timestamp > 0) { "Screen buffer has no producer timestamp" }
@@ -142,7 +152,7 @@ internal class GpuVideoSurface(
         val sample=floatArrayOf(geometry.x.toFloat()/geometry.sourceWidth,
             1f-(geometry.y+geometry.cropHeight).toFloat()/geometry.sourceHeight,
             geometry.cropWidth.toFloat()/geometry.sourceWidth,geometry.cropHeight.toFloat()/geometry.sourceHeight)
-        draw(matrix,floatArrayOf(0f,0f,1f,1f),sample,Math.multiplyExact(ptsUs,1000),target)
+        draw(if (sourceTransform == null) matrix else sourceMatrix,floatArrayOf(0f,0f,1f,1f),sample,Math.multiplyExact(ptsUs,1000),target)
     }
     fun awaitSource(timeoutMs: Long) {
         checkThread();check(output == null)

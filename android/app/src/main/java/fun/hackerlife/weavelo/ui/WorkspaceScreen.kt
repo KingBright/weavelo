@@ -556,9 +556,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             worker = Thread({
                                 var target: GpuVideoSurface? = null
                                 var codec: MediaCodecPlayer? = null
+                                var reportedGeometry: VideoFrameGeometry? = null
                                 try {
                                     if (!pane.source.isCamera) {
                                         target=GpuVideoSurface(holder.surface,pane.source.width,pane.source.height) { geometry ->
+                                            if (geometry != null && geometry != reportedGeometry) {
+                                                reportedGeometry = geometry
+                                                WorkspaceClient.presented(pane.id,sessionKey,generation,token,geometry)
+                                            }
                                             if (geometry != null) post {
                                                 if (running.get() && surfaceToken == token) dimensions=VideoDimensions(geometry.sourceWidth,geometry.sourceHeight)
                                             }
@@ -599,6 +604,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                         if (pending != null && System.nanoTime() - pendingSince > 250_000_000) {
                                             pending = null; waiting = true
                                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "reset")
+                                            reportedGeometry = null
                                             player.flush()
                                             framesBeforeReset = player.outputFrames
                                             reportedFirstFrame = false

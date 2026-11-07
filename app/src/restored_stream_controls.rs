@@ -235,6 +235,7 @@ impl RestoredDashboard {
             .flex()
             .items_center()
             .gap_1()
+            .when(compact, |row| row.max_w(relative(0.95)).flex_wrap().justify_center())
             .px_2()
             .py_2()
             .rounded_full()
@@ -374,6 +375,17 @@ impl RestoredDashboard {
                 }
             }
         }
+        row = row.child(
+                command_button("island_fit_window", ActionVariantKind::Neutral, cx)
+                    .size(px(28.))
+                    .p_0()
+                    .tooltip(tooltip("Fit window").build())
+                    .child(icon(IconName::Window).size(px(13.)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.window_fit.request_fit();
+                        cx.notify();
+                    })),
+            );
         row = row.child(
                 command_button("island_toggle_fullscreen", ActionVariantKind::Neutral, cx)
                     .size(px(28.))
@@ -525,6 +537,7 @@ impl RestoredDashboard {
             .right(px(12.))
             .bottom(px(12.))
             .w(px(370.))
+            .max_w(relative(0.95))
             .flex()
             .flex_col()
             .rounded_lg()

@@ -30,7 +30,7 @@ internal class ManagedApplicationInput(val target: ManagedApplications.Target) {
         } }.toTypedArray()
         val event = MotionEvent.obtain(downTime,SystemClock.uptimeMillis(),action,contacts.size,
             properties,coords,0,0,1f,1f,0,0,InputDevice.SOURCE_TOUCHSCREEN,0)
-        return try { target.host.injectMotion(target.displayId,event) } finally { event.recycle() }
+        return try { target.host.injectMotion(target.displayId,target.width,target.height,target.rotation,event) } finally { event.recycle() }
     }
     private fun start(id: Long, px: Float, py: Float, pressure: Float): Boolean {
         if (id in contacts || contacts.size >= 10) return false
@@ -55,7 +55,7 @@ internal class ManagedApplicationInput(val target: ManagedApplications.Target) {
             (if(modifiers and 0x0A!=0) KeyEvent.META_CTRL_ON else 0) or
             (if(modifiers and 0x14!=0) KeyEvent.META_ALT_ON else 0),
             -1,0,0,InputDevice.SOURCE_KEYBOARD)
-        val accepted=target.host.injectKey(target.displayId,event)
+        val accepted=target.host.injectKey(target.displayId,target.width,target.height,target.rotation,event)
         if (accepted) { if(down) heldKeys.add(code) else heldKeys.remove(code) }
         return accepted
     }

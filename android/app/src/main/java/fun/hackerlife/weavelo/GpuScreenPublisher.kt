@@ -6,8 +6,8 @@ import org.json.JSONObject
 import java.util.TreeMap
 
 /** One authorized raw capture texture, independent native encoders per view. */
-internal class GpuScreenPublisher(private val width: Int, private val height: Int) : AutoCloseable {
-    private val gpu=GpuVideoSurface(null,width,height,PublisherClient::nativeClockMicros)
+internal class GpuScreenPublisher(private val width: Int, private val height: Int, rotation: Int = 0) : AutoCloseable {
+    private val gpu=GpuVideoSurface(null,width,height,PublisherClient::nativeClockMicros,sourceRotation=rotation)
     val input get()=gpu.input
     private val views=mutableMapOf<Long,View>()
     private val failed=mutableSetOf<Long>()

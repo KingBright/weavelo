@@ -23,8 +23,7 @@ class ProjectionService : Service() {
     private var worker: Thread? = null
     private var projection: MediaProjection? = null
     private var displayListener: DisplayManager.DisplayListener? = null
-    @Volatile private var captureDensity = 0
-    @Volatile private var captureSize = 1080 to 1920
+    @Volatile private var captureGeometry = ProjectionCaptureGeometry(1080, 1920, 0, 0)
     @Volatile private var audioAllowed = false
     @Volatile private var controlAllowed = false
     private var sendTarget: String? = null
@@ -51,8 +50,11 @@ class ProjectionService : Service() {
             if (Build.VERSION.SDK_INT >= 29) startForeground(8124, notification, serviceType)
             else startForeground(8124, notification)
             val metrics = resources.displayMetrics
-            captureSize = metrics.widthPixels to metrics.heightPixels
-            captureDensity = metrics.densityDpi
+            val displays = getSystemService(DisplayManager::class.java)
+            @Suppress("DEPRECATION")
+            val initialRotation = displays.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
+            captureGeometry = ProjectionCaptureGeometry(metrics.widthPixels, metrics.heightPixels,
+                metrics.densityDpi, displayRotationDegrees(initialRotation))
             controlAllowed = intent?.getBooleanExtra("control", false) == true
             sendTarget = intent?.getStringExtra("send-target")
             audioAllowed = managed == null && intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
@@ -60,33 +62,43 @@ class ProjectionService : Service() {
             projection = capture
             capture?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() { PublisherClient.controlSize = null; runCatching { PublisherClient.action(1) }; running.set(false); stopSelf() }
-                override fun onCapturedContentResize(width: Int, height: Int) { if (width > 1 && height > 1 && captureSize != (width to height)) {
-                    PublisherClient.controlSize = null
-                    captureSize = width to height
-                } }
+                override fun onCapturedContentResize(width: Int, height: Int) {
+                    val current = captureGeometry
+                    if (width > 1 && height > 1 && (current.width != width || current.height != height)) {
+                        PublisherClient.controlSize = null
+                        captureGeometry = current.copy(width = width, height = height)
+                    }
+                }
             }, Handler(Looper.getMainLooper()))
             if (managed != null) {
                 val info = JSONObject(managed.info())
-                captureSize = info.getInt("width") to info.getInt("height")
-                captureDensity = info.getInt("density")
-                val displays = getSystemService(DisplayManager::class.java)
-                displayListener = object : DisplayManager.DisplayListener {
-                    override fun onDisplayAdded(id: Int) = Unit
-                    override fun onDisplayRemoved(id: Int) = Unit
-                    override fun onDisplayChanged(id: Int) {
-                        if (id != Display.DEFAULT_DISPLAY) return
-                        val current = DisplayMetrics()
+                captureGeometry = captureGeometry.copy(width = info.getInt("width"), height = info.getInt("height"),
+                    density = info.getInt("density"))
+            }
+            displayListener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(id: Int) = Unit
+                override fun onDisplayRemoved(id: Int) = Unit
+                override fun onDisplayChanged(id: Int) {
+                    if (id != Display.DEFAULT_DISPLAY) return
+                    val display = displays.getDisplay(id) ?: return
+                    @Suppress("DEPRECATION")
+                    val rotation = displayRotationDegrees(display.rotation)
+                    val old = captureGeometry
+                    var next = old.copy(rotation = rotation)
+                    if (managed != null) {
+                        val metrics = DisplayMetrics()
                         @Suppress("DEPRECATION")
-                        displays.getDisplay(id)?.getRealMetrics(current)
-                        if (current.widthPixels > 1 && current.heightPixels > 1 &&
-                            (captureSize != (current.widthPixels to current.heightPixels) || captureDensity != current.densityDpi)) {
-                            PublisherClient.controlSize = null
-                            captureDensity = current.densityDpi
-                            captureSize = current.widthPixels to current.heightPixels
+                        display.getRealMetrics(metrics)
+                        if (metrics.widthPixels > 1 && metrics.heightPixels > 1) {
+                            next = next.copy(width = metrics.widthPixels, height = metrics.heightPixels, density = metrics.densityDpi)
                         }
                     }
-                }.also { displays.registerDisplayListener(it, Handler(Looper.getMainLooper())) }
-            }
+                    if (next != old) {
+                        PublisherClient.controlSize = null
+                        captureGeometry = next
+                    }
+                }
+            }.also { displays.registerDisplayListener(it, Handler(Looper.getMainLooper())) }
             running.set(true)
             worker = Thread({ publish(capture, managed) }, "remote-projection").apply { start() }
         } catch (e: Exception) { PublisherClient.status(e.message ?: "Screen sharing failed", false); stopSelf() }
@@ -97,19 +109,18 @@ class ProjectionService : Service() {
         var display: CaptureDisplay? = null
         var publisher: GpuScreenPublisher? = null
         var apps: ManagedApplications? = null
-        var sourceSize = 0 to 0
-        var sourceDensity = 0
+        var appliedGeometry: ProjectionCaptureGeometry? = null
         var demand = JSONObject()
         var nextDemand = 0L
         try {
             val directory = File(filesDir, "received").apply { mkdirs() }
             PublisherClient.action(0, JSONObject().put("bind", "0.0.0.0:5001").put("directory", directory.absolutePath).put("audio", audioAllowed).put("control",controlAllowed).toString())
             captureGrant = JSONObject(PublisherClient.action(2)).getLong("grant")
-            val initialSize=captureSize
+            val initial = captureGeometry
             // Android 14+ authorizes exactly one VirtualDisplay. Pause and
             // rotation replace its Surface, never create another with this token.
-            display = if (managed != null) CaptureDisplay.managed(managed, initialSize.first, initialSize.second, captureDensity)
-                else CaptureDisplay.projection(checkNotNull(capture), initialSize.first, initialSize.second, captureDensity)
+            display = if (managed != null) CaptureDisplay.managed(managed, initial.width, initial.height, initial.density)
+                else CaptureDisplay.projection(checkNotNull(capture), initial.width, initial.height, initial.density)
             if (managed != null) apps = ManagedApplications(managed, applicationContext)
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
@@ -124,17 +135,17 @@ class ProjectionService : Service() {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
                     apps?.update()
                 }
-                val size=captureSize
-                val density=captureDensity
-                if (sourceSize != size || sourceDensity != density) {
+                val geometry = captureGeometry
+                val size = geometry.width to geometry.height
+                if (captureReconfiguration(appliedGeometry, geometry) != null) {
                     PublisherClient.controlSize = null
                     display.surface = null
                     publisher?.finish();publisher?.close();publisher=null
-                    display.resize(size.first,size.second,density)
-                    PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width",size.first).put("height",size.second).toString())
-                    sourceSize=size
-                    sourceDensity=density
-                    if (captureSize == size && controlAllowed) PublisherClient.controlSize=size
+                    display.resize(size.first,size.second,geometry.density)
+                    PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width",size.first).put("height",size.second)
+                        .put("rotation",geometry.rotation).toString())
+                    appliedGeometry = geometry
+                    if (captureGeometry == geometry && controlAllowed) PublisherClient.controlSize=size
                     demand = JSONObject(PublisherClient.action(2))
                 }
                 val views=demand.optJSONArray("views") ?: org.json.JSONArray()

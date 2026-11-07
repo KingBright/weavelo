@@ -1265,6 +1265,7 @@ pub(crate) mod static_input_tests {
                             id,
                             source_revision,
                             request,
+                            ..
                         } = *command
                         {
                             sender

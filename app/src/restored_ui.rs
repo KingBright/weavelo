@@ -12,6 +12,8 @@ use sending::{SendActivity, SendingContext};
 mod native_menu;
 #[path="restored_window_icon.rs"]
 mod window_icon;
+#[path="restored_window_fit.rs"]
+mod window_fit;
 #[path="restored_device_badge.rs"]
 mod device_badges;
 #[cfg(target_os = "macos")]
@@ -46,7 +48,6 @@ use crate::desktop::device_list::{
     DeviceListAction, DeviceListEffect, DeviceListState,
 };
 use crate::desktop::original_owner::{FrameSlot, OriginalOwner, SourceViewBinding};
-use crate::original_design::stream_status_capsule_card;
 use crate::telemetry_display::{NetworkQuality, UiHostStats};
 use crate::{
     AppDevice, HostStats, MacDecodedVideoFrame, MeshPairingControl, MeshPairingMessageKind,
@@ -327,7 +328,7 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
     let (preferred, minimum) = match purpose {
         WindowPurpose::Management => (size(px(580.), px(500.)), size(px(520.), px(440.))),
         WindowPurpose::Sending => (size(px(560.), px(340.)), size(px(420.), px(260.))),
-        WindowPurpose::Stream => (size(px(1280.), px(800.)), size(px(800.), px(560.))),
+        WindowPurpose::Stream => (size(px(1280.), px(800.)), size(px(120.), px(120.))),
     };
     let window_bounds = cx.primary_display().map(|display| {
         let work = display.visible_bounds();
@@ -560,6 +561,7 @@ struct RestoredDashboard {
     window_handle: AnyWindowHandle,
     pip_windows: Vec<AnyWindowHandle>,
     pip_visible: bool,
+    window_fit: window_fit::WindowFit,
     started: Instant,
     render_calls: u64,
     test_connect_started: bool,
@@ -757,6 +759,7 @@ impl RestoredDashboard {
             window_handle: window.window_handle(),
             pip_windows: Vec::new(),
             pip_visible: false,
+            window_fit: window_fit::WindowFit::new([f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)]),
             started: Instant::now(),
             render_calls: 0,
             test_connect_started: false,
@@ -837,7 +840,8 @@ impl RestoredDashboard {
             this.sync_media_pause();
             cx.notify();
         }).detach();
-        cx.observe_window_bounds(window, |this, _, _| {
+        cx.observe_window_bounds(window, |this, window, _| {
+            if this.purpose == WindowPurpose::Stream { window_fit::observe(window, &mut this.window_fit); }
             this.reset_pointer_scroll();
             this.owner.release_input();
             this.pointer_input = PointerInputTracker::default();
@@ -1330,7 +1334,7 @@ impl RestoredDashboard {
                 point(px(200.0), px(120.0)),
                 size(px(854.0), px(480.0)),
             ))),
-            window_min_size: Some(size(px(480.0), px(270.0))),
+            window_min_size: Some(size(px(120.0), px(120.0))),
             titlebar: Some(TitlebarOptions {
                 title: Some(
                     format!(
@@ -1353,8 +1357,11 @@ impl RestoredDashboard {
         let primary = cx.entity();
         let result = cx.open_window(window_options, move |window, cx| {
             window_icon::apply(window,cx);
-            let view = cx.new(|_cx| PopoutStreamView {
-                artwork_cache: Default::default(),
+            let view = cx.new(|cx| {
+                cx.observe_window_bounds(window, |this: &mut PopoutStreamView, window, _| {
+                    window_fit::observe(window, &mut this.window_fit);
+                }).detach();
+                PopoutStreamView {
                 owner,
                 _primary: primary,
                 native_window_title: String::new(),
@@ -1363,7 +1370,8 @@ impl RestoredDashboard {
                 host_stats,
                 scale_mode,
                 telemetry_hud_collapsed: true,
-            });
+                window_fit: window_fit::WindowFit::new([f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)]),
+            }});
             cx.spawn({
                 let view = view.downgrade();
                 async move |cx| {
@@ -2308,8 +2316,14 @@ fn stream_video_canvas_surface(
     }
 }
 
+// Android's selected screen/app source is explicitly tagged by its publisher;
+// desktop display sources keep their existing default sizing.
+fn adaptive_source(source: protocol::session::CaptureSource, sources: &[protocol::session::CaptureSourceInfo]) -> bool {
+    matches!(source, protocol::session::CaptureSource::Window(_))
+        || sources.iter().any(|item| item.source == source && item.application == "MediaProjection")
+}
+
 struct PopoutStreamView {
-    artwork_cache: ApplicationArtwork,
     owner: Arc<OriginalOwner>,
     _primary: Entity<RestoredDashboard>,
     native_window_title: String,
@@ -2318,6 +2332,7 @@ struct PopoutStreamView {
     host_stats: Option<Arc<SharedHostStats>>,
     scale_mode: ViewportScaleMode,
     telemetry_hud_collapsed: bool,
+    window_fit: window_fit::WindowFit,
 }
 
 impl Render for PopoutStreamView {
@@ -2332,8 +2347,6 @@ impl Render for PopoutStreamView {
         if let Some((_, frame)) = self.owner.frame_binding() { self.presentation_frame = frame; }
         else { self.presentation_frame.lock().unwrap().take(); }
         self.host_stats = self.owner.stats();
-        let artwork = self.artwork_cache.update(snapshot.source_icons);
-        let source_icons = &artwork;
         let source = confirmed_source(&snapshot.sources, snapshot.active_source);
         let peer = snapshot.role.session().map(|s| s.peer.display_name.as_str());
         let title = if peer.is_none() && !self.native_window_title.is_empty() {
@@ -2348,6 +2361,10 @@ impl Render for PopoutStreamView {
             .lock()
             .expect("presentation frame lock")
             .clone();
+        if let Some(source_size) = current_frame.as_ref().filter(|frame| frame.frame_geometry.is_some_and(|geometry| self.owner.accepts_frame_source_revision(geometry.source_revision))).and_then(|frame| window_fit::source_size(frame)) {
+            window_fit::fit(window, cx, &mut self.window_fit, source_size,
+                adaptive_source(snapshot.active_source, &snapshot.sources));
+        }
         let stats = self
             .host_stats
             .as_ref()
@@ -2393,9 +2410,13 @@ impl Render for PopoutStreamView {
             })
             .into_any_element();
         let fullscreen = window.is_fullscreen();
-        let controls = div().flex().items_center().gap_1()
-            .when_some(source, |this, source| this.child(capture_source_badge(source, source_icons, &theme)))
+        let controls = div().flex().items_center().justify_center().gap_1()
             .child(scale_btn)
+            .child(command_button("pip_fit_window", ActionVariantKind::Neutral, cx)
+                .h(px(24.0)).px_2()
+                .tooltip(tooltip("Fit window").build())
+                .on_click(cx.listener(|this, _, _, cx| { this.window_fit.request_fit(); cx.notify(); }))
+                .child(icon(IconName::Window).size(px(12.0))))
             .child(command_button("pip_fullscreen", ActionVariantKind::Neutral, cx)
                 .h(px(24.0)).px_2()
                 .tooltip(tooltip(if fullscreen { "Exit fullscreen" } else { "Fullscreen" }).build())
@@ -2422,14 +2443,17 @@ impl Render for PopoutStreamView {
                     .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
                         cx.stop_propagation();
                     }))
-                    .child(stream_status_capsule_card(
-                        title,
-                        current_frame.is_some(),
-                        compact_telemetry_label(stats.as_ref()),
-                        true,
-                        &theme,
-                        Some(controls),
-                    )),
+                    .child(
+                        div().flex().flex_col().items_center().gap_1()
+                            .max_w(relative(0.95)).min_w_0().px_1().py_1()
+                            .rounded(px(12.)).bg(color_glass_card()).border_1()
+                            .border_color(color_border_fine()).shadow_lg()
+                            .child(div().id("pip_source_title").w_full().min_w_0().truncate().text_center()
+                                .text_size(px(10.))
+                                .tooltip(tooltip(format!("{} · {}", title, compact_telemetry_label(stats.as_ref()))).build())
+                                .child(title))
+                            .child(controls),
+                    ),
             )
             .child(if self.telemetry_hud_collapsed {
                 div()
@@ -2538,6 +2562,10 @@ impl Render for RestoredDashboard {
             return self.sending_view(&snapshot,window,cx);
         }
         let role = snapshot.role.clone();
+        if let Some(source_size) = self.current_frame.as_ref().filter(|frame| frame.frame_geometry.is_some_and(|geometry| self.owner.accepts_frame_source_revision(geometry.source_revision))).and_then(|frame| window_fit::source_size(frame)) {
+            window_fit::fit(window, cx, &mut self.window_fit, source_size,
+                adaptive_source(snapshot.active_capture_source, &snapshot.capture_sources));
+        }
         self.capture_supports_input = snapshot.active_capture_supports_input;
         if self.capture_error_seen != snapshot.capture_source_error {
             self.capture_error_seen = snapshot.capture_source_error.clone();

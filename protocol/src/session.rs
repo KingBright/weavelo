@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 // Scroll gesture metadata is part of the current input payload. Reject older
 // session layouts before admitting input; authentication and device keys stay unchanged.
-pub const SESSION_VERSION: u32 = 10;
+pub const SESSION_VERSION: u32 = 11;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -209,7 +209,7 @@ pub enum SessionCommand {
         source_revision: u32,
         event: crate::InputEvent,
     },
-    RequestInputBinding { connection_id: u32, id: u32, source_revision: u32, request: u64 },
+    RequestInputBinding { connection_id: u32, id: u32, source_revision: u32, presented_geometry_revision: u64, request: u64 },
     InputBinding { binding: crate::realtime_input::InputBinding, request: u64, host_time_ms: u64 },
     RealtimeInput(crate::realtime_input::RealtimeInput),
     InputHandled { binding: crate::realtime_input::InputBinding, sequence: u64 },
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn delivery_commands_round_trip_without_changing_existing_wire_indices(){
         let existing=[(SessionCommand::ReleaseInput{id:7},0u32),(SessionCommand::Open{connection_id:9,version:SESSION_VERSION},7),
-            (SessionCommand::Close{connection_id:9},18),(SessionCommand::RequestInputBinding{connection_id:9,id:7,source_revision:0,request:1},23)];
+            (SessionCommand::Close{connection_id:9},18),(SessionCommand::RequestInputBinding{connection_id:9,id:7,source_revision:0,presented_geometry_revision:1,request:1},23)];
         for(command,index)in existing {let bytes=bincode::serialize(&command).unwrap();assert_eq!(&bytes[..4],&index.to_le_bytes());}
         let commands=[SessionCommand::DeliveryOffer{request_id:17,source_device_id:"source".into(),target_device_id:"target".into(),ticket:[3;32],revision:1,sources:vec![CaptureSource::Display(7),CaptureSource::Window(9)]},
             SessionCommand::DeliveryClaim{request_id:17,target_device_id:"target".into(),ticket:[3;32],sources:vec![CaptureSource::Display(7)]},

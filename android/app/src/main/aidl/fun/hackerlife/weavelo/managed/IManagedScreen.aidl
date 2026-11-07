@@ -9,8 +9,10 @@ interface IManagedScreen {
     String applications();
     byte[] applicationIcon(String packageName, int edge);
     int createApplication(String packageName, int width, int height, int density);
-    boolean injectMotion(int id, in MotionEvent event);
-    boolean injectKey(int id, in KeyEvent event);
+    String applicationGeometry(int id);
+    void acceptApplicationGeometry(int id, int width, int height, int rotation);
+    boolean injectMotion(int id, int width, int height, int rotation, in MotionEvent event);
+    boolean injectKey(int id, int width, int height, int rotation, in KeyEvent event);
     void setSurface(int id, in Surface surface);
     void resize(int id, int width, int height, int density);
     void release(int id);

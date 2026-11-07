@@ -32,6 +32,7 @@ pub(crate) struct Source {
     pub audio: bool,
     pub grant: u64,
     pub demand: CaptureDemand,
+    pub capture_rotation: u16,
     // Outer None is pending; Some(None) is a completed native read without an icon.
     pub artwork: Option<Option<protocol::interaction::ApplicationIcon>>,
     pub artwork_epoch: u64,
@@ -57,7 +58,7 @@ impl MediaSources {
         this.sources.insert(CaptureSource::MainDisplay,Source {
             info:CaptureSourceInfo {source:CaptureSource::MainDisplay,title:"Android selected screen or app".into(),
                 application:"MediaProjection".into(),process_id:None,width:1080,height:1920,supports_input:false,camera:None},
-            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},artwork:None,artwork_epoch:1,catalog_icon:None,
+            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,
         });this
     }
     fn next(&mut self)->u64 {
@@ -83,7 +84,7 @@ impl MediaSources {
                 existing.info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,catalog_icon:None,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }Ok(bindings)
     }
@@ -102,11 +103,13 @@ impl MediaSources {
         for mut info in infos {
             info.supports_input=false;
             if let Some(old)=self.sources.get(&info.source)
-                && old.enabled && old.info.application==info.application && old.info.width==info.width && old.info.height==info.height {
+                && old.enabled && old.info.application==info.application {
+                // A package catalog refresh is not a new capture geometry.
+                info.width=old.info.width;info.height=old.info.height;
                 let id=info.source;self.sources.get_mut(&id).unwrap().info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,artwork:None,artwork_epoch:1,catalog_icon:None,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }
         Ok(())
@@ -164,6 +167,10 @@ impl MediaSources {
     pub fn accepts_screen_frame(&self,stream:u64,grant:u64)->bool {
         self.screen_frame_source(stream,grant).is_some()
     }
+    pub fn accepts_screen_geometry(&self,stream:u64,grant:u64,revision:u64)->bool {
+        self.screen_frame_source(stream,grant).is_some()
+            && self.views.get(&stream).is_some_and(|view|view.accepts_geometry(revision))
+    }
     pub fn screen_frame_source(&self,stream:u64,grant:u64)->Option<CaptureSource> {
         let view=self.views.get(&stream).filter(|view|view.active&&view.grant==grant)?;
         self.sources.get(&view.request.source).filter(|source|source.enabled&&source.grant==grant)?;
@@ -186,9 +193,11 @@ impl MediaSources {
         if !(2..=8192).contains(&width)||!(2..=8192).contains(&height)||u64::from(width)*u64::from(height)>33_554_432
             ||!matches!(rotation,0|90|180|270){return Err("Invalid camera or screen geometry".into());}
         let entry=self.sources.get(&source).filter(|entry|entry.enabled&&entry.demand.epoch==epoch).ok_or("Capture configuration changed")?;
-        if (entry.info.width,entry.info.height,entry.info.camera.map_or(0,|camera|camera.rotation))==(width,height,rotation){return Ok(epoch);}
+        if (entry.info.width,entry.info.height,entry.info.camera.map_or(entry.capture_rotation,|camera|camera.rotation))==(width,height,rotation){return Ok(epoch);}
+        for view in self.views.values_mut().filter(|view|view.request.source==source) {view.invalidate_geometry();}
         let next=self.next();let entry=self.sources.get_mut(&source).unwrap();
         entry.info.width=width;entry.info.height=height;
+        entry.capture_rotation=rotation;
         if let Some(camera)=&mut entry.info.camera{camera.rotation=rotation;}
         entry.demand.epoch=next;entry.demand.keyframe=entry.demand.keyframe.saturating_add(1);Ok(next)
     }
@@ -239,6 +248,25 @@ impl MediaSources {
 mod tests {
     use super::*;
     use protocol::session::CameraFacing;
+    #[test]
+    fn app_rotation_invalidates_epoch_and_catalog_refresh_preserves_geometry() {
+        let mut media=MediaSources::new(true,false);
+        let source=CaptureSource::Window(91);
+        let app=CaptureSourceInfo {source,title:"App".into(),application:"App".into(),process_id:None,
+            width:720,height:1280,supports_input:false,camera:None};
+        media.set_applications(vec![app.clone()]).unwrap();
+        let grant=media.sources[&source].grant;
+        let initial=media.demand(source).epoch;
+        let landscape=media.geometry(source,initial,1280,720,90).unwrap();
+        assert_ne!(landscape,initial);
+        let reverse=media.geometry(source,landscape,1280,720,270).unwrap();
+        assert_ne!(reverse,landscape);
+        assert!(media.geometry(source,landscape,720,1280,0).is_err());
+        media.set_applications(vec![app]).unwrap();
+        assert_eq!((media.sources[&source].info.width,media.sources[&source].info.height),(1280,720));
+        assert_eq!(media.sources[&source].demand.epoch,reverse);
+        assert_eq!(media.sources[&source].grant,grant);
+    }
     #[test]
     fn catalog_icons_are_cached_bound_and_never_replace_stream_grants() {
         let mut media=MediaSources::new(true,false);
@@ -339,6 +367,28 @@ mod tests {
         media.recompute([active(&media,&req,true,true)]);
         assert!(!media.accepts_frame(req.source,grant,true));
         assert!(media.accepts_frame(req.source,media.demand(req.source).grant,true));
+    }
+    #[test]
+    fn capture_rotation_fences_old_geometry_but_roi_keeps_prior_revision() {
+        use protocol::viewport::{NormalizedRect,ViewportDemand};
+        let mut media=MediaSources::new(true,false);let req=request(CaptureSource::MainDisplay);
+        media.recompute([active(&media,&req,true,false)]);
+        let first=media.screen_demand().views.remove(0);
+        assert!(media.accepts_screen_geometry(first.stream,first.grant,first.geometry.revision));
+        media.viewport(first.stream,ViewportDemand{id:req.id,source_revision:0,revision:1,
+            visible:NormalizedRect{x:0,y:0,width:500_000,height:500_000},width:320,height:320}).unwrap();
+        let roi=media.screen_demand().views.remove(0);
+        assert!(roi.geometry.revision>first.geometry.revision);
+        assert!(media.accepts_screen_geometry(first.stream,first.grant,first.geometry.revision));
+        let epoch=media.demand(req.source).epoch;
+        let [w,h]=[roi.geometry.source_width,roi.geometry.source_height];
+        media.geometry(req.source,epoch,w,h,180).unwrap();
+        assert!(!media.accepts_screen_geometry(first.stream,first.grant,first.geometry.revision));
+        assert!(!media.accepts_screen_geometry(roi.stream,roi.grant,roi.geometry.revision));
+        let next=media.screen_demand().views.remove(0);
+        assert!(next.geometry.revision>roi.geometry.revision);
+        assert!(media.accepts_screen_geometry(next.stream,next.grant,next.geometry.revision));
+        assert!(!media.accepts_screen_geometry(next.stream,next.grant,next.geometry.revision+1));
     }
     #[test]
     fn screen_views_keep_independent_crops_and_reject_old_grants() {

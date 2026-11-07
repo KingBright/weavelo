@@ -446,6 +446,7 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
                 12 => return serde_json::to_string(&workspace.touch(&payload)?).map_err(|e|e.to_string()),
                 13 => return workspace.keyboard_context(&payload),
                 14 => workspace.keyboard(&payload)?,
+                15 => workspace.presented(&payload)?,
                 _ => return Err("unknown workspace operation".into()),
             }
             Ok(String::new())

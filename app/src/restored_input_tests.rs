@@ -86,7 +86,7 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
                                 )
                                 .await
                                 .unwrap();
-                        } else if let SessionCommand::RequestInputBinding{connection_id,id,source_revision,request}=*cmd {
+                        } else if let SessionCommand::RequestInputBinding{connection_id,id,source_revision,request,..}=*cmd {
                             sender.send_control(&ControlMessage::Session(Box::new(SessionCommand::InputBinding {
                                 binding:protocol::realtime_input::InputBinding{connection_id,subscription_id:id,source_revision,epoch:[9;16]},request,
                                 host_time_ms:remote_core::session_crypto::now_unix_ms(),

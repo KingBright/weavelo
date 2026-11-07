@@ -442,6 +442,11 @@ object WorkspaceClient {
             DirectedDelivery.rendered(it, generation, id, mutable.value.panes)
         }
     }
+    internal fun presented(id: Int, sessionKey: String, generation: Long, token: Long, geometry: VideoFrameGeometry) = guarded {
+        if (currentView(id, sessionKey, generation, true)) {
+            action(15, JSONObject().put("id", id).put("token", token).put("geometry", geometry.toJson()).toString())
+        }
+    }
     internal fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
         mode: TouchMode, width: Int, height: Int, event: JSONObject,
         geometry: VideoFrameGeometry? = null,

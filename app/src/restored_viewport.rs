@@ -120,7 +120,12 @@ impl State {
         self.pending.map(|_|self.last_attempt.map_or(Duration::ZERO,|time|remote_core::viewport::DEMAND_INTERVAL.saturating_sub(now.saturating_duration_since(time))).max(Duration::from_millis(1)))
     }
     fn did_paint(&mut self,painted:Painted,epoch:u64) {
-        if self.epoch==epoch{self.painted=Some(painted);}
+        if self.epoch==epoch {
+            if let Some(connection)=painted.target.binding.scoped_connection(remote_core::shared_files::current_share_scope()) {
+                connection.presented_geometry(painted.target.id,painted.target.source_revision,painted.geometry.revision);
+            }
+            self.painted=Some(painted);self.ready.notify_one();
+        }
     }
 }
 

@@ -70,6 +70,14 @@ impl ViewportPlanner {
         self.demand=Some(demand);Ok(true)
     }
     pub fn reset(&mut self) {*self=Self{native_window:self.native_window,..Self::default()};}
+    /// Capture geometry changed, including a same-sized rotation. Keep the
+    /// sequence monotonic so in-flight encoded frames remain distinguishable.
+    pub fn invalidate_current(&mut self)->Option<u64> {
+        self.current=None;
+        self.last_visible=None;
+        self.last_limits=None;
+        self.next_revision.checked_add(1)
+    }
     pub fn plan(&mut self,source:[u32;2],cap:[u32;2],source_revision:u32,now:Instant)->Result<FrameGeometry,&'static str> {
         if source.iter().any(|v|!(2..=32768).contains(v)) || cap.iter().any(|v|!(2..=8192).contains(v)) {
             return Err("Source or viewport pixel size is unavailable");

@@ -42,6 +42,21 @@ use crate::{
 };
 use crate::{WindowKind, scene::Scene};
 
+fn compositor_fit_bounds(width: i32, height: i32) -> Option<Size<Pixels>> {
+    (width > 0 && height > 0).then(|| size(px(width as f32), px(height as f32)))
+}
+
+#[cfg(test)]
+mod fit_bounds_tests {
+    use super::*;
+    #[test]
+    fn compositor_unspecified_bounds_are_not_treated_as_a_work_area() {
+        assert_eq!(compositor_fit_bounds(800, 600), Some(size(px(800.), px(600.))));
+        assert_eq!(compositor_fit_bounds(0, 600), None);
+        assert_eq!(compositor_fit_bounds(800, 0), None);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Callbacks {
     request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
@@ -110,6 +125,8 @@ pub struct WaylandWindowState {
     active: bool,
     hovered: bool,
     in_progress_configure: Option<InProgressConfigure>,
+    fit_bounds: Option<Size<Pixels>>,
+    fit_bounds_revision: u64,
     resize_throttle: bool,
     in_progress_window_controls: Option<WindowControls>,
     window_controls: WindowControls,
@@ -337,6 +354,8 @@ impl WaylandWindowState {
             tiling: Tiling::default(),
             window_bounds: options.bounds,
             in_progress_configure: None,
+            fit_bounds: None,
+            fit_bounds_revision: 0,
             resize_throttle: false,
             client,
             appearance,
@@ -685,6 +704,24 @@ impl WaylandWindowStatePtr {
 
                 false
             }
+            xdg_toplevel::Event::ConfigureBounds { width, height } => {
+                let (changed, current, scale) = {
+                    let mut state = self.state.borrow_mut();
+                    let bounds = compositor_fit_bounds(width, height);
+                    let changed = state.fit_bounds != bounds;
+                    if changed {
+                        state.fit_bounds = bounds;
+                        state.fit_bounds_revision = state.fit_bounds_revision.wrapping_add(1);
+                    }
+                    (changed, state.bounds.size, state.scale)
+                };
+                if changed {
+                    if let Some(ref mut resize) = self.callbacks.borrow_mut().resize {
+                        resize(current, scale);
+                    }
+                }
+                false
+            }
             xdg_toplevel::Event::Close => {
                 let mut cb = self.callbacks.borrow_mut();
                 if let Some(mut should_close) = cb.should_close.take() {
@@ -985,6 +1022,15 @@ impl rwh::HasDisplayHandle for WaylandWindow {
 }
 
 impl PlatformWindow for WaylandWindow {
+    fn fit_work_area(&self) -> Option<Bounds<Pixels>> {
+        let state = self.borrow();
+        state.fit_bounds.map(|size| Bounds::new(state.bounds.origin, size))
+    }
+
+    fn fit_bounds_revision(&self) -> u64 {
+        self.borrow().fit_bounds_revision
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.borrow().bounds
     }

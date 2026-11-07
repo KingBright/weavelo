@@ -22,11 +22,13 @@ class ManagedApplicationInputTest {
         override fun applicationIcon(packageName:String,edge:Int)=byteArrayOf()
         override fun createMirror(width:Int,height:Int,density:Int)=error("No display creation in this test")
         override fun createApplication(packageName:String,width:Int,height:Int,density:Int)=error("No app launch in this test")
+        override fun applicationGeometry(id:Int)="{}"
+        override fun acceptApplicationGeometry(id:Int,width:Int,height:Int,rotation:Int)=Unit
         override fun setSurface(id:Int,surface:Surface?)=error("No capture in this test")
         override fun resize(id:Int,width:Int,height:Int,density:Int)=error("No resize in this test")
         override fun release(id:Int)=error("No display release in this test")
-        override fun injectKey(id:Int,event:KeyEvent):Boolean {assertEquals(7,id);return true}
-        override fun injectMotion(id:Int,event:MotionEvent):Boolean {
+        override fun injectKey(id:Int,width:Int,height:Int,rotation:Int,event:KeyEvent):Boolean {assertEquals(7,id);return true}
+        override fun injectMotion(id:Int,width:Int,height:Int,rotation:Int,event:MotionEvent):Boolean {
             assertEquals(7,id);events.add(event.actionMasked to event.pointerCount);return true
         }
     }
