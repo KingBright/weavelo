@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[track_caller]
 fn pump_until(
     cx: &mut TestAppContext,
     view: &Entity<RestoredDashboard>,
@@ -56,8 +57,15 @@ fn source_browser_waits_for_an_explicit_choice_and_reuses_its_control_connection
     let server = executor.spawn(async move {
         let mut queries = 0;
         while let Ok(packet) = receiver.recv().await {
-            let MultiplexedPacket::Control(ControlMessage::Session(command), from) = packet else {
-                continue;
+            let (command, from) = match packet {
+                MultiplexedPacket::Control(ControlMessage::Session(command), from) => (command, from),
+                MultiplexedPacket::Control(ControlMessage::Ping { client_send_ts }, from) => {
+                    sender.send_control(&ControlMessage::Pong {
+                        client_send_ts, host_recv_ts: client_send_ts, host_send_ts: client_send_ts,
+                    }, from).await.unwrap();
+                    continue;
+                }
+                _ => continue,
             };
             let response = match *command {
                 SessionCommand::Open { connection_id, .. } => SessionCommand::Opened {

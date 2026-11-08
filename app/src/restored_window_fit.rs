@@ -2,7 +2,25 @@
 //! the encoded crop and demand size, so changing the window cannot feed back.
 use std::time::{Duration, Instant};
 const RESIZE_SETTLE: Duration = Duration::from_millis(750);
-type FitKey = ([u32; 2], [u32; 2], u32, u64);
+pub(super) const STREAM_WINDOW_GUTTER_PX: f32 = 8.0;
+pub(super) const STREAM_HEADER_HEIGHT_PX: f32 = 44.0;
+pub(super) const STREAM_HEADER_TOP_PX: f32 = 8.0;
+pub(super) const STREAM_VIDEO_GAP_PX: f32 = 4.0;
+pub(super) const ANDROID_COMPANION_WIDTH_PX: f32 = 48.0;
+pub(super) const ANDROID_COMPANION_GAP_PX: f32 = 8.0;
+pub(super) const FULLSCREEN_RAIL_WIDTH_PX: f32 = 48.0;
+pub(super) const FULLSCREEN_RAIL_HEIGHT_PX: f32 = 4.0;
+pub(super) const FULLSCREEN_RAIL_HIT_HEIGHT_PX: f32 = 24.0;
+
+type FitKey = ([u32; 2], [u32; 2], u32, u64, [u32; 2]);
+
+pub(super) fn stream_window_chrome(companion: bool, computer_use_status: bool) -> [f32; 2] {
+    let width = 2.0 * STREAM_WINDOW_GUTTER_PX
+        + if companion { ANDROID_COMPANION_WIDTH_PX + ANDROID_COMPANION_GAP_PX } else { 0.0 };
+    let header = STREAM_HEADER_HEIGHT_PX + if computer_use_status { 28.0 } else { 0.0 };
+    let height = STREAM_HEADER_TOP_PX + header + STREAM_VIDEO_GAP_PX + STREAM_WINDOW_GUTTER_PX;
+    [width, height]
+}
 #[derive(Debug)]
 pub(super) struct WindowFit {
     auto: bool,
@@ -43,9 +61,10 @@ impl WindowFit {
         self.fitted_source = None;
     }
 
-    fn key(source: [u32; 2], display_size: [f32; 2], display_scale: f32, revision: u64) -> FitKey {
+    fn key(source: [u32; 2], display_size: [f32; 2], display_scale: f32, revision: u64, chrome: [f32; 2]) -> FitKey {
         (source, [display_size[0].round() as u32, display_size[1].round() as u32],
-            (display_scale * 1000.).round() as u32, revision)
+            (display_scale * 1000.).round() as u32, revision,
+            [chrome[0].round().max(0.0) as u32, chrome[1].round().max(0.0) as u32])
     }
 
     fn needs_fit(&mut self, key: FitKey, special: bool, eligible: bool, now: Instant) -> bool {
@@ -69,12 +88,18 @@ impl WindowFit {
             return None;
         }
         let source = key.0;
-        let max_scale = (available[0] / source[0] as f32).min(available[1] / source[1] as f32);
+        let chrome = [key.4[0] as f32, key.4[1] as f32];
+        let content_available = [available[0] - chrome[0], available[1] - chrome[1]];
+        if content_available.iter().any(|n| !n.is_finite() || *n < 120.) {
+            self.unavailable(key);
+            return None;
+        }
+        let max_scale = (content_available[0] / source[0] as f32).min(content_available[1] / source[1] as f32);
         let min_scale = (120. / source[0] as f32).max(120. / source[1] as f32);
         let scale = (1. / display_scale).max(min_scale).min(max_scale);
         let target = [
-            (source[0] as f32 * scale).round().max(120.).min(available[0]),
-            (source[1] as f32 * scale).round().max(120.).min(available[1]),
+            (source[0] as f32 * scale).round().max(120.).min(content_available[0]) + chrome[0],
+            (source[1] as f32 * scale).round().max(120.).min(content_available[1]) + chrome[1],
         ];
         self.fitted_source = Some(key);
         self.explicit = false;
@@ -99,11 +124,18 @@ fn rotated(mut source: [u32; 2], rotation: u16) -> [u32; 2] {
     source
 }
 
-pub(super) fn fit(window: &mut gpui::Window, cx: &gpui::App, state: &mut WindowFit, source: [u32; 2], eligible: bool) {
+pub(super) fn fit(
+    window: &mut gpui::Window,
+    cx: &gpui::App,
+    state: &mut WindowFit,
+    source: [u32; 2],
+    eligible: bool,
+    chrome: [f32; 2],
+) {
     let Some(display) = window.display(cx) else { return; };
     let display_bounds = display.bounds();
     let scale = window.scale_factor();
-    let key = WindowFit::key(source, [f32::from(display_bounds.size.width), f32::from(display_bounds.size.height)], scale, window.fit_bounds_revision());
+    let key = WindowFit::key(source, [f32::from(display_bounds.size.width), f32::from(display_bounds.size.height)], scale, window.fit_bounds_revision(), chrome);
     let now = Instant::now();
     if !state.needs_fit(key, window.is_fullscreen() || window.is_maximized(), eligible, now) { return; }
     #[cfg(target_os = "linux")]
@@ -155,7 +187,7 @@ mod tests {
         assert_eq!(attempt(&mut fit, [720, 1640], budget, 1.5, false, true, now), Some(portrait));
     }
     fn attempt(fit: &mut WindowFit, source: [u32;2], area: [f32;2], scale: f32, special: bool, eligible: bool, now: Instant) -> Option<[f32;2]> {
-        let key = WindowFit::key(source, [1440.,900.], scale, 0);
+        let key = WindowFit::key(source, [1440.,900.], scale, 0, [0.0, 0.0]);
         fit.needs_fit(key, special, eligible, now).then(|| fit.target(key, area, scale, now)).flatten()
     }
     #[test]
@@ -195,10 +227,10 @@ mod tests {
     #[test]
     fn unavailable_work_area_waits_for_a_new_compositor_revision_or_fit() {
         let now=Instant::now(); let mut fit=WindowFit::new([1000.,700.]);
-        let key=WindowFit::key([800,600],[1440.,900.],1.,0);
+        let key=WindowFit::key([800,600],[1440.,900.],1.,0,[0.0,0.0]);
         assert!(fit.needs_fit(key,false,true,now)); fit.unavailable(key);
         assert!(!fit.needs_fit(key,false,true,now));
-        let updated=WindowFit::key([800,600],[1440.,900.],1.,1);
+        let updated=WindowFit::key([800,600],[1440.,900.],1.,1,[0.0,0.0]);
         assert!(fit.needs_fit(updated,false,true,now));
         fit.unavailable(updated); fit.request_fit();
         assert!(fit.needs_fit(updated,false,true,now));
@@ -227,5 +259,32 @@ mod tests {
         let now=Instant::now();let mut fit=WindowFit::new([1000.,700.]);
         assert_eq!(attempt(&mut fit,[1920,1080],[1400.,800.],1.,false,false,now),None);
         fit.request_fit();assert!(attempt(&mut fit,[1920,1080],[1400.,800.],1.,false,false,now).is_some());
+    }
+
+    #[test]
+    fn windowed_header_and_android_gutter_are_added_outside_source_fit() {
+        let chrome = stream_window_chrome(true, false);
+        assert_eq!(chrome, [72.0, 64.0]);
+        let now = Instant::now();
+        let mut fit = WindowFit::new([1000.0, 700.0]);
+        let key = WindowFit::key([1080, 720], [1440.0, 900.0], 1.0, 0, chrome);
+        let target = fit.target(key, [1440.0, 900.0], 1.0, now).unwrap();
+        assert_eq!(target, [1080.0 + chrome[0], 720.0 + chrome[1]]);
+        assert!(target[0] <= 1440.0 && target[1] <= 900.0);
+        let video = [target[0] - chrome[0], target[1] - chrome[1]];
+        assert!((video[0] / video[1] - 1080.0 / 720.0).abs() < 0.002);
+
+        fit.request_fit();
+        let constrained = fit.target(key, [700.0, 500.0], 1.0, now).unwrap();
+        assert_eq!(constrained, [700.0, 483.0]);
+        let constrained_video = [constrained[0] - chrome[0], constrained[1] - chrome[1]];
+        assert!(constrained[0] <= 700.0 && constrained[1] <= 500.0);
+        assert!((constrained_video[0] / constrained_video[1] - 1080.0 / 720.0).abs() < 0.002);
+    }
+
+    #[test]
+    fn normal_header_and_ai_status_chrome_are_distinct_fit_inputs() {
+        assert_eq!(stream_window_chrome(false, false), [16.0, 64.0]);
+        assert_eq!(stream_window_chrome(false, true), [16.0, 92.0]);
     }
 }

@@ -2,14 +2,14 @@ use super::device_list::{
     DeviceActivity, DeviceFilterKind, DeviceListAction, DeviceListState,
     DeviceListViewModel,
 };
-use crate::design_system::{color_accent_amber, color_accent_cyan, color_accent_emerald, color_border_fine};
+use crate::design_system::color_accent_emerald;
 use crate::product_components::{component::tooltip,icon,IconName};
 use crate::product_components::theme::ActiveTheme;
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
     theme::ControlSize,
 };
-use gpui::{App, FontWeight, IntoElement, RenderOnce, Window, div, prelude::*, px, rgb};
+use gpui::{App, FontWeight, IntoElement, RenderOnce, Window, div, prelude::*, px};
 use remote_core::discovery::DiscoveryScope;
 use std::{rc::Rc,collections::BTreeMap};
 
@@ -66,24 +66,13 @@ impl RenderOnce for DeviceDrawer {
             let scope=match row.scope {DiscoveryScope::Lan=>"LAN",DiscoveryScope::P2p=>"Direct",DiscoveryScope::Relay=>"Relay",DiscoveryScope::Mesh=>"Mesh"};
             let active=activity.receiving>0||activity.sharing>0||activity.connecting;
             let send=self.send.clone();let detail_id=id.clone();
-            let mut actions=div().flex().flex_none().items_center().gap_1();
-            for (key,symbol,label,enabled,action) in [
-                ("connect",IconName::Receiving,"View screens, apps or cameras",row.can_connect,DeviceListAction::Connect(id.clone())),
-                ("send",IconName::Sharing,"Send screens, apps or cameras",row.online,DeviceListAction::SendScreen(id.clone())),
-                ("files",IconName::Files,"Files",row.can_open_files,DeviceListAction::OpenFiles(id.clone())),
-                ("more",IconName::More,"More device actions",true,DeviceListAction::More(id.clone())),
-            ] {
-                let send=self.send.clone();let selector=format!("{key}-{id}");
-                actions=actions.child(Button::new(format!("device-{key}-{id}"),"")
-                    .debug_selector(move||selector.clone()).child(icon(symbol).size(px(18.))).tooltip(tooltip(label).build())
-                    .control_size(ControlSize::Sm).variant(ButtonVariant::Ghost).size(px(32.)).p_0()
-                    .disabled(!enabled).on_click(move|_,_,cx|send(action.clone(),cx)));
-            }
-            let mut card=div().flex().flex_col().gap_1().px_2().py_1().rounded(px(10.))
-                .bg(if active {rgb(0x132235).into()}else{theme.surface.raised})
-                .border_1().border_color(if active {color_accent_cyan()}else{color_border_fine()})
+            let mut card=div().flex().flex_col().gap_1().px_3().py_2().rounded(px(10.))
+                .bg(theme.surface.base).border_1()
+                .border_color(if active {theme.border.focus}else{theme.border.default})
                 .child(div().min_h(px(42.)).flex().items_center().gap_2()
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(if row.online {color_accent_emerald().into()}else{theme.content.disabled}))
+                    .child(div().size(px(34.)).flex_none().flex().items_center().justify_center()
+                        .rounded(px(8.)).bg(theme.surface.sunken)
+                        .child(icon(IconName::Display).size(px(18.)).color(theme.content.secondary)))
                     .child(div().min_w_0().flex_1().flex().flex_col()
                         .child(Button::new(format!("device-name-{id}"),row.display_name.clone())
                             .debug_selector({let id=id.clone();move||format!("device-name-{id}")})
@@ -92,25 +81,44 @@ impl RenderOnce for DeviceDrawer {
                             .tooltip(tooltip(row.display_name.clone()).build())
                             .on_click(move|_,_,cx|send(DeviceListAction::Details(detail_id.clone()),cx)))
                         .child(div().flex().items_center().gap_1().text_size(px(10.))
-                            .text_color(if activity.error.is_some(){color_accent_amber().into()}else{theme.content.secondary})
-                            .when(active,|line|line.child(crate::product_components::component::icon(if activity.sharing>0 {crate::product_components::IconName::Sharing}else{crate::product_components::IconName::Receiving}).size(px(12.))))
+                            .text_color(theme.content.secondary)
+                            .child(div().size(px(6.)).flex_none().rounded_full().bg(if row.online {color_accent_emerald().into()}else{theme.content.disabled}))
                             .child(if !status.is_empty(){status}else{format!("{scope} · {}",if row.online {"Available"}else{"Offline"})})))
-                    .child(actions));
+                    .child({
+                        let send=self.send.clone();let target=id.clone();let selector=format!("connect-{id}");
+                        Button::new(format!("device-connect-{id}"),"View")
+                            .debug_selector(move||selector.clone()).variant(ButtonVariant::Primary)
+                            .control_size(ControlSize::Sm).h(px(28.)).px_2().text_size(px(11.))
+                            .disabled(!row.can_connect).on_click(move|_,_,cx|send(DeviceListAction::Connect(target.clone()),cx))
+                    })
+                    .child({
+                        let send=self.send.clone();let target=id.clone();let selector=format!("more-{id}");
+                        Button::new(format!("device-more-{id}"),"")
+                            .debug_selector(move||selector.clone()).child(icon(IconName::More).size(px(18.)))
+                            .tooltip(tooltip("More device actions").build()).control_size(ControlSize::Sm)
+                            .variant(ButtonVariant::Ghost).size(px(28.)).p_0()
+                            .on_click(move|_,_,cx|send(DeviceListAction::More(target.clone()),cx))
+                    }));
+            if let Some(error)=activity.error.as_ref() {
+                card=card.child(div().text_size(px(11.)).text_color(theme.content.primary)
+                    .child(format!("Needs attention: {error}")));
+            }
             if self.state.more.as_ref()==Some(&id) || self.state.details.as_ref()==Some(&id) {
                 let mut more=div().flex().flex_col().gap_2().py_2();
-                if let Some(error)=activity.error.as_ref() {more=more.child(div().text_size(px(11.)).text_color(color_accent_amber()).child(error.clone()));}
                 let mut commands=div().flex().flex_wrap().gap_2();
                 for (key,label,enabled,action) in [
+                    ("send","Send screen or app",row.online,DeviceListAction::SendScreen(id.clone())),
+                    ("files","Files",row.can_open_files,DeviceListAction::OpenFiles(id.clone())),
                     ("workspace","Open another source",row.can_open_workspace,DeviceListAction::OpenWorkspace(id.clone())),
                     ("show","Show stream",activity.receiving>0||activity.connecting||activity.error.is_some(),DeviceListAction::ShowStreams(id.clone())),
                     ("end","End streams",activity.receiving>0||activity.connecting||activity.error.is_some(),DeviceListAction::EndStreams(id.clone())),
                     ("stop-send","Stop sending",activity.can_stop_sending,DeviceListAction::StopSending(id.clone())),
                 ] {
-                    if !enabled {continue;}
+                    if !enabled && key!="send" && key!="files" {continue;}
                     let send=self.send.clone();let selector=format!("{key}-{id}");
                     commands=commands.child(Button::new(format!("device-{key}-{id}"),label)
                         .debug_selector(move||selector.clone()).variant(ButtonVariant::Secondary)
-                        .control_size(ControlSize::Sm).h(px(26.)).px_2().text_size(px(11.))
+                        .control_size(ControlSize::Sm).h(px(26.)).px_2().text_size(px(11.)).disabled(!enabled)
                         .on_click(move|_,_,cx|send(action.clone(),cx)));
                 }
                 more=more.child(commands).child(div().text_size(px(10.)).text_color(theme.content.tertiary)
@@ -199,6 +207,10 @@ mod tests {
             }
         });
         cx.run_until_parked();
+        let bounds = cx.debug_bounds("more-offline").unwrap();
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+        output.borrow_mut().clear();
         for selector in ["connect-offline", "files-offline"] {
             let bounds = cx.debug_bounds(selector).expect("device control rendered");
             cx.simulate_click(bounds.center(), Modifiers::none());
@@ -231,12 +243,16 @@ mod tests {
         assert!(output.borrow().is_empty());
         let bounds = cx.debug_bounds("connect-a").unwrap();
         cx.simulate_click(bounds.center(), Modifiers::none());
+        let bounds = cx.debug_bounds("more-b").unwrap();
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
         let bounds = cx.debug_bounds("files-b").unwrap();
         cx.simulate_click(bounds.center(), Modifiers::none());
         assert_eq!(
             *output.borrow(),
             [
                 DeviceListAction::Connect("a".into()),
+                DeviceListAction::More("b".into()),
                 DeviceListAction::OpenFiles("b".into())
             ]
         );

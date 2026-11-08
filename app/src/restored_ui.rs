@@ -4,7 +4,7 @@ mod management;
 mod stream_windows;
 #[path="restored_stream_controls.rs"]
 mod stream_controls;
-use stream_controls::{DeviceFiles, StreamPanel, ToolbarDock};
+use stream_controls::{DeviceFiles, StreamPanel};
 #[path="restored_sending.rs"]
 mod sending;
 use sending::{SendActivity, SendingContext};
@@ -358,19 +358,18 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
 }
 
 fn product_window_appearance() -> WindowAppearance {
-    // The video canvas and translucent control surfaces are intentionally dark.
-    WindowAppearance::Dark
+    WindowAppearance::Light
 }
 
 fn apply_product_window_appearance() {
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;
-        use objc2_app_kit::{NSAppearance, NSAppearanceNameDarkAqua, NSApplication};
+        use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSApplication};
 
         let mtm = MainThreadMarker::new().expect("GPUI application must run on the main thread");
         let app = NSApplication::sharedApplication(mtm);
-        if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua })
+        if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua })
         {
             app.setAppearance(Some(&appearance));
         }
@@ -406,29 +405,17 @@ struct SideServiceUiState {
     file_transfer: FeatureToggleState,
 }
 
-pub const TOOLBAR_TRIGGER_ZONE_HEIGHT_PX: f32 = 16.0;
 pub const TOOLBAR_AUTO_HIDE_DELAY: Duration = Duration::from_millis(1800);
 
-pub fn should_reveal_toolbar(cursor_y: f32) -> bool {
-    (0.0..=TOOLBAR_TRIGGER_ZONE_HEIGHT_PX).contains(&cursor_y)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ToolbarRevealTrigger {
+    RemotePointerMove,
+    RemoteDrag,
+    MicroRailClick,
 }
 
-/// Zero-occlusion toolbar reveal guard:
-/// - Never pops up the toolbar while mouse buttons are held (e.g., dragging a remote window title bar or pulling down a mobile notification shade).
-/// - Never pops up on hover when the user explicitly collapsed the toolbar to the Maestro Micro-Rail (`collapsed_rail == true`).
-/// - Only triggers within the active `ToolbarDock` horizontal band so remote top-left tabs and top-right window buttons remain unobstructed.
-pub fn should_reveal_stream_toolbar(
-    cursor_x: f32,
-    cursor_y: f32,
-    viewport_width: f32,
-    dock: ToolbarDock,
-    buttons_held: bool,
-    collapsed_rail: bool,
-) -> bool {
-    !buttons_held
-        && !collapsed_rail
-        && should_reveal_toolbar(cursor_y)
-        && dock.contains_x(cursor_x, viewport_width)
+pub(super) fn should_reveal_toolbar(trigger: ToolbarRevealTrigger) -> bool {
+    matches!(trigger, ToolbarRevealTrigger::MicroRailClick)
 }
 
 pub fn should_auto_hide_toolbar(
@@ -638,8 +625,6 @@ struct RestoredDashboard {
     show_apps_menu: bool,
     toolbar_revealed: bool,
     toolbar_hovered: bool,
-    toolbar_dock: ToolbarDock,
-    toolbar_collapsed_rail: bool,
     last_toolbar_activity: Instant,
     capture_error_seen: Option<String>,
 }
@@ -840,8 +825,6 @@ impl RestoredDashboard {
             show_apps_menu: false,
             toolbar_revealed: true,
             toolbar_hovered: false,
-            toolbar_dock: ToolbarDock::Center,
-            toolbar_collapsed_rail: false,
             last_toolbar_activity: Instant::now(),
             capture_error_seen: None,
         }
@@ -1521,28 +1504,6 @@ impl RestoredDashboard {
     }
 
     fn queue_pointer_move(&mut self, position: Point<Pixels>, from_press: bool) -> bool {
-        let cursor_x = f32::from(position.x);
-        let cursor_y = f32::from(position.y);
-        let viewport_width = self
-            .video_surface_bounds
-            .lock()
-            .expect("video surface bounds lock")
-            .map(|bounds| f32::from(bounds.size.width))
-            .unwrap_or(0.0);
-        let buttons_held = !self.pointer_input.pressed_buttons.is_empty() || from_press;
-        if should_reveal_stream_toolbar(
-            cursor_x,
-            cursor_y,
-            viewport_width,
-            self.toolbar_dock,
-            buttons_held,
-            self.toolbar_collapsed_rail,
-        ) {
-            self.last_toolbar_activity = Instant::now();
-            if !self.toolbar_revealed {
-                self.toolbar_revealed = true;
-            }
-        }
         let Some(event) = self.pointer_event_at(position) else { return false; };
         if from_press && self.owner.retry_viewing_input() {
             self.pointer_input = PointerInputTracker::default();
@@ -2360,6 +2321,13 @@ fn adaptive_source(source: protocol::session::CaptureSource, sources: &[protocol
         || sources.iter().any(|item| item.source == source && item.application == "MediaProjection")
 }
 
+fn has_android_mediaprojection_source(sources: &[protocol::session::CaptureSourceInfo]) -> bool {
+    sources.iter().any(|item| {
+        item.source == protocol::session::CaptureSource::MainDisplay
+            && item.application == "MediaProjection"
+    })
+}
+
 struct PopoutStreamView {
     owner: Arc<OriginalOwner>,
     _primary: Entity<RestoredDashboard>,
@@ -2400,7 +2368,7 @@ impl Render for PopoutStreamView {
             .clone();
         if let Some(source_size) = current_frame.as_ref().filter(|frame| frame.frame_geometry.is_some_and(|geometry| self.owner.accepts_frame_source_revision(geometry.source_revision))).and_then(|frame| window_fit::source_size(frame)) {
             window_fit::fit(window, cx, &mut self.window_fit, source_size,
-                adaptive_source(snapshot.active_source, &snapshot.sources));
+                adaptive_source(snapshot.active_source, &snapshot.sources), [0.0, 0.0]);
         }
         let stats = self
             .host_stats
@@ -2599,9 +2567,18 @@ impl Render for RestoredDashboard {
             return self.sending_view(&snapshot,window,cx);
         }
         let role = snapshot.role.clone();
+        let fullscreen = window.is_fullscreen();
+        let fit_chrome = if fullscreen {
+            [0.0, 0.0]
+        } else {
+            window_fit::stream_window_chrome(
+                has_android_mediaprojection_source(&snapshot.capture_sources),
+                snapshot.computer_use_status.mode.is_some(),
+            )
+        };
         if let Some(source_size) = self.current_frame.as_ref().filter(|frame| frame.frame_geometry.is_some_and(|geometry| self.owner.accepts_frame_source_revision(geometry.source_revision))).and_then(|frame| window_fit::source_size(frame)) {
             window_fit::fit(window, cx, &mut self.window_fit, source_size,
-                adaptive_source(snapshot.active_capture_source, &snapshot.capture_sources));
+                adaptive_source(snapshot.active_capture_source, &snapshot.capture_sources), fit_chrome);
         }
         self.capture_supports_input = snapshot.active_capture_supports_input;
         if self.capture_error_seen != snapshot.capture_source_error {
@@ -2681,16 +2658,91 @@ impl Render for RestoredDashboard {
                     self.owner.clone(),view,binding,self.input_focus.clone(),self.ime_anchor)));
             }
         } else {self.remote_text=None;}
-        let is_fullscreen = window.is_fullscreen();
-        let compact = f32::from(window.viewport_size().width) < 1200.0;
+        let is_fullscreen = fullscreen;
+        let viewport_size = window.viewport_size();
+        let viewport_width = f32::from(viewport_size.width);
+        let viewport_height = f32::from(viewport_size.height);
+        let compact = viewport_width < 1200.0;
+        let tiny = viewport_width < 240.0;
+        let android_companion = has_android_mediaprojection_source(&snapshot.capture_sources);
         let host_stats = self.host_stats_snapshot(&role);
+        let stream_viewport = full_canvas_stream_viewport(
+            &role,
+            self.current_frame.clone(),
+            self.input_focus.clone(),
+            self.video_surface_bounds.clone(),
+            self.viewport.clone(),
+            self.scale_mode,
+            self.remote_text.clone(),
+            matches!(role, RoleState::Idle).then(|| self.idle_stream_stage(cx)),
+            cx,
+        );
+        let mut stream_content = div()
+            .id("stream-window-content")
+            .size_full()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .min_h_0();
+        if !is_fullscreen {
+            stream_content = stream_content.child(self.stream_toolbar(
+                &snapshot,
+                false,
+                compact,
+                tiny,
+                input_hint.as_deref(),
+                cx,
+            ));
+        }
+        let mut video_row = div()
+            .id("stream-presentation-row")
+            .relative()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0();
+        if is_fullscreen {
+            video_row = video_row.size_full().bg(rgb(0x000000));
+        } else {
+            video_row = video_row
+                .mx(px(window_fit::STREAM_WINDOW_GUTTER_PX))
+                .mt(px(window_fit::STREAM_VIDEO_GAP_PX))
+                .mb(px(window_fit::STREAM_WINDOW_GUTTER_PX))
+                .gap_2();
+        }
+        stream_content = stream_content.child(
+            video_row
+                .child(
+                    div()
+                        .id("stream-video-viewport")
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .bg(rgb(0x000000))
+                        .child(stream_viewport),
+                )
+                .when(android_companion, |row| {
+                    row.child(self.android_companion_controls(&snapshot, is_fullscreen, cx))
+                }),
+        );
+        let fullscreen_controls_visible = self.toolbar_revealed
+            || self.toolbar_hovered
+            || self.show_apps_menu
+            || show_drawer
+            || self.source_selection.is_some();
+        let root_background = if is_fullscreen {
+            rgb(0x000000).into()
+        } else {
+            theme.surface.canvas
+        };
         div()
             .relative()
             .w_full()
             .h_full()
             .min_w_0()
             .min_h_0()
-            .bg(theme.surface.canvas)
+            .bg(root_background)
             .text_color(theme.content.primary)
             .font_family(crate::design_system::product_ui_font())
             .overflow_hidden()
@@ -2717,25 +2769,7 @@ impl Render for RestoredDashboard {
                     }
                 },
             ))
-            // Keep remote edge gestures inside the client area, away from
-            // native window resize hit targets. Video and input share this rect.
-            .child(div().absolute()
-                .top(px(if is_fullscreen { 0. } else { 8. }))
-                .bottom(px(if is_fullscreen { 0. } else { 8. }))
-                .left(px(if is_fullscreen { 0. } else { 8. }))
-                .right(px(if is_fullscreen { 0. } else { 8. })).child(
-                full_canvas_stream_viewport(
-                    &role,
-                    self.current_frame.clone(),
-                    self.input_focus.clone(),
-                    self.video_surface_bounds.clone(),
-                    self.viewport.clone(),
-                    self.scale_mode,
-                    self.remote_text.clone(),
-                    matches!(role, RoleState::Idle).then(||self.idle_stream_stage(cx)),
-                    cx,
-                ),
-            ))
+            .child(stream_content)
             .when_some(snapshot.computer_use_status.mode, |this, mode| {
                 let border_color = match mode {
                     crate::desktop::original_owner::ComputerUseMode::Observing => {
@@ -2802,20 +2836,22 @@ impl Render for RestoredDashboard {
                         }),
                 )
             })
-            .when(
-                !matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_))
-                    || (!self.toolbar_collapsed_rail && (self.toolbar_revealed || self.toolbar_hovered)),
-                |this| {
-                    this.child(self.stream_toolbar(&snapshot, is_fullscreen, compact, input_hint.as_deref(), cx))
-                },
-            )
-            .when(
-                matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_))
-                    && (self.toolbar_collapsed_rail || (!self.toolbar_revealed && !self.toolbar_hovered)),
-                |this| this.child(self.stream_micro_rail(cx)),
-            )
+            .when(is_fullscreen && fullscreen_controls_visible, |tree| {
+                tree.child(self.stream_toolbar(
+                    &snapshot,
+                    true,
+                    compact,
+                    tiny,
+                    input_hint.as_deref(),
+                    cx,
+                ))
+            })
+            .when(is_fullscreen && !fullscreen_controls_visible, |tree| {
+                tree.child(self.fullscreen_micro_rail(cx))
+            })
             .child(self.paint_acknowledgement())
-            .when(show_drawer, |tree| tree.child(self.stream_controls_panel(&snapshot, host_stats.as_ref(), cx)))
+            .when(show_drawer, |tree| tree.child(self.stream_controls_panel(
+                &snapshot, host_stats.as_ref(), viewport_width, viewport_height, cx)))
             .child(telemetry_waterfall_overlay(
                 self.telemetry_hud_collapsed,
                 role.kind(),
@@ -2857,7 +2893,6 @@ impl Render for RestoredDashboard {
                         && keystroke.modifiers.alt
                     {
                         this.set_input_locked(true);
-                        this.toolbar_collapsed_rail = false;
                         this.toolbar_revealed = true;
                         this.last_toolbar_activity = Instant::now();
                         cx.stop_propagation();
@@ -6123,11 +6158,10 @@ fn remote_input_hint(status: &str, eligible: bool, focused: bool, local_overlay:
 mod input_tests {
     use super::{
         ControlIslandVisibility, PointerInputTracker, TOOLBAR_AUTO_HIDE_DELAY,
-        TOOLBAR_TRIGGER_ZONE_HEIGHT_PX, ToolbarDock, ViewportScaleMode, absolute_pointer_event,
+        ViewportScaleMode, absolute_pointer_event,
         control_island_visibility, dashboard_refresh_interval, display_capture_sources,
         host_stats_available, is_shifted_macos_symbol, macos_key_code, product_window_appearance,
         protocol_key_event, protocol_modifiers, protocol_mouse_button, should_auto_hide_toolbar,
-        should_reveal_stream_toolbar, should_reveal_toolbar,
     };
     use crate::HostStats;
 
@@ -6375,7 +6409,7 @@ mod input_tests {
 
     #[test]
     fn product_appearance_matches_the_dark_video_and_glass_surfaces() {
-        assert_eq!(product_window_appearance(), WindowAppearance::Dark);
+        assert_eq!(product_window_appearance(), WindowAppearance::Light);
     }
 
     #[test]
@@ -6426,28 +6460,7 @@ mod input_tests {
     }
 
     #[test]
-    fn auto_hide_toolbar_sensors_and_delay_rules() {
-        // 顶部感应区：<= 16px 触发呈现，> 16px 不触发
-        assert!(should_reveal_toolbar(0.0));
-        assert!(!should_reveal_toolbar(-1.0));
-        assert!(!should_reveal_toolbar(f32::NAN));
-        assert!(!should_reveal_toolbar(f32::INFINITY));
-        assert!(should_reveal_toolbar(8.0));
-        assert!(should_reveal_toolbar(TOOLBAR_TRIGGER_ZONE_HEIGHT_PX));
-        assert!(!should_reveal_toolbar(TOOLBAR_TRIGGER_ZONE_HEIGHT_PX + 0.5));
-        assert!(!should_reveal_toolbar(100.0));
-
-        // 零遮挡防误触规则：按住鼠标拖拽、折叠为微导轨或不在当前停靠区水平范围内时绝不弹出工具栏
-        assert!(should_reveal_stream_toolbar(500.0, 6.0, 1000.0, ToolbarDock::Center, false, false));
-        assert!(!should_reveal_stream_toolbar(500.0, 6.0, 1000.0, ToolbarDock::Center, true, false));
-        assert!(!should_reveal_stream_toolbar(500.0, 6.0, 1000.0, ToolbarDock::Center, false, true));
-        assert!(!should_reveal_stream_toolbar(100.0, 6.0, 1000.0, ToolbarDock::Center, false, false));
-        assert!(should_reveal_stream_toolbar(100.0, 6.0, 1000.0, ToolbarDock::Left, false, false));
-        assert!(should_reveal_stream_toolbar(900.0, 6.0, 1000.0, ToolbarDock::Right, false, false));
-        assert_eq!(ToolbarDock::Center.next(), ToolbarDock::Right);
-        assert_eq!(ToolbarDock::Right.next(), ToolbarDock::Left);
-        assert_eq!(ToolbarDock::Left.next(), ToolbarDock::Center);
-
+    fn auto_hide_toolbar_delay_rules() {
         let now = Instant::now();
         // 鼠标悬停在控制条上时，绝不自动隐藏
         assert!(!should_auto_hide_toolbar(

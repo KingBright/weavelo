@@ -1,45 +1,7 @@
 //! Device-bound controls and file contexts. These reuse the existing session and
 //! transfer owners; a window is only a presentation of the retained work.
 use super::*;
-use crate::design_system::{color_accent_amber, color_accent_rose};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ToolbarDock {
-    Left,
-    #[default]
-    Center,
-    Right,
-}
-
-impl ToolbarDock {
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Left => Self::Center,
-            Self::Center => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Left => "Left",
-            Self::Center => "Center",
-            Self::Right => "Right",
-        }
-    }
-
-    pub fn contains_x(self, cursor_x: f32, viewport_width: f32) -> bool {
-        if !cursor_x.is_finite() || !viewport_width.is_finite() || viewport_width <= 0.0 {
-            return true;
-        }
-        let ratio = (cursor_x / viewport_width).clamp(0.0, 1.0);
-        match self {
-            Self::Left => ratio <= 0.38,
-            Self::Center => (0.28..=0.72).contains(&ratio),
-            Self::Right => ratio >= 0.62,
-        }
-    }
-}
+use crate::design_system::color_accent_rose;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum StreamPanel {
@@ -258,29 +220,233 @@ impl RestoredDashboard {
         cx.notify();
     }
 
+    fn toggle_source_menu(&mut self, cx: &mut Context<Self>) {
+        let Some(binding) = self.owner.source_view_binding() else { return; };
+        if !self.owner.source_binding_is_current(&binding) { return; }
+        self.reset_pointer_scroll();
+        self.owner.release_input();
+        self.pointer_input = PointerInputTracker::default();
+        self.show_apps_menu = !self.show_apps_menu;
+        self.toolbar_revealed = true;
+        self.toolbar_hovered = false;
+        self.last_toolbar_activity = Instant::now();
+        if self.show_apps_menu {
+            self.request_bound_capture_sources(binding, cx);
+        }
+        cx.notify();
+    }
+
+    fn android_navigation_target(
+        &self,
+        snapshot: &DashboardSnapshot,
+    ) -> Option<crate::desktop::original_owner::ViewportTarget> {
+        if self.input_locked
+            || !self.capture_supports_input
+            || !snapshot.input_eligible
+            || self.drawer_open
+            || self.show_apps_menu
+            || self.source_selection.is_some()
+            || self.stream_source != Some(snapshot.active_capture_source)
+        {
+            return None;
+        }
+        self.scroll_target()
+    }
+
+    fn send_android_navigation(&mut self, action: &'static str, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot();
+        let Some(button) = protocol::session::android_navigation_button(
+            &snapshot.capture_sources,
+            snapshot.active_capture_source,
+            action,
+        ) else {
+            self.status = format!("Android {action} is unavailable for this source.");
+            cx.notify();
+            return;
+        };
+        let Some(target) = self.android_navigation_target(&snapshot) else {
+            self.status = "Remote navigation is waiting for an unlocked, current painted source frame.".into();
+            cx.notify();
+            return;
+        };
+        if let Err(reason) = self.owner.queue_viewport_button_tap(&target, button) {
+            self.status = format!("Android {action} was not sent: {reason}.");
+        }
+        self.last_toolbar_activity = Instant::now();
+        cx.notify();
+    }
+
+    pub(super) fn android_companion_controls(
+        &self,
+        snapshot: &DashboardSnapshot,
+        fullscreen: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let back = protocol::session::android_navigation_button(
+            &snapshot.capture_sources,
+            snapshot.active_capture_source,
+            "back",
+        );
+        let home = protocol::session::android_navigation_button(
+            &snapshot.capture_sources,
+            snapshot.active_capture_source,
+            "home",
+        );
+        let current_target = self.android_navigation_target(snapshot).is_some();
+        let disabled_reason = if !snapshot.active_capture_supports_input {
+            Some("This source is view-only.")
+        } else if !current_target {
+            Some("Waiting for an unlocked, current painted source frame.")
+        } else {
+            None
+        };
+        let back_tooltip = if back.is_none() {
+            "Back is unavailable for this source."
+        } else if let Some(reason) = disabled_reason {
+            reason
+        } else {
+            "Android Back"
+        };
+        let home_tooltip = if home.is_none()
+            && matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_))
+        {
+            "Home is unavailable for a managed app window."
+        } else if home.is_none() {
+            "Home is unavailable for this source."
+        } else if let Some(reason) = disabled_reason {
+            reason
+        } else {
+            "Android Home"
+        };
+        let back_view = cx.weak_entity();
+        let home_view = cx.weak_entity();
+        let fit_view = cx.weak_entity();
+        let theme = cx.theme().clone();
+        div()
+            .id("android-navigation-gutter")
+            .occlude()
+            .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .bg(if fullscreen { rgb(0x000000).into() } else { theme.surface.canvas })
+            .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .child(
+                command_button("android-navigation-back", ActionVariantKind::Neutral, cx)
+                    .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
+                    .h(px(40.))
+                    .px_0()
+                    .disabled(back.is_none() || !current_target)
+                    .tooltip(tooltip(back_tooltip).build())
+                    .on_click(move |_, _, cx| {
+                        let _ = back_view.update(cx, |this, cx| this.send_android_navigation("back", cx));
+                    })
+                    .child(icon(IconName::Back).size(px(18.))),
+            )
+            .child(
+                command_button("android-navigation-home", ActionVariantKind::Neutral, cx)
+                    .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
+                    .h(px(40.))
+                    .px_0()
+                    .disabled(home.is_none() || !current_target)
+                    .tooltip(tooltip(home_tooltip).build())
+                    .on_click(move |_, _, cx| {
+                        let _ = home_view.update(cx, |this, cx| this.send_android_navigation("home", cx));
+                    })
+                    .child(icon(IconName::Home).size(px(18.))),
+            )
+            .child(
+                command_button("android-navigation-fit", ActionVariantKind::Neutral, cx)
+                    .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
+                    .h(px(40.))
+                    .px_0()
+                    .tooltip(tooltip("Fit the remote picture to the viewer").build())
+                    .on_click(move |_, _, cx| {
+                        let _ = fit_view.update(cx, |this, cx| {
+                            this.reset_pointer_scroll();
+                            this.scale_mode = ViewportScaleMode::AspectFit;
+                            this.viewport.lock().unwrap().reset();
+                            this.persist_preferences();
+                            cx.notify();
+                        });
+                    })
+                    .child(icon(IconName::Window).size(px(18.))),
+            )
+    }
+
+    pub(super) fn fullscreen_micro_rail(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id("fullscreen-toolbar-rail-position")
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("fullscreen-toolbar-rail-hit-target")
+                    .occlude()
+                    .w(px(window_fit::FULLSCREEN_RAIL_WIDTH_PX + 16.0))
+                    .h(px(window_fit::FULLSCREEN_RAIL_HIT_HEIGHT_PX))
+                    .flex()
+                    .justify_center()
+                    .pt(px(8.))
+                    .tooltip(tooltip("Show controls").build())
+                    .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if should_reveal_toolbar(ToolbarRevealTrigger::MicroRailClick) {
+                            this.toolbar_revealed = true;
+                            this.toolbar_hovered = false;
+                            this.last_toolbar_activity = Instant::now();
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .id("fullscreen-toolbar-rail")
+                            .w(px(window_fit::FULLSCREEN_RAIL_WIDTH_PX))
+                            .h(px(window_fit::FULLSCREEN_RAIL_HEIGHT_PX))
+                            .rounded_full()
+                            .bg(cx.theme().action.primary.bg),
+                    ),
+            )
+    }
+
     pub(super) fn stream_toolbar(
         &self,
         snapshot: &DashboardSnapshot,
         fullscreen: bool,
         compact: bool,
+        tiny: bool,
         input_hint: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let visibility = control_island_visibility(snapshot.role.kind());
+        let theme = cx.theme().clone();
+        let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
+        let device = self
+            .stream_device
+            .as_deref()
+            .map(|id| self.device_label(id))
+            .unwrap_or_else(|| "Weavelo".into());
+        let source_label = source.map(capture_source_label).unwrap_or_else(|| "Waiting for source".into());
+        let context_title = format!("{device} · {source_label}");
+        let button_size = if tiny { 20.0 } else { 28.0 };
         let mut row = div()
-            .id("floating_toolbar_pill")
+            .id(if fullscreen { "fullscreen_toolbar_pill" } else { "stream_header" })
             .occlude()
             .flex()
             .items_center()
-            .gap_1()
-            .when(compact, |row| row.max_w(relative(0.95)).flex_wrap().justify_center())
-            .px_2()
-            .py_2()
-            .rounded_full()
-            .bg(color_glass_card())
-            .border_1()
-            .border_color(color_border_fine())
-            .shadow_lg()
+            .gap_0p5()
+            .when(fullscreen, |row| row.px_2().py_1().rounded_full().bg(color_glass_card()).border_1()
+                .border_color(color_border_fine()).shadow_lg())
+            .when(!fullscreen, |row| row.w_full().h(px(window_fit::STREAM_HEADER_HEIGHT_PX))
+                .px_1().rounded(px(14.)).bg(theme.surface.base).border_1().border_color(theme.border.muted))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.toolbar_hovered = *hovered;
                 this.last_toolbar_activity = Instant::now();
@@ -290,194 +456,67 @@ impl RestoredDashboard {
                 this.last_toolbar_activity = Instant::now()
             }))
             .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()));
-        let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
-        let title = self
-            .stream_device
-            .as_deref()
-            .map(|id| self.device_label(id))
-            .unwrap_or_else(|| "Weavelo".into());
-        row = row.child(
+        row = row.when(!tiny, |row| row.child(
             div()
+                .id("stream-header-context")
                 .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
+                .flex_1()
                 .min_w_0()
-                .when_some(source, |row, source| {
-                    row.child(capture_source_badge(
-                        source,
-                        &snapshot.source_icons,
-                        &cx.theme(),
-                    ))
-                })
-                .child(
-                    div()
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(if visibility.show_disconnect {
-                            Hsla::from(color_accent_emerald())
-                        } else {
-                            cx.theme().content.disabled
-                        }),
-                )
+                .items_center()
+                .gap_1()
+                .px_1()
+                .when_some(source, |row, source| row.child(capture_source_badge(source, &snapshot.source_icons, &theme)))
+                .child(div().size(px(6.)).flex_none().rounded_full().bg(if visibility.show_disconnect {
+                    Hsla::from(color_accent_emerald())
+                } else { theme.content.disabled }))
                 .child(
                     div()
                         .id("stream-device-title")
+                        .flex_1()
+                        .min_w_0()
                         .truncate()
-                        .max_w(px(if compact { 110. } else { 190. }))
                         .text_size(px(12.))
-                        .tooltip(tooltip(self.native_window_title.clone()).build())
-                        .child(format!("{title} ↓")),
+                        .text_color(theme.content.primary)
+                        .tooltip(tooltip(context_title.clone()).build())
+                        .child(context_title.clone()),
                 ),
-        );
-        for (panel, label, symbol) in [
-            (StreamPanel::Control, "Control", IconName::Control),
-            (StreamPanel::Files, "Files", IconName::Files),
-            (StreamPanel::Sound, "Sound", IconName::Sound),
-            (StreamPanel::Display, "Display", IconName::Display),
-            (StreamPanel::More, "More", IconName::More),
-        ] {
-            row = row.child(
-                command_button(
-                    format!("stream-panel-{panel:?}"),
-                    if self.drawer_open && self.stream_panel == panel {
-                        ActionVariantKind::Primary
-                    } else {
-                        ActionVariantKind::Neutral
-                    },
-                    cx,
-                )
-                .h(px(28.))
-                .px_2()
-                .gap_1()
-                .tooltip(
-                    tooltip(
-                        (if panel == StreamPanel::Control {
-                            input_hint.unwrap_or(label)
-                        } else {
-                            label
-                        })
-                        .to_owned(),
-                    )
-                    .build(),
-                )
-                .child(icon(symbol).size(px(14.)))
-                .when(!compact, |button| button.child(label))
-                .on_click(cx.listener(move |this, _, _, cx| this.open_stream_panel(panel, cx))),
-            );
-            if panel == StreamPanel::Files {
-                let binding = snapshot.source_binding.clone();
-                row = row.child(
-                    command_button("stream-new-source", ActionVariantKind::Neutral, cx)
-                        .h(px(28.))
-                        .px_2()
-                        .gap_1()
-                        .disabled(binding.is_none())
-                        .tooltip(tooltip("Open another screen or app window").build())
-                        .child(icon(IconName::NewView).size(px(14.)))
-                        .when(!compact, |button| button.child("New view"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.drawer_open = false;
-                            this.begin_remote_source_selection(binding.clone(), cx);
-                        })),
-                );
-                if let Some(target) = snapshot
-                    .capture_sources
-                    .iter()
-                    .find(|item| item.source == snapshot.active_capture_source)
-                    .and_then(|item| {
-                        snapshot
-                            .capture_sources
-                            .iter()
-                            .find(|candidate| item.camera_switch_target(candidate))
-                    })
-                    .cloned()
-                {
-                    let binding = snapshot.source_binding.clone();
-                    row = row.child(
-                        command_button("stream-switch-camera", ActionVariantKind::Neutral, cx)
-                            .size(px(28.))
-                            .p_0()
-                            .disabled(snapshot.pending_capture_source.is_some())
-                            .tooltip(tooltip("Switch camera").build())
-                            .child(icon(IconName::CameraSwitch).size(px(14.)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.start_capture_source_switch(
-                                    binding.clone(),
-                                    target.clone(),
-                                    target.title.clone(),
-                                    cx,
-                                );
-                            })),
-                    );
-                }
-            }
-        }
-        row = row.child(
-                command_button("island_fit_window", ActionVariantKind::Neutral, cx)
-                    .size(px(28.))
-                    .p_0()
-                    .tooltip(tooltip("Fit window").build())
-                    .child(icon(IconName::Window).size(px(13.)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.window_fit.request_fit();
-                        cx.notify();
-                    })),
-            );
-        row = row.child(
-                command_button("island_toggle_fullscreen", ActionVariantKind::Neutral, cx)
-                    .size(px(28.))
-                    .p_0()
-                    .tooltip(tooltip(if fullscreen { "Exit fullscreen · F11" } else { "Fullscreen · F11" }).build())
-                    .child(icon(IconName::Maximize(fullscreen)).size(px(13.)))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.owner.release_input();
-                        window.toggle_fullscreen();
-                        cx.refresh_windows();
-                    })),
-            );
-        let dock_label = self.toolbar_dock.label();
-        row = row.child(
-            command_button("island_dock_cycle", ActionVariantKind::Neutral, cx)
-                .h(px(28.))
-                .px_1p5()
-                .text_size(px(10.))
-                .tooltip(
-                    tooltip(format!(
-                        "Dock position: {dock_label} (click to move island off remote tabs / mobile status bar)"
-                    ))
-                    .build(),
-                )
-                .child(match self.toolbar_dock {
-                    ToolbarDock::Left => "⇤",
-                    ToolbarDock::Center => "⇔",
-                    ToolbarDock::Right => "⇥",
-                })
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.toolbar_dock = this.toolbar_dock.next();
-                    this.last_toolbar_activity = Instant::now();
-                    cx.notify();
-                })),
-        );
-        row = row.child(
-            command_button("island_collapse_rail", ActionVariantKind::Neutral, cx)
-                .size(px(28.))
-                .p_0()
-                .text_size(px(11.))
-                .tooltip(
-                    tooltip("Collapse to zero-occlusion micro-rail (prevents accidental hover pop-up over top tabs)")
-                        .build(),
-                )
-                .child("⌃")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.toolbar_collapsed_rail = true;
-                    this.toolbar_revealed = false;
-                    this.toolbar_hovered = false;
-                    this.drawer_open = false;
-                    this.show_apps_menu = false;
-                    cx.notify();
-                })),
-        );
+        ));
+        let source_binding = snapshot.source_binding.clone();
+        let source_button = command_button("stream-primary-source", ActionVariantKind::Neutral, cx)
+            .size(px(button_size)).p_0()
+            .tooltip(tooltip("Switch source or open a new view").build())
+            .child(icon(IconName::NewView).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+            .disabled(source_binding.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_source_menu(cx)));
+        let files_button = command_button("stream-primary-files", ActionVariantKind::Neutral, cx)
+            .size(px(button_size)).p_0()
+            .tooltip(tooltip("Files").build())
+            .child(icon(IconName::Files).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+            .disabled(self.stream_device.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.open_stream_panel(StreamPanel::Files, cx)));
+        let more_button = command_button(
+            "stream-primary-more",
+            if self.drawer_open { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+            cx,
+        )
+        .size(px(button_size)).p_0()
+        .tooltip(tooltip("Control, sound, display and session options").build())
+        .child(icon(IconName::More).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+        .on_click(cx.listener(|this, _, _, cx| this.open_stream_panel(StreamPanel::More, cx)));
+        let fullscreen_button = command_button("stream-primary-fullscreen", ActionVariantKind::Neutral, cx)
+            .size(px(button_size)).p_0()
+            .tooltip(tooltip(if fullscreen { "Exit fullscreen · F11" } else { "Fullscreen · F11" }).build())
+            .child(icon(IconName::Maximize(fullscreen)).size(px(if tiny { 12. } else { 14. })))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.reset_pointer_scroll();
+                this.owner.release_input();
+                this.pointer_input = PointerInputTracker::default();
+                this.toolbar_revealed = true;
+                this.last_toolbar_activity = Instant::now();
+                window.toggle_fullscreen();
+                cx.refresh_windows();
+            }));
+        row = row.child(source_button).child(files_button).child(more_button).child(fullscreen_button);
         let cua_mode = snapshot.computer_use_status.mode;
         let cua_label = snapshot
             .computer_use_status
@@ -495,21 +534,15 @@ impl RestoredDashboard {
                 }
                 None => String::new(),
             });
-        div()
-            .id("floating_auto_hide_toolbar_container")
-            .absolute()
-            .top(px(10.))
-            .left_0()
-            .right_0()
+        let mut container = div()
+            .id(if fullscreen { "fullscreen-controls-container" } else { "stream-header-container" })
+            .relative()
             .flex()
             .flex_col()
-            .map(|container| match self.toolbar_dock {
-                ToolbarDock::Left => container.items_start().pl_3(),
-                ToolbarDock::Center => container.items_center(),
-                ToolbarDock::Right => container.items_end().pr_3(),
-            })
-            .gap_2()
-            .child(row)
+            .gap_1()
+            .when(fullscreen, |tree| tree.absolute().top(px(8.)).left_0().right_0().items_center())
+            .when(!fullscreen, |tree| tree.mx(px(window_fit::STREAM_WINDOW_GUTTER_PX)).mt(px(window_fit::STREAM_HEADER_TOP_PX)));
+        container = container.child(row)
             .when_some(cua_mode, |tree, mode| {
                 let badge_color = match mode {
                     crate::desktop::original_owner::ComputerUseMode::Observing => {
@@ -526,13 +559,14 @@ impl RestoredDashboard {
                     div()
                         .id("computer-use-status-capsule")
                         .occlude()
+                        .h(px(24.))
                         .flex()
                         .items_center()
                         .gap_2()
                         .px_3()
                         .py_1()
                         .rounded_full()
-                        .bg(color_glass_card())
+                        .bg(if fullscreen { color_glass_card() } else { theme.surface.base })
                         .border_1()
                         .border_color(badge_color)
                         .shadow_md()
@@ -556,65 +590,28 @@ impl RestoredDashboard {
                 )
             })
             .when(self.show_apps_menu, |tree| {
-                tree.child(capture_source_menu(
-                    &snapshot.capture_sources,
-                    &snapshot.source_icons,
-                    snapshot.source_binding.as_ref(),
-                    snapshot.active_capture_source,
-                    snapshot.pending_capture_source,
-                    snapshot.capture_source_error.as_deref(),
-                    snapshot.role.session(),
-                    cx,
-                ))
-            })
-    }
-
-    pub(super) fn stream_micro_rail(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let rail_color = if !self.input_locked && self.capture_supports_input {
-            Hsla::from(color_accent_amber())
-        } else {
-            Hsla::from(color_accent_cyan())
-        };
-        div()
-            .id("floating_toolbar_micro_rail")
-            .occlude()
-            .absolute()
-            .top(px(2.))
-            .left_0()
-            .right_0()
-            .flex()
-            .map(|container| match self.toolbar_dock {
-                ToolbarDock::Left => container.justify_start().pl_6(),
-                ToolbarDock::Center => container.justify_center(),
-                ToolbarDock::Right => container.justify_end().pr_6(),
-            })
-            .child(
-                div()
-                    .id("floating_toolbar_micro_rail_pill")
-                    .w(px(88.))
-                    .h(px(6.))
-                    .rounded_full()
-                    .bg(color_glass_card())
-                    .border_1()
-                    .border_color(rail_color)
-                    .tooltip(
-                        tooltip("Click to expand Weavelo Control Island · Ctrl+Alt+Esc")
-                            .build(),
-                    )
-                    .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.toolbar_collapsed_rail = false;
-                        this.toolbar_revealed = true;
-                        this.last_toolbar_activity = Instant::now();
-                        cx.notify();
-                    })),
-            )
+                tree.child(div().absolute().top(px(window_fit::STREAM_HEADER_HEIGHT_PX + 4.0))
+                    .left_0().right_0().flex().justify_center()
+                    .child(capture_source_menu(
+                        &snapshot.capture_sources,
+                        &snapshot.source_icons,
+                        snapshot.source_binding.as_ref(),
+                        snapshot.active_capture_source,
+                        snapshot.pending_capture_source,
+                        snapshot.capture_source_error.as_deref(),
+                        snapshot.role.session(),
+                        cx,
+                    )))
+            });
+        container
     }
 
     pub(super) fn stream_controls_panel(
         &self,
         snapshot: &DashboardSnapshot,
         host_stats: Option<&UiHostStats>,
+        viewport_width: f32,
+        viewport_height: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let title = match self.stream_panel {
@@ -638,6 +635,23 @@ impl RestoredDashboard {
                 .gap_3()
                 .child(scale_mode_control(self.scale_mode, cx))
                 .when_some(self.viewport_controls(cx),|panel,controls|panel.child(controls))
+                .child(display_switcher_control(
+                    &snapshot.capture_sources,
+                    snapshot.source_binding.as_ref(),
+                    snapshot.active_capture_source,
+                    snapshot.pending_capture_source,
+                    self.show_apps_menu,
+                    cx,
+                ))
+                .child(
+                    command_button("fit-stream-window", ActionVariantKind::Neutral, cx)
+                        .child("Fit window")
+                        .tooltip(tooltip("Resize this window to fit the source without leaving the display").build())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.window_fit.request_fit();
+                            cx.notify();
+                        })),
+                )
                 .child(
                     command_button("island_popout_pip", ActionVariantKind::Neutral, cx)
                         .child("Open picture in picture")
@@ -655,15 +669,48 @@ impl RestoredDashboard {
                 )),
             StreamPanel::More => self.stream_more_panel(snapshot, cx),
         };
+        let compact_panel = viewport_width < 420.0 || viewport_height < 280.0;
+        let top = if viewport_height < 280.0 {
+            8.0
+        } else {
+            window_fit::STREAM_HEADER_TOP_PX + window_fit::STREAM_HEADER_HEIGHT_PX
+                + if snapshot.computer_use_status.mode.is_some() { 36.0 } else { 8.0 }
+        };
+        let bottom = if viewport_height < 280.0 { 8.0 } else { 12.0 };
+        let mut tabs = div().flex().flex_wrap().items_center().gap_1().px_2().pb_2();
+        for (panel, label, symbol) in [
+            (StreamPanel::Control, "Control", IconName::Control),
+            (StreamPanel::Sound, "Sound", IconName::Sound),
+            (StreamPanel::Display, "Display", IconName::Display),
+            (StreamPanel::More, "More", IconName::More),
+        ] {
+            let hint = if panel == StreamPanel::Control {
+                snapshot.input_status.as_str()
+            } else {
+                label
+            };
+            tabs = tabs.child(
+                command_button(
+                    format!("stream-panel-tab-{panel:?}"),
+                    if self.stream_panel == panel { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+                    cx,
+                )
+                .when(compact_panel, |button| button.size(px(28.)).p_0())
+                .when(!compact_panel, |button| button.h(px(28.)).px_2().gap_1())
+                .tooltip(tooltip(hint.to_owned()).build())
+                .child(icon(symbol).size(px(13.)))
+                .when(!compact_panel, |button| button.child(label))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_stream_panel(panel, cx))),
+            );
+        }
         div()
             .id("stream-local-panel")
             .occlude()
             .absolute()
-            .top(px(62.))
+            .top(px(top))
             .right(px(12.))
-            .bottom(px(12.))
-            .w(px(370.))
-            .max_w(relative(0.95))
+            .bottom(px(bottom))
+            .w(px((viewport_width - 24.0).max(1.0).min(370.0)))
             .flex()
             .flex_col()
             .rounded_lg()
@@ -677,7 +724,8 @@ impl RestoredDashboard {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .p_3()
+                    .when(compact_panel, |header| header.px_2().py_1())
+                    .when(!compact_panel, |header| header.p_3())
                     .child(
                         div()
                             .text_size(px(13.))
@@ -703,8 +751,9 @@ impl RestoredDashboard {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .p_3()
-                    .child(body),
+                    .when(compact_panel, |scroll| scroll.px_1().py_1())
+                    .when(!compact_panel, |scroll| scroll.p_3())
+                    .child(div().flex().flex_col().gap_2().child(tabs).child(body)),
             )
     }
 

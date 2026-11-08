@@ -1786,6 +1786,34 @@ impl OriginalOwner {
     pub(crate) fn queue_viewport_input(&self,target:&ViewportTarget,event:InputEvent)->bool {
         self.queue_input_for(Some(target),event)
     }
+    pub(crate) fn queue_viewport_button_tap(&self,target:&ViewportTarget,button:u8)->Result<(),String> {
+        let mut pool=self.pool.lock().unwrap();
+        if pool.active().is_none_or(|entry|!Self::viewport_matches(&entry.session,target)) {
+            return Err("Remote navigation source changed".into());
+        }
+        let session=&pool.active().unwrap().session;
+        if !session.mouse.is_empty() || !session.keys.is_empty() || session.modifiers!=0 {
+            return Err("Release held keys or pointer before using remote navigation".into());
+        }
+        self.revoke_computer_use();
+        let taking_over=if let Ok(mut status)=self.computer_use_status.lock() {
+            if status.mode==Some(ComputerUseMode::Controlling) {
+                status.mode=Some(ComputerUseMode::PausedByHuman);
+                status.status_label=Some("AI Paused — Human took over input".into());true
+            } else {false}
+        } else {false};
+        let session=&mut pool.active_mut().unwrap().session;
+        if taking_over {
+            session.release_input();
+            return Err("Control returned to you; try navigation again".into());
+        }
+        if !session.can_input() {return Err("Remote navigation is waiting for current input control".into());}
+        let binding=session.conn.input_binding(session.video_id,session.source_revision())
+            .ok_or("Remote navigation is waiting for a current input grant")?;
+        let result=session.conn.try_bound_button_tap(binding,button,std::time::Duration::ZERO);
+        if let Err(error)=&result {session.error=error.clone();}
+        result
+    }
     fn queue_input_for(&self,target:Option<&ViewportTarget>,event:InputEvent)->bool {
         let mut p = self.pool.lock().unwrap();
         if target.is_some_and(|target|p.active().is_none_or(|entry|!Self::viewport_matches(&entry.session,target))){return false;}

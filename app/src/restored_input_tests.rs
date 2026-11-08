@@ -4,6 +4,7 @@ use super::{
     StreamPanel, FrontendExitGroup, RestoredDashboard, UnifiedRuntimeConfig, component, weavelo_themes,
     start_unified_runtime,
 };
+use super::{ToolbarRevealTrigger, should_reveal_toolbar};
 use crate::desktop::OriginalGuiSession;
 use gpui::{
     KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext, WindowAppearance,
@@ -22,6 +23,13 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
     time::Duration,
 };
+
+#[test]
+fn fullscreen_toolbar_reveals_only_from_the_micro_rail_click() {
+    assert!(!should_reveal_toolbar(ToolbarRevealTrigger::RemotePointerMove));
+    assert!(!should_reveal_toolbar(ToolbarRevealTrigger::RemoteDrag));
+    assert!(should_reveal_toolbar(ToolbarRevealTrigger::MicroRailClick));
+}
 
 #[gpui::test]
 #[ignore = "local protocol recorder; run explicitly without any real user session key"]
@@ -249,6 +257,28 @@ fn run_input_case(cx:&mut TestAppContext,viewport_frame:bool) {
         Some(MouseButton::Left),
         Modifiers::none(),
     );
+    let navigation_target = view
+        .read_with(cx, |v, _| v.scroll_target())
+        .expect("painted stream should have a current navigation target");
+    let navigation_result = view
+        .read_with(cx, |v, _| v.owner.queue_viewport_button_tap(&navigation_target, 2));
+    assert!(matches!(&navigation_result, Err(reason) if reason.contains("Release held keys or pointer")),
+        "Android Home must be rejected while a remote pointer button is held: {navigation_result:?}");
+    assert!(view.read_with(cx, |v, _| v.pointer_input.pressed_buttons.contains(&0)),
+        "rejected navigation must preserve the original local pressed-button state");
+    std::thread::sleep(Duration::from_millis(100));
+    let rejected_navigation_trace = output.lock().unwrap().clone();
+    assert!(rejected_navigation_trace.iter().any(|command| matches!(command,
+        SessionCommand::SourceInput { event: InputEvent::MouseDown(0), .. })),
+        "the original remote mouse press must remain queued");
+    assert!(!rejected_navigation_trace.iter().any(|command| matches!(command,
+        SessionCommand::SourceInput { event: InputEvent::MouseUp(0), .. })),
+        "navigation must not release the original remote mouse press");
+    assert!(!rejected_navigation_trace.iter().any(|command| matches!(command,
+        SessionCommand::SourceInput { event: InputEvent::MouseDown(2), .. }
+            | SessionCommand::Input { event: InputEvent::MouseDown(2), .. }
+            | SessionCommand::ReleaseInput { .. })),
+        "rejected navigation must queue neither Home down nor an input release");
     let release_pos = point(px(565.), px(375.));
     let final_move = view.read_with(cx, |v, _| v.pointer_event_at(release_pos)).unwrap();
     cx.simulate_mouse_up(

@@ -24,6 +24,8 @@ pub mod assets {
                 "weavelo-icons/server.svg" => {
                     Some(include_bytes!("product_components/icons/server.svg"))
                 }
+                "weavelo-icons/back.svg" => Some(include_bytes!("product_components/icons/back.svg")),
+                "weavelo-icons/home.svg" => Some(include_bytes!("product_components/icons/home.svg")),
                 "weavelo-icons/display.svg" => Some(include_bytes!("product_components/icons/display.svg")),
                 "weavelo-icons/sharing.svg" => Some(include_bytes!("product_components/icons/sharing.svg")),
                 "weavelo-icons/receiving.svg" => Some(include_bytes!("product_components/icons/receiving.svg")),
@@ -139,6 +141,8 @@ pub fn button(id: impl Into<ElementId>) -> Button {
 }
 
 pub enum IconName {
+    Back,
+    Home,
     Server,
     Display,
     Sharing,
@@ -166,6 +170,8 @@ pub struct ProductIcon {
 }
 pub fn icon(name: IconName) -> ProductIcon {
     let file = match name {
+        IconName::Back => "back.svg",
+        IconName::Home => "home.svg",
         IconName::Server => "server.svg",
         IconName::Display => "display.svg",
         IconName::Sharing => "sharing.svg",

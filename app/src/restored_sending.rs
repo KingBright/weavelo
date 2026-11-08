@@ -455,7 +455,13 @@ impl RestoredDashboard {
             )
             .when(
                 self.drawer_open && self.stream_panel == StreamPanel::Files,
-                |tree| tree.child(self.stream_controls_panel(snapshot, None, cx)),
+                |tree| tree.child(self.stream_controls_panel(
+                    snapshot,
+                    None,
+                    f32::from(window.viewport_size().width),
+                    f32::from(window.viewport_size().height),
+                    cx,
+                )),
             )
             .when_some(self.source_selection.as_ref(), |tree, selection| {
                 tree.child(source_selection::render(
