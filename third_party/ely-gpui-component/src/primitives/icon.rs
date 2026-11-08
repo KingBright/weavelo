@@ -475,4 +475,3 @@ impl RenderOnce for Icon {
             })
     }
 }
-
