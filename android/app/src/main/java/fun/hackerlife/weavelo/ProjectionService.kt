@@ -1,6 +1,8 @@
 package `fun`.hackerlife.weavelo
 
 import android.app.*
+import `fun`.hackerlife.weavelo.ui.LanguageNotificationObserver
+import `fun`.hackerlife.weavelo.ui.notificationText
 import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.content.pm.ServiceInfo
@@ -19,6 +21,7 @@ import `fun`.hackerlife.weavelo.managed.ManagedApplications
 
 /** Owns one OS authorization and one VirtualDisplay for its entire lifetime. */
 class ProjectionService : Service() {
+    private var languageObserver: LanguageNotificationObserver? = null
     private val running = AtomicBoolean(false)
     private var worker: Thread? = null
     private var projection: MediaProjection? = null
@@ -32,23 +35,26 @@ class ProjectionService : Service() {
     private var audioWorker: Thread? = null
 
     override fun onBind(intent: Intent?) = null
+    private fun notification(): Notification {
+        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("projection", notificationText("Screen sharing"), NotificationManager.IMPORTANCE_LOW))
+        val stop = PendingIntent.getService(this, 2, Intent(this, ProjectionService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return Notification.Builder(this, "projection").setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(notificationText("Weavelo screen sharing")).setContentText(notificationText("Sharing with your devices. Tap to return."))
+            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, notificationText("Stop sharing"), stop).build()).build()
+    }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "stop") { ManagedScreenBridge.enable(this, false); stopSelf(); return START_NOT_STICKY }
         if (running.get()) return START_NOT_STICKY
         val managed = if (intent?.action == "managed") ManagedScreenBridge.attached() else null
         val consent = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra("consent", Intent::class.java) else @Suppress("DEPRECATION") intent?.getParcelableExtra("consent")
         if (consent == null && managed == null) { stopSelf(); return START_NOT_STICKY }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("projection", "Screen sharing", NotificationManager.IMPORTANCE_LOW))
-        val stop = PendingIntent.getService(this, 2, Intent(this, ProjectionService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val open = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val notification = Notification.Builder(this, "projection").setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("Weavelo screen sharing").setContentText("Sharing with your devices. Tap to return.")
-            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "Stop sharing", stop).build()).build()
+        val notification = notification()
         try {
             val serviceType = if (managed != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             if (Build.VERSION.SDK_INT >= 29) startForeground(8124, notification, serviceType)
             else startForeground(8124, notification)
+            languageObserver = LanguageNotificationObserver(this) { getSystemService(NotificationManager::class.java).notify(8124, notification()) }
             val metrics = resources.displayMetrics
             val displays = getSystemService(DisplayManager::class.java)
             @Suppress("DEPRECATION")
@@ -101,7 +107,7 @@ class ProjectionService : Service() {
             }.also { displays.registerDisplayListener(it, Handler(Looper.getMainLooper())) }
             running.set(true)
             worker = Thread({ publish(capture, managed) }, "remote-projection").apply { start() }
-        } catch (e: Exception) { PublisherClient.status(e.message ?: "Screen sharing failed", false); stopSelf() }
+        } catch (e: Exception) { PublisherClient.status(e.message ?: "Screen sharing failed", false, if (e.message == null) AppText("Screen sharing failed") else null); stopSelf() }
         return START_NOT_STICKY
     }
 
@@ -124,10 +130,10 @@ class ProjectionService : Service() {
             if (managed != null) apps = ManagedApplications(managed, applicationContext)
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
-            PublisherClient.status("Sharing enabled · $addresses", true)
+            PublisherClient.status("Sharing enabled · $addresses", true, AppText("Sharing enabled · %s", listOf(addresses)))
             sendTarget?.let { target ->
                 runCatching { PublisherClient.sendScreen(target) }
-                    .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true) }
+                    .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true, appTextOf(it) ?: if (it.message == null) AppText("Could not send screen") else null) }
                 sendTarget = null
             }
             while (running.get()) {
@@ -166,7 +172,7 @@ class ProjectionService : Service() {
                 if (gpu != null) gpu.awaitFrame(if (gpu.pendingFrames) 1 else waitMs) else Thread.sleep(waitMs)
             }
         } catch (e: Exception) {
-            if (running.get()) { PublisherClient.status(e.message ?: "Projection stopped", false); runCatching { PublisherClient.action(4, e.message ?: "Projection stopped") } }
+            if (running.get()) { PublisherClient.status(e.message ?: "Projection stopped", false, if (e.message == null) AppText("Projection stopped") else null); runCatching { PublisherClient.action(4, e.message ?: "Projection stopped") } }
         } finally {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
@@ -174,7 +180,7 @@ class ProjectionService : Service() {
             runCatching { display?.surface = null }; runCatching { display?.release() }
             publisher?.close()
             runCatching { PublisherClient.action(1) }
-            if (PublisherClient.active) PublisherClient.status("Screen sharing stopped", false)
+            if (PublisherClient.active) PublisherClient.status("Screen sharing stopped", false, AppText("Screen sharing stopped"))
             stopSelf()
         }
     }
@@ -202,12 +208,13 @@ class ProjectionService : Service() {
                     if (filled == samples.size) { check(PublisherClient.nativePcm(grant,samples)) { "Audio source ended or Opus encoder failed" }; filled = 0 }
                 }
             } catch (e: Exception) {
-                if (audioRunning.get()) { audioAllowed = false; PublisherClient.status("Sharing video · ${e.message}") }
+                if (audioRunning.get()) { audioAllowed = false; PublisherClient.status("Sharing video · ${e.message}", text = AppText("Sharing video · %s", listOf(e.message ?: ""))) }
             } finally { runCatching { record?.stop() }; record?.release(); audioRunning.set(false) }
         }, "projection-audio").apply { start() }
     }
     private fun stopAudio() { audioRunning.set(false); audioWorker?.join(500); audioWorker = null }
     override fun onDestroy() {
+        languageObserver?.close()
         displayListener?.let { getSystemService(DisplayManager::class.java).unregisterDisplayListener(it) }
         displayListener = null
         running.set(false); worker?.interrupt(); runCatching { projection?.stop() }; projection = null

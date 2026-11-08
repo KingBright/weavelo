@@ -67,6 +67,7 @@ fun MobileViewportScreen(
     var transform by viewportTransform
     val sessionState by WeaveloClient.sessionState.collectAsState()
     var playbackError by remember { mutableStateOf<String?>(null) }
+    var playbackErrorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     var decodedFps by remember { mutableStateOf<Int?>(null) }
     var videoDimensions by remember { mutableStateOf(VideoDimensions(1920, 1080)) }
     val mediaPaused by WeaveloClient.mediaPaused.collectAsState()
@@ -77,6 +78,7 @@ fun MobileViewportScreen(
     var keepAliveText by remember { mutableStateOf(WeaveloClient.backgroundKeepAliveSeconds.toString()) }
     var keepService by remember { mutableStateOf(WeaveloClient.backgroundServiceEnabled()) }
     var settingsError by remember { mutableStateOf<String?>(null) }
+    var settingsErrorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     val scope = rememberCoroutineScope()
 
     var inputSessionToken by remember { mutableStateOf<WeaveloClient.InputIntentToken?>(null) }
@@ -128,20 +130,20 @@ fun MobileViewportScreen(
 
     if (showStreamSettings) {
         AlertDialog(onDismissRequest = { showStreamSettings = false },
-            title = { Text("Stream settings") },
+            title = { Text(tr("Stream settings")) },
             text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(value = fpsText, onValueChange = { fpsText = it },
-                    label = { Text("Frame rate (FPS)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    label = { Text(tr("Frame rate (FPS)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                 OutlinedTextField(value = bitrateText, onValueChange = { bitrateText = it },
-                    label = { Text("Video bitrate (kbps)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    label = { Text(tr("Video bitrate (kbps)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                 OutlinedTextField(value = keepAliveText, onValueChange = { keepAliveText = it },
-                    label = { Text("Background keepalive (seconds)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    label = { Text(tr("Background keepalive (seconds)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     androidx.compose.material3.Checkbox(keepService, { keepService = it })
-                    Text("Keep this connection in background until Disconnect")
+                    Text(tr("Keep this connection in background until Disconnect"))
                 }
-                Text("When off, the idle timeout applies (0 keeps the connection). This is not a system-stop or battery exemption.")
-                settingsError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Text(tr("When off, the idle timeout applies (0 keeps the connection). This is not a system-stop or battery exemption."))
+                settingsError?.let { Text(settingsErrorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it), color = MaterialTheme.colorScheme.error) }
             } },
             confirmButton = { TextButton(onClick = {
                 val fps = fpsText.toIntOrNull()
@@ -149,19 +151,22 @@ fun MobileViewportScreen(
                 val keepAlive = keepAliveText.toIntOrNull()
                 if (fps == null || bitrate == null || fps <= 0 || bitrate <= 0 || keepAlive == null || keepAlive !in 0..86400) {
                     settingsError = "Use positive FPS/kbps and 0–86400 keepalive seconds"
+                    settingsErrorText = `fun`.hackerlife.weavelo.AppText("Use positive FPS/kbps and 0–86400 keepalive seconds")
                 } else scope.launch {
+                    settingsErrorText = null
                     settingsError = withContext(Dispatchers.IO) { WeaveloClient.updateStreamRates(fps, bitrate) }
                     if (settingsError == null) settingsError = WeaveloClient.updateBackgroundKeepAlive(keepAlive)
                     if (settingsError == null) { WeaveloClient.updateBackgroundServiceEnabled(keepService); showStreamSettings = false }
                 }
-            }) { Text("Apply") } },
-            dismissButton = { TextButton(onClick = { showStreamSettings = false }) { Text("Cancel") } })
+            }) { Text(tr("Apply")) } },
+            dismissButton = { TextButton(onClick = { showStreamSettings = false }) { Text(tr("Cancel")) } })
     }
 
     Column(Modifier.fillMaxSize().imePadding().background(Color.Black).safeDrawingPadding()) {
     Box(Modifier.weight(1f).fillMaxWidth()) {
         val gestureOwner = inputSessionToken
         RemoteViewport(
+            description = tr("Remote screen"),
             dimensions = videoDimensions,
             transformState = viewportTransform,
             enabled = inputEnabled,
@@ -184,6 +189,7 @@ fun MobileViewportScreen(
                                 val active = AtomicBoolean(true)
                                 running = active
                                 playbackError = null
+                                playbackErrorText = null
                                 decodedFps = null
                                 feeder = Thread {
                                     val codec = MediaCodecPlayer(holder.surface) { dimensions ->
@@ -196,9 +202,9 @@ fun MobileViewportScreen(
                                     }
                                     val audioPlayer = AudioOpusPlayer()
                                     var audioEnabled = true
-                                    fun report(message: String, error: Exception) {
+                                    fun report(message: String, error: Exception, text: `fun`.hackerlife.weavelo.AppText) {
                                         Log.e("Weavelo", message, error)
-                                        post { if (active.get()) playbackError = message }
+                                        post { if (active.get()) { playbackError = message; playbackErrorText = text } }
                                     }
                                     try {
                                         codec.start(1920, 1080)
@@ -265,7 +271,7 @@ fun MobileViewportScreen(
                                                 } catch (e: Exception) {
                                                     audioEnabled = false
                                                     audioPlayer.stop()
-                                                    report("Audio unavailable: ${e.message}", e)
+                                                    report("Audio unavailable: ${e.message}", e, `fun`.hackerlife.weavelo.AppText("Audio unavailable: %s", listOf(e.message ?: "")))
                                                 }
                                             }
                                             if (frame == null || pending != null) Thread.sleep(4)
@@ -273,7 +279,7 @@ fun MobileViewportScreen(
                                     } catch (_: InterruptedException) {
                                         Thread.currentThread().interrupt()
                                     } catch (e: Exception) {
-                                        report("Video unavailable: ${e.message}", e)
+                                        report("Video unavailable: ${e.message}", e, `fun`.hackerlife.weavelo.AppText("Video unavailable: %s", listOf(e.message ?: "")))
                                     } finally {
                                         codec.stop()
                                         audioPlayer.stop()
@@ -297,11 +303,11 @@ fun MobileViewportScreen(
         val keyboardToken = textInputToken
         RemoteKeyboard(identity = keyboardToken ?: "no-input", visible = showKeyboard,
             enabled = inputEnabled && keyboardToken != null,
-            onText = { text -> keyboardToken?.let { if (!WeaveloClient.commitText(it,text)) playbackError="Text input source changed; reopen the keyboard" } },
-            onKey = { key, pressed -> keyboardToken?.let { if (!WeaveloClient.textKey(it,key,pressed)) playbackError="Keyboard input is unavailable" } })
+            onText = { text -> keyboardToken?.let { if (!WeaveloClient.commitText(it,text)) { playbackError="Text input source changed; reopen the keyboard"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Text input source changed; reopen the keyboard") } } },
+            onKey = { key, pressed -> keyboardToken?.let { if (!WeaveloClient.textKey(it,key,pressed)) { playbackError="Keyboard input is unavailable"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Keyboard input is unavailable") } } })
 
         playbackError?.let { message ->
-            Text(message, color = Color.White,
+            Text(playbackErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = Color.White,
                 modifier = Modifier.align(Alignment.Center)
                     .background(Color.Black.copy(alpha = 0.85f)).padding(16.dp))
         }
@@ -322,18 +328,19 @@ fun MobileViewportScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             TextButton(onClick = { controlsExpanded = !controlsExpanded }) {
-                Text(if (controlsExpanded) "Hide tools" else "Tools")
+                Text(if (controlsExpanded) tr("Hide tools") else tr("Tools"))
             }
             if (controlsExpanded) {
+            LanguageSelector()
             TextButton(onClick = {
                 WeaveloClient.setManualMediaPaused(!WeaveloClient.manualMediaPaused)
-            }) { Text(if (WeaveloClient.manualMediaPaused) "Resume" else "Pause") }
+            }) { Text(if (WeaveloClient.manualMediaPaused) tr("Resume") else tr("Pause")) }
             TextButton(onClick = {
                 fpsText = WeaveloClient.streamFps.toString()
                 bitrateText = WeaveloClient.streamBitrateKbps.toString()
                 settingsError = null
                 showStreamSettings = true
-            }) { Text("Stream settings") }
+            }) { Text(tr("Stream settings")) }
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -341,7 +348,7 @@ fun MobileViewportScreen(
             ) {
                 Box(modifier = Modifier.size(6.dp).background(ColorStatusGreen, CircleShape))
                 Text(
-                    text = "Remote session",
+                    text = tr("Remote session"),
                     color = ColorTextPrimary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
@@ -354,10 +361,10 @@ fun MobileViewportScreen(
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = if (sessionState == SessionState.RECONNECTING) "Reconnecting…"
-                            else if (pausePending) "Waiting for host…"
-                            else if (mediaPaused) "Paused · connected"
-                            else decodedFps?.let { "Decoded $it FPS" } ?: "Waiting for video",
+                        text = if (sessionState == SessionState.RECONNECTING) tr("Reconnecting…")
+                            else if (pausePending) tr("Waiting for host…")
+                            else if (mediaPaused) tr("Paused · connected")
+                            else decodedFps?.let { trFormat("Decoded %s FPS", it) } ?: tr("Waiting for video"),
                         color = ColorAccentCyan,
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
@@ -370,7 +377,7 @@ fun MobileViewportScreen(
             // 细分隔线
             Box(modifier = Modifier.width(1.dp).height(12.dp).background(ColorBorderFine))
 
-            TouchIslandIconButton(text = "DISCONNECT", active = false, isDestructive = true) {
+            TouchIslandIconButton(text = tr("DISCONNECT"), active = false, isDestructive = true) {
                 virtualKeys.releaseAll()
                 onDisconnect()
             }

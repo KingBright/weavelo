@@ -27,10 +27,10 @@ pub(super) struct SendingContext {
 
 fn source_name(source: CaptureSource) -> String {
     match source {
-        CaptureSource::MainDisplay => "Main display".into(),
-        CaptureSource::Display(id) => format!("Display {id}"),
-        CaptureSource::Window(id) => format!("Window {id}"),
-        CaptureSource::Camera(id) => format!("Camera {id}"),
+        CaptureSource::MainDisplay => crate::i18n::tr("Main display").into(),
+        CaptureSource::Display(id) => crate::i18n::tr_format!("Display {id}", id=id),
+        CaptureSource::Window(id) => crate::i18n::tr_format!("Window {id}", id=id),
+        CaptureSource::Camera(id) => crate::i18n::tr_format!("Camera {id}", id=id),
     }
 }
 
@@ -43,7 +43,7 @@ impl SendingContext {
                 .map(capture_source_label)
                 .unwrap_or_else(|| source_name(*source))
         } else {
-            format!("{} sources", self.sources.len())
+            crate::i18n::tr_format!("{} sources", self.sources.len())
         }
     }
 
@@ -282,7 +282,7 @@ impl RestoredDashboard {
             .map(|device| device.display_name.clone())
             .unwrap_or_else(|| context.target.clone());
         let source = context.label();
-        let title = format!("{source} · {device}");
+        let title = crate::i18n::tr_format!("{} · {}", source, device);
         self.native_window_title = title.clone();
         self.status = context.progress.status.clone();
         window.set_window_title(&title);
@@ -344,14 +344,14 @@ impl RestoredDashboard {
                     )
                     .child(
                         command_button("sending-files", ActionVariantKind::Neutral, cx)
-                            .child("Files")
+                            .child(crate::i18n::tr("Files"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.open_device_files(files_target.clone(), cx)
                             })),
                     )
                     .child(
                         command_button("sending-new-source", ActionVariantKind::Neutral, cx)
-                            .child("New source")
+                            .child(crate::i18n::tr("New source"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.begin_delivery_selection(send_target.clone(), cx)
                             })),
@@ -359,7 +359,7 @@ impl RestoredDashboard {
                     .child(
                         command_button("sending-fullscreen", ActionVariantKind::Neutral, cx)
                             .tooltip(
-                                tooltip(if fullscreen { "Restore" } else { "Fullscreen" }).build(),
+                                tooltip(crate::i18n::tr(if fullscreen { "Restore" } else { "Fullscreen" })).build(),
                             )
                             .child(icon(IconName::Maximize(fullscreen)).size(px(14.)))
                             .on_click(|_, window, _| window.toggle_fullscreen()),
@@ -389,7 +389,7 @@ impl RestoredDashboard {
                             .border_1()
                             .border_color(color_border_fine())
                             .child(sources)
-                            .child(div().text_size(px(12.)).child(format!("To {device}")))
+                            .child(div().text_size(px(12.)).child(crate::i18n::tr_format!("To {device}", device=device)))
                             .child(
                                 div()
                                     .flex()
@@ -404,13 +404,13 @@ impl RestoredDashboard {
                                     } else {
                                         color_accent_cyan().into()
                                     }))
-                                    .child(div().text_size(px(12.)).child(context.progress.status)),
+                                    .child(div().text_size(px(12.)).child(crate::i18n::message(&context.progress.status))),
                             )
                             .when(!finished, |card| card.child(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(theme.content.secondary)
-                                    .child("Closing this window keeps sending in the background."),
+                                    .child(crate::i18n::tr("Closing this window keeps sending in the background.")),
                             ))
                             .child(
                                 div()
@@ -424,7 +424,7 @@ impl RestoredDashboard {
                                             ActionVariantKind::Neutral,
                                             cx,
                                         )
-                                        .child("View device")
+                                        .child(crate::i18n::tr("View device"))
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
                                                 this.open_device_window(&receive_target, cx)
@@ -440,9 +440,9 @@ impl RestoredDashboard {
                                         .disabled(finished)
                                         .debug_selector(|| "sending-stop".into())
                                         .child(if context.sources.len() == 1 {
-                                            "Stop this send"
+                                            crate::i18n::tr("Stop this send")
                                         } else {
-                                            "Stop these sources"
+                                            crate::i18n::tr("Stop these sources")
                                         })
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {

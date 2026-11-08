@@ -1,5 +1,6 @@
 import { WeaveloWebClient } from './client.js';
 import { canvasPoint } from './input.js';
+import { resolveLanguage, translate, applyLanguage } from './i18n.js';
 
 document.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('remote-canvas');
@@ -15,12 +16,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const status = document.getElementById('connection-status');
   const connectBtn = document.getElementById('btn-connect');
   const activePointers = new Map();
+  let savedLanguage;
+  try { savedLanguage = localStorage.getItem('weavelo.language'); } catch { /* Session-only selection remains usable. */ }
+  let language = resolveLanguage(savedLanguage, navigator.language);
+  const tr = key => translate(language, key);
+  const setText = (node, key) => { node.dataset.i18n = key; node.textContent = tr(key); };
+  const languageSelect = document.getElementById('interface-language');
+  languageSelect.value = language;
+  languageSelect.addEventListener('change', () => {
+    language = resolveLanguage(languageSelect.value);
+    try { localStorage.setItem('weavelo.language', language); } catch { /* Browser storage may be disabled. */ }
+    applyLanguage(document, language);
+    client.onTelemetry(client.telemetry);
+  });
+  applyLanguage(document, language);
 
   // 状态与遥测更新
   client.onStateChange = (state) => {
     const labels = { disconnected: 'Weavelo Ready', connecting: 'Connecting…',
       connected: 'Waiting for video…', streaming: 'Weavelo Live', error: 'Connection failed' };
-    islandTitle.textContent = labels[state];
+    setText(islandTitle, labels[state]);
     telemetryBadge.hidden = !['connected', 'streaming'].includes(state);
     btnDisconnect.disabled = !['connecting', 'connected', 'streaming'].includes(state);
     connectBtn.disabled = state === 'connecting';
@@ -28,17 +43,17 @@ document.addEventListener('DOMContentLoaded', () => {
       dot.style.background = state === 'streaming' ? 'var(--color-accent-emerald)' : '#80848b';
     });
     if (state === 'disconnected' || state === 'error') activePointers.clear();
-    if (state === 'connected') status.textContent = 'Connected. Waiting for a decodable video frame…';
-    if (state === 'streaming') status.textContent = 'Live video received. Frame rate is measured from rendered frames.';
+    if (state === 'connected') setText(status, 'Connected. Waiting for a decodable video frame…');
+    if (state === 'streaming') setText(status, 'Live video received. Frame rate is measured from rendered frames.');
   };
 
   client.onTelemetry = (stats) => {
-    telemetryBadge.textContent = `${stats.fps ?? '—'} FPS · ${stats.latencyMs == null ? 'Latency unavailable' : `${stats.latencyMs}ms`}`;
+    telemetryBadge.textContent = `${stats.fps ?? '—'} FPS · ${stats.latencyMs == null ? tr('Latency unavailable') : `${stats.latencyMs}ms`}`;
     document.getElementById('video-bitrate').textContent = stats.videoBitrate ?? '—';
   };
-  client.onError = (message) => { status.textContent = message; };
+  client.onError = (message) => { setText(status, message); };
   const connect = () => {
-    status.textContent = 'Connecting to the video gateway…';
+    setText(status, 'Connecting to the video gateway…');
     client.connect(endpoint.value.trim());
   };
   connectBtn.addEventListener('click', connect);
@@ -59,7 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
   btnDisconnect.addEventListener('click', () => {
     releaseInput();
     client.disconnect();
-    status.textContent = 'Disconnected. Enter a gateway endpoint to reconnect.';
+    setText(status, 'Disconnected. Enter a gateway endpoint to reconnect.');
   });
 
   // 虚拟修饰键点击

@@ -29,7 +29,7 @@ internal object ManagedScreenBridge {
                 if (current?.asBinder() === binder) {
                     current = null
                     PublisherClient.stop(context, disableManaged = false)
-                    PublisherClient.status("Managed screen disconnected", false)
+                    PublisherClient.status("Managed screen disconnected", false, `fun`.hackerlife.weavelo.AppText("Managed screen disconnected"))
                 }
             }
         }, 0)
@@ -47,7 +47,7 @@ internal object ManagedScreenBridge {
         if (attached() == null || PublisherClient.active ||
             !context.getSharedPreferences("managed_screen", Context.MODE_PRIVATE).getBoolean("enabled", false)) return
         runCatching { PublisherClient.startManaged(context) }
-            .onFailure { PublisherClient.status("Open Weavelo to resume managed screen sharing", false) }
+            .onFailure { PublisherClient.status("Open Weavelo to resume managed screen sharing", false, `fun`.hackerlife.weavelo.AppText("Open Weavelo to resume managed screen sharing")) }
     }
 }
 

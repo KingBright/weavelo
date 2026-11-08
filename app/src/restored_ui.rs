@@ -1299,8 +1299,8 @@ impl RestoredDashboard {
         self.owner.release_input();
         self.pairing_image_status("Choose a local invitation QR image.", MeshPairingMessageKind::Neutral);
         let task = tokio::spawn(async move {
-            let Some(file) = rfd::AsyncFileDialog::new().set_title("Scan Weavelo invitation image")
-                .add_filter("Invitation QR image", &["png", "jpg", "jpeg", "webp"]).pick_file().await
+            let Some(file) = rfd::AsyncFileDialog::new().set_title(crate::i18n::tr("Scan Weavelo invitation image"))
+                .add_filter(crate::i18n::tr("Invitation QR image"), &["png", "jpg", "jpeg", "webp"]).pick_file().await
             else { return None; };
             let path = file.path().to_path_buf();
             Some(tokio::task::spawn_blocking(move || remote_core::pairing_image::decode_pairing_image_file(&path))
@@ -1719,7 +1719,7 @@ impl RestoredDashboard {
             .child(
                 div()
                     .text_size(px(11.0))
-                    .child("Custom frame rate (FPS) and video bitrate (kbps)"),
+                    .child(crate::i18n::tr("Custom frame rate (FPS) and video bitrate (kbps)")),
             )
             .child(
                 component::text_input("custom_fps")
@@ -1744,7 +1744,7 @@ impl RestoredDashboard {
             )
             .child(
                 command_button("apply_custom_stream", ActionVariantKind::Primary, cx)
-                    .child("Apply custom values")
+                    .child(crate::i18n::tr("Apply custom values"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dispatch_stream_settings_action(StreamSettingsAction::ApplyCustom, cx);
                     })),
@@ -1752,9 +1752,9 @@ impl RestoredDashboard {
             .when(self.purpose == WindowPurpose::Stream, |controls| controls.child(
                 command_button("toggle_media_pause", ActionVariantKind::Neutral, cx)
                     .child(if self.manual_media_paused {
-                        "Resume media"
+                        crate::i18n::tr("Resume media")
                     } else {
-                        "Pause media · keep connected"
+                        crate::i18n::tr("Pause media · keep connected")
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.set_stream_paused(!this.manual_media_paused,cx);
@@ -1763,9 +1763,9 @@ impl RestoredDashboard {
             .child(
                 command_button("pause_in_background", ActionVariantKind::Neutral, cx)
                     .child(if self.pause_when_inactive {
-                        "Pause hidden video: on"
+                        crate::i18n::tr("Pause hidden video: on")
                     } else {
-                        "Pause hidden video: off"
+                        crate::i18n::tr("Pause hidden video: off")
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.pause_when_inactive = !this.pause_when_inactive;
@@ -1775,14 +1775,14 @@ impl RestoredDashboard {
                     })),
             )
             .when(self.purpose == WindowPurpose::Stream, |controls| controls.child(div().text_size(px(11.0)).child(if pending {
-                "Waiting for host confirmation…"
+                crate::i18n::tr("Waiting for host confirmation…")
             } else if paused {
-                "Media paused · connection retained"
+                crate::i18n::tr("Media paused · connection retained")
             } else {
-                "Media enabled"
+                crate::i18n::tr("Media enabled")
             })));
         if let Some(error) = form.error {
-            controls = controls.child(div().text_size(px(11.0)).child(error.to_owned()));
+            controls = controls.child(div().text_size(px(11.0)).child(crate::i18n::message(error)));
         }
         controls
     }
@@ -2298,13 +2298,13 @@ fn stream_video_canvas_surface(
                             .text_size(px(13.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.content.primary)
-                            .child(fallback_title),
+                            .child(crate::i18n::tr(fallback_title)),
                     )
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(theme.content.tertiary)
-                            .child(fallback_subtitle),
+                            .child(crate::i18n::tr(fallback_subtitle)),
                     ),
             )
             .into_any_element()
@@ -2389,8 +2389,8 @@ impl Render for PopoutStreamView {
             .text_size(px(10.0))
             .tooltip(
                 tooltip(match scale_mode {
-                    ViewportScaleMode::AspectFit => "Scale mode: Aspect Fit (click for Fill)",
-                    ViewportScaleMode::Fill => "Scale mode: Fill (click for Fit)",
+                    ViewportScaleMode::AspectFit => crate::i18n::tr("Scale mode: Aspect Fit (click for Fill)"),
+                    ViewportScaleMode::Fill => crate::i18n::tr("Scale mode: Fill (click for Fit)"),
                 })
                 .build(),
             )
@@ -2416,12 +2416,12 @@ impl Render for PopoutStreamView {
             .child(scale_btn)
             .child(command_button("pip_fit_window", ActionVariantKind::Neutral, cx)
                 .h(px(24.0)).px_2()
-                .tooltip(tooltip("Fit window").build())
+                .tooltip(tooltip(crate::i18n::tr("Fit window")).build())
                 .on_click(cx.listener(|this, _, _, cx| { this.window_fit.request_fit(); cx.notify(); }))
                 .child(icon(IconName::Window).size(px(12.0))))
             .child(command_button("pip_fullscreen", ActionVariantKind::Neutral, cx)
                 .h(px(24.0)).px_2()
-                .tooltip(tooltip(if fullscreen { "Exit fullscreen" } else { "Fullscreen" }).build())
+                .tooltip(tooltip(if fullscreen { crate::i18n::tr("Exit fullscreen") } else { crate::i18n::tr("Fullscreen") }).build())
                 .on_click(|_, window, cx| { window.toggle_fullscreen(); cx.refresh_windows(); })
                 .child(icon(IconName::Maximize(fullscreen)).size(px(12.0))))
             .into_any_element();
@@ -2469,7 +2469,7 @@ impl Render for PopoutStreamView {
                         command_button("expand_pip_hud_btn", ActionVariantKind::Neutral, cx)
                             .size(px(26.0))
                             .rounded_full()
-                            .tooltip(tooltip(format!("{} · Show telemetry",UiHostStats::network_detail(network, stats.as_ref()))).build())
+                            .tooltip(tooltip(crate::i18n::tr_format!("{} · Show telemetry",UiHostStats::network_detail(network, stats.as_ref()))).build())
                             .on_click({
                                 let view = view.clone();
                                 move |_event, _window, cx| {
@@ -2512,7 +2512,7 @@ impl Render for PopoutStreamView {
                                     .text_size(px(10.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(color_accent_cyan())
-                                    .child("Network"),
+                                    .child(crate::i18n::tr("Network")),
                             )
                             .child(
                                 command_button(
@@ -2523,7 +2523,7 @@ impl Render for PopoutStreamView {
                                 .size(px(18.0))
                                 .rounded_full()
                                 .text_size(px(8.0))
-                                .tooltip(tooltip("Collapse live telemetry").build())
+                                .tooltip(tooltip(crate::i18n::tr("Collapse live telemetry")).build())
                                 .on_click({
                                     let view = view.clone();
                                     move |_event, _window, cx| {
@@ -2605,7 +2605,7 @@ impl Render for RestoredDashboard {
                 .map(|device|device.display_name.as_str())
         });
         let title = if self.stream_source.is_none() {
-            peer.or(self.stream_device.as_deref()).unwrap_or("Device").to_owned()
+            peer.or(self.stream_device.as_deref()).unwrap_or(crate::i18n::tr("Device")).to_owned()
         } else if active_session.is_none() && self.native_window_title!="Weavelo" && !self.native_window_title.is_empty() {
             self.native_window_title.clone()
         } else {remote_window_title(peer.or(self.stream_device.as_deref()),source)};
@@ -2623,14 +2623,14 @@ impl Render for RestoredDashboard {
             let app_name = source.map(|source| source.application.trim())
                 .filter(|name| !name.is_empty())
                 .unwrap_or(match snapshot.active_capture_source.category() {
-                    protocol::session::SourceCategory::Window => "Remote window",
-                    protocol::session::SourceCategory::Camera => "Camera",
-                    protocol::session::SourceCategory::Screen => peer.unwrap_or("Device"),
+                    protocol::session::SourceCategory::Window => crate::i18n::tr("Remote window"),
+                    protocol::session::SourceCategory::Camera => crate::i18n::tr("Camera"),
+                    protocol::session::SourceCategory::Screen => peer.unwrap_or(crate::i18n::tr("Device")),
                 });
             self.native_window_artwork.sync_stream(
                 window, cx, bitmap.as_deref(), appearance.map(AsRef::as_ref),
-                if screen_source { peer.unwrap_or("Device") } else { app_name },
-                if screen_source { "" } else { peer.unwrap_or("Device") },
+                if screen_source { peer.unwrap_or(crate::i18n::tr("Device")) } else { app_name },
+                if screen_source { "" } else { peer.unwrap_or(crate::i18n::tr("Device")) },
             );
         } else {
             self.native_window_artwork.close();
@@ -2783,7 +2783,7 @@ impl Render for RestoredDashboard {
                                             .border_1()
                                             .border_color(border_color)
                                             .text_size(px(10.))
-                                            .child("AI"),
+                                            .child(crate::i18n::tr("AI")),
                                     ),
                             )
                         }),
@@ -3056,13 +3056,13 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<RestoredDashboard>) -> D
                         .text_size(px(17.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.content.primary)
-                        .child("Sharing Desktop Stream"),
+                        .child(crate::i18n::tr("Sharing Desktop Stream")),
                 )
                 .child(
                     div()
                         .text_size(px(12.0))
                         .text_color(theme.content.tertiary)
-                        .child(format!("Controlled by remote client {peer_name}")),
+                        .child(crate::i18n::tr_format!("Controlled by remote client {peer_name}", peer_name=peer_name)),
                 ),
         )
 }
@@ -3166,9 +3166,9 @@ fn display_switcher_control(
         let binding = source_binding.cloned();
         let view = view.clone();
         let label = if source.supports_input {
-            format!("Display {}", index + 1)
+            crate::i18n::tr_format!("Display {}", index + 1)
         } else {
-            format!("Display {} · view", index + 1)
+            crate::i18n::tr_format!("Display {} · view", index + 1)
         };
         let is_selected = capture_source_is_selected(selected, &source, index);
         control = control.child(
@@ -3191,7 +3191,7 @@ fn display_switcher_control(
                     cx.notify();
                 });
             })
-            .child(label),
+            .child(crate::i18n::tr(&label).to_owned()),
         );
     }
 
@@ -3200,7 +3200,7 @@ fn display_switcher_control(
         let view=view.clone();let binding=source_binding.cloned();
         control=control.child(command_button("island_camera_switch",ActionVariantKind::Neutral,cx)
             .disabled(pending_source.is_some()).h(px(22.0)).w(px(26.0))
-            .tooltip(tooltip("Switch camera").build())
+            .tooltip(tooltip(crate::i18n::tr("Switch camera")).build())
             .on_click(move|_,_,cx| {
                 let _=view.update(cx,|this,cx|this.start_capture_source_switch(
                     binding.clone(),target.clone(),target.title.clone(),cx));
@@ -3221,7 +3221,7 @@ fn display_switcher_control(
         .h(px(22.0))
         .px_2()
         .text_size(px(9.0))
-        .tooltip(tooltip("Switch displays or application windows").build())
+        .tooltip(tooltip(crate::i18n::tr("Switch displays or application windows")).build())
         .on_click(move |_event, _window, cx| {
             let _ = view.update(cx, |this, cx| {
                 let Some(binding) = binding.clone().filter(|binding| this.owner.source_binding_is_current(binding)) else { return; };
@@ -3237,7 +3237,7 @@ fn display_switcher_control(
                 cx.notify();
             });
         })
-        .child("Apps"),
+        .child(crate::i18n::tr("Apps")),
     )
 }
 
@@ -3260,9 +3260,9 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
     let title = source.title.trim();
     if title.is_empty() {
         if !app.is_empty() { app.into() }
-        else if matches!(source.source, protocol::session::CaptureSource::Window(_)) { "Application window".into() }
-        else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) { "Camera".into() }
-        else { "Display".into() }
+        else if matches!(source.source, protocol::session::CaptureSource::Window(_)) { crate::i18n::tr("Application window").into() }
+        else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) { crate::i18n::tr("Camera").into() }
+        else { crate::i18n::tr("Display").into() }
     } else if app.is_empty() || app == title {
         title.into()
     } else {
@@ -3276,14 +3276,14 @@ fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::Ca
             Some(source) => {
                 let label=match source.source.category() {
                     protocol::session::SourceCategory::Screen=>return peer.to_owned(),
-                    protocol::session::SourceCategory::Camera=>if source.title.trim().is_empty(){"Camera".into()}else{source.title.trim().to_owned()},
+                    protocol::session::SourceCategory::Camera=>if source.title.trim().is_empty(){crate::i18n::tr("Camera").into()}else{source.title.trim().to_owned()},
                     protocol::session::SourceCategory::Window=>if source.application.trim().is_empty(){capture_source_label(source)}else{source.application.trim().to_owned()},
                 };
                 format!("{label} · {peer}")
             },
             None => peer.to_owned(),
         },
-        None => "Device".into(),
+        None => crate::i18n::tr("Device").into(),
     }
 }
 
@@ -3360,30 +3360,30 @@ fn capture_source_menu(
                 .text_size(px(11.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(theme.content.primary)
-                .child("Sources"),
+                .child(crate::i18n::tr("Sources")),
         )
         .child(div().w_full().h(px(1.0)).bg(theme.border.divider))
         .when(error.is_none() && !sources.is_empty()
             && sources.iter().all(|source|matches!(source.source,protocol::session::CaptureSource::Camera(_))),|menu|
             menu.child(div().text_size(px(11.0)).text_color(theme.content.secondary)
-                .child("Screen not shared. Start sharing on the remote device.")));
+                .child(crate::i18n::tr("Screen not shared. Start sharing on the remote device."))));
 
     let multiple_view=view.clone();let multiple_binding=source_binding.cloned();
     menu=menu.child(command_button("island_menu_multiple",ActionVariantKind::Neutral,cx)
         .disabled(multiple_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
         .on_click(move|_,_,cx| {let _=multiple_view.update(cx,|this,cx|this.begin_remote_source_selection(multiple_binding.clone(),cx));})
-        .child("Open several windows…"));
+        .child(crate::i18n::tr("Open several windows…")));
     let replace_view=view.clone();let replace_binding=source_binding.cloned();
     menu=menu.child(command_button("island_menu_replace",ActionVariantKind::Neutral,cx)
         .disabled(replace_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
         .on_click(move|_,_,cx| {let _=replace_view.update(cx,|this,cx|this.begin_remote_source_replacement(replace_binding.clone(),cx));})
-        .child("Replace current source…"));
+        .child(crate::i18n::tr("Replace current source…")));
     if let Some(error) = error {
         menu = menu.child(
             div()
                 .text_size(px(10.0))
                 .text_color(theme.status.error.bg)
-                .child(format!("Last switch failed: {error}")),
+                .child(crate::i18n::tr_format!("Last switch failed: {error}", error=error)),
         );
     }
 
@@ -3391,9 +3391,9 @@ fn capture_source_menu(
         let binding = source_binding.cloned();
         let view = view.clone();
         let label = if source.supports_input {
-            format!("Display {}", index + 1)
+            crate::i18n::tr_format!("Display {}", index + 1)
         } else {
-            format!("Display {} · view only", index + 1)
+            crate::i18n::tr_format!("Display {} · view only", index + 1)
         };
         let detail = source.title.clone();
         let badge = capture_source_badge(&source, source_icons, &theme);
@@ -3430,7 +3430,7 @@ fn capture_source_menu(
                 .text_size(px(9.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.content.secondary)
-                .child("APPLICATION WINDOWS"),
+                .child(crate::i18n::tr("APPLICATION WINDOWS")),
         );
         for (index, source) in windows.into_iter().enumerate() {
             let binding = source_binding.cloned();
@@ -3475,7 +3475,7 @@ fn capture_source_menu(
             div()
                 .text_size(px(10.0))
                 .text_color(theme.content.secondary)
-                .child("No application-window capture sources are available on this host."),
+                .child(crate::i18n::tr("No application-window capture sources are available on this host.")),
         );
     }
 
@@ -3497,7 +3497,7 @@ fn capture_source_menu(
                             cx.notify();
                         });
                     })
-                    .child("Open multi-window workspace"),
+                    .child(crate::i18n::tr("Open multi-window workspace")),
             );
     }
 
@@ -3527,7 +3527,7 @@ fn scale_mode_control(current: ViewportScaleMode, cx: &Context<RestoredDashboard
             .h(px(22.0))
             .px_2()
             .text_size(px(9.0))
-            .tooltip(tooltip("Fit the entire remote display").build())
+            .tooltip(tooltip(crate::i18n::tr("Fit the entire remote display")).build())
             .on_click(move |_event, _window, cx| {
                 let _ = fit_view.update(cx, |this, cx| {
                     this.scale_mode = ViewportScaleMode::AspectFit;
@@ -3535,7 +3535,7 @@ fn scale_mode_control(current: ViewportScaleMode, cx: &Context<RestoredDashboard
                     cx.notify();
                 });
             })
-            .child("Fit"),
+            .child(crate::i18n::tr("Fit")),
         )
         .child(
             command_button(
@@ -3550,7 +3550,7 @@ fn scale_mode_control(current: ViewportScaleMode, cx: &Context<RestoredDashboard
             .h(px(22.0))
             .px_2()
             .text_size(px(9.0))
-            .tooltip(tooltip("Fill the viewport and crop the edges").build())
+            .tooltip(tooltip(crate::i18n::tr("Fill the viewport and crop the edges")).build())
             .on_click(move |_event, _window, cx| {
                 let _ = fill_view.update(cx, |this, cx| {
                     this.scale_mode = ViewportScaleMode::Fill;
@@ -3558,7 +3558,7 @@ fn scale_mode_control(current: ViewportScaleMode, cx: &Context<RestoredDashboard
                     cx.notify();
                 });
             })
-            .child("Fill"),
+            .child(crate::i18n::tr("Fill")),
         )
 }
 
@@ -3605,7 +3605,7 @@ fn drawer_trigger_capsule(
                             .text_size(px(11.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .whitespace_nowrap()
-                            .child("Devices"),
+                            .child(crate::i18n::tr("Devices")),
                     )
                 })
                 .child(
@@ -3693,7 +3693,7 @@ fn slide_over_management_drawer(
                                 .text_color(theme.content.primary)
                                 .whitespace_nowrap()
                                 .truncate()
-                                .child(if management { "Weavelo" } else { "Device & Network Control" }),
+                                .child(if management { crate::i18n::tr("Weavelo") } else { crate::i18n::tr("Device & Network Control") }),
                         ),
                 )
                 .when(!management, |header| header.child(
@@ -3701,7 +3701,7 @@ fn slide_over_management_drawer(
                         .size(px(28.0))
                         .flex_none()
                         .rounded_full()
-                        .tooltip(tooltip("Close device panel").build())
+                        .tooltip(tooltip(crate::i18n::tr("Close device panel")).build())
                         .on_click(move |_event, _window, cx| {
                             let _ = view.update(cx, |this, cx| {
                                 this.drawer_open = false;
@@ -3710,16 +3710,16 @@ fn slide_over_management_drawer(
                         })
                         .text_size(px(11.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("X"),
+                        .child(crate::i18n::tr("X")),
                 )),
         ))
         .when(management, |panel| panel.child(
             div().flex().items_center().gap_2().px_3().py_2()
-                .child(component::text_input("device-search").placeholder("Search devices").height(px(32.).into()).content(device_query.to_owned())
+                .child(component::text_input("device-search").placeholder(crate::i18n::tr("Search devices")).height(px(32.).into()).content(device_query.to_owned())
                     .on_change({ let view=cx.weak_entity(); move |text, _, cx| {
                         let _=view.update(cx, |this,cx| {this.device_query=text.to_string();cx.notify();});
                     }}))
-                .child(command_button("add-device",ActionVariantKind::Neutral,cx).size(px(32.)).p_0().icon(ely_gpui_component::primitives::IconName::Plus).tooltip(tooltip("Add device").build())
+                .child(command_button("add-device",ActionVariantKind::Neutral,cx).size(px(32.)).p_0().icon(ely_gpui_component::primitives::IconName::Plus).tooltip(tooltip(crate::i18n::tr("Add device")).build())
                     .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
         ))
         .child(div().flex_none().flex().items_center().gap_1().px_2().py_1().bg(theme.surface.sunken)
@@ -3805,7 +3805,7 @@ fn drawer_tab_button(
             cx.notify();
         });
     })
-    .child(label)
+    .child(crate::i18n::tr(&label).to_owned())
 }
 
 fn drawer_devices_tab(
@@ -3815,7 +3815,7 @@ fn drawer_devices_tab(
     _owner:Arc<OriginalOwner>, cx:&mut Context<RestoredDashboard>,
 )->Div {
     use crate::sharing_permissions::Access;
-    let name=local_name.unwrap_or_else(||"This device".into());
+    let name=local_name.unwrap_or_else(||crate::i18n::tr("This device").into());
     let permission_hint=match permissions {
         Some(Ok(status)) if [status.screen,status.control,status.microphone,status.camera].contains(&Access::NeedsReview)=>"Review sharing permissions",
         Some(Ok(status)) if status.screen==Access::SelectSource=>"Choose a screen or window",
@@ -3827,14 +3827,14 @@ fn drawer_devices_tab(
         .child(icon(IconName::Display).size(px(18.)))
         .child(div().min_w_0().flex_1().flex().flex_col()
             .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(name))
-            .child(div().text_size(px(10.)).text_color(cx.theme().content.secondary).child(permission_hint))
+            .child(div().text_size(px(10.)).text_color(cx.theme().content.secondary).child(crate::i18n::message(&permission_hint)))
             .when(activity.unattributed_sharing>0,|card|card.child(div().text_size(px(10.)).text_color(color_accent_emerald())
-                .child(format!("Sharing · {} direct streams",activity.unattributed_sharing)))))
+                .child(crate::i18n::tr_format!("Sharing · {} direct streams",activity.unattributed_sharing)))))
         .child(command_button("sharing-permissions",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
-            .child(icon(IconName::Permissions).size(px(16.))).tooltip(tooltip("Sharing & permissions").build())
+            .child(icon(IconName::Permissions).size(px(16.))).tooltip(tooltip(crate::i18n::tr("Sharing & permissions")).build())
             .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::Security;this.refresh_local_permissions(cx);cx.notify();})))
         .child(command_button("edit-this-device-name",ActionVariantKind::Neutral,cx).size(px(28.)).p_0()
-            .child(icon(IconName::More).size(px(16.))).tooltip(tooltip("Device name & pairing").build())
+            .child(icon(IconName::More).size(px(16.))).tooltip(tooltip(crate::i18n::tr("Device name & pairing")).build())
             .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})));
     let view=cx.weak_entity();
     div().flex().flex_col().gap_2().child(local)
@@ -4208,15 +4208,15 @@ fn local_permissions_panel(status:Option<Result<crate::sharing_permissions::Stat
     let view=cx.weak_entity();
     let mut panel=div().flex().flex_col().gap_2()
         .child(div().flex().items_center().justify_between()
-            .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).child("Sharing & permissions"))
+            .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).child(crate::i18n::tr("Sharing & permissions")))
             .child(command_button("refresh-local-permissions",ActionVariantKind::Neutral,cx)
-                .h(px(26.0)).text_size(px(10.0)).child(if checking {"Checking…"} else {"Check status"})
+                .h(px(26.0)).text_size(px(10.0)).child(if checking {crate::i18n::tr("Checking…")} else {crate::i18n::tr("Check status")})
                 .on_click(move |_,_,cx| {let _=view.update(cx,|this,cx|this.refresh_local_permissions(cx));})))
         .child(div().text_size(px(11.0)).text_color(cx.theme().content.secondary)
-            .child("Choose what to share, with control and audio permissions."));
+            .child(crate::i18n::tr("Choose what to share, with control and audio permissions.")));
     let status=match status {
         Some(Ok(status))=>Some(status),
-        Some(Err(error))=>{panel=panel.child(div().text_size(px(11.0)).child(error));None},
+        Some(Err(error))=>{panel=panel.child(div().text_size(px(11.0)).child(crate::i18n::message(&error)));None},
         None=>None,
     };
     for (id,label,setting,access) in [
@@ -4226,20 +4226,20 @@ fn local_permissions_panel(status:Option<Result<crate::sharing_permissions::Stat
         ("permission-camera","Camera",Setting::Camera,status.as_ref().map(|s|s.camera)),
     ] {
         let row=div().flex().items_center().justify_between().gap_2().text_size(px(11.0))
-            .child(div().flex_1().child(label))
+            .child(div().flex_1().child(crate::i18n::tr(&label).to_owned()))
             .child(div().text_color(cx.theme().content.secondary)
-                .child(access.map(Access::label).unwrap_or(if checking {"Checking…"} else {"Unchecked"})));
+                .child(crate::i18n::tr(access.map(Access::label).unwrap_or(if checking {"Checking…"} else {"Unchecked"}))));
         #[cfg(any(target_os="macos",target_os="linux"))]
         if matches!(setting,Setting::Camera) && (host::cameras::access()==0 || (cfg!(target_os="linux") && host::cameras::access()!=3)) {
             let view=cx.weak_entity();
             panel=panel.child(row.child(command_button(id,ActionVariantKind::Neutral,cx)
-                .h(px(26.0)).text_size(px(10.0)).disabled(checking).child("Allow camera")
+                .h(px(26.0)).text_size(px(10.0)).disabled(checking).child(crate::i18n::tr("Allow camera"))
                 .on_click(move|_,_,cx|{let _=view.update(cx,|this,cx|this.request_local_camera_permission(cx));})));
             continue;
         }
         let row=if let Some(uri)=crate::sharing_permissions::settings_uri(setting) {
             row.child(command_button(id,ActionVariantKind::Neutral,cx).h(px(26.0)).text_size(px(10.0))
-                .child("Open settings").on_click(move |_,_,cx|cx.open_url(uri)))
+                .child(crate::i18n::tr("Open settings")).on_click(move |_,_,cx|cx.open_url(uri)))
         } else {row};
         panel=panel.child(row);
     }
@@ -4282,7 +4282,7 @@ fn drawer_security_tab(
                 .text_size(px(12.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.content.primary)
-                .child("Session Permissions"),
+                .child(crate::i18n::tr("Session Permissions")),
         )
         .child(security_toggle_row(
             "Keyboard & Pointer Input",
@@ -4375,7 +4375,7 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
             div()
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child("Files & transfers"),
+                .child(crate::i18n::tr("Files & transfers")),
         );
     let send_owner = owner.clone();
     let share_owner = owner.clone();
@@ -4387,18 +4387,18 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
             .gap_2()
             .child(
                 command_button("files_send", ActionVariantKind::Primary, cx)
-                    .child("Send files")
+                    .child(crate::i18n::tr("Send files"))
                     .disabled(!owner.supports_file_transfer())
                     .on_click(move |_, _, _| pick_session_files(send_owner.clone(), false)),
             )
             .child(
                 command_button("files_publish", ActionVariantKind::Neutral, cx)
-                    .child("Publish files")
+                    .child(crate::i18n::tr("Publish files"))
                     .on_click(move |_, _, _| pick_session_files(share_owner.clone(), true)),
             )
             .child(
                 command_button("files_receive_dir", ActionVariantKind::Neutral, cx)
-                    .child("Receive folder")
+                    .child(crate::i18n::tr("Receive folder"))
                     .on_click(move |_, _, _| {
                         let owner = folder_owner.clone();
                         tokio::spawn(async move {
@@ -4413,18 +4413,18 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         div()
             .text_size(px(10.))
             .text_color(theme.content.tertiary)
-            .child(format!("Receive: {}", owner.receive_dir().display())),
+            .child(crate::i18n::tr_format!("Receive: {}", owner.receive_dir().display())),
     );
     let publication_status = owner.publication_status();
     if !publication_status.is_empty() {
-        panel = panel.child(div().text_size(px(11.)).child(publication_status));
+        panel = panel.child(div().text_size(px(11.)).child(crate::i18n::message(&publication_status)));
     }
     let binding = owner.file_view_binding();
     let refresh_binding = binding.clone();
     let refresh = owner.clone();
     panel = panel.child(
         command_button("files_refresh", ActionVariantKind::Neutral, cx)
-            .child("Refresh shared files")
+            .child(crate::i18n::tr("Refresh shared files"))
             .on_click(move |_, _, cx| {
                 refresh.list_bound_files(&refresh_binding, 0);
                 let _ = view.update(cx, |_, cx| cx.notify());
@@ -4437,9 +4437,9 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
                 .text_size(px(11.))
                 .text_color(theme.content.tertiary)
                 .child(if pending {
-                    "Reading shared files…"
+                    crate::i18n::tr("Reading shared files…")
                 } else {
-                    "No files published by this device. Publish on the other device, then refresh."
+                    crate::i18n::tr("No files published by this device. Publish on the other device, then refresh.")
                 }),
         );
     }
@@ -4458,11 +4458,11 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
                         .min_w_0()
                         .truncate()
                         .text_size(px(11.))
-                        .child(format!("{} · {} bytes", file.name, file.size_bytes)),
+                        .child(crate::i18n::tr_format!("{} · {} bytes", file.name, file.size_bytes)),
                 )
                 .child(
                     command_button(format!("pull_{}", file.id), ActionVariantKind::Primary, cx)
-                        .child("Pull")
+                        .child(crate::i18n::tr("Pull"))
                         .on_click(move |_, _, _| {
                             file_owner.fetch_bound_file(&file_binding, file.id)
                         }),
@@ -4475,7 +4475,7 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         let o = owner.clone();
         pager = pager.child(
             command_button("files_previous", ActionVariantKind::Neutral, cx)
-                .child("Previous")
+                .child(crate::i18n::tr("Previous"))
                 .disabled(pending)
                 .on_click(move |_, _, _| o.list_bound_files(&page_binding, after)),
         );
@@ -4485,7 +4485,7 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         let o = owner.clone();
         pager = pager.child(
             command_button("files_next", ActionVariantKind::Neutral, cx)
-                .child("Next")
+                .child(crate::i18n::tr("Next"))
                 .disabled(pending)
                 .on_click(move |_, _, _| o.list_bound_files(&page_binding, after)),
         );
@@ -4515,7 +4515,7 @@ fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashbo
                 div()
                     .text_size(px(10.))
                     .text_color(theme.content.secondary)
-                    .child(transfer.detail.clone()),
+                    .child(crate::i18n::message(&transfer.detail.clone())),
             );
         if transfer.is_running()
             && let Some(target) = transfer.cancel_target
@@ -4528,7 +4528,7 @@ fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashbo
                     ActionVariantKind::Danger,
                     cx,
                 )
-                .child("Cancel")
+                .child(crate::i18n::tr("Cancel"))
                 .on_click(move |_, _, _| o.cancel_bound_transfer(&transfer_binding, target)),
             );
         }
@@ -4543,9 +4543,9 @@ fn pick_session_files(owner: Arc<OriginalOwner>, share: bool) {
     tokio::spawn(async move {
         let Some(files) = rfd::AsyncFileDialog::new()
             .set_title(if share {
-                "Publish only selected files"
+                crate::i18n::tr("Publish only selected files")
             } else {
-                "Send files to this connection"
+                crate::i18n::tr("Send files to this connection")
             })
             .pick_files()
             .await
@@ -4609,7 +4609,7 @@ fn security_toggle_row(
                         .text_color(theme.content.primary)
                         .whitespace_nowrap()
                         .truncate()
-                        .child(title),
+                        .child(crate::i18n::tr(title)),
                 )
                 .child(
                     div()
@@ -4623,9 +4623,9 @@ fn security_toggle_row(
                         .whitespace_nowrap()
                         .truncate()
                         .child(if available {
-                            detail.to_string()
+                            crate::i18n::tr(detail).to_string()
                         } else {
-                            format!("{detail} / Unavailable")
+                            crate::i18n::tr_format!("{detail} / Unavailable", detail=crate::i18n::tr(detail))
                         }),
                 ),
         )
@@ -4638,13 +4638,13 @@ fn security_toggle_row(
                 .flex_none()
                 .tooltip(
                     tooltip(format!(
-                        "{title}: {}",
+                        "{}: {}", crate::i18n::tr(title),
                         if !available {
-                            "unavailable"
+                            crate::i18n::tr("unavailable")
                         } else if enabled {
-                            "on"
+                            crate::i18n::tr("on")
                         } else {
-                            "off"
+                            crate::i18n::tr("off")
                         }
                     ))
                     .build(),
@@ -4685,14 +4685,13 @@ fn host_stats_available(stats: &HostStats) -> bool {
 
 fn compact_telemetry_label(stats: Option<&UiHostStats>) -> String {
     stats.map_or_else(
-        || "Awaiting telemetry".to_string(),
+        || crate::i18n::tr("Awaiting telemetry").to_string(),
         |stats| {
-            format!(
+            crate::i18n::tr_format!(
                 "{:.0} FPS / capture→UI {} / enc {:.1} ms",
                 stats.fps,
                 stats.capture_submit.value(),
-                stats.latency
-            )
+                stats.latency)
         },
     )
 }
@@ -4700,19 +4699,40 @@ fn compact_telemetry_label(stats: Option<&UiHostStats>) -> String {
 #[allow(dead_code)]
 fn viewer_media_status_label(status: &UnifiedViewerMediaStatus) -> &'static str {
     match status {
-        UnifiedViewerMediaStatus::Disabled => "Viewer media disabled",
-        UnifiedViewerMediaStatus::Ready => "Awaiting telemetry",
-        UnifiedViewerMediaStatus::AudioUnavailable { .. } => "Video ready / audio unavailable",
-        UnifiedViewerMediaStatus::Unavailable { .. } => "Viewer media unavailable",
+        UnifiedViewerMediaStatus::Disabled => crate::i18n::tr("Viewer media disabled"),
+        UnifiedViewerMediaStatus::Ready => crate::i18n::tr("Awaiting telemetry"),
+        UnifiedViewerMediaStatus::AudioUnavailable { .. } => crate::i18n::tr("Video ready / audio unavailable"),
+        UnifiedViewerMediaStatus::Unavailable { .. } => crate::i18n::tr("Viewer media unavailable"),
     }
 }
 
 fn format_bitrate(bitrate_kbps: u32) -> String {
     if bitrate_kbps >= 1_000 {
-        format!("{:.1} Mbps", bitrate_kbps as f32 / 1_000.0)
+        crate::i18n::tr_format!("{:.1} Mbps", bitrate_kbps as f32 / 1_000.0)
     } else {
-        format!("{bitrate_kbps} kbps")
+        crate::i18n::tr_format!("{bitrate_kbps} kbps", bitrate_kbps=bitrate_kbps)
     }
+}
+
+fn interface_language_controls(cx: &mut Context<RestoredDashboard>) -> Div {
+    use crate::i18n::{Language, tr};
+    let selected = crate::i18n::language();
+    div().flex().flex_col().gap_2()
+        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(tr("Interface language")))
+        .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary)
+            .child(tr("Changes apply to all windows immediately.")))
+        .child(div().flex().flex_wrap().gap_2().children(
+            [Language::Chinese, Language::English].into_iter().map(|language| {
+                command_button(language.native_name(), if selected == language { ActionVariantKind::Primary } else { ActionVariantKind::Neutral }, cx)
+                    .child(language.native_name())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        match crate::i18n::select(language) {
+                            Ok(()) => cx.refresh_windows(),
+                            Err(error) => { this.status = format!("Could not save language: {error}"); cx.notify(); }
+                        }
+                    }))
+            })
+        ))
 }
 
 fn drawer_network_telemetry_tab(
@@ -4727,14 +4747,16 @@ fn drawer_network_telemetry_tab(
 ) -> Div {
     let theme = cx.theme().clone();
     let view = cx.weak_entity();
-    let mut content = div().flex().flex_col().gap_3().child(
+    let mut content = div().flex().flex_col().gap_3()
+        .when(defaults, |panel| panel.child(interface_language_controls(cx)))
+        .child(
         div()
             .text_size(px(12.0))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(theme.content.primary)
             .whitespace_nowrap()
             .truncate()
-            .child(if defaults { "Default stream settings" } else { "Live Transport & Latency Telemetry" }),
+            .child(if defaults { crate::i18n::tr("Default stream settings") } else { crate::i18n::tr("Live Transport & Latency Telemetry") }),
     );
 
     if let Some(stats) = host_stats {
@@ -4751,7 +4773,7 @@ fn drawer_network_telemetry_tab(
         content = content
             .child(telemetry_metric_row(
                 "Video frame rate",
-                format!("{:.0} FPS", stats.fps),
+                crate::i18n::tr_format!("{:.0} FPS", stats.fps),
                 color_accent_cyan(),
                 cx,
             ))
@@ -4763,7 +4785,7 @@ fn drawer_network_telemetry_tab(
             ))
             .child(telemetry_metric_row(
                 "Host encode time",
-                format!("{:.1} ms", stats.latency),
+                crate::i18n::tr_format!("{:.1} ms", stats.latency),
                 color_accent_amber(),
                 cx,
             ))
@@ -4775,7 +4797,7 @@ fn drawer_network_telemetry_tab(
             ))
             .child(telemetry_metric_row(
                 "Client decode time",
-                format!("{:.1} ms", stats.decode_latency_ms),
+                crate::i18n::tr_format!("{:.1} ms", stats.decode_latency_ms),
                 color_accent_purple(),
                 cx,
             ))
@@ -4806,12 +4828,11 @@ fn drawer_network_telemetry_tab(
                 if st.sample_count > 0 {
                     content = content.child(telemetry_metric_row(
                         format!("{}. {}", stage.wire_id() + 1, stage.display_name()),
-                        format!(
+                        crate::i18n::tr_format!(
                             "{:.1}ms (p50: {:.1}ms, p99: {:.1}ms)",
                             st.avg_us as f32 / 1000.0,
                             st.p50_us as f32 / 1000.0,
-                            st.p99_us as f32 / 1000.0
-                        ),
+                            st.p99_us as f32 / 1000.0),
                         color_accent_purple(),
                         cx,
                     ));
@@ -4848,7 +4869,7 @@ fn drawer_network_telemetry_tab(
                     .text_size(px(11.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.content.primary)
-                    .child("Stream Resolution, FPS & Bitrate Control"),
+                    .child(crate::i18n::tr("Stream Resolution, FPS & Bitrate Control")),
             )
             // 1. Resolution
             .child(
@@ -4856,7 +4877,7 @@ fn drawer_network_telemetry_tab(
                     div()
                         .text_size(px(10.0))
                         .text_color(theme.content.secondary)
-                        .child("Target Resolution:"),
+                        .child(crate::i18n::tr("Target Resolution:")),
                 ).child(
                     div()
                         .flex()
@@ -4888,7 +4909,7 @@ fn drawer_network_telemetry_tab(
                                     this.dispatch_stream_settings_action(StreamSettingsAction::SelectResolution(w, h), cx);
                                 });
                             })
-                            .child(label)
+                            .child(crate::i18n::tr(&label).to_owned())
                         }))
                 )
             )
@@ -4898,7 +4919,7 @@ fn drawer_network_telemetry_tab(
                     div()
                         .text_size(px(10.0))
                         .text_color(theme.content.secondary)
-                        .child("Capture & Stream Frame Rate:"),
+                        .child(crate::i18n::tr("Capture & Stream Frame Rate:")),
                 ).child(
                     div()
                         .flex()
@@ -4929,7 +4950,7 @@ fn drawer_network_telemetry_tab(
                                     this.dispatch_stream_settings_action(StreamSettingsAction::SelectFps(fps), cx);
                                 });
                             })
-                            .child(label)
+                            .child(crate::i18n::tr(&label).to_owned())
                         }))
                 )
             )
@@ -4939,7 +4960,7 @@ fn drawer_network_telemetry_tab(
                     div()
                         .text_size(px(10.0))
                         .text_color(theme.content.secondary)
-                        .child("Video Bitrate (CBR Data Rate Limit):"),
+                        .child(crate::i18n::tr("Video Bitrate (CBR Data Rate Limit):")),
                 ).child(
                     div()
                         .flex()
@@ -4973,7 +4994,7 @@ fn drawer_network_telemetry_tab(
                                     this.dispatch_stream_settings_action(StreamSettingsAction::SelectBitrate(kbps), cx);
                                 });
                             })
-                            .child(label)
+                            .child(crate::i18n::tr(&label).to_owned())
                         }))
                 )
             ),
@@ -4989,6 +5010,7 @@ fn telemetry_metric_row(
     cx: &Context<RestoredDashboard>,
 ) -> Div {
     let theme = cx.theme().clone();
+    let label: SharedString = label.into();
 
     div()
         .flex()
@@ -5008,7 +5030,7 @@ fn telemetry_metric_row(
                 .text_color(theme.content.primary)
                 .whitespace_nowrap()
                 .truncate()
-                .child(label.into()),
+                .child(crate::i18n::tr(label.as_ref()).to_owned()),
         )
         .child(
             div()
@@ -5045,14 +5067,14 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                     .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
-                    .child(div().text_color(theme.content.tertiary).child("Frame rate"))
+                    .child(div().text_color(theme.content.tertiary).child(crate::i18n::tr("Frame rate")))
                     .child(
                         div()
                             .min_w_0()
                             .flex_1()
                             .text_right()
                             .text_color(color_accent_cyan())
-                            .child(format!("{:.0} FPS", stats.fps)),
+                            .child(crate::i18n::tr_format!("{:.0} FPS", stats.fps)),
                     ),
             )
             .child(
@@ -5063,7 +5085,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                     .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
-                    .child(div().text_color(theme.content.tertiary).child("Bitrate"))
+                    .child(div().text_color(theme.content.tertiary).child(crate::i18n::tr("Bitrate")))
                     .child(
                         div()
                             .min_w_0()
@@ -5089,7 +5111,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Capture → UI"),
+                            .child(crate::i18n::tr("Capture → UI")),
                     )
                     .child(
                         div()
@@ -5116,7 +5138,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("RTT"),
+                            .child(crate::i18n::tr("RTT")),
                     )
                     .child(
                         div()
@@ -5141,7 +5163,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Encode"),
+                            .child(crate::i18n::tr("Encode")),
                     )
                     .child(
                         div()
@@ -5149,7 +5171,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .flex_1()
                             .text_right()
                             .text_color(theme.content.secondary)
-                            .child(format!("{:.1} ms", stats.latency)),
+                            .child(crate::i18n::tr_format!("{:.1} ms", stats.latency)),
                     ),
             )
             .child(
@@ -5166,7 +5188,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Decode"),
+                            .child(crate::i18n::tr("Decode")),
                     )
                     .child(
                         div()
@@ -5174,7 +5196,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .flex_1()
                             .text_right()
                             .text_color(theme.content.secondary)
-                            .child(format!("{:.1} ms", stats.decode_latency_ms)),
+                            .child(crate::i18n::tr_format!("{:.1} ms", stats.decode_latency_ms)),
                     ),
             )
             .child(
@@ -5191,7 +5213,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Packet loss"),
+                            .child(crate::i18n::tr("Packet loss")),
                     )
                     .child(
                         div()
@@ -5220,7 +5242,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .whitespace_nowrap()
                             .text_left()
                             .text_color(theme.content.tertiary)
-                            .child("Link"),
+                            .child(crate::i18n::tr("Link")),
                     )
                     .child(
                         div()
@@ -5234,12 +5256,12 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .text_color(theme.content.primary)
                             .child(network_quality_icon(network, theme).size(px(10.0)))
                             .child(match network {
-                                NetworkQuality::Connecting => "Connecting",
-                                NetworkQuality::Disconnected => "Disconnected",
-                                NetworkQuality::Unknown => "Unknown",
-                                NetworkQuality::Good => "Good",
-                                NetworkQuality::Fair => "Fair",
-                                NetworkQuality::Poor => "Poor",
+                                NetworkQuality::Connecting => crate::i18n::tr("Connecting"),
+                                NetworkQuality::Disconnected => crate::i18n::tr("Disconnected"),
+                                NetworkQuality::Unknown => crate::i18n::tr("Unknown"),
+                                NetworkQuality::Good => crate::i18n::tr("Good"),
+                                NetworkQuality::Fair => crate::i18n::tr("Fair"),
+                                NetworkQuality::Poor => crate::i18n::tr("Poor"),
                             }),
                     ),
             )
@@ -5248,7 +5270,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
             .text_size(px(10.0))
             .font_family(crate::design_system::product_mono_font())
             .text_color(theme.content.tertiary)
-            .child("Waiting for telemetry...")
+            .child(crate::i18n::tr("Waiting for telemetry..."))
     }
 }
 
@@ -5258,9 +5280,9 @@ fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut C
     let submit_view = cx.weak_entity();
     div().flex().flex_col().gap_2()
         .child(div().text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme.content.primary).child("This device name"))
+            .text_color(theme.content.primary).child(crate::i18n::tr("This device name")))
         .child(component::text_input("this-device-name")
-            .content(editor.draft().to_owned()).placeholder("Device name")
+            .content(editor.draft().to_owned()).placeholder(crate::i18n::tr("Device name"))
             .max_length(128).height(px(32.0).into())
             .on_change(move |text, _, cx| {
                 let _ = edit_view.update(cx, |this, cx| {
@@ -5275,21 +5297,21 @@ fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut C
                 });
             }))
         .when_some(editor.validation_error(), |this, error| {
-            this.child(div().text_size(px(10.0)).text_color(color_accent_amber()).child(error))
+            this.child(div().text_size(px(10.0)).text_color(color_accent_amber()).child(crate::i18n::message(&error)))
         })
         .child(div().flex().gap_2()
             .child(command_button("save-device-name", ActionVariantKind::Primary, cx)
                 .h(px(28.0)).px_2().text_size(px(10.0))
-                .disabled(editor.pending_name().is_none()).child("Save name")
+                .disabled(editor.pending_name().is_none()).child(crate::i18n::tr("Save name"))
                 .on_click(cx.listener(|this, _, _, cx| this.save_device_name(false, cx))))
             .child(command_button("default-device-name", ActionVariantKind::Neutral, cx)
-                .h(px(28.0)).px_2().text_size(px(10.0)).child("Use host name")
+                .h(px(28.0)).px_2().text_size(px(10.0)).child(crate::i18n::tr("Use host name"))
                 .on_click(cx.listener(|this, _, _, cx| this.save_device_name(true, cx))))
             .child(command_button("cancel-device-name", ActionVariantKind::Neutral, cx)
-                .h(px(28.0)).px_2().text_size(px(10.0)).child("Cancel")
+                .h(px(28.0)).px_2().text_size(px(10.0)).child(crate::i18n::tr("Cancel"))
                 .on_click(cx.listener(|this, _, _, cx| this.cancel_device_name_edit(cx)))))
         .child(div().text_size(px(10.0)).text_color(theme.content.tertiary)
-            .child("Visible to your paired devices. Use host name restores this computer’s current device name."))
+            .child(crate::i18n::tr("Visible to your paired devices. Use host name restores this computer’s current device name.")))
 }
 
 fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mut Context<RestoredDashboard>) -> Div {
@@ -5298,7 +5320,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
     let message_color = status_color(message_tone, cx);
     let restart_text = snapshot
         .restart_required
-        .then_some("Restart Weavelo to apply these changes.");
+        .then_some(crate::i18n::tr("Restart Weavelo to apply these changes."));
     let copy_view = cx.weak_entity();
     let join_view = cx.weak_entity();
     let create_view = cx.weak_entity();
@@ -5333,7 +5355,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                                 .text_color(theme.content.primary)
                                 .flex().items_center().gap_2()
                                 .child(svg().path("weavelo-brand/mark-mono.svg").size(px(18.0)).text_color(theme.content.primary))
-                                .child("Weavelo Device Group"),
+                                .child(crate::i18n::tr("Weavelo Device Group")),
                         )
                         .child(
                             div()
@@ -5359,7 +5381,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                         .text_size(px(9.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.status.info.fg)
-                        .child("PRIVATE"),
+                        .child(crate::i18n::tr("PRIVATE")),
                 ),
         )
         .child(
@@ -5393,7 +5415,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
             },
         )
         .child(div().text_size(px(10.0)).text_color(theme.content.secondary)
-            .child("Scan with Weavelo on Android, or copy the invitation code."))
+            .child(crate::i18n::tr("Scan with Weavelo on Android, or copy the invitation code.")))
         .child(
             div()
                 .flex()
@@ -5410,7 +5432,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                                 cx.notify();
                             });
                         })
-                        .child("Copy Code"),
+                        .child(crate::i18n::tr("Copy Code")),
                 )
                 .child(
                     command_button(
@@ -5428,7 +5450,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                             cx.notify();
                         });
                     })
-                    .child("Join from Clipboard"),
+                    .child(crate::i18n::tr("Join from Clipboard")),
                 ),
         )
         .child(
@@ -5437,7 +5459,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                     .h(px(28.0)).flex_1().px_2().text_size(px(10.0)).disabled(image_pending)
                     .on_click(move |_, _, cx| {
                         let _ = image_view.update(cx, |this, cx| this.scan_pairing_image(cx));
-                    }).child("Scan QR Image…"))
+                    }).child(crate::i18n::tr("Scan QR Image…")))
                 .when(image_pending, |row| row.child(
                     command_button("cancel_mesh_image", ActionVariantKind::Neutral, cx)
                         .h(px(28.0)).px_2().text_size(px(10.0))
@@ -5447,7 +5469,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                                 this.pairing_image_status("Image scan cancelled.", MeshPairingMessageKind::Neutral);
                                 cx.notify();
                             });
-                        }).child("Cancel"))),
+                        }).child(crate::i18n::tr("Cancel")))),
         )
         .child(
             div().flex().gap_2().child(
@@ -5462,7 +5484,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                             cx.notify();
                         });
                     })
-                    .child("Create New Group"),
+                    .child(crate::i18n::tr("Create New Group")),
             ),
         )
         .child(
@@ -5473,7 +5495,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                 .text_size(px(10.0))
                 .text_color(message_color)
                 .child(status_dot(message_tone, px(5.0), cx))
-                .child(snapshot.message),
+                .child(crate::i18n::message(&snapshot.message)),
         );
 
     if let Some(text) = restart_text {
@@ -5481,7 +5503,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
             div()
                 .text_size(px(10.0))
                 .text_color(status_color(StatusTone::Warning, cx))
-                .child(text),
+                .child(crate::i18n::tr(text)),
         );
     }
     card
@@ -5575,13 +5597,13 @@ fn empty_state(
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.content.secondary)
-                .child(title),
+                .child(crate::i18n::tr(title)),
         )
         .child(
             div()
                 .text_size(px(10.0))
                 .text_color(theme.content.tertiary)
-                .child(detail),
+                .child(crate::i18n::tr(detail)),
         )
 }
 
@@ -5625,10 +5647,10 @@ fn pairing_message_tone(kind: MeshPairingMessageKind) -> StatusTone {
 
 fn discovery_scope_label(scope: remote_core::discovery::DiscoveryScope) -> &'static str {
     match scope {
-        remote_core::discovery::DiscoveryScope::Lan => "LAN",
-        remote_core::discovery::DiscoveryScope::P2p => "P2P Direct",
-        remote_core::discovery::DiscoveryScope::Mesh => "Legacy Route",
-        remote_core::discovery::DiscoveryScope::Relay => "Relay",
+        remote_core::discovery::DiscoveryScope::Lan => crate::i18n::tr("LAN"),
+        remote_core::discovery::DiscoveryScope::P2p => crate::i18n::tr("P2P Direct"),
+        remote_core::discovery::DiscoveryScope::Mesh => crate::i18n::tr("Legacy Route"),
+        remote_core::discovery::DiscoveryScope::Relay => crate::i18n::tr("Relay"),
     }
 }
 
@@ -6002,19 +6024,19 @@ struct DashboardSnapshot {
 // Coarse state in the existing control, exact backend reason in its tooltip.
 fn input_control_caption(locked: bool, supported: bool, ready: bool, compact: bool) -> &'static str {
     match (supported, locked, ready, compact) {
-        (false, _, _, true) => "View", (false, _, _, false) => "View only",
-        (true, true, _, true) => "Enable", (true, true, _, false) => "Enable control",
-        (true, false, false, true) => "Paused", (true, false, false, false) => "Control paused",
-        (true, false, true, true) => "Ready", (true, false, true, false) => "Control ready",
+        (false, _, _, true) => crate::i18n::tr("View"), (false, _, _, false) => crate::i18n::tr("View only"),
+        (true, true, _, true) => crate::i18n::tr("Enable"), (true, true, _, false) => crate::i18n::tr("Enable control"),
+        (true, false, false, true) => crate::i18n::tr("Paused"), (true, false, false, false) => crate::i18n::tr("Control paused"),
+        (true, false, true, true) => crate::i18n::tr("Ready"), (true, false, true, false) => crate::i18n::tr("Control ready"),
     }
 }
 fn remote_input_hint(status: &str, eligible: bool, focused: bool, local_overlay: bool) -> Option<String> {
     if local_overlay {
-        Some("Remote input is paused while a local menu is open. Close the drawer or source menu to continue".into())
+        Some(crate::i18n::tr("Remote input is paused while a local menu is open. Close the drawer or source menu to continue").into())
     } else if !eligible {
-        Some(status.into())
+        Some(crate::i18n::message(status))
     } else if !focused {
-        Some("Control enabled. Click the remote picture to send keyboard input".into())
+        Some(crate::i18n::tr("Control enabled. Click the remote picture to send keyboard input").into())
     } else {
         None
     }
@@ -6724,7 +6746,7 @@ fn decoded_video_frame_surface_with_fit(
         .flex()
         .items_center()
         .justify_center()
-        .child("Native video adapter pending. This development preview is not the released viewer.")
+        .child(crate::i18n::tr("Native video adapter pending. This development preview is not the released viewer."))
         .into_any_element()
 }
 
@@ -6791,7 +6813,7 @@ fn decoded_video_frame_surface_with_fit(
             .into_any_element()
     } else {
         div()
-            .child("Waiting for a native decoder frame; no CPU presentation fallback")
+            .child(crate::i18n::tr("Waiting for a native decoder frame; no CPU presentation fallback"))
             .into_any_element()
     }
 }
@@ -6800,7 +6822,7 @@ fn decoded_video_frame_surface_with_fit(
 fn decoded_video_frame_surface_with_fit(frame:&MacDecodedVideoFrame,fit:ObjectFit)->AnyElement {
     match &frame.native_linux {
         Some(native)=>gpui::surface(native.frame.clone()).video_geometry(native_frame_geometry(frame).expect("native frame geometry")).object_fit(fit).size_full().into_any_element(),
-        None=>div().size_full().flex().items_center().justify_center().child("Native video is unavailable; see the decoder status.").into_any_element(),
+        None=>div().size_full().flex().items_center().justify_center().child(crate::i18n::tr("Native video is unavailable; see the decoder status.")).into_any_element(),
     }
 }
 

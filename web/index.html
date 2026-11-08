@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -8,7 +8,7 @@
   <link rel="apple-touch-icon" href="./icons/icon-180.png">
   <link rel="manifest" href="./manifest.webmanifest">
   <meta name="theme-color" content="#087F8C">
-  <title>Weavelo - Ultra-Low-Latency Web Console</title>
+  <title data-i18n="Weavelo - Ultra-Low-Latency Web Console">Weavelo - Ultra-Low-Latency Web Console</title>
   <link rel="stylesheet" href="./src/styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -26,22 +26,22 @@
     <button class="glass-btn">
       <img src="./icons/mark-dark.svg" alt="" width="20" height="20">
       <span class="status-dot"></span>
-      <span>Connection</span>
+      <span data-i18n="Connection">Connection</span>
     </button>
   </div>
 
   <!-- 3. 顶部微型悬浮 Dynamic Island -->
   <div id="floating-island">
     <span class="status-dot"></span>
-    <span class="island-title" id="island-title">Weavelo Ready</span>
+    <span class="island-title" id="island-title" data-i18n="Weavelo Ready">Weavelo Ready</span>
     <span class="telemetry-badge" id="telemetry-badge" hidden>—</span>
     
     <div class="island-divider"></div>
     
-    <button class="glass-btn active" id="btn-touch-mode" disabled title="Direct touch mode">TOUCH</button>
-    <button class="glass-btn" id="btn-mic" disabled title="Microphone transport is not connected in the web client">MIC</button>
-    <button class="glass-btn" id="btn-clip" disabled title="Clipboard transport is not connected in the web client">CLIP</button>
-    <button class="glass-btn destructive" id="btn-disconnect" disabled>DISCONNECT</button>
+    <button class="glass-btn active" id="btn-touch-mode" disabled title="Direct touch mode" data-i18n-title="Direct touch mode" data-i18n="TOUCH">TOUCH</button>
+    <button class="glass-btn" id="btn-mic" disabled title="Microphone transport is not connected in the web client" data-i18n-title="Microphone transport is not connected in the web client" data-i18n="MIC">MIC</button>
+    <button class="glass-btn" id="btn-clip" disabled title="Clipboard transport is not connected in the web client" data-i18n-title="Clipboard transport is not connected in the web client" data-i18n="CLIP">CLIP</button>
+    <button class="glass-btn destructive" id="btn-disconnect" disabled data-i18n="DISCONNECT">DISCONNECT</button>
   </div>
 
   <!-- 4. 底部浮动虚拟修饰键条 (Floating Modifier Bar) -->
@@ -64,43 +64,45 @@
   <div id="drawer-overlay">
     <div class="drawer-header">
       <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-weight: 700; font-size: 14px;">Weavelo Console</span>
+        <span style="font-weight: 700; font-size: 14px;" data-i18n="Weavelo Console">Weavelo Console</span>
       </div>
-      <button class="glass-btn" id="close-drawer-btn" aria-label="Close connection panel" style="padding: 4px 8px;">✕</button>
+      <button class="glass-btn" id="close-drawer-btn" aria-label="Close connection panel" data-i18n-aria-label="Close connection panel" style="padding: 4px 8px;">✕</button>
     </div>
 
     <div class="drawer-content">
+      <label for="interface-language" data-i18n="Interface language">Interface language</label>
+      <select id="interface-language" class="glass-btn"><option value="zh-CN">中文</option><option value="en">English</option></select>
       <!-- 发现的主机 -->
-      <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); font-family: var(--font-mono);">
+      <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); font-family: var(--font-mono);" data-i18n="VIDEO GATEWAY">
         VIDEO GATEWAY
       </div>
 
-      <label for="endpoint">WebSocket endpoint</label>
+      <label for="endpoint" data-i18n="WebSocket endpoint">WebSocket endpoint</label>
       <input id="endpoint" type="url" value="ws://localhost:9002/relay" spellcheck="false" autocomplete="off">
-      <button class="cyan-btn" id="btn-connect">Connect / Reconnect</button>
-      <p id="connection-status" role="status">Enter an HEVC Annex B video gateway endpoint. The native Weavelo relay requires a protocol adapter. Discovery, audio and clipboard are not connected in this web client.</p>
+      <button class="cyan-btn" id="btn-connect" data-i18n="Connect / Reconnect">Connect / Reconnect</button>
+      <p id="connection-status" role="status" data-i18n="Enter an HEVC Annex B video gateway endpoint. The native Weavelo relay requires a protocol adapter. Discovery, audio and clipboard are not connected in this web client.">Enter an HEVC Annex B video gateway endpoint. The native Weavelo relay requires a protocol adapter. Discovery, audio and clipboard are not connected in this web client.</p>
 
       <!-- 5 信道遥测 -->
-      <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); font-family: var(--font-mono); margin-top: 8px;">
+      <div style="font-size: 11px; font-weight: 700; color: var(--color-text-secondary); font-family: var(--font-mono); margin-top: 8px;" data-i18n="MEASURED NETWORK ACTIVITY">
         MEASURED NETWORK ACTIVITY
       </div>
 
       <div style="background: #16181D; border: 1px solid var(--color-border-fine); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span style="color: var(--color-text-primary);">Received binary data</span>
+          <span style="color: var(--color-text-primary);" data-i18n="Received binary data">Received binary data</span>
           <span id="video-bitrate" style="color: var(--color-accent-cyan); font-family: var(--font-mono); font-weight: 700;">—</span>
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span style="color: var(--color-text-primary);">Realtime Audio (Opus)</span>
-          <span style="color: var(--color-accent-emerald); font-family: var(--font-mono); font-weight: 700;">Unavailable</span>
+          <span style="color: var(--color-text-primary);" data-i18n="Realtime Audio (Opus)">Realtime Audio (Opus)</span>
+          <span style="color: var(--color-accent-emerald); font-family: var(--font-mono); font-weight: 700;" data-i18n="Unavailable">Unavailable</span>
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span style="color: var(--color-text-primary);">Interactive Control</span>
-          <span style="color: #FFB300; font-family: var(--font-mono); font-weight: 700;">Unavailable</span>
+          <span style="color: var(--color-text-primary);" data-i18n="Interactive Control">Interactive Control</span>
+          <span style="color: #FFB300; font-family: var(--font-mono); font-weight: 700;" data-i18n="Unavailable">Unavailable</span>
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 11px;">
-          <span style="color: var(--color-text-primary);">Reliable File Transfer</span>
-          <span style="color: #B388FF; font-family: var(--font-mono); font-weight: 700;">Unavailable</span>
+          <span style="color: var(--color-text-primary);" data-i18n="Reliable File Transfer">Reliable File Transfer</span>
+          <span style="color: #B388FF; font-family: var(--font-mono); font-weight: 700;" data-i18n="Unavailable">Unavailable</span>
         </div>
       </div>
     </div>

@@ -5,12 +5,15 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import `fun`.hackerlife.weavelo.ui.LanguageNotificationObserver
+import `fun`.hackerlife.weavelo.ui.notificationText
 import android.content.Intent
 import android.os.IBinder
 import kotlinx.coroutines.*
 
 /** Keeps an explicitly connected remote-device session alive while media is paused. */
 class SessionConnectionService : Service() {
+    private var languageObserver: LanguageNotificationObserver? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val workspaceOwner = Any()
     private var disconnectRequested = false
@@ -31,21 +34,25 @@ class SessionConnectionService : Service() {
         }
     }
 
-    override fun onCreate() {
-        super.onCreate()
+    private fun notification(): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = "remote-session"
-        manager.createNotificationChannel(NotificationChannel(channel, "Remote connection", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(channel, notificationText("Remote connection"), NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val stop = PendingIntent.getService(this, 1, Intent(this, SessionConnectionService::class.java).setAction("disconnect"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val builder = Notification.Builder(this, channel)
-        startForeground(8123, builder
+        return Notification.Builder(this, channel)
             .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-            .setContentTitle("Weavelo connection")
-            .setContentText("Background media pauses automatically. Tap to return.")
+            .setContentTitle(notificationText("Weavelo connection"))
+            .setContentText(notificationText("Background media pauses automatically. Tap to return."))
             .setContentIntent(open).setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Disconnect", stop).build())
-            .build())
+            .addAction(Notification.Action.Builder(null, notificationText("Disconnect"), stop).build())
+            .build()
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        startForeground(8123, notification())
+        languageObserver = LanguageNotificationObserver(this) { getSystemService(NotificationManager::class.java).notify(8123, notification()) }
         scope.launch {
             delay(1000) // onStartCommand must first deliver the user connection intent.
             while (isActive) {
@@ -90,6 +97,7 @@ class SessionConnectionService : Service() {
     }
 
     override fun onDestroy() {
+        languageObserver?.close()
         scope.cancel()
         WorkspaceClient.closeFromService(workspaceOwner, preserveForForeground = !disconnectRequested)
         super.onDestroy()

@@ -117,11 +117,11 @@ fun QrScanScreen(
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
             .background(ColorBaseBg.copy(alpha = 0.92f)).safeDrawingPadding().padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(cameraMessage ?: "Scan the invitation QR shown in Weavelo on your other device.",
+            Text(tr(cameraMessage ?: "Scan the invitation QR shown in Weavelo on your other device."),
                 color = ColorTextPrimary, fontSize = 14.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                TextButton(onClick = { session.close(); onManualInput() }) { Text("Enter invitation", color = ColorAccentCyan) }
-                TextButton(onClick = cancel) { Text("Cancel", color = ColorTextPrimary) }
+                TextButton(onClick = { session.close(); onManualInput() }) { Text(tr("Enter invitation"), color = ColorAccentCyan) }
+                TextButton(onClick = cancel) { Text(tr("Cancel"), color = ColorTextPrimary) }
             }
         }
     }

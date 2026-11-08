@@ -22,18 +22,18 @@ internal data class CameraDescription(val id: String, val name: String, val faci
     val sensor: Int, val sizes: List<Size>, val rates: List<Range<Int>>, val manager: CameraManager) {
     fun rotation(displayDegrees: Int): Int = (sensor + (if (facing == "Front") displayDegrees else -displayDegrees) + 360) % 360
     fun json(displayDegrees: Int): JSONObject {
-        val largest = sizes.maxByOrNull { it.width.toLong() * it.height } ?: error("Camera has no video modes")
+        val largest = sizes.maxByOrNull { it.width.toLong() * it.height } ?: appError("Camera has no video modes")
         return JSONObject().put("key", id).put("name", name).put("facing", facing)
             .put("switch_group", if (facing == "Front" || facing == "Back") "phone-cameras" else JSONObject.NULL)
             .put("width", largest.width).put("height", largest.height).put("rotation", rotation(displayDegrees))
     }
     data class Configuration(val encoder: SurfaceHevcEncoder.Plan, val range: Range<Int>)
     fun configure(demand: JSONObject): Configuration {
-        val native = sizes.maxByOrNull { it.width.toLong() * it.height } ?: error("Camera has no video modes")
+        val native = sizes.maxByOrNull { it.width.toLong() * it.height } ?: appError("Camera has no video modes")
         val targetWidth = demand.getInt("width")
         val targetHeight = demand.getInt("height")
         val fit = VideoDimensions.fitEncoder(native.width, native.height, targetWidth, targetHeight, 2, 2)
-            ?: error("Camera viewport is too small")
+            ?: appError("Camera viewport is too small")
         val wanted = fit.width.toLong() * fit.height
         val ordered = sizes.sortedWith(compareBy<Size> {
             abs(it.width.toDouble() / it.height - native.width.toDouble() / native.height)
@@ -42,7 +42,7 @@ internal data class CameraDescription(val id: String, val name: String, val faci
         val fps = demand.getInt("fps")
         val characteristics = manager.getCameraCharacteristics(id)
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?: error("Camera video formats are unavailable")
+            ?: appError("Camera video formats are unavailable")
         val srgb = Build.VERSION.SDK_INT >= 34 && characteristics
             .get(CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES)
             ?.getSupportedColorSpacesForDynamicRange(ImageFormat.PRIVATE, DynamicRangeProfiles.STANDARD)
@@ -60,7 +60,7 @@ internal data class CameraDescription(val id: String, val name: String, val faci
             val encoder = SurfaceHevcEncoder.exact(size.width, size.height, actual, demand.getInt("bitrate_kbps")) ?: continue
             return Configuration(encoder.copy(srgb = srgb), rate)
         }
-        error("No native camera mode and hardware HEVC encoder support this stream")
+        appError("No native camera mode and hardware HEVC encoder support this stream")
     }
     companion object {
         fun enumerate(manager: CameraManager): List<CameraDescription> {
@@ -116,19 +116,19 @@ internal class CameraCapture(private val description: CameraDescription, val con
     }
     @SuppressLint("MissingPermission")
     fun start() {
-        if (!owner.compareAndSet(null, this)) { release(); error("The previous camera is still closing") }
+        if (!owner.compareAndSet(null, this)) { release(); appError("The previous camera is still closing") }
         try {
             requested.set(true)
             description.manager.openCamera(description.id, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     device.set(camera)
-                    if (closing.get()) { camera.close(); opened.completeExceptionally(IllegalStateException("Camera start cancelled")) }
+                    if (closing.get()) { camera.close(); opened.completeExceptionally(AppTextException(AppText("Camera start cancelled"))) }
                     else opened.complete(camera)
                 }
-                override fun onDisconnected(camera: CameraDevice) { failed(camera, "Camera disconnected") }
-                override fun onError(camera: CameraDevice, error: Int) { failed(camera, "Camera unavailable ($error)") }
-                private fun failed(camera: CameraDevice, message: String) {
-                    device.set(camera); val error = IllegalStateException(message)
+                override fun onDisconnected(camera: CameraDevice) { failed(camera, AppText("Camera disconnected")) }
+                override fun onError(camera: CameraDevice, error: Int) { failed(camera, AppText("Camera unavailable (%d)", listOf(error))) }
+                private fun failed(camera: CameraDevice, text: AppText) {
+                    device.set(camera); val error = AppTextException(text)
                     if (!closing.get()) failure.set(error)
                     opened.completeExceptionally(error); configured.completeExceptionally(error); camera.close()
                 }
@@ -138,11 +138,11 @@ internal class CameraCapture(private val description: CameraDescription, val con
             val callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(value: CameraCaptureSession) {
                     session.set(value)
-                    if (closing.get()) { value.close(); configured.completeExceptionally(IllegalStateException("Camera start cancelled")) }
+                    if (closing.get()) { value.close(); configured.completeExceptionally(AppTextException(AppText("Camera start cancelled"))) }
                     else configured.complete(value)
                 }
                 override fun onConfigureFailed(value: CameraCaptureSession) {
-                    val error = IllegalStateException("Camera capture session could not be configured")
+                    val error = AppTextException(AppText("Camera capture session could not be configured"))
                     failure.set(error); configured.completeExceptionally(error)
                 }
             }
@@ -159,7 +159,7 @@ internal class CameraCapture(private val description: CameraDescription, val con
                 camera.createCaptureSession(session)
             } else @Suppress("DEPRECATION") camera.createCaptureSession(listOf(encoder.surface), callback, handler)
             val ready = configured.get(5, TimeUnit.SECONDS)
-            check(!closing.get()) { "Camera start cancelled" }
+            appCheck(!closing.get(), "Camera start cancelled")
             val capture = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(encoder.surface)
                 set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)

@@ -25,11 +25,12 @@ fun DeviceBadgeSettings() {
     var expanded by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var errorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     val save:(Any)->Unit = { value ->
         scope.launch {
             busy=true
             runCatching { withContext(Dispatchers.IO) { DeviceArtwork.save(value) } }
-                .onSuccess { selected=value;error=null }.onFailure { error=it.message }
+                .onSuccess { selected=value;error=null;errorText=null }.onFailure { error=it.message;errorText=`fun`.hackerlife.weavelo.appTextOf(it) }
             busy=false
         }
     }
@@ -38,7 +39,7 @@ fun DeviceBadgeSettings() {
             busy=true
             runCatching { withContext(Dispatchers.IO) {
                 DeviceArtwork.importImage(context,uri).also {DeviceArtwork.save(it)}
-            } }.onSuccess { selected=it;error=null }.onFailure { error=it.message }
+            } }.onSuccess { selected=it;error=null;errorText=null }.onFailure { error=it.message;errorText=`fun`.hackerlife.weavelo.appTextOf(it) }
             busy=false
         }
     }
@@ -49,22 +50,22 @@ fun DeviceBadgeSettings() {
     val preview=remember(appearance) {DeviceArtwork.badge(appearance.preset,appearance.custom).asImageBitmap()}
     Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()) {
-            Image(preview,"Device badge",Modifier.size(40.dp))
+            Image(preview,tr("Device badge"),Modifier.size(40.dp))
             Column(Modifier.weight(1f).padding(horizontal=10.dp)) {
                 Text(android.os.Build.MODEL,color=ColorTextPrimary)
-                Text("Device badge",style=MaterialTheme.typography.labelMedium,color=ColorTextSecondary)
+                Text(tr("Device badge"),style=MaterialTheme.typography.labelMedium,color=ColorTextSecondary)
             }
             Box {
-                TextButton(enabled=!busy,onClick={expanded=true}) {Text("Change")}
+                TextButton(enabled=!busy,onClick={expanded=true}) {Text(tr("Change"))}
                 DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}) {
                     listOf("automatic" to "Automatic", "phone" to "Android phone", "mac_book" to "MacBook",
                         "mac_studio" to "Mac Studio", "windows" to "Windows", "linux" to "Linux").forEach { (key,label) ->
-                        DropdownMenuItem(text={Text(label)},onClick={expanded=false;save(if(key=="automatic") key else JSONObject().put("preset",key))})
+                        DropdownMenuItem(text={Text(tr(label))},onClick={expanded=false;save(if(key=="automatic") key else JSONObject().put("preset",key))})
                     }
-                    DropdownMenuItem(text={Text("Choose image…")},onClick={expanded=false;picker.launch("image/*")})
+                    DropdownMenuItem(text={Text(tr("Choose image…"))},onClick={expanded=false;picker.launch("image/*")})
                 }
             }
         }
-        error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
+        error?.let {Text(errorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it),color=MaterialTheme.colorScheme.error)}
     }
 }

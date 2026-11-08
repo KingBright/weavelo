@@ -17,6 +17,7 @@ pub mod desktop;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod original_design;
 pub mod preferences;
+pub mod i18n;
 mod sharing_permissions;
 #[cfg(target_os="linux")]
 mod local_sharing;

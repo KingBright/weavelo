@@ -35,6 +35,7 @@ internal fun RemoteViewport(
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
     sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {},
     overlay: @Composable BoxScope.() -> Unit = {},
+    description: String? = null,
     factory: (Context) -> SurfaceView
 ) {
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
@@ -59,7 +60,7 @@ internal fun RemoteViewport(
         ) {
             RemoteVideoSurface(transformState.value,
                 Modifier.align(Alignment.Center).requiredSize(if (quarterTurn) height else width, if (quarterTurn) width else height),
-                rotation, factory)
+                rotation, description, factory)
             overlay()
         }
     }
@@ -71,6 +72,7 @@ internal fun RemoteVideoSurface(
     transform: ViewportTransform,
     modifier: Modifier = Modifier,
     rotation: Int = 0,
+    description: String? = null,
     factory: (Context) -> SurfaceView
 ) {
     AndroidView(
@@ -81,6 +83,7 @@ internal fun RemoteVideoSurface(
             translationY = transform.offset.y
             rotationZ = rotation.toFloat()
         },
-        factory = factory
+        factory = factory,
+        update = { if (description != null) it.contentDescription = description }
     )
 }

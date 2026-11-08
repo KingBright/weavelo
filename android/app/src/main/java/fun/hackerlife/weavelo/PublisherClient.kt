@@ -8,6 +8,8 @@ import org.json.JSONObject
 
 data class OutgoingScreenState(val id: Long = 0, val active: Boolean = false, val target: String = "", val status: String = "", val peers: Map<String, Int> = emptyMap(), val unattributedSharing: Int = 0)
 
+data class PublisherNotice(val message: String = "", val text: AppText? = null)
+
 object PublisherClient {
     external fun nativeAction(operation: Int, payload: String): String
     const val SCREEN_SOURCE = "\"MainDisplay\""
@@ -19,11 +21,13 @@ object PublisherClient {
         internal set
     private val mutable = MutableStateFlow("")
     val status = mutable.asStateFlow()
+    private val mutableNotice = MutableStateFlow(PublisherNotice())
+    val notice = mutableNotice.asStateFlow()
     private val mutableOutgoing = MutableStateFlow(OutgoingScreenState())
     val outgoing = mutableOutgoing.asStateFlow()
     @Volatile var active = false
         private set
-    fun status(message: String, active: Boolean = this.active) { this.active = active; mutable.value = message }
+    fun status(message: String, active: Boolean = this.active, text: AppText? = null) { this.active = active; mutable.value = message; mutableNotice.value = PublisherNotice(message, text) }
     fun action(operation: Int, payload: String = ""): String {
         val body = if (operation in listOf(0, 5, 20, 30)) {
             org.json.JSONObject(payload).put("device_badge", DeviceArtwork.savedJson()).toString()

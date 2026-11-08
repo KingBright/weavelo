@@ -21,7 +21,7 @@ data class WorkspaceSource(val source: Any, val title: String, val width: Int, v
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null,
-    val maxTouchPoints: Int = 0)
+    val maxTouchPoints: Int = 0, val inputErrorText: AppText? = null, val videoErrorText: AppText? = null)
 internal enum class WorkspaceNavigation(val wireValue: String) { BACK("back"), HOME("home") }
 
 internal fun isAndroidProjectionSource(source: String, application: String): Boolean =
@@ -32,7 +32,8 @@ data class WorkspaceState(val deviceId: String = "", val transferring: Boolean =
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
     val androidHost: Boolean = false,
     val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
-    val incomingEnded: Boolean = false, val connectionId: Long = 0)
+    val incomingEnded: Boolean = false, val connectionId: Long = 0,
+    val statusText: AppText? = AppText("Connecting…"))
 
 object WorkspaceClient {
     private external fun nativeAction(operation: Int, payload: String): String
@@ -82,7 +83,7 @@ object WorkspaceClient {
     private fun request(p: WorkspacePane) = JSONObject().put("id", p.id).put("source", p.source.source)
         .put("width", p.width).put("height", p.height).put("fps", p.fps).put("bitrate_kbps", p.kbps).put("audio", true)
     private fun guarded(block: () -> Unit) = scope.launch {
-        runCatching(block).onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection failed") }
+        runCatching(block).onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection failed", statusText = appTextOf(it) ?: if (it.message == null) AppText("Connection failed") else null) }
     }
     // One bounded local record remains available independently of logcat.
     // Never include tickets, addresses, file names, clipboard or typed text.
@@ -135,7 +136,7 @@ object WorkspaceClient {
                     closeNative()
                     this.context = context.applicationContext
                     endpoint = request.endpoint; deviceId = request.deviceId
-                    mutable.value = if (sameSession) mutable.value.copy(connected = false, androidHost = false, status = "Connecting…")
+                    mutable.value = if (sameSession) mutable.value.copy(connected = false, androidHost = false, status = "Connecting…", statusText = AppText("Connecting…"))
                         else WorkspaceState(sessionKey = request.sessionKey, deviceId = request.deviceId).also { applicationIcons.clear() }
                     if (!sameSession) nextId = 256
                     revision = 0; asleep = false
@@ -153,15 +154,15 @@ object WorkspaceClient {
                 polling = ownerScope.launch(dispatcher) {
                     while (isActive && active) {
                         runCatching {
-                            if (!incomingEnded && ownership.request()?.incomingId?.let { !DirectedDelivery.alive(it) } == true) endIncoming("Sending stopped")
+                            if (!incomingEnded && ownership.request()?.incomingId?.let { !DirectedDelivery.alive(it) } == true) endIncoming("Sending stopped", reasonText = AppText("Sending stopped"))
                             if (!asleep) drainEvents()
                             retireEndedIncoming()
-                        }.onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection error") }
+                        }.onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Connection error", statusText = appTextOf(it) ?: if (it.message == null) AppText("Connection error") else null) }
                         if (background && !asleep) {
                             val seconds = BackgroundConnectionPolicy.currentSeconds(context)
                             if (seconds > 0 && !transfersActive && SystemClock.elapsedRealtime() - lastFileAction >= 5_000 && SystemClock.elapsedRealtime() - backgroundAt >= seconds * 1000L) {
                                 action(1); asleep = true; retainingConnection = false
-                                mutable.value = mutable.value.copy(connected = false, androidHost = false, status = "Connection sleeping to save power")
+                                mutable.value = mutable.value.copy(connected = false, androidHost = false, status = "Connection sleeping to save power", statusText = AppText("Connection sleeping to save power"))
                             }
                         }
                         delay(if (background) 1000 else 50)
@@ -182,7 +183,7 @@ object WorkspaceClient {
         incoming?.let { DirectedDelivery.finish(it) }
         closeNative()
         applicationIcons.clear()
-        mutable.value = WorkspaceState(status = "Disconnected")
+        mutable.value = WorkspaceState(status = "Disconnected", statusText = AppText("Disconnected"))
     }
 
     fun closeFromService(owner: Any, preserveForForeground: Boolean) = guarded {
@@ -190,8 +191,9 @@ object WorkspaceClient {
         closeNative()
         mutable.value = if (preserveForForeground) mutable.value.copy(connected = false, androidHost = false,
             panes = mutable.value.panes.map { it.copy(input = false, accepted = false) },
-            status = if (mutable.value.connected) "Connection sleeping; reopen to reconnect" else mutable.value.status)
-            else WorkspaceState(status = "Disconnected")
+            status = if (mutable.value.connected) "Connection sleeping; reopen to reconnect" else mutable.value.status,
+            statusText = if (mutable.value.connected) AppText("Connection sleeping; reopen to reconnect") else mutable.value.statusText)
+            else WorkspaceState(status = "Disconnected", statusText = AppText("Disconnected"))
     }
     private fun connectNative() {
         val directory = File(checkNotNull(context).filesDir, "received").apply { mkdirs() }
@@ -205,7 +207,7 @@ object WorkspaceClient {
         pendingShareList = 0L
         mutable.value = mutable.value.copy(connected = true, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
-            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
+            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
     private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); if (active) action(1); active = false; retainingConnection = false }
@@ -230,41 +232,41 @@ object WorkspaceClient {
     fun add(source: WorkspaceSource, sessionKey: String, generation: Long) = guarded {
         val current = mutable.value
         if (!active || !current.connected || current.sessionKey != sessionKey || current.connectionGeneration != generation) return@guarded
-        if (source !in current.sources) { mutable.value = current.copy(status = "Source list changed; choose the window again"); return@guarded }
+        if (source !in current.sources) { mutable.value = current.copy(status = "Source list changed; choose the window again", statusText = AppText("Source list changed; choose the window again")); return@guarded }
         initialSource.cancel(sessionKey)
         addNative(source)
     }
     private fun addNative(source: WorkspaceSource) {
         val incoming = ownership.request()?.incomingId
         if (incoming != null && source.source.toString() !in DirectedDelivery.sources(incoming)) {
-            mutable.value = mutable.value.copy(status = "This view is bound to the offered sources"); return
+            mutable.value = mutable.value.copy(status = "This view is bound to the offered sources", statusText = AppText("This view is bound to the offered sources")); return
         }
         val existing = mutable.value.panes.firstOrNull { it.source.source.toString() == source.source.toString() }
         if (existing != null) { mutable.value = mutable.value.copy(selected = existing.id); activity(); return }
         // Conservative default for mobile hardware; source count is distinct from visible decoder count.
-        if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)"); return }
+        if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)", statusText = AppText("This connection supports %d window(s)", listOf(minOf(4, mutable.value.maxSubscriptions)))); return }
         val prefs = checkNotNull(context).getSharedPreferences("stream", Context.MODE_PRIVATE)
         val pane = WorkspacePane(nextId, source, prefs.getInt("fps", 60), prefs.getInt("bitrate_kbps", 20_000))
         nextId += 256
-        mutable.value = mutable.value.copy(panes = mutable.value.panes + pane, selected = pane.id, status = "Connected")
+        mutable.value = mutable.value.copy(panes = mutable.value.panes + pane, selected = pane.id, status = "Connected", statusText = AppText("Connected"))
         command("Subscribe", request(pane)); activity()
     }
     fun remove(id: Int) = guarded {
         cameraSwitches.entries.removeAll { it.value.pane == id }
         cameraReplacements.entries.removeAll { it.value.first == id }
         command("Unsubscribe", JSONObject().put("id", id))
-        removePane(id, "Receiving stopped")
+        removePane(id, "Receiving stopped", reasonText = AppText("Receiving stopped"))
     }
     fun retry(id: Int, sessionKey: String, generation: Long) = guarded {
         if (!currentView(id, sessionKey, generation, false)) return@guarded
         val pane = mutable.value.panes.firstOrNull { it.id == id && it.videoError != null && !it.accepted } ?: return@guarded
-        val next = pane.copy(id = nextId, audioOwner = null, input = false, inputError = null, videoError = null)
+        val next = pane.copy(id = nextId, audioOwner = null, input = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null)
         nextId += 256
         mutable.value = mutable.value.copy(panes = mutable.value.panes.map { if (it.id == id) next else it },
             selected = if (mutable.value.selected == id) next.id else mutable.value.selected)
         runCatching { command("Subscribe", request(next)); activity() }.onFailure { error ->
             mutable.value = mutable.value.copy(panes = mutable.value.panes.map {
-                if (it.id == next.id) it.copy(videoError = error.message ?: "Could not open this source") else it
+                if (it.id == next.id) it.copy(videoError = error.message ?: "Could not open this source", videoErrorText = appTextOf(error) ?: if (error.message == null) AppText("Could not open this source") else null) else it
             })
         }
     }
@@ -297,13 +299,13 @@ object WorkspaceClient {
         mutable.value=mutable.value.copy(panes=mutable.value.panes.map { if(it.id==pane.id) next else it },
             selected=if(mutable.value.selected==pane.id) next.id else mutable.value.selected)
     }
-    private fun removePane(id: Int, reason: String, rejected: Boolean = false) {
+    private fun removePane(id: Int, reason: String, rejected: Boolean = false, reasonText: AppText? = null) {
         val previous = mutable.value
         if (previous.panes.none { it.id == id }) return
         val panes = previous.panes.filter { it.id != id }
         mutable.value = previous.copy(panes = panes,
             selected = previous.selected.takeIf { selected -> panes.any { it.id == selected } } ?: panes.firstOrNull()?.id ?: 0)
-        if (panes.isEmpty() && ownership.request()?.incomingId != null && !incomingEnded) endIncoming(reason, rejected)
+        if (panes.isEmpty() && ownership.request()?.incomingId != null && !incomingEnded) endIncoming(reason, rejected, reasonText)
         else activity()
     }
     fun layout(grid: Boolean, selected: Int = mutable.value.selected) = guarded {
@@ -322,7 +324,7 @@ object WorkspaceClient {
         val pane = mutable.value.panes.find { it.id == id } ?: return@guarded
         if (!pane.accepted) return@guarded
         val updated = pane.copy(width = width ?: pane.width, height = height ?: pane.height, fps = fps ?: pane.fps, kbps = kbps ?: pane.kbps)
-        require(updated.fps > 0 && updated.kbps > 0) { "Frame rate and bitrate must be positive" }
+        appRequire(updated.fps > 0 && updated.kbps > 0, "Frame rate and bitrate must be positive")
         if (updated == pane) return@guarded
         action(3, request(updated).toString())
         mutable.value = mutable.value.copy(panes = mutable.value.panes.map { if (it.id == id) updated else it })
@@ -336,36 +338,34 @@ object WorkspaceClient {
                 .put("width",visible[2]).put("height",visible[3])))
     }
     fun sendFile(file: File, expectedSessionKey: String) = guarded {
-        check(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey) {
-            "The destination changed or disconnected. Select the file again for the intended device."
-        }
+        appCheck(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey, "The destination changed or disconnected. Select the file again for the intended device.")
         lastFileAction = SystemClock.elapsedRealtime()
         action(4, file.absolutePath)
     }
     fun publishSharedFile(file: File, expectedSessionKey: String) = guarded {
-        check(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey) { "The selected device session changed" }
+        appCheck(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey, "The selected device session changed")
         action(8, file.absolutePath)
-        mutable.value = mutable.value.copy(status = "File shared with this network until cleared, network change, or app exit. Enable file reception on this phone for new incoming connections.")
+        mutable.value = mutable.value.copy(status = "File shared with this network until cleared, network change, or app exit. Enable file reception on this phone for new incoming connections.", statusText = AppText("File shared with this network until cleared, network change, or app exit. Enable file reception on this phone for new incoming connections."))
     }
     fun clearSharedFiles() = guarded {
         action(10)
-        mutable.value = mutable.value.copy(status = "Shared list cleared. Already accepted transfers may finish.")
+        mutable.value = mutable.value.copy(status = "Shared list cleared. Already accepted transfers may finish.", statusText = AppText("Shared list cleared. Already accepted transfers may finish."))
     }
     fun listSharedFiles(afterId: Long = 0L) = guarded {
-        check(active && mutable.value.connected && mutable.value.files) { "File connection is unavailable" }
-        check(!mutable.value.sharedBusy) { "A shared-file list request is already pending" }
+        appCheck(active && mutable.value.connected && mutable.value.files, "File connection is unavailable")
+        appCheck(!mutable.value.sharedBusy, "A shared-file list request is already pending")
         val id = ++shareRequestId
         action(9, JSONObject().put("request_id", id).put("request", JSONObject().put("List", JSONObject().put("after_id", afterId))).toString())
         pendingShareList = id
         lastFileAction = SystemClock.elapsedRealtime()
-        mutable.value = mutable.value.copy(sharedBusy = true, status = "Requesting shared files...")
+        mutable.value = mutable.value.copy(sharedBusy = true, status = "Requesting shared files...", statusText = AppText("Requesting shared files..."))
     }
     fun fetchSharedFile(fileId: Long, expectedSessionKey: String) = guarded {
-        check(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey) { "The selected device session changed" }
-        check(mutable.value.remoteFiles.any { it.id == fileId }) { "Refresh the remote shared list first" }
+        appCheck(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey, "The selected device session changed")
+        appCheck(mutable.value.remoteFiles.any { it.id == fileId }, "Refresh the remote shared list first")
         action(9, JSONObject().put("request_id", ++shareRequestId).put("request", JSONObject().put("Fetch", JSONObject().put("file_id", fileId))).toString())
         lastFileAction = SystemClock.elapsedRealtime()
-        mutable.value = mutable.value.copy(status = "File requested; waiting for transfer confirmation")
+        mutable.value = mutable.value.copy(status = "File requested; waiting for transfer confirmation", statusText = AppText("File requested; waiting for transfer confirmation"))
     }
     fun enableClipboard(enabled: Boolean) = guarded {
         command("SetClipboard", JSONObject().put("enabled", enabled))
@@ -393,7 +393,7 @@ object WorkspaceClient {
                     else -> return@post
                 }
                 clipboard.setPrimaryClip(clip)
-            }.onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Clipboard unavailable") }
+            }.onFailure { mutable.value = mutable.value.copy(status = it.message ?: "Clipboard unavailable", statusText = appTextOf(it) ?: if (it.message == null) AppText("Clipboard unavailable") else null) }
         }
     }
     fun keyframe(id: Int) = guarded { action(6, id.toString()) }
@@ -402,21 +402,22 @@ object WorkspaceClient {
         return active && s.connected && s.sessionKey == sessionKey && s.connectionGeneration == generation &&
             s.panes.any { it.id == id } && (!visible || (!background && (s.grid || s.selected == id)))
     }
-    private fun inputIssue(id: Int, message: String?) {
+    private fun inputIssue(id: Int, message: String?, text: AppText? = null) {
         val current = mutable.value
-        if (current.panes.any { it.id == id && it.inputError != message }) {
-            mutable.value = current.copy(panes = current.panes.map { if (it.id == id) it.copy(inputError = message) else it })
+        if (current.panes.any { it.id == id && (it.inputError != message || it.inputErrorText != text) }) {
+            mutable.value = current.copy(panes = current.panes.map { if (it.id == id) it.copy(inputError = message, inputErrorText = text) else it })
         }
     }
     private fun inputViewIssue(id: Int, sessionKey: String, generation: Long) {
         val current = mutable.value
         if (current.sessionKey != sessionKey || current.connectionGeneration != generation || current.panes.none { it.id == id }) return
-        inputIssue(id, when {
+        val message = when {
             !active || !current.connected -> "Input couldn't reach this device connection."
             background -> "Input was ignored while the app was in the background."
             !current.grid && current.selected != id -> "Input was ignored while this stream was hidden."
             else -> "Control is not ready yet."
-        })
+        }
+        inputIssue(id, message, AppText(message))
     }
     fun keyboardBinding(id: Int, sessionKey: String, generation: Long, token: Long): String? = synchronized(this) {
         if (!currentView(id,sessionKey,generation,true)) {
@@ -425,9 +426,12 @@ object WorkspaceClient {
         }
         val result = runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("generation") } }
         guarded {
-            if (currentView(id,sessionKey,generation,false)) inputIssue(id,
-                if (result.isFailure) result.exceptionOrNull()?.message ?: "Keyboard is unavailable"
-                else if (result.getOrNull() == null) "Control is not ready yet." else null)
+            if (currentView(id,sessionKey,generation,false)) {
+                val message = if (result.isFailure) result.exceptionOrNull()?.message ?: "Keyboard is unavailable"
+                    else if (result.getOrNull() == null) "Control is not ready yet." else null
+                val local = if (result.isFailure && result.exceptionOrNull()?.message != null) null else message?.let { AppText(it) }
+                inputIssue(id, message, local)
+            }
         }
         result.getOrNull()
     }
@@ -440,7 +444,7 @@ object WorkspaceClient {
             // A rejected commit can invalidate its editor before queued IME
             // callbacks arrive. Keep the original, actionable host reason.
             if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
-                inputIssue(id, it.message ?: "Keyboard is unavailable")
+                inputIssue(id, it.message ?: "Keyboard is unavailable", if (it.message == null) AppText("Keyboard is unavailable") else null)
         }
     }
     internal fun keyboardAlive(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
@@ -449,13 +453,13 @@ object WorkspaceClient {
             mutable.value.panes.none { it.id == id && it.input && it.accepted }) return@guarded
         val age = SystemClock.uptimeMillis() - eventTime
         if (age !in 0L..250L) {
-            inputIssue(id, "Keyboard shortcuts expired. Reopen the keyboard and select them again.")
+            inputIssue(id, "Keyboard shortcuts expired. Reopen the keyboard and select them again.", AppText("Keyboard shortcuts expired. Reopen the keyboard and select them again."))
             return@guarded
         }
         val event = JSONObject().put("id", id).put("token", token).put("binding", JSONObject(binding))
             .put("age_ms", age).put("alive", true)
         runCatching { action(14, event.toString()) }.onFailure {
-            inputIssue(id, "Keyboard shortcuts expired. Reopen the keyboard and select them again.")
+            inputIssue(id, "Keyboard shortcuts expired. Reopen the keyboard and select them again.", AppText("Keyboard shortcuts expired. Reopen the keyboard and select them again."))
         }
     }
     internal fun navigation(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
@@ -469,14 +473,14 @@ object WorkspaceClient {
             WorkspaceNavigation.HOME -> mainDisplay
         }
         if (!state.androidHost || !pane.accepted || !pane.input || pane.source.isCamera || !supportedSource) {
-            inputIssue(id, "Remote navigation is unavailable for this source")
+            inputIssue(id, "Remote navigation is unavailable for this source", AppText("Remote navigation is unavailable for this source"))
             return@guarded
         }
         val event = JSONObject().put("id", id).put("token", token).put("binding", JSONObject(binding))
             .put("age_ms", SystemClock.uptimeMillis() - eventTime).put("navigation", navigation.wireValue)
         runCatching { action(14, event.toString()) }.onFailure {
             if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
-                inputIssue(id, it.message ?: "Remote navigation is unavailable")
+                inputIssue(id, it.message ?: "Remote navigation is unavailable", if (it.message == null) AppText("Remote navigation is unavailable") else null)
         }
     }
     fun surface(id: Int, sessionKey: String, generation: Long, token: Long, phase: String, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
@@ -505,7 +509,7 @@ object WorkspaceClient {
         // Include time waiting on this serial executor; do not replay an old Android event as fresh input.
         if (SystemClock.uptimeMillis() - eventTime !in 0L..250L) {
             action(11, JSONObject().put("id", id).put("token", token).put("phase", "cancel").toString())
-            if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.")
+            if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.", AppText("Input arrived too late. Try again."))
             return@guarded
         }
         val presented = geometry?.let { g -> JSONObject().put("source_revision",Integer.toUnsignedLong(g.sourceRevision))
@@ -517,7 +521,7 @@ object WorkspaceClient {
             .put("mode", mode.code).put("width", width).put("height", height)
             .put("geometry",presented ?: JSONObject.NULL)
             .put("event", if(contacts==null) JSONObject().put("Touch",event) else JSONObject().put("TouchFrame",contacts)).toString()) }
-            .onFailure { inputIssue(id, it.message ?: "Control is unavailable") }
+            .onFailure { inputIssue(id, it.message ?: "Control is unavailable", if (it.message == null) AppText("Control is unavailable") else null) }
             .onSuccess { result ->
                 if (event.optString("action") == "Down") inputIssue(id, null)
                 if (result != "null") {
@@ -529,13 +533,13 @@ object WorkspaceClient {
                 }
             }
     }
-    private fun endIncoming(reason: String, rejected: Boolean = false) {
+    private fun endIncoming(reason: String, rejected: Boolean = false, reasonText: AppText? = null) {
         ownership.endIncoming(mutable.value.sessionKey)
         incomingEnded = true
         // A lost unsubscribe acknowledgment must not leave a completed offer
         // visible/busy forever. The retained connection closes after files drain.
         mutable.value.panes.forEach { pane -> runCatching { command("Unsubscribe", JSONObject().put("id", pane.id)) } }
-        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), androidHost = false, incomingEnded = true, status = reason)
+        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), androidHost = false, incomingEnded = true, status = reason, statusText = reasonText)
         ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason, rejected) }
     }
     private fun retireEndedIncoming() {
@@ -549,13 +553,13 @@ object WorkspaceClient {
     private fun drainEvents() {
         cameraSwitches.entries.removeAll { (_, pending) ->
             if (pending.deadline < SystemClock.elapsedRealtime()) {
-                mutable.value = mutable.value.copy(status = "Camera switch timed out; retry")
+                mutable.value = mutable.value.copy(status = "Camera switch timed out; retry", statusText = AppText("Camera switch timed out; retry"))
                 true
             } else mutable.value.panes.none { it.id == pending.pane }
         }
         cameraReplacements.entries.filter { it.value.second<SystemClock.elapsedRealtime() }.toList().forEach { (old,waiting)->
             cameraReplacements.remove(old)
-            removePane(waiting.first,"Camera did not finish closing; retry this source",rejected=true)
+            removePane(waiting.first,"Camera did not finish closing; retry this source",rejected=true, reasonText = AppText("Camera did not finish closing; retry this source"))
         }
         val events = JSONArray(action(5))
         for (i in 0 until events.length()) {
@@ -580,12 +584,12 @@ object WorkspaceClient {
                         if (ready.has("Ok")) {
                             if (incomingId != null) DirectedDelivery.replaceSource(incomingId, pane.source.source.toString(), pending.source.source)
                             replaceCameraView(pane, pending.source)
-                        } else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"))
+                        } else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"), statusText = if (ready.has("Err")) null else AppText("Camera switch was rejected"))
                     }
                 }
             }
             control?.optJSONObject("Opened")?.let { mutable.value = mutable.value.copy(connectionId = it.getLong("connection_id"), maxSubscriptions = it.getInt("max_subscriptions"), files = it.getBoolean("files"), clipboardAvailable = it.getBoolean("clipboard")) }
-            control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, androidHost = false, status = it.getString("reason")) }
+            control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, androidHost = false, status = it.getString("reason"), statusText = null) }
             control?.optJSONObject("TextRejected")?.let {
                 val id = it.getJSONObject("binding").getInt("subscription_id")
                 if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
@@ -657,7 +661,7 @@ object WorkspaceClient {
                 if (incoming != null && !incomingInitialized && !incomingEnded) {
                     incomingInitialized = true
                     if (expected.isNullOrEmpty() || expected.size > minOf(4, mutable.value.maxSubscriptions) || initialVisible.size != expected.size) {
-                        endIncoming("An offered source is no longer available", rejected = true)
+                        endIncoming("An offered source is no longer available", rejected = true, reasonText = AppText("An offered source is no longer available"))
                     } else initialVisible.forEach { addNative(it) }
                 }
             }
@@ -665,12 +669,12 @@ object WorkspaceClient {
                 val id=ended.getInt("id")
                 val next=cameraReplacements.remove(id)?.first
                 if(next!=null) mutable.value.panes.firstOrNull { it.id==next }?.let { command("Subscribe",request(it)) }
-                else removePane(id, "The source stopped sharing")
+                else removePane(id, "The source stopped sharing", reasonText = AppText("The source stopped sharing"))
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map {
                     if (it.id == subscribed.getInt("id")) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input"),
-                        maxTouchPoints = subscribed.getInt("max_touch_points").coerceIn(0,10), accepted = true, videoError = null) else it
+                        maxTouchPoints = subscribed.getInt("max_touch_points").coerceIn(0,10), accepted = true, videoError = null, videoErrorText = null) else it
                 })
                 activity()
             }
@@ -678,11 +682,11 @@ object WorkspaceClient {
                 val id = it.getInt("request_id")
                 if (ownership.request()?.incomingId != null && mutable.value.panes.any { pane -> pane.id == id && !pane.accepted }) {
                     command("Unsubscribe", JSONObject().put("id", id))
-                    mutable.value = mutable.value.copy(status = it.getString("reason"))
+                    mutable.value = mutable.value.copy(status = it.getString("reason"), statusText = null)
                     removePane(id, it.getString("reason"), rejected = true)
                 } else if (mutable.value.panes.any { pane -> pane.id == id && !pane.accepted }) {
                     mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
-                        if (pane.id == id) pane.copy(videoError = it.getString("reason"), input = false) else pane
+                        if (pane.id == id) pane.copy(videoError = it.getString("reason"), videoErrorText = null, input = false) else pane
                     })
                 }
                 android.util.Log.w("WeaveloWorkspace", "Request $id failed: ${it.getString("reason")}")
@@ -691,9 +695,9 @@ object WorkspaceClient {
                 if (it.getString("reason").startsWith("INPUT_UNAVAILABLE:") && mutable.value.panes.any { pane -> pane.id == id && pane.accepted })
                     inputIssue(id, it.getString("reason"))
                 else if (id in 0..1 || mutable.value.panes.any { pane -> pane.id == id && pane.accepted })
-                    mutable.value = mutable.value.copy(status = it.getString("reason"))
+                    mutable.value = mutable.value.copy(status = it.getString("reason"), statusText = null)
             }
-            if (event.has("file")) mutable.value = mutable.value.copy(status = event.getString("file").take(220))
+            if (event.has("file")) mutable.value = mutable.value.copy(status = event.getString("file").take(220), statusText = null)
             event.optJSONObject("detail")?.let { detail ->
                 val response = detail.optJSONObject("shared_response")
                 val id = detail.optLong("shared_request_id")
@@ -704,12 +708,12 @@ object WorkspaceClient {
                         RemoteSharedFile(item.getLong("id"), item.getString("name"), item.getLong("size_bytes"))
                     }
                     pendingShareList = 0L
-                    mutable.value = mutable.value.copy(remoteFiles = files, sharedNext = if (page.isNull("next_after_id")) null else page.getLong("next_after_id"), sharedBusy = false, status = if (files.isEmpty()) "No files explicitly shared by this device" else "Choose a shared file to retrieve")
+                    mutable.value = mutable.value.copy(remoteFiles = files, sharedNext = if (page.isNull("next_after_id")) null else page.getLong("next_after_id"), sharedBusy = false, status = if (files.isEmpty()) "No files explicitly shared by this device" else "Choose a shared file to retrieve", statusText = AppText(if (files.isEmpty()) "No files explicitly shared by this device" else "Choose a shared file to retrieve"))
                 }
-                response?.optJSONObject("Queued")?.let { mutable.value = mutable.value.copy(status = "Request accepted; delivery is not complete yet") }
+                response?.optJSONObject("Queued")?.let { mutable.value = mutable.value.copy(status = "Request accepted; delivery is not complete yet", statusText = AppText("Request accepted; delivery is not complete yet")) }
                 response?.optJSONObject("Rejected")?.let { rejected ->
                     if (id == pendingShareList) pendingShareList = 0L
-                    mutable.value = mutable.value.copy(sharedBusy = pendingShareList != 0L, status = rejected.getString("message"))
+                    mutable.value = mutable.value.copy(sharedBusy = pendingShareList != 0L, status = rejected.getString("message"), statusText = null)
                 }
             }
         }

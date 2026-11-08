@@ -25,6 +25,9 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
     var directory by remember { mutableStateOf(root) }
     var files by remember { mutableStateOf(emptyList<File>()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var errorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
+    val shareLabel = tr("Share received file")
+    val openLabel = tr("Open received file")
     var refresh by remember { mutableIntStateOf(0) }
     var exporting by remember { mutableStateOf<File?>(null) }
     val scope = rememberCoroutineScope()
@@ -34,7 +37,7 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
         if (uri != null && source != null) scope.launch(Dispatchers.IO) {
             runCatching {
                 source.inputStream().use { input -> checkNotNull(context.contentResolver.openOutputStream(uri, "w")).use { input.copyTo(it, 64 * 1024) } }
-            }.onFailure { withContext(Dispatchers.Main) { error = it.message ?: "File could not be saved" } }
+            }.onFailure { withContext(Dispatchers.Main) { error = it.message ?: "File could not be saved"; errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("File could not be saved") else null } }
         }
     }
     fun open(file: File, share: Boolean) {
@@ -44,8 +47,8 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
             val intent = if (share) Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, uri)
                 else Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            context.startActivity(Intent.createChooser(intent, if (share) "Share received file" else "Open received file"))
-        }.onFailure { error = it.message ?: "No application can open this file" }
+            context.startActivity(Intent.createChooser(intent, if (share) shareLabel else openLabel))
+        }.onFailure { error = it.message ?: "No application can open this file"; errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("No application can open this file") else null }
     }
     DisposableEffect(directory) {
         val observer = object : FileObserver(directory.path,
@@ -61,25 +64,25 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
     LaunchedEffect(directory, refresh) {
         files = withContext(Dispatchers.IO) { directory.listFiles()?.filter { !it.name.startsWith(".weavelo-") && it.canonicalPath.startsWith(root.path + File.separator) }?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name }) ?: emptyList() }
     }
-    AlertDialog(onDismissRequest = onClose, title = { Text("Received files") }, text = {
+    AlertDialog(onDismissRequest = onClose, title = { Text(tr("Received files")) }, text = {
         Column {
-            if (directory != root) TextButton(onClick = { directory = directory.parentFile ?: root }) { Text("Back to parent folder") }
-            error?.let { Text(it) }
+            if (directory != root) TextButton(onClick = { directory = directory.parentFile ?: root }) { Text(tr("Back to parent folder")) }
+            error?.let { Text(errorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it)) }
             LazyColumn(Modifier.heightIn(max = 420.dp)) {
                 items(files, key = { it.absolutePath }) { file ->
                     Column {
-                        TextButton(onClick = { if (file.isDirectory) directory = file else open(file, false) }) { Text((if (file.isDirectory) "Folder · " else "") + file.name) }
+                        TextButton(onClick = { if (file.isDirectory) directory = file else open(file, false) }) { Text(if (file.isDirectory) trFormat("Folder · %s", file.name) else file.name) }
                         if (file.isFile) Row {
-                            TextButton(onClick = { exporting = file; save.launch(file.name) }) { Text("Save a copy") }
-                            TextButton(onClick = { open(file, true) }) { Text("Share") }
+                            TextButton(onClick = { exporting = file; save.launch(file.name) }) { Text(tr("Save a copy")) }
+                            TextButton(onClick = { open(file, true) }) { Text(tr("Share")) }
                             onSendToDevice?.let { send ->
-                                MobileAction(MobileSymbol.Send, "Send to device", modifier = Modifier.size(44.dp)) { send(file) }
+                                MobileAction(MobileSymbol.Send, tr("Send to device"), modifier = Modifier.size(44.dp)) { send(file) }
                             }
                         }
                     }
                 }
             }
-            if (files.isEmpty()) Text("No completed files in this folder")
+            if (files.isEmpty()) Text(tr("No completed files in this folder"))
         }
-    }, confirmButton = { TextButton(onClick = onClose) { Text("Close") } })
+    }, confirmButton = { TextButton(onClick = onClose) { Text(tr("Close")) } })
 }

@@ -28,8 +28,8 @@ impl RestoredDashboard {
 
     pub(super) fn idle_stream_stage(&self, cx: &mut Context<Self>) -> AnyElement {
         let source_selected=self.stream_source.is_some();
-        let title=if source_selected {"Disconnected"} else {"Choose a source"};
-        let detail=if self.status=="Ready" {"This stream is not connected".into()} else {self.status.clone()};
+        let title=crate::i18n::tr(if source_selected {"Disconnected"} else {"Choose a source"});
+        let detail=if self.status=="Ready" {crate::i18n::tr("This stream is not connected").to_owned()} else {crate::i18n::message(&self.status)};
         let target=self.stream_device.clone();
         let can_reconnect=target.is_some();
         div().size_full().flex().items_center().justify_center().p_4()
@@ -40,7 +40,7 @@ impl RestoredDashboard {
                 .child(div().text_size(px(12.)).child(self.native_window_title.clone()))
                 .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary).child(detail))
                 .child(command_button("reconnect-fixed-stream",ActionVariantKind::Primary,cx)
-                    .disabled(!can_reconnect).child(if source_selected {"Reconnect this stream"} else {"Choose a source"})
+                    .disabled(!can_reconnect).child(crate::i18n::tr(if source_selected {"Reconnect this stream"} else {"Choose a source"}))
                     .on_click(cx.listener(move|this,_,_,cx| {
                         if let Some(device)=target.clone() {
                             if let Some(source)=this.stream_source {

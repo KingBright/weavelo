@@ -48,7 +48,7 @@ impl RenderOnce for DeviceDrawer {
         let mut filters=div().flex().gap_1();
         for (label,filter) in [("All",DeviceFilterKind::All),("LAN",DeviceFilterKind::Lan),("P2P",DeviceFilterKind::P2p),("Relay",DeviceFilterKind::Relay)] {
             let send=self.send.clone();
-            filters=filters.child(Button::new(format!("filter_{label}"),label)
+            filters=filters.child(Button::new(format!("filter_{label}"),crate::i18n::tr(label))
                 .debug_selector(move||format!("filter-{label}"))
                 .variant(if filter==self.state.filter {ButtonVariant::Primary}else{ButtonVariant::Ghost})
                 .control_size(ControlSize::Sm).h(px(24.)).px_2().text_size(px(10.))
@@ -57,13 +57,13 @@ impl RenderOnce for DeviceDrawer {
         let mut content=div().flex().flex_col().gap_2().child(filters);
         if self.model.rows.is_empty() {
             return content.child(div().py_3().text_color(theme.content.tertiary).text_size(px(12.))
-                .child("No devices. Add a device or choose All."));
+                .child(crate::i18n::tr("No devices. Add a device or choose All.")));
         }
         for row in self.model.rows {
             let id=row.device_id.clone();
             let activity=self.activity.get(&id).cloned().unwrap_or_default();
             let status=activity.label();
-            let scope=match row.scope {DiscoveryScope::Lan=>"LAN",DiscoveryScope::P2p=>"Direct",DiscoveryScope::Relay=>"Relay",DiscoveryScope::Mesh=>"Mesh"};
+            let scope=crate::i18n::tr(match row.scope {DiscoveryScope::Lan=>"LAN",DiscoveryScope::P2p=>"Direct",DiscoveryScope::Relay=>"Relay",DiscoveryScope::Mesh=>"Mesh"});
             let active=activity.receiving>0||activity.sharing>0||activity.connecting;
             let send=self.send.clone();let detail_id=id.clone();
             let mut card=div().flex().flex_col().gap_1().px_3().py_2().rounded(px(10.))
@@ -83,10 +83,10 @@ impl RenderOnce for DeviceDrawer {
                         .child(div().flex().items_center().gap_1().text_size(px(10.))
                             .text_color(theme.content.secondary)
                             .child(div().size(px(6.)).flex_none().rounded_full().bg(if row.online {color_accent_emerald().into()}else{theme.content.disabled}))
-                            .child(if !status.is_empty(){status}else{format!("{scope} · {}",if row.online {"Available"}else{"Offline"})})))
+                            .child(if !status.is_empty(){status}else{crate::i18n::tr_format!("{} · {}",scope,crate::i18n::tr(if row.online {"Available"}else{"Offline"}))})))
                     .child({
                         let send=self.send.clone();let target=id.clone();let selector=format!("connect-{id}");
-                        Button::new(format!("device-connect-{id}"),"View")
+                        Button::new(format!("device-connect-{id}"),crate::i18n::tr("View"))
                             .debug_selector(move||selector.clone()).variant(ButtonVariant::Primary)
                             .control_size(ControlSize::Sm).h(px(28.)).px_2().text_size(px(11.))
                             .disabled(!row.can_connect).on_click(move|_,_,cx|send(DeviceListAction::Connect(target.clone()),cx))
@@ -95,13 +95,13 @@ impl RenderOnce for DeviceDrawer {
                         let send=self.send.clone();let target=id.clone();let selector=format!("more-{id}");
                         Button::new(format!("device-more-{id}"),"")
                             .debug_selector(move||selector.clone()).child(icon(IconName::More).size(px(18.)))
-                            .tooltip(tooltip("More device actions").build()).control_size(ControlSize::Sm)
+                            .tooltip(tooltip(crate::i18n::tr("More device actions")).build()).control_size(ControlSize::Sm)
                             .variant(ButtonVariant::Ghost).size(px(28.)).p_0()
                             .on_click(move|_,_,cx|send(DeviceListAction::More(target.clone()),cx))
                     }));
             if let Some(error)=activity.error.as_ref() {
                 card=card.child(div().text_size(px(11.)).text_color(theme.content.primary)
-                    .child(format!("Needs attention: {error}")));
+                    .child(crate::i18n::tr_format!("Needs attention: {error}", error=crate::i18n::message(error))));
             }
             if self.state.more.as_ref()==Some(&id) || self.state.details.as_ref()==Some(&id) {
                 let mut more=div().flex().flex_col().gap_2().py_2();
@@ -116,7 +116,7 @@ impl RenderOnce for DeviceDrawer {
                 ] {
                     if !enabled && key!="send" && key!="files" {continue;}
                     let send=self.send.clone();let selector=format!("{key}-{id}");
-                    commands=commands.child(Button::new(format!("device-{key}-{id}"),label)
+                    commands=commands.child(Button::new(format!("device-{key}-{id}"),crate::i18n::tr(label))
                         .debug_selector(move||selector.clone()).variant(ButtonVariant::Secondary)
                         .control_size(ControlSize::Sm).h(px(26.)).px_2().text_size(px(11.)).disabled(!enabled)
                         .on_click(move|_,_,cx|send(action.clone(),cx)));

@@ -1,5 +1,10 @@
 package `fun`.hackerlife.weavelo
 
+import `fun`.hackerlife.weavelo.ui.cameraNameText
+import `fun`.hackerlife.weavelo.ui.appText
+import `fun`.hackerlife.weavelo.ui.trFormat
+import `fun`.hackerlife.weavelo.ui.tr
+import `fun`.hackerlife.weavelo.ui.AppLanguageProvider
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -66,6 +71,7 @@ class MainActivity : ComponentActivity() {
         WeaveloClient.initialize(applicationContext)
 
         setContent {
+            AppLanguageProvider(this) {
             `fun`.hackerlife.weavelo.ui.WeaveloTheme {
             val scope = rememberCoroutineScope()
             val sessionState by WeaveloClient.sessionState.collectAsState()
@@ -88,11 +94,12 @@ class MainActivity : ComponentActivity() {
             var receivedFileTargetPath by rememberSaveable { mutableStateOf<String?>(null) }
             var workspaceFilePath by rememberSaveable { mutableStateOf<String?>(null) }
             var pairingMessage by remember { mutableStateOf<String?>(null) }
-            val publisherStatus by PublisherClient.status.collectAsState()
+            var pairingText by remember { mutableStateOf<AppText?>(null) }
+            val publisherNotice by PublisherClient.notice.collectAsState()
             val outgoing by PublisherClient.outgoing.collectAsState()
             val camera by CameraPublisher.state.collectAsState()
             var cameraTarget by remember { mutableStateOf<String?>(null) }
-            val incomingError by DirectedDelivery.error.collectAsState()
+            val incomingNotice by DirectedDelivery.notice.collectAsState()
             val receiverState by FileReceiverClient.state.collectAsState()
             val controlReady by RemoteControlService.connected.collectAsState()
             fun joinNetwork(raw: String) {
@@ -100,20 +107,24 @@ class MainActivity : ComponentActivity() {
                 if (WorkspaceClient.active || PublisherClient.active || camera.enabled || FileReceiverClient.ownsNetwork ||
                     sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING)) {
                     pairingMessage = "error:Disconnect active sessions and stop file reception and screen sharing before changing networks."
+                    pairingText = AppText("Disconnect active sessions and stop file reception and screen sharing before changing networks.")
                     return
                 }
                 joiningNetwork = true
                 pairingMessage = "Joining device network..."
+                pairingText = AppText("Joining device network...")
                 scope.launch {
                     try {
                         pairingMessage = withContext(Dispatchers.IO) {
                             DirectedDelivery.pauseForNetworkChange()
                             WeaveloClient.joinPairingPayload(raw)
                         }
+                        pairingText = pairingResultText(pairingMessage, WeaveloClient.networkName.value)
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
                         throw cancelled
                     } catch (error: Exception) {
                         pairingMessage = "error:${error.message ?: "Could not join network"}"
+                        pairingText = appTextOf(error) ?: if (error.message == null) AppText("Could not join network") else null
                     } finally {
                         joiningNetwork = false
                     }
@@ -126,7 +137,7 @@ class MainActivity : ComponentActivity() {
                 val target = pendingSendTarget
                 pendingSendTarget = null
                 if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl, target)
-                else PublisherClient.status("Screen sharing was not started. Confirm Android screen capture to make this phone viewable.", false)
+                else PublisherClient.status("Screen sharing was not started. Confirm Android screen capture to make this phone viewable.", false, AppText("Screen sharing was not started. Confirm Android screen capture to make this phone viewable."))
             }
             fun requestProjection(audio: Boolean, control: Boolean = false) {
                 publishAudio = audio; publishControl = control
@@ -148,22 +159,22 @@ class MainActivity : ComponentActivity() {
             val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> requestProjection(granted,publishControl) }
             val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
                 if (granted) CameraPublisher.start(this)
-                else { cameraTarget = null; CameraPublisher.update(CameraSharingState(status = "Camera permission was not granted")) }
+                else { cameraTarget = null; CameraPublisher.update(CameraSharingState(status = "Camera permission was not granted", statusText = AppText("Camera permission was not granted"))) }
             }
             fun requestCamera() {
                 if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) CameraPublisher.start(this)
                 else cameraPermission.launch(Manifest.permission.CAMERA)
             }
             if (cameraTarget != null && camera.enabled) androidx.compose.material3.AlertDialog(
-                onDismissRequest = { cameraTarget = null }, title = { androidx.compose.material3.Text("Send camera") },
+                onDismissRequest = { cameraTarget = null }, title = { androidx.compose.material3.Text(tr("Send camera")) },
                 text = { androidx.compose.foundation.layout.Column {
                     camera.sources.forEach { source -> androidx.compose.material3.TextButton(onClick = {
                         val target = cameraTarget ?: return@TextButton
                         cameraTarget = null
                         scope.launch(Dispatchers.IO) { runCatching { CameraPublisher.send(target, source) }
-                            .onFailure { CameraPublisher.update(camera.copy(status = it.message ?: "Could not send camera")) } }
-                    }) { androidx.compose.material3.Text(source.name) } }
-                } }, confirmButton = {}, dismissButton = { androidx.compose.material3.TextButton(onClick = { cameraTarget = null }) { androidx.compose.material3.Text("Cancel") } })
+                            .onFailure { CameraPublisher.update(camera.copy(status = it.message ?: "Could not send camera", statusText = appTextOf(it) ?: if (it.message == null) AppText("Could not send camera") else null)) } }
+                    }) { androidx.compose.material3.Text(appText(cameraNameText(source.facing))) } }
+                } }, confirmButton = {}, dismissButton = { androidx.compose.material3.TextButton(onClick = { cameraTarget = null }) { androidx.compose.material3.Text(tr("Cancel")) } })
 
             LaunchedEffect(Unit) {
                 lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -182,7 +193,7 @@ class MainActivity : ComponentActivity() {
                                         WorkspaceClient.starting || WorkspaceClient.active ||
                                         sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING))
                                 }.onSuccess { DirectedDelivery.failed(null) }
-                                    .onFailure { DirectedDelivery.failed(it.message ?: "Could not receive screens") }.getOrNull()
+                                    .onFailure { DirectedDelivery.failed(it.message ?: "Could not receive screens", appTextOf(it) ?: if (it.message == null) AppText("Could not receive screens") else null) }.getOrNull()
                             }
                             if (incoming != null) {
                                 incomingSession = incoming
@@ -240,7 +251,13 @@ class MainActivity : ComponentActivity() {
                         nativeAvailable = WeaveloClient.nativeAvailable && !joiningNetwork,
                         networkName = networkName,
                         joiningNetwork = joiningNetwork,
-                        pairingMessage = listOfNotNull(WeaveloClient.nativeStartupError.takeIf { it.isNotBlank() }?.let { "error:Native startup failed ($it). Existing data is retained." }, pairingMessage, incomingError, publisherStatus.takeIf { it.isNotBlank() }, receiverState.message.takeIf { it.isNotBlank() }).distinct().joinToString("\n"),
+                        pairingMessage = listOfNotNull(
+                            WeaveloClient.nativeStartupError.takeIf { it.isNotBlank() }?.let { "error:" + trFormat("Native startup failed (%s). Existing data is retained.", it) },
+                            pairingMessage?.let { message -> (if (message.startsWith("error:")) "error:" else "") + (pairingText?.let { appText(it) } ?: trFormat("Network join result: %s", message.removePrefix("error:"))) },
+                            incomingNotice?.let { notice -> notice.text?.let { appText(it) } ?: trFormat("Details: %s", notice.message) },
+                            publisherNotice.message.takeIf { it.isNotBlank() }?.let { publisherNotice.text?.let { text -> appText(text) } ?: trFormat("Details: %s", it) },
+                            receiverState.message.takeIf { it.isNotBlank() }?.let { receiverState.messageText?.let { text -> appText(text) } ?: trFormat("Details: %s", it) }
+                        ).distinct().joinToString("\n"),
                         sessionError = sessionError,
                         sessionState = sessionState,
                         onCancelConnect = {
@@ -256,14 +273,14 @@ class MainActivity : ComponentActivity() {
                         onSendCamera = { target -> cameraTarget = target; if (!camera.enabled) requestCamera() },
                         onSendScreen = { deviceId ->
                             if (PublisherClient.active) scope.launch(Dispatchers.IO) {
-                                runCatching { PublisherClient.sendScreen(deviceId) }.onFailure { PublisherClient.status(it.message ?: "Could not send screen") }
+                                runCatching { PublisherClient.sendScreen(deviceId) }.onFailure { PublisherClient.status(it.message ?: "Could not send screen", text = appTextOf(it) ?: if (it.message == null) AppText("Could not send screen") else null) }
                             } else {
                                 pendingSendTarget = deviceId
                                 requestProjection(false)
                             }
                         },
                         onStopSending = { id -> scope.launch(Dispatchers.IO) {
-                            runCatching { PublisherClient.stopSending(id) }.onFailure { PublisherClient.status(it.message ?: "Could not stop sending") }
+                            runCatching { PublisherClient.stopSending(id) }.onFailure { PublisherClient.status(it.message ?: "Could not stop sending", text = appTextOf(it) ?: if (it.message == null) AppText("Could not stop sending") else null) }
                         } },
                         publishing = PublisherClient.active,
                         receivingFiles = receiverState.active || receiverState.starting,
@@ -300,10 +317,10 @@ class MainActivity : ComponentActivity() {
             }) { receivedFiles = false }
             if (receivedFileTargetPath != null) androidx.compose.material3.AlertDialog(
                 onDismissRequest = { receivedFileTargetPath = null },
-                title = { androidx.compose.material3.Text("Send to device") },
+                title = { androidx.compose.material3.Text(tr("Send to device")) },
                 text = { androidx.compose.foundation.layout.Column {
                     val targets = devices.filter { it.canSendFiles && it.canOpenWorkspace }
-                    if (targets.isEmpty()) androidx.compose.material3.Text("No devices available")
+                    if (targets.isEmpty()) androidx.compose.material3.Text(tr("No devices available"))
                     targets.forEach { device -> androidx.compose.material3.TextButton(onClick = {
                         workspaceFilePath = receivedFileTargetPath
                         receivedFileTargetPath = null
@@ -314,8 +331,9 @@ class MainActivity : ComponentActivity() {
                         workspaceEndpoint = device.endpoint
                     }) { androidx.compose.material3.Text(device.name) } }
                 } }, confirmButton = {}, dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { receivedFileTargetPath = null }) { androidx.compose.material3.Text("Cancel") }
+                    androidx.compose.material3.TextButton(onClick = { receivedFileTargetPath = null }) { androidx.compose.material3.Text(tr("Cancel")) }
                 })
+            }
             }
         }
     }

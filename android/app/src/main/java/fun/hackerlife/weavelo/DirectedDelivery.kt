@@ -12,7 +12,9 @@ internal fun incomingVideoReceiving(expected: List<String>, panes: List<Workspac
 object DirectedDelivery {
     private val mutableError = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     val error = mutableError.asStateFlow()
-    fun failed(reason: String?) { mutableError.value = reason }
+    private val mutableNotice = kotlinx.coroutines.flow.MutableStateFlow<PublisherNotice?>(null)
+    val notice = mutableNotice.asStateFlow()
+    fun failed(reason: String?, text: AppText? = null) { mutableError.value = reason; mutableNotice.value = reason?.let { PublisherNotice(it, text) } }
     private var foregroundOwner: Any? = null
     private var listening = false
     private var incoming: JSONObject? = null
@@ -38,7 +40,7 @@ object DirectedDelivery {
 
     /** Network changes are allowed while idle, without retaining an old endpoint. */
     @Synchronized fun pauseForNetworkChange() {
-        check(incoming == null) { "Stop the incoming screen before changing networks" }
+        appCheck(incoming == null, "Stop the incoming screen before changing networks")
         if (listening) PublisherClient.action(21)
         listening = false
     }
@@ -78,7 +80,7 @@ object DirectedDelivery {
         runCatching { PublisherClient.action(18, id) == "true" }.getOrDefault(false)
 
     @Synchronized fun claim(id: String): JSONObject {
-        check(alive(id)) { "Sending intent ended" }
+        appCheck(alive(id), "Sending intent ended")
         return JSONObject(incoming!!.getJSONObject("claim").toString())
     }
 

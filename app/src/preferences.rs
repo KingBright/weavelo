@@ -80,6 +80,8 @@ impl Default for SideServicePreferences {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiPreferences {
+    #[serde(default)]
+    pub language: Option<crate::i18n::Language>,
     #[serde(default = "default_true")]
     pub pause_when_inactive: bool,
     #[serde(default = "default_scale_mode")]
@@ -95,6 +97,7 @@ pub(crate) use protocol::appearance::{DeviceBadge, DeviceBadgePreset};
 impl Default for UiPreferences {
     fn default() -> Self {
         Self {
+            language: None,
             pause_when_inactive: true,
             scale_mode: default_scale_mode(),
             telemetry_hud_collapsed: default_false(),
@@ -400,6 +403,23 @@ mod tests {
             builder.permissions(fs::Permissions::from_mode(0o700));
         }
         builder.tempdir().unwrap()
+    }
+
+    #[test]
+    fn language_preference_roundtrips_without_replacing_other_settings() {
+        let fixture = private_profile_fixture();
+        let path = fixture.path().join("preferences.json");
+        let mut prefs = UserPreferences::default();
+        prefs.stream.fps = 120;
+        prefs.save_to_path(&path).unwrap();
+        for language in [crate::i18n::Language::Chinese, crate::i18n::Language::English] {
+            UserPreferences::update_at_path(&path, |prefs| prefs.ui.language = Some(language)).unwrap();
+            let (_, loaded) = UserPreferences::read_document(&path).unwrap().unwrap();
+            assert_eq!(loaded.ui.language, Some(language));
+            assert_eq!(loaded.stream.fps, 120);
+        }
+        let old_ui: UiPreferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(old_ui.language, None);
     }
 
     #[test]

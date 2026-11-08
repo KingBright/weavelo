@@ -28,8 +28,8 @@ impl NetworkQuality {
         else {Self::Good}
     }
     pub(crate) fn label(self)->&'static str {match self {
-        Self::Connecting=>"Connecting",Self::Disconnected=>"Not connected",Self::Unknown=>"Network unknown",
-        Self::Good=>"Network good",Self::Fair=>"Network fair",Self::Poor=>"Network poor",
+        Self::Connecting=>crate::i18n::tr("Connecting"),Self::Disconnected=>crate::i18n::tr("Not connected"),Self::Unknown=>crate::i18n::tr("Network unknown"),
+        Self::Good=>crate::i18n::tr("Network good"),Self::Fair=>crate::i18n::tr("Network fair"),Self::Poor=>crate::i18n::tr("Network poor"),
     }}
 }
 
@@ -98,8 +98,8 @@ impl UiHostStats {
         match quality {
             NetworkQuality::Good | NetworkQuality::Fair | NetworkQuality::Poor => {
                 let rtt = stats.rtt.map(|rtt| format!("{:.0} ms", rtt.latest_ms))
-                    .unwrap_or_else(|| "unavailable".into());
-                format!("{} · RTT {} · loss {:.1}%", quality.label(), rtt, stats.packet_loss_rate)
+                    .unwrap_or_else(|| crate::i18n::tr("unavailable").into());
+                crate::i18n::tr_format!("{} · RTT {} · loss {:.1}%", quality.label(), rtt, stats.packet_loss_rate)
             }
             _ => quality.label().into(),
         }
@@ -109,10 +109,10 @@ impl UiHostStats {
         self.rtt.map(|rtt| format!("{:.1} ms", rtt.median_ms)).unwrap_or_else(|| "—".into())
     }
     pub(crate) fn rtt_detail(&self) -> String {
-        self.rtt.map(|rtt| format!(
+        self.rtt.map(|rtt| crate::i18n::tr_format!(
             "Median of {} recent probes. Latest {:.1} ms; range {:.1}–{:.1} ms. Excludes measured host processing; includes transport and send scheduling. Expires after 10 s.",
             rtt.samples, rtt.latest_ms, rtt.min_ms, rtt.max_ms))
-            .unwrap_or_else(|| "No fresh round-trip measurement.".into())
+            .unwrap_or_else(|| crate::i18n::tr("No fresh round-trip measurement.").into())
     }
 
 }
@@ -166,28 +166,28 @@ impl CaptureReceiveDisplay {
     }
 
     pub(crate) fn submission_detail(&self) -> String {
-        self.explain("Latest completed host capture to UI scene submission sample (expires after 5 s), including transport, decode and UI waiting. GPU completion and physical display remain unmeasured.")
+        self.explain(crate::i18n::tr("Latest completed host capture to UI scene submission sample (expires after 5 s), including transport, decode and UI waiting. GPU completion and physical display remain unmeasured."))
     }
     pub(crate) fn detail(&self) -> String {
-        self.explain("Host capture to client receive estimate; excludes decoding and display.")
+        self.explain(crate::i18n::tr("Host capture to client receive estimate; excludes decoding and display."))
     }
     fn explain(&self,scope:&str) -> String {
         if self.latency_ms.is_some() {
             let uncertainty = self.uncertainty_ms.map_or_else(
-                || "Model clock uncertainty unavailable.".to_string(),
-                |uncertainty| format!(
-                    "Model clock uncertainty ± {uncertainty:.1} ms; not a guaranteed accuracy bound."
+                || crate::i18n::tr("Model clock uncertainty unavailable.").to_string(),
+                |uncertainty| crate::i18n::tr_format!(
+                    "Model clock uncertainty ± {uncertainty:.1} ms; not a guaranteed accuracy bound.", uncertainty=uncertainty
                 ),
             );
-            format!("{scope} {uncertainty}")
+            crate::i18n::tr_format!("{scope} {uncertainty}", scope=scope, uncertainty=uncertainty)
         } else {
             let reason = match self.clock_state {
-                None => "awaiting clock measurements",
-                Some(ClockSyncState::Acquiring) => "acquiring clock mapping",
-                Some(ClockSyncState::Stale) => "clock mapping expired",
-                Some(ClockSyncState::Synchronized) => "awaiting a valid capture/receive sample",
+                None => crate::i18n::tr("awaiting clock measurements"),
+                Some(ClockSyncState::Acquiring) => crate::i18n::tr("acquiring clock mapping"),
+                Some(ClockSyncState::Stale) => crate::i18n::tr("clock mapping expired"),
+                Some(ClockSyncState::Synchronized) => crate::i18n::tr("awaiting a valid capture/receive sample"),
             };
-            format!("{scope} Unavailable: {reason}.")
+            crate::i18n::tr_format!("{scope} Unavailable: {reason}.", scope=scope, reason=reason)
         }
     }
 }

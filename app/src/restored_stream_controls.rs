@@ -171,10 +171,10 @@ impl RestoredDashboard {
                 div()
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(format!("Files · {}", self.device_label(&context.device))),
+                    .child(crate::i18n::tr_format!("Files · {}", self.device_label(&context.device))),
             )
             .when(context.connecting.load(Ordering::Acquire), |panel| {
-                panel.child("Updating file connection…")
+                panel.child(crate::i18n::tr("Updating file connection…"))
             })
             .when_some(context.error.lock().unwrap().clone(), |panel, error| {
                 let device = context.device.clone();
@@ -183,11 +183,11 @@ impl RestoredDashboard {
                         div()
                             .text_size(px(11.))
                             .text_color(color_accent_rose())
-                            .child(error),
+                            .child(crate::i18n::message(&error)),
                     )
                     .child(
                         command_button("retry-device-files", ActionVariantKind::Neutral, cx)
-                            .child("Retry")
+                            .child(crate::i18n::tr("Retry"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.open_device_files(device.clone(), cx)
                             })),
@@ -197,7 +197,7 @@ impl RestoredDashboard {
             .child(
                 command_button("disconnect-device-files", ActionVariantKind::Neutral, cx)
                     .disabled(busy)
-                    .child("Disconnect files")
+                    .child(crate::i18n::tr("Disconnect files"))
                     .on_click(move |_, _, _| disconnect.disconnect()),
             )
     }
@@ -294,29 +294,29 @@ impl RestoredDashboard {
         );
         let current_target = self.android_navigation_target(snapshot).is_some();
         let disabled_reason = if !snapshot.active_capture_supports_input {
-            Some("This source is view-only.")
+            Some(crate::i18n::tr("This source is view-only."))
         } else if !current_target {
-            Some("Waiting for an unlocked, current painted source frame.")
+            Some(crate::i18n::tr("Waiting for an unlocked, current painted source frame."))
         } else {
             None
         };
         let back_tooltip = if back.is_none() {
-            "Back is unavailable for this source."
+            crate::i18n::tr("Back is unavailable for this source.")
         } else if let Some(reason) = disabled_reason {
             reason
         } else {
-            "Android Back"
+            crate::i18n::tr("Android Back")
         };
         let home_tooltip = if home.is_none()
             && matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_))
         {
-            "Home is unavailable for a managed app window."
+            crate::i18n::tr("Home is unavailable for a managed app window.")
         } else if home.is_none() {
-            "Home is unavailable for this source."
+            crate::i18n::tr("Home is unavailable for this source.")
         } else if let Some(reason) = disabled_reason {
             reason
         } else {
-            "Android Home"
+            crate::i18n::tr("Android Home")
         };
         let back_view = cx.weak_entity();
         let home_view = cx.weak_entity();
@@ -364,7 +364,7 @@ impl RestoredDashboard {
                     .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
                     .h(px(40.))
                     .px_0()
-                    .tooltip(tooltip("Fit the remote picture to the viewer").build())
+                    .tooltip(tooltip(crate::i18n::tr("Fit the remote picture to the viewer")).build())
                     .on_click(move |_, _, cx| {
                         let _ = fit_view.update(cx, |this, cx| {
                             this.reset_pointer_scroll();
@@ -396,7 +396,7 @@ impl RestoredDashboard {
                     .flex()
                     .justify_center()
                     .pt(px(8.))
-                    .tooltip(tooltip("Show controls").build())
+                    .tooltip(tooltip(crate::i18n::tr("Show controls")).build())
                     .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if should_reveal_toolbar(ToolbarRevealTrigger::MicroRailClick) {
@@ -434,8 +434,8 @@ impl RestoredDashboard {
             .as_deref()
             .map(|id| self.device_label(id))
             .unwrap_or_else(|| "Weavelo".into());
-        let source_label = source.map(capture_source_label).unwrap_or_else(|| "Waiting for source".into());
-        let context_title = format!("{device} · {source_label}");
+        let source_label = source.map(capture_source_label).unwrap_or_else(|| crate::i18n::tr("Waiting for source").into());
+        let context_title = crate::i18n::tr_format!("{} · {}", device, source_label);
         let button_size = if tiny { 20.0 } else { 28.0 };
         let mut row = div()
             .id(if fullscreen { "fullscreen_toolbar_pill" } else { "stream_header" })
@@ -484,13 +484,13 @@ impl RestoredDashboard {
         let source_binding = snapshot.source_binding.clone();
         let source_button = command_button("stream-primary-source", ActionVariantKind::Neutral, cx)
             .size(px(button_size)).p_0()
-            .tooltip(tooltip("Switch source or open a new view").build())
+            .tooltip(tooltip(crate::i18n::tr("Switch source or open a new view")).build())
             .child(icon(IconName::NewView).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
             .disabled(source_binding.is_none())
             .on_click(cx.listener(|this, _, _, cx| this.toggle_source_menu(cx)));
         let files_button = command_button("stream-primary-files", ActionVariantKind::Neutral, cx)
             .size(px(button_size)).p_0()
-            .tooltip(tooltip("Files").build())
+            .tooltip(tooltip(crate::i18n::tr("Files")).build())
             .child(icon(IconName::Files).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
             .disabled(self.stream_device.is_none())
             .on_click(cx.listener(|this, _, _, cx| this.open_stream_panel(StreamPanel::Files, cx)));
@@ -500,12 +500,12 @@ impl RestoredDashboard {
             cx,
         )
         .size(px(button_size)).p_0()
-        .tooltip(tooltip("Control, sound, display and session options").build())
+        .tooltip(tooltip(crate::i18n::tr("Control, sound, display and session options")).build())
         .child(icon(IconName::More).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
         .on_click(cx.listener(|this, _, _, cx| this.open_stream_panel(StreamPanel::More, cx)));
         let fullscreen_button = command_button("stream-primary-fullscreen", ActionVariantKind::Neutral, cx)
             .size(px(button_size)).p_0()
-            .tooltip(tooltip(if fullscreen { "Exit fullscreen · F11" } else { "Fullscreen · F11" }).build())
+            .tooltip(tooltip(crate::i18n::tr(if fullscreen { "Exit fullscreen · F11" } else { "Fullscreen · F11" })).build())
             .child(icon(IconName::Maximize(fullscreen)).size(px(if tiny { 12. } else { 14. })))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.reset_pointer_scroll();
@@ -524,13 +524,13 @@ impl RestoredDashboard {
             .clone()
             .unwrap_or_else(|| match cua_mode {
                 Some(crate::desktop::original_owner::ComputerUseMode::Observing) => {
-                    "AI Observing screen".into()
+                    crate::i18n::tr("AI Observing screen").into()
                 }
                 Some(crate::desktop::original_owner::ComputerUseMode::Controlling) => {
-                    "AI Controlling — Move mouse or press Esc to take over".into()
+                    crate::i18n::tr("AI Controlling — Move mouse or press Esc to take over").into()
                 }
                 Some(crate::desktop::original_owner::ComputerUseMode::PausedByHuman) => {
-                    "AI Paused — Human took over input".into()
+                    crate::i18n::tr("AI Paused — Human took over input").into()
                 }
                 None => String::new(),
             });
@@ -571,15 +571,15 @@ impl RestoredDashboard {
                         .border_color(badge_color)
                         .shadow_md()
                         .child(div().size(px(8.)).rounded_full().bg(badge_color))
-                        .child(div().text_size(px(11.)).child(cua_label))
+                        .child(div().text_size(px(11.)).child(crate::i18n::message(&cua_label)))
                         .child(
                             command_button("computer-use-dismiss-pill", ActionVariantKind::Neutral, cx)
                                 .h(px(20.))
                                 .px_2()
                                 .child(if mode == crate::desktop::original_owner::ComputerUseMode::PausedByHuman {
-                                    "Dismiss"
+                                    crate::i18n::tr("Dismiss")
                                 } else {
-                                    "Pause AI"
+                                    crate::i18n::tr("Pause AI")
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.owner.release_input();
@@ -615,11 +615,11 @@ impl RestoredDashboard {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let title = match self.stream_panel {
-            StreamPanel::Control => "Control",
-            StreamPanel::Files => "Files",
-            StreamPanel::Sound => "Sound",
-            StreamPanel::Display => "Display",
-            StreamPanel::More => "More",
+            StreamPanel::Control => crate::i18n::tr("Control"),
+            StreamPanel::Files => crate::i18n::tr("Files"),
+            StreamPanel::Sound => crate::i18n::tr("Sound"),
+            StreamPanel::Display => crate::i18n::tr("Display"),
+            StreamPanel::More => crate::i18n::tr("More"),
         };
         let body = match self.stream_panel {
             StreamPanel::Control => self.stream_input_panel(snapshot, cx),
@@ -627,7 +627,7 @@ impl RestoredDashboard {
                 .stream_device
                 .as_deref()
                 .map(|device| self.device_files_panel(&self.device_files(device), cx))
-                .unwrap_or_else(|| div().child("Choose a device")),
+                .unwrap_or_else(|| div().child(crate::i18n::tr("Choose a device"))),
             StreamPanel::Sound => self.stream_sound_panel(cx),
             StreamPanel::Display => div()
                 .flex()
@@ -645,8 +645,8 @@ impl RestoredDashboard {
                 ))
                 .child(
                     command_button("fit-stream-window", ActionVariantKind::Neutral, cx)
-                        .child("Fit window")
-                        .tooltip(tooltip("Resize this window to fit the source without leaving the display").build())
+                        .child(crate::i18n::tr("Fit window"))
+                        .tooltip(tooltip(crate::i18n::tr("Resize this window to fit the source without leaving the display")).build())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.window_fit.request_fit();
                             cx.notify();
@@ -654,7 +654,7 @@ impl RestoredDashboard {
                 )
                 .child(
                     command_button("island_popout_pip", ActionVariantKind::Neutral, cx)
-                        .child("Open picture in picture")
+                        .child(crate::i18n::tr("Open picture in picture"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_popout_pip_window(cx))),
                 )
                 .child(drawer_network_telemetry_tab(
@@ -685,9 +685,9 @@ impl RestoredDashboard {
             (StreamPanel::More, "More", IconName::More),
         ] {
             let hint = if panel == StreamPanel::Control {
-                snapshot.input_status.as_str()
+                crate::i18n::message(&snapshot.input_status)
             } else {
-                label
+                crate::i18n::tr(label).to_owned()
             };
             tabs = tabs.child(
                 command_button(
@@ -763,14 +763,14 @@ impl RestoredDashboard {
                 .disabled(!snapshot.active_capture_supports_input)
                 .child(input_control_caption(self.input_locked, snapshot.active_capture_supports_input, snapshot.input_eligible, false))
                 .on_click(cx.listener(|this, _, _, cx| { this.set_input_locked(!this.input_locked); cx.notify(); })))
-            .child(div().text_size(px(11.)).child(snapshot.input_status.clone()))
+                .child(div().text_size(px(11.)).child(crate::i18n::message(&snapshot.input_status)))
             .child(command_button("island_keyboard_mode", ActionVariantKind::Neutral, cx)
-                .child(if self.text_mode { "Text · local input method" } else { "Keys · physical keyboard" })
+                .child(crate::i18n::tr(if self.text_mode { "Text · local input method" } else { "Keys · physical keyboard" }))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.owner.release_input(); this.remote_text = None; this.text_mode = !this.text_mode; cx.notify();
                 })))
             .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary)
-                .child("Text uses your local input method. Keys forwards physical keys. Ctrl+Alt+Esc releases control."))
+                .child(crate::i18n::tr("Text uses your local input method. Keys forwards physical keys. Ctrl+Alt+Esc releases control.")))
     }
 
     fn stream_sound_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -779,7 +779,7 @@ impl RestoredDashboard {
             .flex()
             .flex_col()
             .gap_3()
-            .child(div().child(format!("Playback · {volume}%")))
+            .child(div().child(crate::i18n::tr_format!("Playback · {volume}%", volume=volume)))
             .child(
                 div()
                     .flex()
@@ -803,7 +803,7 @@ impl RestoredDashboard {
                     )
                     .child(
                         command_button("remote_audio_mute", ActionVariantKind::Neutral, cx)
-                            .child(if muted { "Unmute" } else { "Mute" })
+                            .child(crate::i18n::tr(if muted { "Unmute" } else { "Mute" }))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.owner.set_audio(volume, !muted);
                                 cx.notify();
@@ -811,8 +811,8 @@ impl RestoredDashboard {
                     ),
             )
             .child(security_toggle_row(
-                "Microphone to this connection",
-                "Shared by this device connection",
+                crate::i18n::tr("Microphone to this connection"),
+                crate::i18n::tr("Shared by this device connection"),
                 self.owner.talkback_enabled(),
                 self.owner.supports_talkback(),
                 {
@@ -833,8 +833,8 @@ impl RestoredDashboard {
             .flex_col()
             .gap_3()
             .child(security_toggle_row(
-                "Clipboard",
-                "Shared by this device connection",
+                crate::i18n::tr("Clipboard"),
+                crate::i18n::tr("Shared by this device connection"),
                 self.owner.clipboard_sync_enabled(),
                 self.owner.supports_clipboard_sync(),
                 {
@@ -847,8 +847,8 @@ impl RestoredDashboard {
                 cx,
             ))
             .child(security_toggle_row(
-                "Background AI Computer Use",
-                "Allow authorized AI agents to control this window while unfocused",
+                crate::i18n::tr("Background AI Computer Use"),
+                crate::i18n::tr("Allow authorized AI agents to control this window while unfocused"),
                 snapshot.computer_use_status.background_allowed,
                 snapshot.active_capture_supports_input,
                 {
@@ -863,7 +863,7 @@ impl RestoredDashboard {
             .child(
                 command_button("replace-current-source", ActionVariantKind::Neutral, cx)
                     .disabled(binding.is_none())
-                    .child("Replace current source…")
+                    .child(crate::i18n::tr("Replace current source…"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.drawer_open = false;
                         this.begin_remote_source_replacement(binding.clone(), cx);
@@ -889,11 +889,11 @@ impl RestoredDashboard {
                     },
                 ),
             )
-            .child(div().text_size(px(11.)).child(self.status.clone()))
+            .child(div().text_size(px(11.)).child(crate::i18n::message(&self.status)))
             .child(
                 command_button("island_disconnect", ActionVariantKind::Danger, cx)
                     .debug_selector(||"end-current-stream".into())
-                    .child("End this stream")
+                    .child(crate::i18n::tr("End this stream"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.end_stream_window(cx)
                     })),
@@ -902,7 +902,7 @@ impl RestoredDashboard {
         if let Some(device) = self.stream_device.clone() {
             body = body.child(
                 command_button("send-back-to-device", ActionVariantKind::Neutral, cx)
-                    .child("Send a local screen to this device…")
+                    .child(crate::i18n::tr("Send a local screen to this device…"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.begin_delivery_selection(device.clone(), cx)
                     })),

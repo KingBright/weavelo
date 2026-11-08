@@ -68,10 +68,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     val activePane = state.panes.firstOrNull { it.id == state.selected } ?: state.panes.firstOrNull()
-    LaunchedEffect(activePane?.id, activePane?.appearance, activePane?.source?.icon, remoteDevice?.name) {
+    val defaultDeviceName = tr("Device")
+    LaunchedEffect(activePane?.id, activePane?.appearance, activePane?.source?.icon, remoteDevice?.name, defaultDeviceName) {
         (context as? android.app.Activity)?.let { activity ->
             if (activePane == null) `fun`.hackerlife.weavelo.DeviceArtwork.restore(activity)
-            else `fun`.hackerlife.weavelo.DeviceArtwork.task(activity, activePane, remoteDevice?.name ?: "Device")
+            else `fun`.hackerlife.weavelo.DeviceArtwork.task(activity, activePane, remoteDevice?.name ?: defaultDeviceName)
         }
     }
     DisposableEffect(context) {
@@ -88,6 +89,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         if (state.sessionKey == sessionKey && state.incomingEnded && !state.connected) onClose()
     }
     var localError by remember { mutableStateOf<String?>(null) }
+    var localErrorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     var receivedFiles by remember { mutableStateOf(false) }
     var backgroundSettings by remember { mutableStateOf(false) }
     var shareSelection by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
@@ -123,23 +125,23 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
             LaunchedEffect(Unit) { sourcePicker = false }
         } else SourcePicker(state.sources, onClose = { sourcePicker = false }) { source ->
-            localError = null
+            localError = null; localErrorText = null
             WorkspaceClient.add(source, sessionKey, pickerGeneration)
             sourcePicker = false
         }
     }
-    if (backgroundSettings) AlertDialog(onDismissRequest = { backgroundSettings = false }, title = { Text("Background connection") },
+    if (backgroundSettings) AlertDialog(onDismissRequest = { backgroundSettings = false }, title = { Text(tr("Background connection")) },
         text = { Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(keepService, { keepService = it }); Text("Keep this connection in background until Disconnect")
+                Checkbox(keepService, { keepService = it }); Text(tr("Keep this connection in background until Disconnect"))
             }
-            Text("This is an explicit foreground service, not a battery or system-stop exemption. The idle timeout below applies when this is off.")
-            OutlinedTextField(keepAlive, { keepAlive = it }, label = { Text("Idle seconds (0 = always keep)") },
+            Text(tr("This is an explicit foreground service, not a battery or system-stop exemption. The idle timeout below applies when this is off."))
+            OutlinedTextField(keepAlive, { keepAlive = it }, label = { Text(tr("Idle seconds (0 = always keep)")) },
                 isError = keepAlive.toIntOrNull()?.let { it !in 0..86400 } ?: true)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(adaptive, { adaptive = it }); Text("Adjust for battery and mobile data")
+                Checkbox(adaptive, { adaptive = it }); Text(tr("Adjust for battery and mobile data"))
             }
-            Text("Media pauses immediately. Idle connections sleep sooner on battery saver (30s), low battery (60s), or metered data (120s). File transfers finish first. Reopen to reconnect.")
+            Text(tr("Media pauses immediately. Idle connections sleep sooner on battery saver (30s), low battery (60s), or metered data (120s). File transfers finish first. Reopen to reconnect."))
         } }, confirmButton = { TextButton(onClick = {
             val seconds = keepAlive.toIntOrNull()
             if (seconds != null && seconds in 0..86400) {
@@ -148,7 +150,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 preferences.edit().putBoolean("adaptive_background", adaptive).apply()
                 backgroundSettings = false
             }
-        }) { Text("Save") } })
+        }) { Text(tr("Save")) } })
     DisposableEffect(endpoint, deviceId, sessionKey) {
         SessionConnectionService.openWorkspace(context, incoming ?: WorkspaceSessionRequest(endpoint, deviceId, sessionKey, openMainDisplay = openMainDisplay))
         val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }
@@ -167,7 +169,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 val file = File(directory, name)
                 checkNotNull(context.contentResolver.openInputStream(uri)).use { input -> file.outputStream().use { output -> input.copyTo(output, 64 * 1024) } }
                 if (publishSelection) WorkspaceClient.publishSharedFile(file, selectedSessionKey) else WorkspaceClient.sendFile(file, selectedSessionKey)
-            }.onFailure { withContext(Dispatchers.Main) { localError = it.message } }
+            }.onFailure { withContext(Dispatchers.Main) { localError = it.message; localErrorText = `fun`.hackerlife.weavelo.appTextOf(it) } }
         }
     }
     LaunchedEffect(sessionKey, foreground, state.connected, state.incomingEnded, remoteDevice?.endpoint, remoteDevice?.canOpenWorkspace) {
@@ -216,17 +218,17 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                             canRemoteBack = ZeroOcclusionHudPolicy.supportsRemoteBack(
                                                 state.androidHost, pane.source.isCamera,
                                                 pane.source.source.toString(), pane.source.isWindow),
-                                            onMore = { hudVisible = true; hudInteraction++; actionsOpen = true }, onError = { localError = it; hudVisible = true; hudInteraction++ })
+                                            onMore = { hudVisible = true; hudInteraction++; actionsOpen = true }, onError = { message, text -> localError = message; localErrorText = text; hudVisible = true; hudInteraction++ })
                                         if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
                                             .safeDrawingPadding().padding(top = 56.dp)
                                             .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
-                                                MobileAction(MobileSymbol.CameraSwitch, "Switch camera", state.connected) {
+                                                MobileAction(MobileSymbol.CameraSwitch, tr("Switch camera"), state.connected) {
                                                     WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
                                                 }
                                             }
-                                            MobileAction(MobileSymbol.Close, "Close ${pane.source.title}") { WorkspaceClient.remove(pane.id) }
+                                            MobileAction(MobileSymbol.Close, trFormat("Close %s", pane.source.title)) { WorkspaceClient.remove(pane.id) }
                                         }
                                     }
                                 }
@@ -239,22 +241,22 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 Column(horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
                     Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
-                    Text(if (state.incomingEnded) "Sharing ended" else "Choose a screen", color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
-                    Text(if (state.incomingEnded) "You can still exchange files."
-                        else if (state.sources.isEmpty()) "This device has not shared a screen yet. You can still exchange files."
-                        else "Open a display or application window. File transfers stay independent.",
+                    Text(if (state.incomingEnded) tr("Sharing ended") else tr("Choose a screen"), color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
+                    Text(if (state.incomingEnded) tr("You can still exchange files.")
+                        else if (state.sources.isEmpty()) tr("This device has not shared a screen yet. You can still exchange files.")
+                        else tr("Open a display or application window. File transfers stay independent."),
                         color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     if (!state.incomingEnded) Button(onClick = {
                         WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                         pickerGeneration = state.connectionGeneration; sourcePicker = true
                     }, enabled = state.connected) {
-                        Text("Browse screens and windows")
+                        Text(tr("Browse screens and windows"))
                     }
                 }
             }
             if (foreground && state.connected) visible.mapNotNull { it.audioOwner }.distinct().forEach { owner ->
-                key(owner) { WorkspaceAudio(owner, volumes[owner] ?: 1f, onError = { localError = it }) }
+                key(owner) { WorkspaceAudio(owner, volumes[owner] ?: 1f, onError = { message, text -> localError = message; localErrorText = text }) }
             }
             }
             if ((hudVisible || state.panes.isEmpty()) && !typing) Column(
@@ -264,44 +266,45 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         awaitPointerEventScope { while (true) if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) hudInteraction++ }
                     }) {
             if (!typing) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                MobileAction(MobileSymbol.Back, "Hide controls", onClick = { hudVisible = false })
+                MobileAction(MobileSymbol.Back, tr("Hide controls"), onClick = { hudVisible = false })
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(remoteDevice?.name ?: "Remote device",
+                    Text(remoteDevice?.name ?: tr("Remote device"),
                         color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                         maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                    Text(if (state.incomingEnded) "Sharing ended" else if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
+                    Text(if (state.incomingEnded) tr("Sharing ended") else if (state.connected) tr("Connected") else tr("Connecting…"), color = ColorTextSecondary,
                         style = MaterialTheme.typography.labelSmall)
                 }
-                MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected && !state.incomingEnded) {
+                MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                     pickerGeneration = state.connectionGeneration; sourcePicker = true
                 }
-                MobileAction(MobileSymbol.Refresh, "Refresh screens and windows", state.connected && !state.incomingEnded) {
+                MobileAction(MobileSymbol.Refresh, tr("Refresh screens and windows"), state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                 }
                 Box {
-                    MobileAction(MobileSymbol.More, "Connection actions") { actionsOpen = true }
+                    MobileAction(MobileSymbol.More, tr("Connection actions")) { actionsOpen = true }
                     DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
-                TextButton(onClick = { actionsOpen = false; disconnect() }) { Text("Disconnect") }
-                if (!state.connected && !state.incomingEnded) TextButton(onClick = { actionsOpen = false;  WorkspaceClient.reconnect() }) { Text("Reconnect") }
-                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.layout(!state.grid) }) { Text(if (state.grid) "Use tabs" else "Show together") }
-                TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected && state.files) { Text("Send file") }
-                TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected) { Text("Share file with network") }
-                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.clearSharedFiles() }, enabled = state.connected) { Text("Clear my shared list") }
-                TextButton(onClick = { actionsOpen = false;  sharedFilesOpen = true; WorkspaceClient.listSharedFiles() }, enabled = state.connected && state.files && !state.sharedBusy) { Text("Retrieve shared files") }
-                TextButton(onClick = { actionsOpen = false;  receivedFiles = true }) { Text("Received files") }
-                TextButton(onClick = { actionsOpen = false;  backgroundSettings = true }) { Text("Background") }
-                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.enableClipboard(!state.clipboard) }, enabled = state.connected && state.clipboardAvailable) { Text(if (state.clipboard) "Clipboard ✓" else "Clipboard") }
+                LanguageSelector()
+                TextButton(onClick = { actionsOpen = false; disconnect() }) { Text(tr("Disconnect")) }
+                if (!state.connected && !state.incomingEnded) TextButton(onClick = { actionsOpen = false;  WorkspaceClient.reconnect() }) { Text(tr("Reconnect")) }
+                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.layout(!state.grid) }) { Text(if (state.grid) tr("Use tabs") else tr("Show together")) }
+                TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected && state.files) { Text(tr("Send file")) }
+                TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected) { Text(tr("Share file with network")) }
+                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.clearSharedFiles() }, enabled = state.connected) { Text(tr("Clear my shared list")) }
+                TextButton(onClick = { actionsOpen = false;  sharedFilesOpen = true; WorkspaceClient.listSharedFiles() }, enabled = state.connected && state.files && !state.sharedBusy) { Text(tr("Retrieve shared files")) }
+                TextButton(onClick = { actionsOpen = false;  receivedFiles = true }) { Text(tr("Received files")) }
+                TextButton(onClick = { actionsOpen = false;  backgroundSettings = true }) { Text(tr("Background")) }
+                TextButton(onClick = { actionsOpen = false;  WorkspaceClient.enableClipboard(!state.clipboard) }, enabled = state.connected && state.clipboardAvailable) { Text(if (state.clipboard) tr("Clipboard ✓") else tr("Clipboard")) }
                 TextButton(onClick = { actionsOpen = false;
                     // Android only allows reading the clipboard while this app has focus.
                     val clip = context.getSystemService(android.content.ClipboardManager::class.java).primaryClip
                     if (clip != null) scope.launch(Dispatchers.IO) {
                         runCatching {
                             val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
-                            require(uris.size <= 16) { "Send at most 16 clipboard files at a time" }
+                            if (uris.size > 16) throw `fun`.hackerlife.weavelo.AppTextArgumentException(`fun`.hackerlife.weavelo.AppText("Send at most 16 clipboard files at a time"))
                             if (uris.isEmpty()) {
-                                val text = clip.getItemAt(0).text?.toString() ?: error("Clipboard has no transferable content")
-                                require(text.toByteArray().size <= 1024 * 1024) { "Clipboard text is too large" }
+                                val text = clip.getItemAt(0).text?.toString() ?: throw `fun`.hackerlife.weavelo.AppTextException(`fun`.hackerlife.weavelo.AppText("Clipboard has no transferable content"))
+                                if (text.toByteArray().size > 1024 * 1024) throw `fun`.hackerlife.weavelo.AppTextArgumentException(`fun`.hackerlife.weavelo.AppText("Clipboard text is too large"))
                                 WorkspaceClient.sendClipboard(JSONObject().put("text", text))
                             } else {
                                 val directory = File(context.cacheDir, "outgoing/${java.util.UUID.randomUUID()}").apply { mkdirs() }
@@ -318,21 +321,21 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                 if (uris.size == 1 && context.contentResolver.getType(uris[0])?.startsWith("image/") == true) {
                                     val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                                     android.graphics.BitmapFactory.decodeFile(files[0].absolutePath, bounds)
-                                    require(bounds.outWidth > 0 && bounds.outHeight > 0 && bounds.outWidth.toLong() * bounds.outHeight <= 16_777_216) { "Clipboard image is too large or unsupported" }
+                                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth.toLong() * bounds.outHeight > 16_777_216) throw `fun`.hackerlife.weavelo.AppTextArgumentException(`fun`.hackerlife.weavelo.AppText("Clipboard image is too large or unsupported"))
                                     val bitmap = checkNotNull(android.graphics.BitmapFactory.decodeFile(files[0].absolutePath))
                                     val png = File(directory, "clipboard.png")
                                     try { png.outputStream().use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) } } finally { bitmap.recycle() }
                                     WorkspaceClient.sendClipboard(JSONObject().put("image", png.absolutePath).put("mime", "image/png"))
                                 } else WorkspaceClient.sendClipboard(JSONObject().put("files", org.json.JSONArray(files.map { it.absolutePath })))
                             }
-                        }.onFailure { withContext(Dispatchers.Main) { localError = it.message } }
+                        }.onFailure { withContext(Dispatchers.Main) { localError = it.message; localErrorText = `fun`.hackerlife.weavelo.appTextOf(it) } }
                     }
-                }, enabled = state.connected && state.clipboard) { Text("Send clipboard") }
+                }, enabled = state.connected && state.clipboard) { Text(tr("Send clipboard")) }
                     }
                 }
             }
             (localError ?: state.status.takeUnless { it == "Connected" })?.takeIf { it.isNotBlank() }?.let {
-                Text(it, color = ColorTextSecondary, maxLines = 2)
+                Text(if (localError != null && localErrorText != null) appText(localErrorText!!) else if (localError == null && state.statusText != null) appText(state.statusText!!) else trFormat("Details: %s", it), color = ColorTextSecondary, maxLines = 2)
             }
             if (!typing && !state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title) } }
@@ -340,7 +343,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }
             if (!hudVisible && state.panes.isNotEmpty() && !typing && state.panes.any {
                 !ZeroOcclusionHudPolicy.isMobileTarget(state.androidHost, it.source.isCamera)
-            }) MobileAction(MobileSymbol.More, "Show stream controls",
+            }) MobileAction(MobileSymbol.More, tr("Show stream controls"),
                 modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp).size(36.dp)
                     .background(ColorSurfaceCard.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))) {
                 hudVisible = true; hudInteraction++
@@ -349,32 +352,32 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         selectedSettings?.let { pane ->
             var fps by remember(pane.id) { mutableStateOf(pane.fps.toString()) }
             var kbps by remember(pane.id) { mutableStateOf(pane.kbps.toString()) }
-            AlertDialog(onDismissRequest = { selectedSettings = null }, title = { Text("Stream settings") },
+            AlertDialog(onDismissRequest = { selectedSettings = null }, title = { Text(tr("Stream settings")) },
                 text = { Column {
-                    OutlinedTextField(fps, { fps = it }, label = { Text("Frames per second") })
-                    OutlinedTextField(kbps, { kbps = it }, label = { Text("Bitrate (kbps)") })
+                    OutlinedTextField(fps, { fps = it }, label = { Text(tr("Frames per second")) })
+                    OutlinedTextField(kbps, { kbps = it }, label = { Text(tr("Bitrate (kbps)")) })
                     pane.audioOwner?.let { owner ->
-                        Text("Volume")
+                        Text(tr("Volume"))
                         Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it })
                     }
                 } },
                 confirmButton = { TextButton(onClick = {
                     val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
                     if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, state.sessionKey, state.connectionGeneration, fps = f, kbps = k); selectedSettings = null }
-                }) { Text("Apply") } })
+                }) { Text(tr("Apply")) } })
         }
-        if (sharedFilesOpen) AlertDialog(onDismissRequest = { sharedFilesOpen = false }, title = { Text("Remote shared files") },
+        if (sharedFilesOpen) AlertDialog(onDismissRequest = { sharedFilesOpen = false }, title = { Text(tr("Remote shared files")) },
             text = { Column {
                 Text(state.status)
-                Text("Only explicitly shared files are listed. No remote filesystem paths are accepted.")
+                Text(tr("Only explicitly shared files are listed. No remote filesystem paths are accepted."))
                 state.remoteFiles.forEach { file ->
-                    TextButton(onClick = { WorkspaceClient.fetchSharedFile(file.id, sessionKey) }, enabled = state.connected && !state.sharedBusy) { Text("Get ${file.name} (${file.sizeBytes} bytes)") }
+                    TextButton(onClick = { WorkspaceClient.fetchSharedFile(file.id, sessionKey) }, enabled = state.connected && !state.sharedBusy) { Text(trFormat("Get %s (%d bytes)", file.name, file.sizeBytes)) }
                 }
                 Row {
-                    TextButton(onClick = { WorkspaceClient.listSharedFiles() }, enabled = state.connected && !state.sharedBusy) { Text("Refresh") }
-                    state.sharedNext?.let { next -> TextButton(onClick = { WorkspaceClient.listSharedFiles(next) }, enabled = state.connected && !state.sharedBusy) { Text("Next page") } }
+                    TextButton(onClick = { WorkspaceClient.listSharedFiles() }, enabled = state.connected && !state.sharedBusy) { Text(tr("Refresh")) }
+                    state.sharedNext?.let { next -> TextButton(onClick = { WorkspaceClient.listSharedFiles(next) }, enabled = state.connected && !state.sharedBusy) { Text(tr("Next page")) } }
                 }
-            } }, confirmButton = { TextButton(onClick = { sharedFilesOpen = false }) { Text("Close") } })
+            } }, confirmButton = { TextButton(onClick = { sharedFilesOpen = false }) { Text(tr("Close")) } })
         if (receivedFiles) ReceivedFilesDialog(onSendToDevice = if (state.connected && state.files) { file ->
             receivedFiles = false
             WorkspaceClient.sendFile(file, sessionKey)
@@ -383,7 +386,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
 }
 
 @Composable
-private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit) {
+private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit) {
     val player = remember(owner) { AudioOpusPlayer() }
     SideEffect { player.setVolume(volume) }
     DisposableEffect(player) { onDispose { player.stop() } }
@@ -394,7 +397,7 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
                     repeat(8) { WorkspaceClient.nativeMedia(owner + 2, true)?.let { player.feed(it) } }
                     player.drain(); delay(5)
                 }
-            } catch (e: Exception) { if (e !is CancellationException) withContext(Dispatchers.Main) { onError(e.message ?: "Audio failed") } }
+            } catch (e: Exception) { if (e !is CancellationException) withContext(Dispatchers.Main) { onError(e.message ?: "Audio failed", if (e.message == null) `fun`.hackerlife.weavelo.AppText("Audio failed") else null) } }
             finally { player.stop() }
         }
     }
@@ -403,19 +406,19 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
 @Composable
 private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long,
     mobileTarget: Boolean, isPhoneScreen: Boolean, canRemoteBack: Boolean,
-    onMore: () -> Unit, onError: (String) -> Unit) {
+    onMore: () -> Unit, onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit) {
     pane.videoError?.let { reason ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(reason, color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
+                Text(pane.videoErrorText?.let { appText(it) } ?: trFormat("Details: %s", reason), color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                TextButton(onClick = { WorkspaceClient.retry(pane.id, sessionKey, generation) }) { Text("Retry this source") }
+                TextButton(onClick = { WorkspaceClient.retry(pane.id, sessionKey, generation) }) { Text(tr("Retry this source")) }
             }
         }
         return
     }
     if (pane.source.isCamera && !pane.accepted) {
-        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { Text("Updating camera…",color=ColorTextSecondary) }
+        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { Text(tr("Updating camera…"),color=ColorTextSecondary) }
         return
     }
     var dimensions by remember(pane.id, sessionKey, generation) {
@@ -463,7 +466,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         if (heldModifiers.isNotEmpty() && pane.inputError != null) {
             virtualKeys.forgetAll(); heldModifiers = emptySet(); modifierBinding = null
             keyboardVisible = false; keyboardBinding = null
-            onError("Keyboard control changed. Reopen the keyboard and select shortcuts again.")
+            onError("Keyboard control changed. Reopen the keyboard and select shortcuts again.", `fun`.hackerlife.weavelo.AppText("Keyboard control changed. Reopen the keyboard and select shortcuts again."))
         } else if (imeVisible && heldModifiers.isNotEmpty() && pane.input && token != 0L && heldOwner != null) {
             while (isActive) {
                 delay(100)
@@ -533,7 +536,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             mobileControls = false
         }
         RemoteViewport(
-            dimensions = dimensions, transformState = transform,
+            dimensions = dimensions, transformState = transform, description = tr("Remote screen"),
             rotation = pane.source.rotation,
             enabled = pane.input && token != 0L,
             touchMode = touchMode,
@@ -608,13 +611,13 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                         }
                     }
                 }
-                if (imeVisible && pane.input) MobileAction(MobileSymbol.Keyboard, "Hide keyboard",
+                if (imeVisible && pane.input) MobileAction(MobileSymbol.Keyboard, tr("Hide keyboard"),
                     modifier = Modifier.align(Alignment.TopEnd).size(36.dp)
                         .background(ColorSurfaceCard.copy(alpha = .85f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
                     keyboardVisible = false
                 }
                 (videoStatus ?: pane.inputError)?.let { message ->
-                    Text(message, color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
+                    Text(if (videoStatus != null) tr(message) else pane.inputErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
                             .background(ColorSurfaceCard.copy(alpha = .94f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                             .padding(horizontal = 12.dp, vertical = 8.dp))
@@ -622,7 +625,6 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             },
             factory = { context ->
                 SurfaceView(context).apply {
-                    contentDescription = "Remote screen"
                     fun clearTouches() { pointers.clear(); touching = false }
                     holder.addCallback(object : SurfaceHolder.Callback {
                         private var active = AtomicBoolean(false)
@@ -657,7 +659,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                         if (running.get() && surfaceToken == token && nativeViewport.get()?.presentation?.geometry == null) dimensions=decoded
                                     } }
                                     codec=player
-                                    val size=if (target != null) checkNotNull(MediaCodecPlayer.screenSize(pane.source.width,pane.source.height)) { "No supported native screen decoder size" }
+                                    val size=if (target != null) MediaCodecPlayer.screenSize(pane.source.width,pane.source.height) ?: `fun`.hackerlife.weavelo.appError("No supported native screen decoder size")
                                         else VideoDimensions(pane.width,pane.height)
                                     player.start(size.width,size.height)
                                     WorkspaceClient.keyframe(pane.id)
@@ -718,7 +720,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                                         if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
                                         Thread.sleep(4)
                                     }
-                                } catch (e: Exception) { if (running.get()) post { currentError(e.message ?: "Video decoder failed") } }
+                                } catch (e: Exception) { if (running.get()) post { currentError(e.message ?: "Video decoder failed", `fun`.hackerlife.weavelo.appTextOf(e) ?: if (e.message == null) `fun`.hackerlife.weavelo.AppText("Video decoder failed") else null) } }
                                 finally {
                                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "end")
                                     codec?.stop()
@@ -761,7 +763,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                         handleFraction = ZeroOcclusionHudPolicy.dragEdgePillFraction(handleFraction, drag.y, viewportHeightPx)
                     }
                 }
-                .clickable(onClickLabel = "Show remote controls") {
+                .clickable(onClickLabel = tr("Show remote controls")) {
                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                     pointers.clear(); touching = false; mobileControls = !mobileControls
                 }
@@ -770,24 +772,24 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             if (mobileControls && mobileTarget) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
                 .background(ColorSurfaceCard, RoundedCornerShape(18.dp)).padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                MobileAction(MobileSymbol.Back, "Remote Back", enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
+                MobileAction(MobileSymbol.Back, tr("Remote Back"), enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
                     val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.BACK) }
                 })
-                MobileAction(MobileSymbol.Home, "Remote Home", enabled = pane.input && token != 0L && pane.accepted && isPhoneScreen, onClick = {
+                MobileAction(MobileSymbol.Home, tr("Remote Home"), enabled = pane.input && token != 0L && pane.accepted && isPhoneScreen, onClick = {
                     val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.HOME) }
                 })
-                MobileAction(MobileSymbol.Keyboard, "Keyboard", enabled = pane.input && token != 0L, onClick = {
+                MobileAction(MobileSymbol.Keyboard, tr("Keyboard"), enabled = pane.input && token != 0L, onClick = {
                     if (keyboardVisible) keyboardVisible = false else {
                         keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                         keyboardVisible = keyboardBinding != null
                     }
                 })
                 Box {
-                    MobileAction(MobileSymbol.More, "More remote actions", onClick = { mobileMore = true })
+                    MobileAction(MobileSymbol.More, tr("More remote actions"), onClick = { mobileMore = true })
                     DropdownMenu(expanded = mobileMore, onDismissRequest = { mobileMore = false }) {
-                        DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.VIEW) "Control" else "Adjust view") }, onClick = {
+                        DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.VIEW) tr("Control") else tr("Adjust view")) }, onClick = {
                             mobileMore = false
                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                             pointers.clear(); touching = false
@@ -796,8 +798,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             } else TouchMode.VIEW
                         })
                         DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.TRACKPAD) {
-                            if (pane.maxTouchPoints > 0) "Use multi-touch" else "Use direct touch"
-                        } else "Use trackpad") }, onClick = {
+                            if (pane.maxTouchPoints > 0) tr("Use multi-touch") else tr("Use direct touch")
+                        } else tr("Use trackpad")) }, onClick = {
                             mobileMore = false
                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                             pointers.clear(); touching = false
@@ -806,16 +808,16 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             } else TouchMode.TRACKPAD
                         })
                         if (!pane.input) DropdownMenuItem(
-                            text = { Text("Remote control is unavailable; you can adjust the view") },
+                            text = { Text(tr("Remote control is unavailable; you can adjust the view")) },
                             enabled = false, onClick = {})
                         if (!canRemoteBack) DropdownMenuItem(
-                            text = { Text("Back is available for an Android screen or app window") },
+                            text = { Text(tr("Back is available for an Android screen or app window")) },
                             enabled = false, onClick = {})
                         if (!isPhoneScreen) DropdownMenuItem(
-                            text = { Text("Home is available for the shared Android screen") },
+                            text = { Text(tr("Home is available for the shared Android screen")) },
                             enabled = false, onClick = {})
-                        DropdownMenuItem(text = { Text("Reset zoom") }, onClick = { mobileMore = false; transform.value = transform.value.reset() })
-                        DropdownMenuItem(text = { Text("Connection actions") }, onClick = { mobileMore = false; onMore() })
+                        DropdownMenuItem(text = { Text(tr("Reset zoom")) }, onClick = { mobileMore = false; transform.value = transform.value.reset() })
+                        DropdownMenuItem(text = { Text(tr("Connection actions")) }, onClick = { mobileMore = false; onMore() })
                     }
                 }
             }
@@ -883,22 +885,22 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
     AlertDialog(onDismissRequest = onClose,
         modifier = Modifier.imePadding().navigationBarsPadding().widthIn(max = 560.dp).fillMaxWidth(.9f),
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        title = { Text("Sources", maxLines = 1) }, text = {
+        title = { Text(tr("Sources"), maxLines = 1) }, text = {
         Column(Modifier.fillMaxWidth()) {
-            OutlinedTextField(query, { query = it }, label = { Text("Search apps and windows") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(query, { query = it }, label = { Text(tr("Search apps and windows")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
             LazyColumn(Modifier.weight(1f, fill = false).fillMaxWidth().heightIn(max = 300.dp)) {
                 itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
                   Column(Modifier.fillMaxWidth()) {
                     if (index == 0 || matches[index - 1].group != source.group) {
-                        Text(source.group,
+                        Text(tr(source.group),
                             style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
                     }
                     val app=source.application.trim().ifBlank { "Other applications" }
                     if (source.isWindow && (index==0 || !matches[index-1].isWindow ||
                             !matches[index-1].application.trim().ifBlank { "Other applications" }.equals(app,true))) {
-                        Text(app,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,
+                        Text(if (source.application.trim().isBlank()) tr("Other applications") else app,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier=Modifier.padding(start=8.dp,top=8.dp,bottom=2.dp))
                     }
                     TextButton(onClick = { onSelect(source) }, modifier = Modifier.fillMaxWidth(),
@@ -914,11 +916,11 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
                 }
                 if (matches.isEmpty()) item {
                     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
-                        Text("No matching sources",style=MaterialTheme.typography.bodySmall)
-                        TextButton(onClick={query=""}) { Text("Clear search") }
+                        Text(tr("No matching sources"),style=MaterialTheme.typography.bodySmall)
+                        TextButton(onClick={query=""}) { Text(tr("Clear search")) }
                     }
                 }
             }
         }
-    }, confirmButton = { TextButton(onClick = onClose) { Text("Close") } })
+    }, confirmButton = { TextButton(onClick = onClose) { Text(tr("Close")) } })
 }

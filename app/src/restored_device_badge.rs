@@ -213,8 +213,8 @@ fn choose_image(view: &mut RestoredDashboard, cx: &mut Context<RestoredDashboard
     view.device_badge_editor.error = None;
     let task = tokio::spawn(async {
         let file = rfd::AsyncFileDialog::new()
-            .set_title("Choose a device badge")
-            .add_filter("Device badge image", &["png", "jpg", "jpeg", "webp"])
+            .set_title(crate::i18n::tr("Choose a device badge"))
+            .add_filter(crate::i18n::tr("Device badge image"), &["png", "jpg", "jpeg", "webp"])
             .pick_file()
             .await?;
         let path = file.path().to_path_buf();
@@ -244,11 +244,11 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
     let theme = cx.theme().clone();
     let (label, preview) = match &editor.selection {
         DeviceBadge::Automatic => (
-            format!("Automatic · {}", editor.automatic.label()),
+            crate::i18n::tr_format!("Automatic · {}", crate::i18n::tr(editor.automatic.label())),
             editor.automatic.image(cx),
         ),
-        DeviceBadge::Preset(preset) => (preset.label().into(), preset.image(cx)),
-        DeviceBadge::Custom(_) => ("Custom image".into(), editor.custom_preview.clone()),
+        DeviceBadge::Preset(preset) => (crate::i18n::tr(preset.label()).into(), preset.image(cx)),
+        DeviceBadge::Custom(_) => (crate::i18n::tr("Custom image").into(), editor.custom_preview.clone()),
     };
     let choice =
         |id, label: &'static str, selection: DeviceBadge, cx: &mut Context<RestoredDashboard>| {
@@ -265,7 +265,7 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
             .px_2()
             .text_size(px(10.0))
             .disabled(editor.picking)
-            .tooltip(tooltip(label).build())
+            .tooltip(tooltip(crate::i18n::tr(label)).build())
             .on_click(cx.listener(move |this, _, _, cx| {
                 let editor = &mut this.device_badge_editor;
                 editor.error = editor.save(selection.clone()).err();
@@ -279,7 +279,7 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
             DeviceBadge::Automatic,
             cx,
         )
-        .child("Auto"),
+        .child(crate::i18n::tr("Auto")),
     );
     for preset in Preset::CHOICES {
         let button = choice(
@@ -313,7 +313,7 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
                             div()
                                 .text_size(px(11.0))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("Device badge"),
+                                .child(crate::i18n::tr("Device badge")),
                         )
                         .child(
                             div()
@@ -328,7 +328,7 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
                         .px_2()
                         .text_size(px(10.0))
                         .disabled(editor.picking)
-                        .child("Choose image…")
+                        .child(crate::i18n::tr("Choose image…"))
                         .on_click(cx.listener(|this, _, _, cx| choose_image(this, cx))),
                 ),
         )
@@ -338,7 +338,7 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
                 div()
                     .text_size(px(10.0))
                     .text_color(color_accent_amber())
-                    .child(error),
+                    .child(crate::i18n::message(&error)),
             )
         })
 }

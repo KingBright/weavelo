@@ -140,14 +140,14 @@ impl RenderOnce for Controls {
             .bg(cx.theme().surface.sunken)
             .text_size(px(11.0))
             .text_color(cx.theme().content.primary)
-            .child(div().child("Share this computer"));
+            .child(div().child(crate::i18n::tr("Share this computer")));
         let mut choices = div().flex().flex_wrap().gap_2();
         for (id, label, kind) in [
-            ("share-window", "App window", ShareKind::Window),
-            ("share-display", "Screen", ShareKind::Display),
+            ("share-window", crate::i18n::tr("App window"), ShareKind::Window),
+            ("share-display", crate::i18n::tr("Screen"), ShareKind::Display),
             (
                 "share-control",
-                "Screen + control",
+                crate::i18n::tr("Screen + control"),
                 ShareKind::ControlledDisplay,
             ),
         ] {
@@ -167,11 +167,11 @@ impl RenderOnce for Controls {
         panel = panel.child(choices).child(
             Button::new(
                 "share_remember",
-                if selected {
+                crate::i18n::tr(if selected {
                     "Remember selection · On"
                 } else {
                     "Remember selection · Off"
-                },
+                }),
             )
             .control_size(ControlSize::Sm)
             .variant(ButtonVariant::Secondary)
@@ -187,9 +187,9 @@ impl RenderOnce for Controls {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child("Confirm the system selection…")
+                    .child(crate::i18n::tr("Confirm the system selection…"))
                     .child(
-                        Button::new("share_cancel", "Cancel")
+                        Button::new("share_cancel", crate::i18n::tr("Cancel"))
                             .debug_selector(|| "share-cancel".into())
                             .control_size(ControlSize::Sm)
                             .rounded_full()
@@ -198,10 +198,10 @@ impl RenderOnce for Controls {
                     ),
             );
         } else if self.state.busy {
-            panel = panel.child("Updating sharing…");
+            panel = panel.child(crate::i18n::tr("Updating sharing…"));
         }
         if self.state.snapshot.stopping {
-            panel = panel.child("Stopping sharing…");
+            panel = panel.child(crate::i18n::tr("Stopping sharing…"));
         }
         for source in &self.state.snapshot.sources {
             let send = self.send.clone();
@@ -217,23 +217,16 @@ impl RenderOnce for Controls {
                             div()
                                 .text_size(px(10.0))
                                 .text_color(cx.theme().content.secondary)
-                                .child(format!(
-                                    "{}{}",
-                                    if source.supports_input {
-                                        "Control"
-                                    } else {
-                                        "Video only"
-                                    },
-                                    if source.remembered {
-                                        " · remembered"
-                                    } else {
-                                        ""
-                                    }
-                                )),
+                                .child(match (source.supports_input, source.remembered) {
+                                    (true, true) => crate::i18n::tr("Control · remembered"),
+                                    (false, true) => crate::i18n::tr("Video only · remembered"),
+                                    (true, false) => crate::i18n::tr("Control"),
+                                    (false, false) => crate::i18n::tr("Video only"),
+                                }),
                         ),
                     )
                     .child(
-                        Button::new(format!("share_stop_{id:?}"), "Stop")
+                        Button::new(format!("share_stop_{id:?}"), crate::i18n::tr("Stop"))
                             .control_size(ControlSize::Sm)
                             .rounded_full()
                             .h(px(26.0))
@@ -244,7 +237,7 @@ impl RenderOnce for Controls {
         if !self.state.snapshot.sources.is_empty() {
             let send = self.send.clone();
             panel = panel.child(
-                Button::new("share_stop_all", "Stop sharing")
+                Button::new("share_stop_all", crate::i18n::tr("Stop sharing"))
                     .control_size(ControlSize::Sm)
                     .variant(ButtonVariant::Secondary)
                     .rounded_full()
@@ -252,10 +245,10 @@ impl RenderOnce for Controls {
                     .on_click(move |_, _, cx| send(Action::StopAll, cx)),
             );
         } else if !pending {
-            panel = panel.child("No source shared");
+            panel = panel.child(crate::i18n::tr("No source shared"));
         }
         if let Some(message) = self.state.error.or(self.state.snapshot.message) {
-            panel = panel.child(message);
+            panel = panel.child(crate::i18n::message(&message));
         }
         panel
     }

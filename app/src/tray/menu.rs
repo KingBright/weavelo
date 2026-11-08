@@ -28,6 +28,7 @@ pub(super) struct Model {
     pub devices: Vec<Device>,
     pub sharing: usize,
     pub error: Option<String>,
+    pub language: Option<crate::i18n::Language>,
 }
 impl Model {
     pub fn summary(&self) -> String {
@@ -35,7 +36,7 @@ impl Model {
         if receiving == 0 && self.sharing == 0 {
             "Weavelo".into()
         } else {
-            format!("Weavelo · Receiving {receiving} · Sharing {}", self.sharing)
+            crate::i18n::tr_format!("Weavelo · Receiving {receiving} · Sharing {sharing}", receiving=receiving, sharing=self.sharing)
         }
     }
 }
@@ -76,6 +77,8 @@ impl Source {
         let saved = source.clone();
         let monitor = tokio::spawn(async move {
             loop {
+                crate::i18n::reload();
+                let language = crate::i18n::language();
                 let selected = profile.clone();
                 let expected = hash.clone();
                 let result =
@@ -108,6 +111,7 @@ impl Source {
                     devices,
                     sharing,
                     error,
+                    language: Some(language),
                 };
                 saved.current.send_if_modified(|old| {
                     if *old == next {
@@ -248,7 +252,7 @@ impl Menu {
         };
         let mut roots = vec![
             self.item(&model.summary(), false, None, vec![]),
-            self.item("Open Weavelo", true, Some(Action::Open), vec![]),
+            self.item(crate::i18n::tr("Open Weavelo"), true, Some(Action::Open), vec![]),
         ];
         if let Some(gui) = &model.gui {
             if !gui.receiving.is_empty() {
@@ -257,7 +261,7 @@ impl Menu {
                     let target = stream.target.clone();
                     let children = vec![
                         self.item(
-                            "Open window",
+                            crate::i18n::tr("Open window"),
                             true,
                             Some(ui(Call::Stream {
                                 target: target.clone(),
@@ -267,9 +271,9 @@ impl Menu {
                         ),
                         self.item(
                             if stream.paused {
-                                "Resume"
+                                crate::i18n::tr("Resume")
                             } else {
-                                "Pause media"
+                                crate::i18n::tr("Pause media")
                             },
                             stream.can_pause,
                             Some(ui(Call::Stream {
@@ -279,7 +283,7 @@ impl Menu {
                             vec![],
                         ),
                         self.item(
-                            "End this stream",
+                            crate::i18n::tr("End this stream"),
                             true,
                             Some(ui(Call::Stream {
                                 target,
@@ -290,20 +294,20 @@ impl Menu {
                     ];
                     streams.push(self.item(&stream.title, true, None, children));
                 }
-                roots.push(self.item("Stream windows", true, None, streams));
+                roots.push(self.item(crate::i18n::tr("Stream windows"), true, None, streams));
             }
             if !gui.sending.is_empty() {
                 let mut sends = vec![];
                 for send in &gui.sending {
                     let children = vec![
                         self.item(
-                            "Open sending window",
+                            crate::i18n::tr("Open sending window"),
                             true,
                             Some(ui(Call::OpenSend(send.request.clone()))),
                             vec![],
                         ),
                         self.item(
-                            "Stop this send",
+                            crate::i18n::tr("Stop this send"),
                             true,
                             Some(ui(Call::StopSend(send.request.clone()))),
                             vec![],
@@ -311,7 +315,7 @@ impl Menu {
                     ];
                     sends.push(self.item(&send.title, true, None, children));
                 }
-                roots.push(self.item("Sending", true, None, sends));
+                roots.push(self.item(crate::i18n::tr("Sending"), true, None, sends));
             }
         }
         let mut devices = vec![];
@@ -325,24 +329,24 @@ impl Menu {
             };
             let children = vec![
                 self.item(
-                    "View screen or window",
+                    crate::i18n::tr("View screen or window"),
                     device.online,
                     call(DeviceAction::View),
                     vec![],
                 ),
                 self.item(
-                    "Send screen or window",
+                    crate::i18n::tr("Send screen or window"),
                     device.can_send,
                     call(DeviceAction::Send),
                     vec![],
                 ),
-                self.item("Files", device.online, call(DeviceAction::Files), vec![]),
-                self.item("Device details", true, call(DeviceAction::Details), vec![]),
+                self.item(crate::i18n::tr("Files"), device.online, call(DeviceAction::Files), vec![]),
+                self.item(crate::i18n::tr("Device details"), true, call(DeviceAction::Details), vec![]),
             ];
             let name = if device.online {
                 device.name.clone()
             } else {
-                format!("{} · Offline", device.name)
+                crate::i18n::tr_format!("{} · Offline", device.name)
             };
             devices.push(self.item(&name, true, None, children));
             if device.online {
@@ -350,50 +354,50 @@ impl Menu {
             }
         }
         if !devices.is_empty() {
-            roots.push(self.item("Devices", true, None, devices));
+            roots.push(self.item(crate::i18n::tr("Devices"), true, None, devices));
         }
         if !files.is_empty() {
-            roots.push(self.item("Send files to…", true, None, files));
+            roots.push(self.item(crate::i18n::tr("Send files to…"), true, None, files));
         }
         roots.push(self.item(
-            "Transfer center",
+            crate::i18n::tr("Transfer center"),
             true,
             Some(ui(Call::Manager(Section::Transfers))),
             vec![],
         ));
         let settings = vec![
             self.item(
-                "Sharing & permissions",
+                crate::i18n::tr("Sharing & permissions"),
                 true,
                 Some(ui(Call::Manager(Section::Sharing))),
                 vec![],
             ),
             self.item(
-                "Preferences",
+                crate::i18n::tr("Preferences"),
                 true,
                 Some(ui(Call::Manager(Section::Preferences))),
                 vec![],
             ),
             self.item(
-                "Pairing & device name",
+                crate::i18n::tr("Pairing & device name"),
                 true,
                 Some(ui(Call::Manager(Section::Pairing))),
                 vec![],
             ),
         ];
-        roots.push(self.item("Sharing & settings", true, None, settings));
+        roots.push(self.item(crate::i18n::tr("Sharing & settings"), true, None, settings));
         if model.gui.as_ref().is_some_and(|g| !g.sending.is_empty()) {
             roots.push(self.item(
-                "Stop all sent streams",
+                crate::i18n::tr("Stop all sent streams"),
                 true,
                 Some(ui(Call::StopAllSends)),
                 vec![],
             ));
         }
         if model.error.is_some() {
-            roots.push(self.item("Window status unavailable", false, None, vec![]));
+            roots.push(self.item(crate::i18n::tr("Window status unavailable"), false, None, vec![]));
         }
-        roots.push(self.item("Quit Weavelo", true, Some(Action::Quit), vec![]));
+        roots.push(self.item(crate::i18n::tr("Quit Weavelo"), true, Some(Action::Quit), vec![]));
         self.roots = roots;
     }
     pub fn action(&self, id: i32) -> Option<Action> {

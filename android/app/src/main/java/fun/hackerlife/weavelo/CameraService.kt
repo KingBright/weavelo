@@ -3,6 +3,9 @@ package `fun`.hackerlife.weavelo
 import android.Manifest
 import android.app.*
 import android.content.Context
+import `fun`.hackerlife.weavelo.ui.LanguageNotificationObserver
+import `fun`.hackerlife.weavelo.ui.notificationText
+import `fun`.hackerlife.weavelo.ui.cameraNameText
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraManager
@@ -20,10 +23,10 @@ import java.util.concurrent.atomic.AtomicReference
 
 data class LocalCameraSource(val source: Any, val cameraId: String, val name: String, val facing: String)
 data class CameraSharingState(val enabled: Boolean = false, val live: Boolean = false,
-    val sources: List<LocalCameraSource> = emptyList(), val activeCameraId: String? = null, val status: String = "Not sharing")
+    val sources: List<LocalCameraSource> = emptyList(), val activeCameraId: String? = null, val status: String = "Not sharing", val statusText: AppText? = null)
 
 object CameraPublisher {
-    private val mutable = MutableStateFlow(CameraSharingState())
+    private val mutable = MutableStateFlow(CameraSharingState(statusText = AppText("Not sharing")))
     val state = mutable.asStateFlow()
     internal fun update(value: CameraSharingState) { mutable.value = value }
     fun start(context: Context, target: String? = null) {
@@ -41,6 +44,7 @@ object CameraPublisher {
 
 /** One foreground camera owner; the existing Rust endpoint owns sessions, auth and encoded fanout. */
 class CameraService : Service() {
+    private var languageObserver: LanguageNotificationObserver? = null
     private val running = AtomicBoolean(false)
     private val capture = AtomicReference<CameraCapture?>(null)
     private val target = AtomicReference<String?>(null)
@@ -54,19 +58,22 @@ class CameraService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "stop") { stopSelf(); return START_NOT_STICKY }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            CameraPublisher.update(CameraSharingState(status = "Allow camera access on this phone")); stopSelf(); return START_NOT_STICKY
+            CameraPublisher.update(CameraSharingState(status = "Allow camera access on this phone", statusText = AppText("Allow camera access on this phone"))); stopSelf(); return START_NOT_STICKY
         }
         target.set(intent?.getStringExtra("target"))
         if (!running.compareAndSet(false, true)) return START_NOT_STICKY
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("camera", "Camera sharing", NotificationManager.IMPORTANCE_LOW))
-        val stop = PendingIntent.getService(this, 8126, Intent(this, CameraService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val open = PendingIntent.getActivity(this, 8127, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        startForeground(8125, Notification.Builder(this, "camera").setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("Weavelo camera sharing").setContentText("Ready for your paired devices")
-            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "Stop sharing", stop).build()).build())
+        startForeground(8125, notification())
+        languageObserver = LanguageNotificationObserver(this) { getSystemService(NotificationManager::class.java).notify(8125, notification()) }
         worker = Thread({ publish() }, "weavelo-camera").apply { start() }
         return START_NOT_STICKY
+    }
+    private fun notification(): Notification {
+        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("camera", notificationText("Camera sharing"), NotificationManager.IMPORTANCE_LOW))
+        val stop = PendingIntent.getService(this, 8126, Intent(this, CameraService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(this, 8127, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return Notification.Builder(this, "camera").setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle(notificationText("Weavelo camera sharing")).setContentText(notificationText("Ready for your paired devices"))
+            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, notificationText("Stop sharing"), stop).build()).build()
     }
     @Suppress("DEPRECATION")
     private fun displayDegrees(): Int = when (getSystemService(WindowManager::class.java).defaultDisplay.rotation) {
@@ -79,7 +86,7 @@ class CameraService : Service() {
         var delayedClose: CameraCapture? = null
         try {
             val descriptions = CameraDescription.enumerate(getSystemService(CameraManager::class.java))
-            check(descriptions.isNotEmpty()) { "No video camera is available on this phone" }
+            appCheck(descriptions.isNotEmpty(), "No video camera is available on this phone")
             val directory = File(filesDir, "received").apply { mkdirs() }
             PublisherClient.action(30, JSONObject().put("bind", "0.0.0.0:5001").put("directory", directory.absolutePath).toString())
             val registered = JSONArray(PublisherClient.action(32, JSONArray().apply {
@@ -90,13 +97,13 @@ class CameraService : Service() {
                 val description = descriptions.first { it.id == cameraId }
                 LocalCameraSource(pair.get(0), cameraId, description.name, description.facing)
             }
-            CameraPublisher.update(CameraSharingState(enabled = true, sources = sources, status = "Ready for your devices"))
+            CameraPublisher.update(CameraSharingState(enabled = true, sources = sources, status = "Ready for your devices", statusText = AppText("Ready for your devices")))
             while (running.get()) {
-                check(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) { "Camera permission was revoked" }
+                appCheck(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED, "Camera permission was revoked")
                 target.getAndSet(null)?.let { device ->
                     val source = sources.firstOrNull { it.facing == "Back" } ?: sources.first()
                     runCatching { CameraPublisher.send(device, source) }.onFailure {
-                        CameraPublisher.update(CameraPublisher.state.value.copy(status = it.message ?: "Camera delivery failed"))
+                        CameraPublisher.update(CameraPublisher.state.value.copy(status = it.message ?: "Camera delivery failed", statusText = appTextOf(it) ?: if (it.message == null) AppText("Camera delivery failed") else null))
                     }
                 }
                 val all = JSONArray(PublisherClient.action(31))
@@ -107,7 +114,7 @@ class CameraService : Service() {
                     activeKey = ""
                     val state = CameraPublisher.state.value
                     CameraPublisher.update(state.copy(live = false, activeCameraId = null,
-                        status = if (state.live) "Ready for your devices" else state.status))
+                        status = if (state.live) "Ready for your devices" else state.status, statusText = if (state.live) AppText("Ready for your devices") else state.statusText))
                     Thread.sleep(100); continue
                 }
                 val source = wanted.get("source")
@@ -131,7 +138,7 @@ class CameraService : Service() {
                         capture.set(next); next.start()
                         activeKey = key(epoch)
                         CameraPublisher.update(CameraPublisher.state.value.copy(enabled = true, live = true,
-                            activeCameraId = description.id, status = "Sharing ${description.name.lowercase()}"))
+                            activeCameraId = description.id, status = "Sharing ${description.name.lowercase()}", statusText = AppText("Sharing %s", listOf(cameraNameText(description.facing)))))
                     }
                     capture.get()?.failure?.get()?.let { throw it }
                     val frameEpoch = epoch
@@ -148,12 +155,12 @@ class CameraService : Service() {
                         PublisherClient.action(35, JSONObject().put("source", source).put("epoch", epoch)
                             .put("reason", error.cause?.message ?: error.message ?: "Camera capture failed").toString())
                         CameraPublisher.update(CameraPublisher.state.value.copy(live = false, activeCameraId = null,
-                            status = error.cause?.message ?: error.message ?: "Camera capture failed"))
+                            status = error.cause?.message ?: error.message ?: "Camera capture failed", statusText = appTextOf(error) ?: if (error.cause?.message == null && error.message == null) AppText("Camera capture failed") else null))
                     }
                 }
             }
         } catch (error: Throwable) {
-            CameraPublisher.update(CameraSharingState(status = error.cause?.message ?: error.message ?: "Camera sharing stopped"))
+            CameraPublisher.update(CameraSharingState(status = error.cause?.message ?: error.message ?: "Camera sharing stopped", statusText = appTextOf(error) ?: if (error.cause?.message == null && error.message == null) AppText("Camera sharing stopped") else null))
         } finally {
             running.set(false)
             runCatching { PublisherClient.action(33) }
@@ -165,11 +172,12 @@ class CameraService : Service() {
         }
     }
     override fun onDestroy() {
+        languageObserver?.close()
         running.set(false)
         runCatching { PublisherClient.action(33) }
         capture.get()?.requestClose()
         val state = CameraPublisher.state.value
-        CameraPublisher.update(CameraSharingState(status = if (state.enabled) "Not sharing" else state.status))
+        CameraPublisher.update(CameraSharingState(status = if (state.enabled) "Not sharing" else state.status, statusText = if (state.enabled) AppText("Not sharing") else state.statusText))
         super.onDestroy()
     }
 }

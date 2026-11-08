@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="remote_control_label">Weavelo 远程控制</string>
+    <string name="remote_control_description">仅当您明确共享此手机的整个屏幕并启用控制时，已配对的 Weavelo 设备才能在此手机上点按、拖动、滚动和输入。停止共享即结束远程控制。不会记录输入内容。</string>
+</resources>

@@ -56,7 +56,7 @@ impl Item {
             self.icon_name().into(),
             vec![],
             "Weavelo".into(),
-            "Devices, streams and settings".into(),
+            crate::i18n::tr("Devices, streams and settings").into(),
         )
     }
     fn activate(&self, _x: i32, _y: i32) {

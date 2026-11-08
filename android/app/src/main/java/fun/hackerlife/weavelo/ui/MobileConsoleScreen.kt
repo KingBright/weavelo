@@ -102,10 +102,10 @@ fun MobileConsoleScreen(
         }
     }
     var advancedConnection by remember { mutableStateOf(false) }
-    if (pairingCodeOpen) AlertDialog(onDismissRequest = { pairingCode = ""; pairingCodeOpen = false }, title = { Text("Join with invitation") },
-        text = { OutlinedTextField(pairingCode, { pairingCode = it }, label = { Text("Invitation from an existing network member") }) },
-        dismissButton = { TextButton(onClick = { pairingCode = ""; pairingCodeOpen = false }) { Text("Cancel") } },
-        confirmButton = { TextButton(onClick = { onJoinCode(pairingCode.trim()); pairingCode = ""; pairingCodeOpen = false }, enabled = nativeAvailable && !joiningNetwork && pairingCode.isNotBlank()) { Text("Join") } })
+    if (pairingCodeOpen) AlertDialog(onDismissRequest = { pairingCode = ""; pairingCodeOpen = false }, title = { Text(tr("Join with invitation")) },
+        text = { OutlinedTextField(pairingCode, { pairingCode = it }, label = { Text(tr("Invitation from an existing network member")) }) },
+        dismissButton = { TextButton(onClick = { pairingCode = ""; pairingCodeOpen = false }) { Text(tr("Cancel")) } },
+        confirmButton = { TextButton(onClick = { onJoinCode(pairingCode.trim()); pairingCode = ""; pairingCodeOpen = false }, enabled = nativeAvailable && !joiningNetwork && pairingCode.isNotBlank()) { Text(tr("Join")) } })
     var activeTab by remember { mutableStateOf("Devices") }
     var manualEndpoint by remember { mutableStateOf("") }
     Box(
@@ -121,7 +121,7 @@ fun MobileConsoleScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                MobileAction(MobileSymbol.Network, "Pair devices", nativeAvailable,
+                MobileAction(MobileSymbol.Network, tr("Pair devices"), nativeAvailable,
                     modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
             }
             Spacer(Modifier.height(8.dp))
@@ -133,23 +133,23 @@ fun MobileConsoleScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 QuickActionButton(
-                    text = "Scan to join network",
+                    text = tr("Scan to join network"),
                     modifier = Modifier.weight(1f),
                     enabled = nativeAvailable,
                     onClick = onScanQr
                 )
                 QuickActionButton(
-                    text = "Enter invitation",
+                    text = tr("Enter invitation"),
                     modifier = Modifier.weight(1f),
                     enabled = nativeAvailable,
                     onClick = { pairingCodeOpen = true }
                 )
             }
             TextButton(onClick = { invitationOpen = true }, enabled = nativeAvailable && !joiningNetwork) {
-                Text("Show invitation QR", color = ColorAccentCyan)
+                Text(tr("Show invitation QR"), color = ColorAccentCyan)
             }
             if (networkName.isNotBlank()) {
-                Text("Network: $networkName", color = ColorTextSecondary, fontSize = 11.sp,
+                Text(trFormat("Network: %s", networkName), color = ColorTextSecondary, fontSize = 11.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 8.dp))
             }
@@ -186,14 +186,14 @@ fun MobileConsoleScreen(
                         onConnectWorkspace = onConnectWorkspace,
                         onSendFiles = onSendFiles,
                         localStatus = when {
-                            !nativeAvailable -> "Connection service unavailable"
-                            joiningNetwork -> "Joining network…"
-                            outgoing.unattributedSharing > 0 -> "Sharing · ${outgoing.unattributedSharing} direct streams"
-                            publishing && !controlReady -> "Sharing ready · review control permission"
-                            publishing -> "Sharing ready"
-                            else -> "Sharing & permissions"
+                            !nativeAvailable -> tr("Connection service unavailable")
+                            joiningNetwork -> tr("Joining network…")
+                            outgoing.unattributedSharing > 0 -> trFormat("Sharing · %d direct streams", outgoing.unattributedSharing)
+                            publishing && !controlReady -> tr("Sharing ready · review control permission")
+                            publishing -> tr("Sharing ready")
+                            else -> tr("Sharing & permissions")
                         },
-                        onLocalSettings = { activeTab = "Sharing" },
+                        onLocalSettings = { activeTab = "Security" },
                         onLocalDetails = { activeTab = "Mesh P2P" },
                         outgoing = outgoing, onSendScreen = onSendScreen, onSendCamera = onSendCamera, onStopSending = onStopSending
                     )
@@ -261,7 +261,7 @@ fun QuickActionButton(text: String, modifier: Modifier = Modifier, enabled: Bool
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = text,
+            text = tr(text),
             color = ColorTextPrimary,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold
@@ -275,18 +275,18 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
     canSendFiles: Boolean = false, onSendFiles: () -> Unit = {},
     canSendScreen: Boolean = false, sending: Boolean = false, onSendScreen: () -> Unit = {},
     canSendCamera: Boolean = false, onSendCamera: () -> Unit = {},
-    details: String = "", onEnd: (() -> Unit)? = null, onConnect: () -> Unit) {
+    details: String = "", hasActiveStream: Boolean = false, onEnd: (() -> Unit)? = null, onConnect: () -> Unit) {
     var sendMenu by remember(name) { mutableStateOf(false) }
     var expanded by remember(name) { mutableStateOf(false) }
     val badge = remember(deviceBadge) { DeviceArtwork.badge(deviceBadge).asImageBitmap() }
-    val activeStream = sending || onEnd != null || subtext.contains("Receiving") || subtext.contains("Sharing")
+    val activeStream = hasActiveStream || sending || onEnd != null || subtext.contains("Receiving") || subtext.contains("Sharing")
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
         .background(if (activeStream) Color(0xFFEFF6FF) else ColorSurfaceCard)
         .border(1.dp, if (activeStream) ColorAccentCyan.copy(alpha = .5f) else ColorBorderFine, RoundedCornerShape(12.dp))
         .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 10.dp, vertical = 6.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Image(badge, contentDescription = "Device type: ${deviceBadge.displayName}",
+            Image(badge, contentDescription = trFormat("Device type: %s", tr(deviceBadge.displayName)),
                 modifier = Modifier.size(24.dp))
             Text(name, modifier = Modifier.weight(1f), color = ColorTextPrimary, fontSize = 15.sp,
                 lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -297,30 +297,30 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
                 Text(subtext, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2,
                     overflow = TextOverflow.Ellipsis)
             }
-            MobileAction(MobileSymbol.View, "Open device $name", enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
+            MobileAction(MobileSymbol.View, trFormat("Open device %s", name), enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
             Box {
                 MobileAction(if (sending) MobileSymbol.Close else MobileSymbol.Share,
-                    if (sending) "Stop sending to $name" else "Send to $name", canSendScreen || canSendCamera,
+                    if (sending) trFormat("Stop sending to %s", name) else trFormat("Send to %s", name), canSendScreen || canSendCamera,
                     modifier = Modifier.size(48.dp), onClick = { if (sending) onSendScreen() else sendMenu = true })
                 androidx.compose.material3.DropdownMenu(expanded = sendMenu && !sending,
                     onDismissRequest = { sendMenu = false }) {
-                    androidx.compose.material3.DropdownMenuItem(text = { Text("Screen or app") },
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(tr("Screen or app")) },
                         enabled = canSendScreen, leadingIcon = {
                             androidx.compose.material3.Icon(MobileSymbol.Devices.image, contentDescription = null)
                         }, onClick = { sendMenu = false; onSendScreen() })
-                    androidx.compose.material3.DropdownMenuItem(text = { Text("Camera") },
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(tr("Camera")) },
                         enabled = canSendCamera, leadingIcon = {
                             androidx.compose.material3.Icon(MobileSymbol.Camera.image, contentDescription = null)
                         }, onClick = { sendMenu = false; onSendCamera() })
                 }
             }
-            MobileAction(MobileSymbol.Files, "Send files to $name", canSendFiles, modifier = Modifier.size(48.dp), onClick = onSendFiles)
-            MobileAction(MobileSymbol.More, "Device details $name", true, modifier = Modifier.size(48.dp), onClick = { expanded = !expanded })
+            MobileAction(MobileSymbol.Files, trFormat("Send files to %s", name), canSendFiles, modifier = Modifier.size(48.dp), onClick = onSendFiles)
+            MobileAction(MobileSymbol.More, trFormat("Device details %s", name), true, modifier = Modifier.size(48.dp), onClick = { expanded = !expanded })
         }
         if (expanded) {
             Text(details.ifBlank { subtext }, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
                 modifier = Modifier.padding(vertical = 4.dp))
-            onEnd?.let { end -> TextButton(onClick = end) { Text("End streams") } }
+            onEnd?.let { end -> TextButton(onClick = end) { Text(tr("End streams")) } }
         }
     }
 }
@@ -353,7 +353,7 @@ fun NavTab(text: String, active: Boolean, onClick: () -> Unit = {}) {
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
         androidx.compose.material3.Icon(symbol.image, contentDescription = null,
             tint = if (active) ColorAccentEmerald else ColorTextSecondary, modifier = Modifier.size(20.dp))
-        Text(text, color = if (active) ColorTextPrimary else ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
+        Text(tr(text), color = if (active) ColorTextPrimary else ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
     }
 }
@@ -392,8 +392,8 @@ private fun DevicesTabContent(
                     Text(android.os.Build.MODEL, color = ColorTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Text(localStatus, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp)
                 }
-                MobileAction(MobileSymbol.Permissions, "Sharing & permissions", true, modifier = Modifier.size(48.dp), onClick = onLocalSettings)
-                MobileAction(MobileSymbol.More, "This device & pairing", true, modifier = Modifier.size(48.dp), onClick = onLocalDetails)
+                MobileAction(MobileSymbol.Permissions, tr("Sharing & permissions"), true, modifier = Modifier.size(48.dp), onClick = onLocalSettings)
+                MobileAction(MobileSymbol.More, tr("This device & pairing"), true, modifier = Modifier.size(48.dp), onClick = onLocalDetails)
             }
         }
 
@@ -408,7 +408,7 @@ private fun DevicesTabContent(
                         .padding(16.dp)
                 ) {
                     Text(
-                        discoveryDiagnostics.emptyMessage,
+                        tr(discoveryDiagnostics.emptyMessage),
                         color = ColorTextSecondary,
                         fontSize = 13.sp
                     )
@@ -420,22 +420,26 @@ private fun DevicesTabContent(
                 val receiving = workspace.deviceId == device.id
                 val streams = if (receiving) workspace.panes.count { it.accepted && it.videoError == null } else 0
                 val sharing = outgoing.peers[device.id] ?: 0
-                val streamError = if (receiving) workspace.panes.firstNotNullOfOrNull { it.videoError ?: it.inputError } else null
+                val errorPane = if (receiving) workspace.panes.firstOrNull { it.videoError != null || it.inputError != null } else null
+                val streamError = errorPane?.videoError ?: errorPane?.inputError
+                val streamErrorText = if (errorPane?.videoError != null) errorPane.videoErrorText else errorPane?.inputErrorText
+                val shownError = streamError?.let { streamErrorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it) }
                 val state = buildList {
-                    if (sharing > 0) add("Sharing · $sharing")
-                    if (streams > 0) add("Receiving · $streams")
-                    if (outgoing.active && outgoing.target == device.id && sharing == 0) add("Connecting…")
-                    if (receiving && workspace.transferring) add("Transferring files…")
-                    if (streamError != null) add("Needs attention")
-                    if (!device.hasService) add("No shared sources")
+                    if (sharing > 0) add(trFormat("Sharing · %d", sharing))
+                    if (streams > 0) add(trFormat("Receiving · %d", streams))
+                    if (outgoing.active && outgoing.target == device.id && sharing == 0) add(tr("Connecting…"))
+                    if (receiving && workspace.transferring) add(tr("Transferring files…"))
+                    if (streamError != null) add(tr("Needs attention"))
+                    if (!device.hasService) add(tr("No shared sources"))
                 }.joinToString(" · ")
                 HostCard(
                     name = device.name.ifBlank { device.id },
                     deviceBadge = device.deviceBadge,
                     tag = device.scope,
-                    subtext = state.ifBlank { "Available" },
-                    details = listOfNotNull(streamError, if (outgoing.target == device.id) outgoing.status.takeIf { it.isNotBlank() } else null,
-                        device.capabilitySummary, device.endpoint, device.id).joinToString("\n"),
+                    subtext = state.ifBlank { tr("Available") },
+                    hasActiveStream = sharing > 0 || streams > 0,
+                    details = listOfNotNull(shownError, if (outgoing.target == device.id) outgoing.status.takeIf { it.isNotBlank() }?.let { trFormat("Details: %s", it) } else null,
+                        deviceCapabilities(device), device.endpoint, device.id).joinToString("\n"),
                     onEnd = if (receiving && workspace.panes.isNotEmpty()) ({ `fun`.hackerlife.weavelo.WorkspaceClient.disconnectSession(workspace.sessionKey) }) else null,
                     enabled = nativeAvailable && device.canOpenWorkspace && sessionState != SessionState.CONNECTING,
                     canSendFiles = nativeAvailable && device.canSendFiles,
@@ -453,13 +457,13 @@ private fun DevicesTabContent(
 
         item {
             TextButton(onClick = onToggleAdvanced) {
-                Text(if (advancedConnection) "Hide manual connection" else "Advanced: connect by address")
+                Text(if (advancedConnection) tr("Hide manual connection") else tr("Advanced: connect by address"))
             }
             if (advancedConnection) {
                 OutlinedTextField(
                     value = manualEndpoint,
                     onValueChange = onManualEndpointChange,
-                    label = { Text("Host IP:port") },
+                    label = { Text(tr("Host IP:port")) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = ColorTextPrimary, unfocusedTextColor = ColorTextPrimary,
@@ -480,12 +484,12 @@ private fun DevicesTabContent(
                         ),
                         enabled = nativeAvailable && manualEndpoint.isNotBlank() && sessionState != SessionState.CONNECTING,
                         onClick = { onConnectAddress(manualEndpoint.trim()) }
-                    ) { Text("Connect to address") }
+                    ) { Text(tr("Connect to address")) }
 
                     TextButton(
                         onClick = { onConnectWorkspace("", manualEndpoint.trim()) },
                         enabled = nativeAvailable && manualEndpoint.isNotBlank()
-                    ) { Text("Open workspace") }
+                    ) { Text(tr("Open workspace")) }
                 }
             }
         }
@@ -507,7 +511,7 @@ private fun MeshP2pTabContent(
     ) {
         item {
             Text(
-                text = "PRIVATE MESH TOPOLOGY",
+                text = tr("PRIVATE MESH TOPOLOGY"),
                 color = ColorTextSecondary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -532,7 +536,7 @@ private fun MeshP2pTabContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = networkName.ifBlank { "Personal Device Mesh" },
+                        text = networkName.ifBlank { tr("Personal Device Mesh") },
                         color = ColorTextPrimary,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold
@@ -546,9 +550,9 @@ private fun MeshP2pTabContent(
                     ) {
                         Text(
                             text = when {
-                                joiningNetwork -> "Joining..."
-                                nativeAvailable -> "Active · P2P"
-                                else -> "Offline"
+                                joiningNetwork -> tr("Joining...")
+                                nativeAvailable -> tr("Active · P2P")
+                                else -> tr("Offline")
                             },
                             color = ColorAccentCyan,
                             fontSize = 10.sp,
@@ -558,12 +562,12 @@ private fun MeshP2pTabContent(
                     }
                 }
                 Text(
-                    text = "${devices.size} linked peers in private overlay network",
+                    text = trFormat("%d linked peers in private overlay network", devices.size),
                     color = ColorTextSecondary,
                     fontSize = 12.sp
                 )
                 Text(
-                    text = "Encrypted point-to-point tunnels with zero-config hole punching.",
+                    text = tr("Encrypted point-to-point tunnels with zero-config hole punching."),
                     color = ColorTextSecondary,
                     fontSize = 11.sp
                 )
@@ -572,7 +576,7 @@ private fun MeshP2pTabContent(
 
         item {
             Text(
-                text = "LINKED PEERS",
+                text = tr("LINKED PEERS"),
                 color = ColorTextSecondary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -592,7 +596,7 @@ private fun MeshP2pTabContent(
                         .padding(16.dp)
                 ) {
                     Text(
-                        "No peers linked yet. Scan a QR invitation or enter a join code from another device to expand your mesh.",
+                        tr("No peers linked yet. Scan a QR invitation or enter a join code from another device to expand your mesh."),
                         color = ColorTextSecondary,
                         fontSize = 13.sp
                     )
@@ -637,13 +641,13 @@ private fun MeshP2pTabContent(
                         }
                     }
                     Text(
-                        text = "Endpoint: ${device.endpoint.ifBlank { "Auto-negotiated UDP" }}",
+                        text = trFormat("Endpoint: %s", device.endpoint.ifBlank { tr("Auto-negotiated UDP") }),
                         color = ColorTextSecondary,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = device.capabilitySummary,
+                        text = deviceCapabilities(device),
                         color = ColorTextSecondary,
                         fontSize = 11.sp
                     )
@@ -652,7 +656,7 @@ private fun MeshP2pTabContent(
                             onClick = { onConnectWorkspace(device.id, device.endpoint) },
                             enabled = nativeAvailable && !joiningNetwork,
                             modifier = Modifier.align(Alignment.End)
-                        ) { Text("Inspect peer") }
+                        ) { Text(tr("Inspect peer")) }
                     }
                 }
             }
@@ -669,13 +673,13 @@ private fun MeshP2pTabContent(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "ROUTING & SECURITY POLICY",
+                    text = tr("ROUTING & SECURITY POLICY"),
                     color = ColorTextPrimary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "• Local Subnet: Direct UDP\n• WAN Cross-NAT: STUN UDP Hole Punching\n• Fallback: Authenticated end-to-end encrypted relay",
+                    text = tr("• Local Subnet: Direct UDP\n• WAN Cross-NAT: STUN UDP Hole Punching\n• Fallback: Authenticated end-to-end encrypted relay"),
                     color = ColorTextSecondary,
                     fontSize = 11.sp,
                     lineHeight = 16.sp
@@ -720,55 +724,55 @@ private fun SecurityTabContent(
         context.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()
     }
     if (securityDetails) AlertDialog(onDismissRequest = { securityDetails = false },
-        title = { Text("Connection security") },
+        title = { Text(tr("Connection security")) },
         text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TelemetryLaneRow("Transport cipher", "ChaCha20-Poly1305", ColorAccentCyan)
-            TelemetryLaneRow("Network access", "Invitation required", ColorAccentEmerald)
-            TelemetryLaneRow("Authentication", "Paired device group", ColorAccentCyan)
-            TelemetryLaneRow("Storage", "App private", ColorTextSecondary)
-        } }, confirmButton = { TextButton(onClick = { securityDetails = false }) { Text("Done") } })
+            TelemetryLaneRow(tr("Transport cipher"), "ChaCha20-Poly1305", ColorAccentCyan)
+            TelemetryLaneRow(tr("Network access"), tr("Invitation required"), ColorAccentEmerald)
+            TelemetryLaneRow(tr("Authentication"), tr("Paired device group"), ColorAccentCyan)
+            TelemetryLaneRow(tr("Storage"), tr("App private"), ColorTextSecondary)
+        } }, confirmButton = { TextButton(onClick = { securityDetails = false }) { Text(tr("Done")) } })
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Text("Sharing & permissions", color = ColorTextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-            Text("Share a screen, app or camera with your devices.",
+            Text(tr("Sharing & permissions"), color = ColorTextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            Text(tr("Share a screen, app or camera with your devices."),
                 color = ColorTextSecondary, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
         }
         item {
             Column(Modifier.fillMaxWidth().background(ColorSurfaceCard, RoundedCornerShape(18.dp))
                 .border(1.dp, ColorBorderFine, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 6.dp)) {
-                SharingPermissionRow(MobileSymbol.Share, "Screen or app", if (publishing) "Sharing" else "Not sharing",
+                SharingPermissionRow(MobileSymbol.Share, "Screen or app", if (publishing) tr("Sharing") else tr("Not sharing"),
                     if (publishing) "Stop" else "Share", nativeAvailable) {
                     if (publishing) onStopSharing() else onShareScreen(false)
                 }
-                SharingPermissionRow(MobileSymbol.Camera, "Camera", camera.status,
+                SharingPermissionRow(MobileSymbol.Camera, "Camera", camera.statusText?.let { appText(it) } ?: trFormat("Details: %s", camera.status),
                     if (camera.enabled) "Stop" else "Share", nativeAvailable) {
                     if (camera.enabled) `fun`.hackerlife.weavelo.CameraPublisher.stop(context) else onShareCamera()
                 }
-                SharingPermissionRow(MobileSymbol.Control, "Remote control", if (controlReady) "Allowed" else "Needs permission",
+                SharingPermissionRow(MobileSymbol.Control, "Remote control", if (controlReady) tr("Allowed") else tr("Needs permission"),
                     if (controlReady) "Settings" else "Allow", nativeAvailable, onControlSettings)
-                SharingPermissionRow(MobileSymbol.Audio, "Audio", if (audioAllowed) "Microphone allowed" else "Needs permission",
+                SharingPermissionRow(MobileSymbol.Audio, "Audio", if (audioAllowed) tr("Microphone allowed") else tr("Needs permission"),
                     "Share with audio", nativeAvailable && !publishing) { onShareScreen(true) }
-                SharingPermissionRow(MobileSymbol.Notifications, "Notifications", if (notificationsAllowed) "Allowed" else "Off",
+                SharingPermissionRow(MobileSymbol.Notifications, "Notifications", if (notificationsAllowed) tr("Allowed") else tr("Off"),
                     "Settings", true) {
                     context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
                 }
                 if (controlReady) TextButton(onClick = onShareControlledScreen, enabled = nativeAvailable && !publishing,
-                    modifier = Modifier.fillMaxWidth()) { Text("Share with control and audio") }
+                    modifier = Modifier.fillMaxWidth()) { Text(tr("Share with control and audio")) }
             }
         }
         item {
             Column(Modifier.fillMaxWidth().background(ColorSurfaceCard, RoundedCornerShape(18.dp))
                 .border(1.dp, ColorBorderFine, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 6.dp)) {
                 SharingPermissionRow(MobileSymbol.Files, "Receive files",
-                    if (receiverStarting) "Starting…" else if (receivingFiles) "On" else "Off",
+                    if (receiverStarting) tr("Starting…") else if (receivingFiles) tr("On") else tr("Off"),
                     if (receivingFiles) "Stop" else "Start", nativeAvailable && !receiverStarting) {
                     if (receivingFiles) onStopReceiving() else onStartReceiving()
                 }
-                TextButton(onClick = onBrowseFiles, modifier = Modifier.fillMaxWidth()) { Text("Browse received files") }
+                TextButton(onClick = onBrowseFiles, modifier = Modifier.fillMaxWidth()) { Text(tr("Browse received files")) }
             }
         }
-        item { TextButton(onClick = { securityDetails = true }) { Text("Connection security") } }
+        item { TextButton(onClick = { securityDetails = true }) { Text(tr("Connection security")) } }
     }
 }
 
@@ -780,10 +784,10 @@ private fun SharingPermissionRow(symbol: MobileSymbol, title: String, state: Str
         androidx.compose.material3.Icon(symbol.image, contentDescription = null, tint = ColorAccentCyan,
             modifier = Modifier.size(22.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, color = ColorTextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(tr(title), color = ColorTextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
             Text(state, color = ColorTextSecondary, fontSize = 11.sp)
         }
-        TextButton(onClick = onClick, enabled = enabled) { Text(action, fontSize = 12.sp) }
+        TextButton(onClick = onClick, enabled = enabled) { Text(tr(action), fontSize = 12.sp) }
     }
 }
 
@@ -797,20 +801,21 @@ private fun SettingsTabContent(
     var connectionDetails by remember { mutableStateOf<String?>(null) }
     connectionDetails?.let { evidence ->
         AlertDialog(onDismissRequest = { connectionDetails = null },
-            title = { Text("Public connection diagnostics") },
+            title = { Text(tr("Public connection diagnostics")) },
             text = { Text(evidence, fontFamily = FontFamily.Monospace, fontSize = 10.sp,
                 modifier = Modifier.verticalScroll(rememberScrollState())) },
-            confirmButton = { TextButton(onClick = { connectionDetails = publicConnectionEvidence(appNetwork, discoveryDiagnostics) }) { Text("Refresh diagnostics") } },
-            dismissButton = { TextButton(onClick = { connectionDetails = null }) { Text("Close diagnostics") } })
+            confirmButton = { TextButton(onClick = { connectionDetails = publicConnectionEvidence(appNetwork, discoveryDiagnostics) }) { Text(tr("Refresh diagnostics")) } },
+            dismissButton = { TextButton(onClick = { connectionDetails = null }) { Text(tr("Close diagnostics")) } })
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item { LanguageSelector() }
         item { DeviceBadgeSettings() }
         item {
             Text(
-                text = "RUNTIME & ENGINE",
+                text = tr("RUNTIME & ENGINE"),
                 color = ColorTextSecondary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -829,10 +834,10 @@ private fun SettingsTabContent(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                TelemetryLaneRow("Bridge Status", if (nativeAvailable) "Loaded (.so ready)" else "Missing native library", if (nativeAvailable) ColorAccentEmerald else Color(0xFFB42318))
-                TelemetryLaneRow("Session State", sessionState.name, ColorAccentCyan)
-                TelemetryLaneRow("Decoders", "Hardware MediaCodec (H.264/HEVC)", ColorTextPrimary)
-                TelemetryLaneRow("Audio Engine", "AudioTrack + Opus Decoder", ColorTextPrimary)
+                TelemetryLaneRow(tr("Bridge Status"), if (nativeAvailable) tr("Loaded (.so ready)") else tr("Missing native library"), if (nativeAvailable) ColorAccentEmerald else Color(0xFFB42318))
+                TelemetryLaneRow(tr("Session State"), sessionLabel(sessionState), ColorAccentCyan)
+                TelemetryLaneRow(tr("Decoders"), tr("Hardware MediaCodec (H.264/HEVC)"), ColorTextPrimary)
+                TelemetryLaneRow(tr("Audio Engine"), tr("AudioTrack + Opus Decoder"), ColorTextPrimary)
             }
         }
 
@@ -843,29 +848,29 @@ private fun SettingsTabContent(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 val status = discoveryDiagnostics
-                Text("CONNECTION STATUS", color = ColorTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                TextButton(onClick = { connectionDetails = publicConnectionEvidence(appNetwork, status) }) { Text("Connection details") }
-                TextButton(onClick = { WeaveloClient.checkRelayTransport() }) { Text("Check relay transport") }
-                TelemetryLaneRow("Discovery", status.phase, ColorAccentCyan)
-                TelemetryLaneRow("Runtime network", status.networkHash.take(12).ifEmpty { "Starting" }, ColorTextPrimary)
-                TelemetryLaneRow("This device", status.deviceHash.take(12).ifEmpty { "Starting" }, ColorTextPrimary)
-                TelemetryLaneRow("Configuration", "${status.reloadApplied}/${status.reloadRequested} · run ${status.generation}", ColorTextPrimary)
-                TelemetryLaneRow("Routes / Devices", "${status.routes} / ${status.peers}", ColorTextPrimary)
-                TelemetryLaneRow("Direct discovery", status.p2p, ColorTextPrimary)
+                Text(tr("CONNECTION STATUS"), color = ColorTextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                TextButton(onClick = { connectionDetails = publicConnectionEvidence(appNetwork, status) }) { Text(tr("Connection details")) }
+                TextButton(onClick = { WeaveloClient.checkRelayTransport() }) { Text(tr("Check relay transport")) }
+                TelemetryLaneRow(tr("Discovery"), status.phase, ColorAccentCyan)
+                TelemetryLaneRow(tr("Runtime network"), status.networkHash.take(12).ifEmpty { tr("Starting") }, ColorTextPrimary)
+                TelemetryLaneRow(tr("This device"), status.deviceHash.take(12).ifEmpty { tr("Starting") }, ColorTextPrimary)
+                TelemetryLaneRow(tr("Configuration"), trFormat("%d/%d · run %d", status.reloadApplied, status.reloadRequested, status.generation), ColorTextPrimary)
+                TelemetryLaneRow(tr("Routes / Devices"), "${status.routes} / ${status.peers}", ColorTextPrimary)
+                TelemetryLaneRow(tr("Direct discovery"), status.p2p, ColorTextPrimary)
                 for ((name, relay) in listOf("Control relay" to status.control, "Discovery relay" to status.discovery)) {
-                    TelemetryLaneRow(name, relay.state, ColorAccentCyan)
-                    TelemetryLaneRow("Connection attempts", relay.attempts.toString(), ColorTextPrimary)
-                    TelemetryLaneRow("Registration writes / Pongs", "${relay.registrationsSent} / ${relay.pongsReceived}", ColorTextPrimary)
-                    if (relay.error.isNotEmpty()) TelemetryLaneRow("Relay reason", relay.error, ColorTextSecondary)
+                    TelemetryLaneRow(tr(name), relay.state, ColorAccentCyan)
+                    TelemetryLaneRow(tr("Connection attempts"), relay.attempts.toString(), ColorTextPrimary)
+                    TelemetryLaneRow(tr("Registration writes / Pongs"), "${relay.registrationsSent} / ${relay.pongsReceived}", ColorTextPrimary)
+                    if (relay.error.isNotEmpty()) TelemetryLaneRow(tr("Relay reason"), relay.error, ColorTextSecondary)
                 }
-                if (status.failure.isNotEmpty()) TelemetryLaneRow("Discovery reason", status.failure, ColorTextSecondary)
-                Text("Registration writes are local sends. Pongs confirm a relay response; the device list confirms discovery.", color = ColorTextSecondary, fontSize = 11.sp)
+                if (status.failure.isNotEmpty()) TelemetryLaneRow(tr("Discovery reason"), status.failure, ColorTextSecondary)
+                Text(tr("Registration writes are local sends. Pongs confirm a relay response; the device list confirms discovery."), color = ColorTextSecondary, fontSize = 11.sp)
             }
         }
 
         item {
             Text(
-                text = "GESTURE SYSTEM",
+                text = tr("GESTURE SYSTEM"),
                 color = ColorTextSecondary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
@@ -884,12 +889,32 @@ private fun SettingsTabContent(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text("Direct Touch (Screen-First)", color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Drag: Vertical / Horizontal Scroll\n• Two-Finger Tap: Mouse Right Click", color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+                Text(tr("Direct Touch (Screen-First)"), color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(tr("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Drag: Vertical / Horizontal Scroll\n• Two-Finger Tap: Mouse Right Click"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
                 Spacer(modifier = Modifier.height(4.dp))
-                Text("Virtual Trackpad", color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text("• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Wheel Scroll", color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+                Text(tr("Virtual Trackpad"), color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(tr("• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Wheel Scroll"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
             }
         }
     }
+}
+
+@Composable
+private fun deviceCapabilities(device: HostDevice): String = buildList {
+    if (device.canStream) add(tr("Screen sharing"))
+    if (device.fileTransfer) add(tr("Files"))
+    if (device.canView) add(tr("Can view other devices"))
+    if (!device.hasService) add(tr("No incoming service active"))
+}.joinToString(" · ").ifBlank { tr("No supported action advertised") }
+
+@Composable
+private fun sessionLabel(state: SessionState): String {
+    val label = when (state) {
+        SessionState.DISCONNECTED -> tr("Disconnected")
+        SessionState.CONNECTING -> tr("Connecting…")
+        SessionState.STREAMING -> tr("Streaming")
+        SessionState.RECONNECTING -> tr("Reconnecting…")
+        SessionState.ERROR -> tr("Error")
+    }
+    return trFormat("%s (%s)", label, state.name)
 }

@@ -43,6 +43,7 @@ fn generated_module(raw: &[u8]) -> String {
 }
 
 fn main() {
+    generate_i18n_formats();
     embed_windows_brand();
     println!("cargo:rerun-if-changed=build.rs");
     // ScreenCaptureKit's Swift bridge needs this on app, test and example
@@ -203,4 +204,21 @@ fn embed_windows_brand() {
     let status = std::process::Command::new("rc.exe").arg("/nologo").arg("/fo").arg(&resource).arg(&rc).status().expect("existing Windows SDK rc.exe is required");
     check(status.success(), "Windows brand resource compilation failed");
     println!("cargo:rustc-link-arg-bin=weavelo={}", resource.display());
+}
+
+// Both branches use Rust's formatter, so invalid/missing translation placeholders
+// fail compilation rather than losing identifiers or user-provided values.
+fn generate_i18n_formats() {
+    println!("cargo:rerun-if-changed=src/i18n/zh-CN.json");
+    let catalog: std::collections::BTreeMap<String, String> = serde_json::from_str(
+        &fs::read_to_string("src/i18n/zh-CN.json").expect("UI catalog"))
+        .expect("valid UI catalog");
+    let mut code = String::from("#[allow(unused_macros)]\nmacro_rules! tr_format {\n");
+    for (english, chinese) in catalog {
+        if !english.contains('{') { continue; }
+        let en = format!("{english:?}"); let zh = format!("{chinese:?}");
+        code.push_str(&format!("    ({en} $(, $($args:tt)*)?) => {{ {{ if $crate::i18n::is_chinese() {{ format!({zh} $(, $($args)*)?) }} else {{ format!({en} $(, $($args)*)?) }} }} }};\n"));
+    }
+    code.push_str("    ($($args:tt)*) => { compile_error!(\"Missing localized format template in i18n/zh-CN.json\") };\n}\n#[allow(unused_imports)]\npub(crate) use tr_format;\n");
+    fs::write(Path::new(&env::var_os("OUT_DIR").expect("Cargo output directory")).join("i18n_formats.rs"), code).expect("write localized formats");
 }

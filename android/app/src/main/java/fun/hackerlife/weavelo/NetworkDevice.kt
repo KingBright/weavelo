@@ -30,12 +30,10 @@ data class HostDevice(
 fun resolveNetworkEndpoint(deviceId: String, manualEndpoint: String, devices: List<HostDevice>): String {
     if (deviceId.isBlank()) return manualEndpoint
     val device = devices.firstOrNull { it.id == deviceId }
-    check(device != null && device.canOpenWorkspace) {
-        "This device is not currently reachable. Wait for discovery and reconnect."
-    }
-    return device.endpoint
+    appCheck(device != null && device.canOpenWorkspace, "This device is not currently reachable. Wait for discovery and reconnect.")
+    return checkNotNull(device).endpoint
 }
 
 fun resolveScreenDeliveryEndpoint(deviceId: String, devices: List<HostDevice>): String =
     devices.firstOrNull { it.id == deviceId && it.canReceiveScreen }?.endpoint
-        ?: error("This device is not currently accepting incoming screens")
+        ?: appError("This device is not currently accepting incoming screens")

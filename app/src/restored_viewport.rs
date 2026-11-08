@@ -213,10 +213,10 @@ impl RestoredDashboard {
             .child(div().w(px(42.)).text_size(px(11.)).text_center().child(format!("{zoom:.1}×")))
             .child(command_button("view_zoom_in",ActionVariantKind::Neutral,cx).size(px(28.)).p_0().child("+")
                 .disabled(zoom>=4.).on_click(cx.listener(|this,_,_,cx|this.change_view_zoom(1.25,None,cx))))
-            .child(command_button("view_navigation",if navigation{ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx).child("Move view")
-                .tooltip(tooltip("Drag to pan · wheel to zoom. Turn off to use the remote pointer.").build())
+            .child(command_button("view_navigation",if navigation{ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx).child(crate::i18n::tr("Move view"))
+                .tooltip(tooltip(crate::i18n::tr("Drag to pan · wheel to zoom. Turn off to use the remote pointer.")).build())
                 .on_click(cx.listener(|this,_,_,cx|{this.viewport.lock().unwrap().toggle_navigation();cx.notify();})))
-            .child(command_button("view_zoom_reset",ActionVariantKind::Neutral,cx).child("Reset")
+            .child(command_button("view_zoom_reset",ActionVariantKind::Neutral,cx).child(crate::i18n::tr("Reset"))
                 .disabled(at_default).on_click(cx.listener(|this,_,_,cx|{this.viewport.lock().unwrap().reset();cx.notify();}))))
     }
 }

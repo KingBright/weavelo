@@ -31,7 +31,7 @@ object DeviceArtwork {
     fun savedJson(): Any = org.json.JSONTokener(preferences?.getString("badge", "\"automatic\"") ?: "\"automatic\"").nextValue()
     fun save(value: Any) {
         val encoded = if (value is String) JSONObject.quote(value) else value.toString()
-        check(preferences?.edit()?.putString("badge", encoded)?.commit() == true) { "Could not save device badge" }
+        appCheck(preferences?.edit()?.putString("badge", encoded)?.commit() == true, "Could not save device badge")
         // A running publisher observes the change now; a later start reads the saved value.
         runCatching { PublisherClient.action(41, encoded) }.onFailure {
             if (it.message != "screen sharing is not running") throw it
@@ -59,15 +59,15 @@ object DeviceArtwork {
             while (true) {
                 val count = stream.read(buffer)
                 if (count < 0) break
-                require(output.size() + count <= 2 * 1024 * 1024) { "Choose an image smaller than 2 MiB" }
+                appRequire(output.size() + count <= 2 * 1024 * 1024, "Choose an image smaller than 2 MiB")
                 output.write(buffer, 0, count)
             }
             output.toByteArray()
-        } ?: error("Could not open image")
+        } ?: appError("Could not open image")
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        require(bounds.outWidth in 1..1024 && bounds.outHeight in 1..1024) { "Choose an image up to 1024 × 1024" }
-        val original = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: error("Unsupported image")
+        appRequire(bounds.outWidth in 1..1024 && bounds.outHeight in 1..1024, "Choose an image up to 1024 × 1024")
+        val original = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: appError("Unsupported image")
         val image = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
         val scale = 64f / maxOf(original.width, original.height)
         val w = original.width * scale; val h = original.height * scale

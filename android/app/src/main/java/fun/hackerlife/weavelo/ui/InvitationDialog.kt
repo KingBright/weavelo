@@ -76,14 +76,16 @@ fun InvitationDialog(onDismiss: () -> Unit) {
             }
         }
     }
+    val invitationDescription = tr("Invitation QR for the current device group")
+    val clipboardLabel = tr("Weavelo invitation")
     AlertDialog(onDismissRequest = onDismiss,
-        title = { Text("Invite a device") },
+        title = { Text(tr("Invite a device")) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 invitation?.let { Text(it.networkName) }
                 matrix?.let { qr ->
                     Canvas(Modifier.fillMaxWidth().aspectRatio(1f).background(Color.White)
-                        .semantics { contentDescription = "Invitation QR for the current device group" }) {
+                        .semantics { contentDescription = invitationDescription }) {
                         val cell = floor(size.minDimension / qr.width).coerceAtLeast(1f)
                         val left = floor((size.width - cell * qr.width) / 2)
                         val top = floor((size.height - cell * qr.height) / 2)
@@ -92,22 +94,22 @@ fun InvitationDialog(onDismiss: () -> Unit) {
                         }
                     }
                 }
-                Text(message)
+                Text(tr(message))
                 Row {
                     TextButton(enabled = matrix != null && !saving,
-                        onClick = { saveImage.launch("Weavelo-invitation.png") }) { Text(if (saving) "Saving…" else "Save PNG") }
+                        onClick = { saveImage.launch("Weavelo-invitation.png") }) { Text(if (saving) tr("Saving…") else tr("Save PNG")) }
                     TextButton(enabled = invitation != null, onClick = {
                         invitation?.let { data ->
-                            val clip = ClipData.newPlainText("Weavelo invitation", data.code)
+                            val clip = ClipData.newPlainText(clipboardLabel, data.code)
                             if (Build.VERSION.SDK_INT >= 33) clip.description.extras = PersistableBundle().apply {
                                 putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
                             }
                             context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
                             message = "Invitation code copied."
                         }
-                    }) { Text("Copy code") }
+                    }) { Text(tr("Copy code")) }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
+        confirmButton = { TextButton(onClick = onDismiss) { Text(tr("Close")) } })
 }

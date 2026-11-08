@@ -53,11 +53,11 @@ pub(crate) enum Access {
 impl Access {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Allowed => "Allowed",
-            Self::NeedsReview => "Needs permission",
-            Self::SelectSource => "Choose a source",
-            Self::SystemManaged => "Managed by the system",
-            Self::OnUse => "Checked when used",
+            Self::Allowed => crate::i18n::tr("Allowed"),
+            Self::NeedsReview => crate::i18n::tr("Needs permission"),
+            Self::SelectSource => crate::i18n::tr("Choose a source"),
+            Self::SystemManaged => crate::i18n::tr("Managed by the system"),
+            Self::OnUse => crate::i18n::tr("Checked when used"),
         }
     }
 }

@@ -22,13 +22,13 @@ pub(crate) enum DeviceConnectionStatus {
 }
 
 impl DeviceConnectionStatus {
-    pub(crate) const fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Connecting => "Connecting…",
-            Self::Viewing => "Session connected",
-            Self::Serving => "Serving",
-            Self::Available => "Available",
-            Self::Standby => "Standby",
+            Self::Connecting => crate::i18n::tr("Connecting…"),
+            Self::Viewing => crate::i18n::tr("Session connected"),
+            Self::Serving => crate::i18n::tr("Serving"),
+            Self::Available => crate::i18n::tr("Available"),
+            Self::Standby => crate::i18n::tr("Standby"),
         }
     }
 
@@ -94,13 +94,13 @@ impl StreamFailures {
 impl DeviceActivity {
     pub fn label(&self)->String {
         let mut parts=Vec::new();
-        if self.connecting {parts.push("Connecting…".into());}
-        if self.receiving>0 {parts.push(format!("Receiving · {}",self.receiving));}
-        if self.sharing>0 {parts.push(format!("Sharing · {}",self.sharing));}
+        if self.connecting {parts.push(crate::i18n::tr("Connecting…").into());}
+        if self.receiving>0 {parts.push(crate::i18n::tr_format!("Receiving · {}",self.receiving));}
+        if self.sharing>0 {parts.push(crate::i18n::tr_format!("Sharing · {}",self.sharing));}
         if let Some((done,total))=self.transfer {
-            parts.push(if total>0 {format!("Files · {}%",done.saturating_mul(100).checked_div(total).unwrap_or(0).min(100))} else {"Transferring files…".into()});
+            parts.push(if total>0 {crate::i18n::tr_format!("Files · {}%",done.saturating_mul(100).checked_div(total).unwrap_or(0).min(100))} else {crate::i18n::tr("Transferring files…").into()});
         }
-        if self.error.is_some() {parts.push("Needs attention".into());}
+        if self.error.is_some() {parts.push(crate::i18n::tr("Needs attention").into());}
         parts.join("  ·  ")
     }
 }
