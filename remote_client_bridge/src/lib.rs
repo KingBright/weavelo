@@ -2152,27 +2152,27 @@ mod tests {
     }
 
     #[test]
-    fn workspace_touch_uses_shared_grant_and_releases_cancelled_drag() {
-        const CHILD:&str="WEAVELO_WORKSPACE_TOUCH_FIXTURE_CHILD";
+    fn workspace_keyboard_liveness_keeps_a_visible_shortcut_owned() {
+        const CHILD:&str="WEAVELO_WORKSPACE_KEYBOARD_FIXTURE_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output=std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","tests::workspace_touch_uses_shared_grant_and_releases_cancelled_drag","--nocapture"])
+                .args(["--exact","tests::workspace_keyboard_liveness_keeps_a_visible_shortcut_owned","--nocapture"])
                 .env(CHILD,"1").output().unwrap();
             assert!(output.status.success(),"isolated touch fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
             return;
         }
         assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
-        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-workspace-touch-fixture");
+        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-workspace-keyboard-fixture");
         use protocol::realtime_input::{InputBinding, InputPayload};
         let client = RemoteBridgeClient::new();
         let (sender, mut rx, address) = test_host(&client);
-        let directory = std::env::temp_dir().join(format!("rp-workspace-touch-{}-{}", std::process::id(),
+        let directory = std::env::temp_dir().join(format!("rp-workspace-keyboard-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir(&directory).unwrap();
         client.runtime().block_on(async {
             let workspace = workspace_bridge::MobileWorkspace::connect(address, directory.clone()).await.unwrap();
             workspace.command(&serde_json::to_string(&SessionCommand::Subscribe(SubscriptionRequest {
-                id: 256, source: CaptureSource::Display(1), width: 1280, height: 720,
+                id: 256, source: CaptureSource::MainDisplay, width: 1280, height: 720,
                 fps: 60, bitrate_kbps: 20_000, audio: false,
             })).unwrap()).await.unwrap();
             let (binding, request, peer) = loop {
@@ -2199,6 +2199,105 @@ mod tests {
             workspace.surface(&surface("ready")).unwrap();
             let keyboard_request = serde_json::json!({"id":256,"token":1}).to_string();
             let keyboard_owner = workspace.keyboard_context(&keyboard_request).unwrap();
+            let keyboard=|key:&str,pressed|serde_json::json!({"id":256,"token":1,
+                "binding":serde_json::from_str::<serde_json::Value>(&keyboard_owner).unwrap(),
+                "key":key,"pressed":pressed,"age_ms":0}).to_string();
+            let alive=serde_json::json!({"id":256,"token":1,
+                "binding":serde_json::from_str::<serde_json::Value>(&keyboard_owner).unwrap(),"alive":true,"age_ms":0}).to_string();
+            assert!(workspace.keyboard(&alive).is_err(),"no selected modifiers cannot sustain arbitrary input");
+            workspace.keyboard(&keyboard("ctrl",true)).unwrap();
+            assert!(matches!(next_input(&mut rx,true).await.payload,InputPayload::Event(protocol::InputEvent::ModifiersChanged(2))));
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_millis(90)).await;
+                workspace.keyboard(&alive).unwrap();
+            }
+            workspace.keyboard(&keyboard("Tab",true)).unwrap();
+            let tab=next_input(&mut rx,true).await;
+            assert_eq!(tab.binding,binding);
+            assert!(matches!(tab.payload,InputPayload::Event(protocol::InputEvent::Key{pressed:true,modifiers:2,..})),
+                "Ctrl+Tab must retain Ctrl after the normal 300ms watchdog interval");
+            workspace.keyboard(&keyboard("Tab",false)).unwrap();
+            workspace.keyboard(&keyboard("ctrl",false)).unwrap();
+            assert!(matches!(next_input(&mut rx,true).await.payload,InputPayload::Event(protocol::InputEvent::Key{pressed:false,..})));
+            assert!(matches!(next_input(&mut rx,true).await.payload,InputPayload::Event(protocol::InputEvent::ModifiersChanged(0))));
+            assert!(workspace.keyboard(&alive).is_err(),"IME dismissal releases its modifier liveness");
+            workspace.surface(&surface("end")).unwrap();
+            assert!(workspace.keyboard(&alive).is_err(),"old surface liveness cannot revive a detached keyboard");
+            drop(workspace);
+        });
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn workspace_touch_uses_shared_grant_and_releases_cancelled_drag() {
+        const CHILD:&str="WEAVELO_WORKSPACE_TOUCH_FIXTURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","tests::workspace_touch_uses_shared_grant_and_releases_cancelled_drag","--nocapture"])
+                .env(CHILD,"1").output().unwrap();
+            assert!(output.status.success(),"isolated touch fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
+        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-workspace-touch-fixture");
+        use protocol::realtime_input::{InputBinding, InputPayload};
+        let client = RemoteBridgeClient::new();
+        let (sender, mut rx, address) = test_host(&client);
+        let directory = std::env::temp_dir().join(format!("rp-workspace-touch-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&directory).unwrap();
+        client.runtime().block_on(async {
+            let workspace = workspace_bridge::MobileWorkspace::connect(address, directory.clone()).await.unwrap();
+            workspace.command(&serde_json::to_string(&SessionCommand::Subscribe(SubscriptionRequest {
+                id: 256, source: CaptureSource::MainDisplay, width: 1280, height: 720,
+                fps: 60, bitrate_kbps: 20_000, audio: false,
+            })).unwrap()).await.unwrap();
+            let (binding, request, peer) = loop {
+                let (message, peer) = next_control(&mut rx).await;
+                if let ControlMessage::Session(command) = message
+                    && let SessionCommand::RequestInputBinding { connection_id, id, source_revision, request, .. } = *command {
+                    break (InputBinding { connection_id, subscription_id: id, source_revision, epoch: [9; 16] }, request, peer);
+                }
+            };
+            sender.send_control(&ControlMessage::Session(Box::new(SessionCommand::InputBinding {
+                binding, request, host_time_ms: remote_core::session_crypto::now_unix_ms(),
+            })), peer).await.unwrap();
+            let held = next_input(&mut rx, false).await;
+            assert_eq!(held.binding, binding);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !workspace.events().contains("Subscribed") { tokio::time::sleep(Duration::from_millis(1)).await; }
+            }).await.unwrap();
+            let surface = |phase| serde_json::json!({"id":256,"token":1,"phase":phase}).to_string();
+            let gesture = |action, x| serde_json::json!({"id":256,"token":1,"mode":0,"width":1920,"height":1080,"event":{"Touch":{
+                "action":action,"pointer_id":7,"normalized_x":x,"normalized_y":0.5,"pressure":1.0}}}).to_string();
+            workspace.surface(&surface("begin")).unwrap();
+            // No frame: report the blocked input without accumulating a press.
+            assert!(workspace.touch(&gesture("Down", 0.1)).unwrap_err().contains("first video frame"));
+            workspace.surface(&surface("ready")).unwrap();
+            let keyboard_request = serde_json::json!({"id":256,"token":1}).to_string();
+            let keyboard_owner = workspace.keyboard_context(&keyboard_request).unwrap();
+            let navigation=|token,age_ms|serde_json::json!({"id":256,"token":token,
+                "binding":serde_json::from_str::<serde_json::Value>(&keyboard_owner).unwrap(),
+                "navigation":"home","age_ms":age_ms}).to_string();
+            assert!(workspace.keyboard(&navigation(1,0)).unwrap_err().contains("unavailable"),
+                "touch/input support is not proof of an Android navigation source");
+            sender.send_control(&ControlMessage::Session(Box::new(SessionCommand::Sources {
+                request_id:1,sources:vec![protocol::session::CaptureSourceInfo {
+                    source:CaptureSource::MainDisplay,title:"Phone".into(),application:"MediaProjection".into(),
+                    process_id:None,width:1080,height:2400,supports_input:true,camera:None}],
+                source_icons:vec![],icons:vec![],
+            })),peer).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1),async {
+                while !workspace.events().contains("Sources") {tokio::time::sleep(Duration::from_millis(1)).await;}
+            }).await.unwrap();
+            assert!(workspace.keyboard(&navigation(2,0)).unwrap_err().contains("surface changed"));
+            assert!(workspace.keyboard(&navigation(1,251)).unwrap_err().contains("expired"));
+            workspace.keyboard(&navigation(1,0)).unwrap();
+            for expected in [protocol::InputEvent::MouseDown(2),protocol::InputEvent::MouseUp(2)] {
+                let packet=next_input(&mut rx,true).await;
+                assert_eq!(packet.binding,binding);
+                assert!(matches!(packet.payload,InputPayload::Event(actual) if actual==expected));
+            }
             workspace.touch(&gesture("Move", 0.8)).unwrap();
             workspace.touch(&gesture("Down", 0.1)).unwrap();
             workspace.touch(&gesture("Move", 0.8)).unwrap();
@@ -2238,6 +2337,7 @@ mod tests {
                 "action":"Down","pointer_id":7,"normalized_x":0.5,"normalized_y":0.5,"pressure":1.0}}}});
             assert!(workspace.command(&raw.to_string()).await.is_err());
             workspace.surface(&surface("end")).unwrap();
+            assert!(workspace.keyboard(&navigation(1,0)).is_err(),"detached navigation cannot reuse a keyboard owner");
             assert!(workspace.keyboard_context(&keyboard_request).is_err(),
                 "a detached surface must still invalidate the keyboard");
             drop(workspace);

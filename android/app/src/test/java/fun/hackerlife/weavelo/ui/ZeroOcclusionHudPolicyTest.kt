@@ -1,9 +1,41 @@
 package `fun`.hackerlife.weavelo.ui
 
+import `fun`.hackerlife.weavelo.isAndroidProjectionSource
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ZeroOcclusionHudPolicyTest {
+    @Test
+    fun androidMarkerRequiresTheProjectionMainDisplay() {
+        assertEquals(true, isAndroidProjectionSource("MainDisplay", "MediaProjection"))
+        assertEquals(false, isAndroidProjectionSource("Window", "MediaProjection"))
+        assertEquals(false, isAndroidProjectionSource("MainDisplay", "Desktop"))
+    }
+
+    @Test
+    fun mobileClassificationRequiresPublisherMarkerAndExcludesCamera() {
+        assertEquals(true, ZeroOcclusionHudPolicy.isMobileTarget(true, false))
+        assertEquals(false, ZeroOcclusionHudPolicy.isMobileTarget(false, false))
+        assertEquals(false, ZeroOcclusionHudPolicy.isMobileTarget(true, true))
+        assertEquals(true, ZeroOcclusionHudPolicy.supportsRemoteHome(true, false, "MainDisplay"))
+        assertEquals(false, ZeroOcclusionHudPolicy.supportsRemoteHome(true, false, "Window"))
+        assertEquals(false, ZeroOcclusionHudPolicy.supportsRemoteHome(false, false, "MainDisplay"))
+        assertEquals(false, ZeroOcclusionHudPolicy.supportsRemoteHome(true, true, "MainDisplay"))
+        assertEquals(true, ZeroOcclusionHudPolicy.supportsRemoteBack(true, false, "MainDisplay", false))
+        assertEquals(true, ZeroOcclusionHudPolicy.supportsRemoteBack(true, false, "Window", true))
+        assertEquals(false, ZeroOcclusionHudPolicy.supportsRemoteBack(true, false, "Other", false))
+        assertEquals(false, ZeroOcclusionHudPolicy.supportsRemoteBack(false, false, "Window", true))
+    }
+
+    @Test
+    fun onlyDeliberateInwardHandleDragRevealsControls() {
+        assertEquals(true, ZeroOcclusionHudPolicy.revealsControls(-24f, 24f))
+        assertEquals(false, ZeroOcclusionHudPolicy.revealsControls(-23f, 24f))
+        assertEquals(false, ZeroOcclusionHudPolicy.revealsControls(30f, 24f))
+        assertEquals(false, ZeroOcclusionHudPolicy.revealsControls(Float.NaN, 24f))
+        assertEquals(false, ZeroOcclusionHudPolicy.revealsControls(-24f, 0f))
+    }
+
     @Test
     fun edgePillStaysAwayFromTopCutoutAndBottomGestureBar() {
         assertEquals(0.45f, ZeroOcclusionHudPolicy.clampEdgePillFraction(Float.NaN), 0.0001f)
@@ -20,42 +52,8 @@ class ZeroOcclusionHudPolicyTest {
     }
 
     @Test
-    fun twoStageBackGuardPreventsAccidentalDisconnectDuringEdgeSwipe() {
-        // 1. Open overlay/keyboard is dismissed first without disconnecting
-        assertEquals(
-            BackPressAction.DismissLocalOverlay,
-            ZeroOcclusionHudPolicy.evaluateBackPress(
-                hasLocalOverlayOpen = true,
-                lastBackPromptMs = 1_000L,
-                nowMs = 1_500L,
-            )
-        )
-        // 2. First back press in full-bleed canvas prompts and reveals the Orbit Pod
-        assertEquals(
-            BackPressAction.PromptAndRevealPod,
-            ZeroOcclusionHudPolicy.evaluateBackPress(
-                hasLocalOverlayOpen = false,
-                lastBackPromptMs = 0L,
-                nowMs = 5_000L,
-            )
-        )
-        // 3. Second back press within 3s window confirms disconnect
-        assertEquals(
-            BackPressAction.DisconnectSession,
-            ZeroOcclusionHudPolicy.evaluateBackPress(
-                hasLocalOverlayOpen = false,
-                lastBackPromptMs = 5_000L,
-                nowMs = 7_500L,
-            )
-        )
-        // 4. Back press after the 3s window expires prompts again instead of disconnecting
-        assertEquals(
-            BackPressAction.PromptAndRevealPod,
-            ZeroOcclusionHudPolicy.evaluateBackPress(
-                hasLocalOverlayOpen = false,
-                lastBackPromptMs = 5_000L,
-                nowMs = 8_500L,
-            )
-        )
+    fun backNeverDisconnectsAndDismissesLocalOverlaysFirst() {
+        assertEquals(BackPressAction.DismissLocalOverlay, ZeroOcclusionHudPolicy.evaluateBackPress(true))
+        assertEquals(BackPressAction.ToggleControls, ZeroOcclusionHudPolicy.evaluateBackPress(false))
     }
 }

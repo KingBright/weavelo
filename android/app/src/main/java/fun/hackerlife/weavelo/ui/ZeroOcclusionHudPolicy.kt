@@ -2,14 +2,25 @@ package `fun`.hackerlife.weavelo.ui
 
 enum class BackPressAction {
     DismissLocalOverlay,
-    PromptAndRevealPod,
-    DisconnectSession,
+    ToggleControls,
 }
 
 object ZeroOcclusionHudPolicy {
-    const val CONFIRM_WINDOW_MS: Long = 3_000L
     const val MIN_VERTICAL_BIAS: Float = 0.14f
     const val MAX_VERTICAL_BIAS: Float = 0.86f
+
+    /** Only the publisher's source directory identifies Android; touch capability does not. */
+    fun isMobileTarget(hasMediaProjection: Boolean, isCamera: Boolean): Boolean = hasMediaProjection && !isCamera
+
+    fun supportsRemoteHome(hasMediaProjection: Boolean, isCamera: Boolean, source: String): Boolean =
+        isMobileTarget(hasMediaProjection, isCamera) && source == "MainDisplay"
+
+    fun supportsRemoteBack(hasMediaProjection: Boolean, isCamera: Boolean, source: String, isWindow: Boolean): Boolean =
+        isMobileTarget(hasMediaProjection, isCamera) && (source == "MainDisplay" || isWindow)
+
+    /** Reveal only on a deliberate inward movement from the right handle. */
+    fun revealsControls(deltaX: Float, thresholdPx: Float): Boolean =
+        deltaX.isFinite() && thresholdPx.isFinite() && thresholdPx > 0f && deltaX <= -thresholdPx
 
     /**
      * Clamps the magnetic edge micro-pill's vertical position so it stays clear of
@@ -40,25 +51,7 @@ object ZeroOcclusionHudPolicy {
         else -> 0.88f
     }
 
-    /**
-     * Two-stage anti-mispress back guard for mobile remote sessions:
-     * 1. If any local overlay (keyboard, sticky modifier bar, source picker, actions menu, or expanded HUD pod)
-     *    is open, the back gesture closes that local overlay first without disconnecting.
-     * 2. In full-bleed canvas mode, the first back swipe reveals the Orbit Pod + anti-mispress hint;
-     *    only a second back swipe within [confirmWindowMs] disconnects the session.
-     */
-    fun evaluateBackPress(
-        hasLocalOverlayOpen: Boolean,
-        lastBackPromptMs: Long,
-        nowMs: Long,
-        confirmWindowMs: Long = CONFIRM_WINDOW_MS,
-    ): BackPressAction {
-        if (hasLocalOverlayOpen) {
-            return BackPressAction.DismissLocalOverlay
-        }
-        if (lastBackPromptMs > 0L && nowMs >= lastBackPromptMs && (nowMs - lastBackPromptMs) <= confirmWindowMs) {
-            return BackPressAction.DisconnectSession
-        }
-        return BackPressAction.PromptAndRevealPod
-    }
+    /** Back first dismisses local UI; it never disconnects a live session. */
+    fun evaluateBackPress(hasLocalOverlayOpen: Boolean): BackPressAction =
+        if (hasLocalOverlayOpen) BackPressAction.DismissLocalOverlay else BackPressAction.ToggleControls
 }

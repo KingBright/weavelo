@@ -38,6 +38,7 @@ fn file_status(event:&FileTransferEvent)->String {
 
 #[derive(Default)]
 struct Queues {
+    sources: Vec<protocol::session::CaptureSourceInfo>,
     events: VecDeque<serde_json::Value>,
     video: HashMap<u32, remote_core::video_queue::EncodedQueue<EncodedVideoNalu>>,
     audio: HashMap<u32, VecDeque<EncodedAudioPacket>>,
@@ -227,8 +228,10 @@ impl MobileWorkspace {
                         {
                             let mut touches = event_touches.lock().unwrap();
                             let release = match &event {
-                                SessionCommand::Subscribed { id, supports_input, max_touch_points, .. }
-                                | SessionCommand::SourceSwitched { id, supports_input, max_touch_points, .. } => touches.get_mut(id).and_then(|t| t.capabilities(*supports_input,*max_touch_points)),
+                                SessionCommand::Subscribed { id, supports_input, max_touch_points, .. } => touches.get_mut(id).and_then(|t| t.capabilities(*supports_input,*max_touch_points)),
+                                SessionCommand::SourceSwitched { id, request_id, source, supports_input, max_touch_points, .. } => touches.get_mut(id).filter(|t|t.revision==*request_id).and_then(|t| {
+                                    t.source=Some(*source); t.capabilities(*supports_input,*max_touch_points)
+                                }),
                                 SessionCommand::Unsubscribed { id } => touches.remove(id).and_then(|mut t| t.invalidate()),
                                 SessionCommand::Closed { .. } => { touches.clear(); None },
                                 _ => None,
@@ -238,6 +241,11 @@ impl MobileWorkspace {
                             }
                         }
                         let mut state = state.lock().unwrap();
+                        match &event {
+                            SessionCommand::Sources { sources, .. } => state.sources=sources.clone(),
+                            SessionCommand::Closed { .. } => state.sources.clear(),
+                            _ => {}
+                        }
                         if let SessionCommand::Subscribed { id, audio_owner:Some(owner), .. } = &event { owners.insert(*id, *owner); }
                         if let SessionCommand::Unsubscribed { id } = &event {
                             state.video.remove(id);
@@ -304,6 +312,7 @@ impl MobileWorkspace {
                     touches.get_mut(id).and_then(|t| {
                         let release = t.invalidate();
                         t.revision = *request_id;
+                        t.source = None;
                         t.support(false);
                         release
                     })
@@ -338,10 +347,9 @@ impl MobileWorkspace {
         if self.pumps.lock().unwrap().len() >= protocol::session::MAX_SUBSCRIPTIONS {
             return Err("too many subscriptions".into());
         }
-        self.touches
-            .lock()
-            .unwrap()
-            .insert(id, WorkspaceTouch::new());
+        let mut touch=WorkspaceTouch::new();
+        touch.source=Some(request.source);
+        self.touches.lock().unwrap().insert(id,touch);
         let (tx, mut rx) = remote_core::video_queue::channel(4);
         self.connection
             .subscribe(
@@ -449,7 +457,7 @@ impl MobileWorkspace {
     }
     pub fn keyboard(&self,json:&str)->Result<(),String> {
         #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,binding:remote_core::workspace_session::TextInputOwner,
-            text:Option<String>,key:Option<String>,#[serde(default)]pressed:bool,#[serde(default)]age_ms:u64}
+            text:Option<String>,key:Option<String>,navigation:Option<String>,#[serde(default)]alive:bool,#[serde(default)]pressed:bool,#[serde(default)]age_ms:u64}
         let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
         let mut touches=self.touches.lock().unwrap();
         let touch=touches.get_mut(&request.id).ok_or("video surface is unavailable")?;
@@ -458,7 +466,24 @@ impl MobileWorkspace {
         }
         let binding=self.connection.text_input_binding(request.binding).ok_or("remote keyboard source changed")?;
         if touch.keyboard_binding(request.token,Some(binding))!=Some(binding) {return Err("remote keyboard surface changed".into());}
-        if let Some(text)=request.text {self.connection.try_commit_text_for_owner(request.binding,&text,std::time::Duration::from_millis(request.age_ms))}
+        if request.alive {
+            if request.text.is_some() || request.key.is_some() || request.navigation.is_some()
+                || request.age_ms>protocol::realtime_input::MAX_INPUT_AGE_MS {
+                return Err("invalid or expired keyboard activity".into());
+            }
+            if !touch.keyboard_holds_modifiers(binding) || !self.connection.refresh_bound_input_with_age(binding,std::time::Duration::from_millis(request.age_ms)) {
+                return Err("Held keys expired; select the shortcut again".into());
+            }
+            Ok(())
+        } else if let Some(action)=request.navigation {
+            if request.text.is_some() || request.key.is_some() || request.age_ms>protocol::realtime_input::MAX_INPUT_AGE_MS {
+                return Err("invalid or expired navigation event".into());
+            }
+            let source=touch.source.ok_or("remote navigation source changed")?;
+            let button=protocol::session::android_navigation_button(&self.queues.lock().unwrap().sources,source,&action)
+                .ok_or("navigation is unavailable for this source")?;
+            self.connection.try_bound_button_tap(binding,button,std::time::Duration::from_millis(request.age_ms))
+        } else if let Some(text)=request.text {self.connection.try_commit_text_for_owner(request.binding,&text,std::time::Duration::from_millis(request.age_ms))}
         else if let Some(key)=request.key {
             for event in touch.key_events(binding,&key,request.pressed) {
                 if !self.connection.try_bound_input(binding,Some(event)) {return Err("remote keyboard queue is full".into());}

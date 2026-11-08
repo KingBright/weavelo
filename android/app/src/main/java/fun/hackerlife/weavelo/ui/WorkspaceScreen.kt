@@ -16,31 +16,26 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -70,9 +65,6 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val typing = state.panes.isNotEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) > 0
     var hudVisible by remember(sessionKey) { mutableStateOf(true) }
     var hudInteraction by remember(sessionKey) { mutableLongStateOf(0L) }
-    var edgePillFraction by rememberSaveable(sessionKey) { mutableFloatStateOf(0.32f) }
-    var lastBackPromptMs by remember(sessionKey) { mutableLongStateOf(0L) }
-    var backExitPromptVisible by remember(sessionKey) { mutableStateOf(false) }
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     val activePane = state.panes.firstOrNull { it.id == state.selected } ?: state.panes.firstOrNull()
@@ -108,38 +100,20 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val scope = rememberCoroutineScope()
     var selectedSettings by remember { mutableStateOf<WorkspacePane?>(null) }
     BackHandler(enabled = foreground) {
-        val anyOverlayOpen = sourcePicker || actionsOpen || selectedSettings != null ||
-            sharedFilesOpen || receivedFiles || backgroundSettings || (hudVisible && state.panes.isNotEmpty())
-        val nowMs = android.os.SystemClock.uptimeMillis()
-        when (ZeroOcclusionHudPolicy.evaluateBackPress(hasLocalOverlayOpen = anyOverlayOpen, lastBackPromptMs = lastBackPromptMs, nowMs = nowMs)) {
-            BackPressAction.DismissLocalOverlay -> {
-                when {
-                    sourcePicker -> sourcePicker = false
-                    actionsOpen -> actionsOpen = false
-                    selectedSettings != null -> selectedSettings = null
-                    sharedFilesOpen -> sharedFilesOpen = false
-                    receivedFiles -> receivedFiles = false
-                    backgroundSettings -> backgroundSettings = false
-                    hudVisible && state.panes.isNotEmpty() -> hudVisible = false
-                }
-            }
-            BackPressAction.PromptAndRevealPod -> {
-                lastBackPromptMs = nowMs
-                backExitPromptVisible = true
-                hudVisible = true
-                hudInteraction++
-            }
-            BackPressAction.DisconnectSession -> disconnect()
+        val hasOverlay = sourcePicker || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || backgroundSettings
+        when {
+            ZeroOcclusionHudPolicy.evaluateBackPress(hasOverlay) == BackPressAction.ToggleControls -> { hudVisible = !hudVisible; hudInteraction++ }
+            sourcePicker -> sourcePicker = false
+            actionsOpen -> actionsOpen = false
+            selectedSettings != null -> selectedSettings = null
+            sharedFilesOpen -> sharedFilesOpen = false
+            receivedFiles -> receivedFiles = false
+            backgroundSettings -> backgroundSettings = false
         }
     }
-    LaunchedEffect(lastBackPromptMs) {
-        if (lastBackPromptMs > 0L) {
-            delay(ZeroOcclusionHudPolicy.CONFIRM_WINDOW_MS)
-            backExitPromptVisible = false
-        }
-    }
-    LaunchedEffect(hudVisible, hudInteraction, actionsOpen, sourcePicker, selectedSettings, typing, state.panes.isEmpty()) {
-        if (hudVisible && state.panes.isNotEmpty() && !actionsOpen && !sourcePicker && selectedSettings == null && !typing) {
+    LaunchedEffect(hudVisible, hudInteraction, actionsOpen, sourcePicker, selectedSettings, typing, state.panes.isEmpty(), state.connected) {
+        if (!state.connected) hudVisible = true
+        if (state.connected && hudVisible && state.panes.isNotEmpty() && !actionsOpen && !sourcePicker && selectedSettings == null && !typing) {
             delay(3500)
             hudVisible = false
         }
@@ -221,8 +195,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         }
     }
     WeaveloTheme {
-        BoxWithConstraints(Modifier.fillMaxSize().background(ColorBaseBg)) {
-            val containerHeightPx = with(LocalDensity.current) { maxHeight.toPx().coerceAtLeast(1f) }
+        Box(Modifier.fillMaxSize().background(ColorBaseBg)) {
             Column(Modifier.fillMaxSize().imePadding()) {
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
             if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
@@ -236,11 +209,17 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                 key(pane.id, state.connectionGeneration) {
                                     Box(Modifier.weight(1f).fillMaxHeight().padding(if (visible.size > 1) 2.dp else 0.dp)) {
                                         if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration,
-                                            hudVisible = hudVisible, onHudInteraction = { hudInteraction++ }, onError = { localError = it })
+                                            mobileTarget = ZeroOcclusionHudPolicy.isMobileTarget(
+                                                state.androidHost, pane.source.isCamera),
+                                            isPhoneScreen = ZeroOcclusionHudPolicy.supportsRemoteHome(
+                                                state.androidHost, pane.source.isCamera, pane.source.source.toString()),
+                                            canRemoteBack = ZeroOcclusionHudPolicy.supportsRemoteBack(
+                                                state.androidHost, pane.source.isCamera,
+                                                pane.source.source.toString(), pane.source.isWindow),
+                                            onMore = { hudVisible = true; hudInteraction++; actionsOpen = true }, onError = { localError = it; hudVisible = true; hudInteraction++ })
                                         if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
-                                            .safeDrawingPadding().padding(top = 56.dp, start = 6.dp, end = 6.dp)
-                                            .background(ColorSurfaceCard.copy(alpha = .88f), RoundedCornerShape(14.dp))
-                                            .border(1.dp, ColorBorderFine, RoundedCornerShape(14.dp))) {
+                                            .safeDrawingPadding().padding(top = 56.dp)
+                                            .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
                                                 MobileAction(MobileSymbol.CameraSwitch, "Switch camera", state.connected) {
@@ -280,24 +259,18 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }
             if ((hudVisible || state.panes.isEmpty()) && !typing) Column(
                 Modifier.align(Alignment.TopCenter).fillMaxWidth().safeDrawingPadding().padding(6.dp)
-                    .background(ColorSurfaceCard.copy(alpha = .92f), RoundedCornerShape(18.dp))
-                    .border(1.dp, ColorBorderFine, RoundedCornerShape(18.dp))
+                    .background(ColorSurfaceCard.copy(alpha = .9f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
                     .pointerInput(sessionKey) {
                         awaitPointerEventScope { while (true) if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) hudInteraction++ }
                     }) {
             if (!typing) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                MobileAction(MobileSymbol.Back, "Disconnect", onClick = disconnect)
+                MobileAction(MobileSymbol.Back, "Hide controls", onClick = { hudVisible = false })
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(remoteDevice?.name ?: "Remote device",
                         color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                         maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     Text(if (state.incomingEnded) "Sharing ended" else if (state.connected) "Connected" else "Connecting…", color = ColorTextSecondary,
                         style = MaterialTheme.typography.labelSmall)
-                }
-                if (state.panes.isNotEmpty()) {
-                    TextButton(onClick = { hudVisible = false }) {
-                        Text("Dock", color = ColorAccentCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    }
                 }
                 MobileAction(MobileSymbol.Sources, "Choose screen or app window", state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
@@ -309,6 +282,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 Box {
                     MobileAction(MobileSymbol.More, "Connection actions") { actionsOpen = true }
                     DropdownMenu(expanded = actionsOpen, onDismissRequest = { actionsOpen = false }) {
+                TextButton(onClick = { actionsOpen = false; disconnect() }) { Text("Disconnect") }
                 if (!state.connected && !state.incomingEnded) TextButton(onClick = { actionsOpen = false;  WorkspaceClient.reconnect() }) { Text("Reconnect") }
                 TextButton(onClick = { actionsOpen = false;  WorkspaceClient.layout(!state.grid) }) { Text(if (state.grid) "Use tabs" else "Show together") }
                 TextButton(onClick = { actionsOpen = false;  pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }, enabled = state.connected && state.files) { Text("Send file") }
@@ -358,72 +332,16 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }
             }
             (localError ?: state.status.takeUnless { it == "Connected" })?.takeIf { it.isNotBlank() }?.let {
-                Text(it, color = Color.LightGray, maxLines = 2)
+                Text(it, color = ColorTextSecondary, maxLines = 2)
             }
             if (!typing && !state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title) } }
             }
             }
-            if (!hudVisible && state.panes.isNotEmpty() && !typing) {
-                // Draggable Magnetic Edge Micro-Pill: leaves all 4 corners and top/bottom bars 100% unobstructed.
-                val pillYOffsetPx = ((edgePillFraction - 0.5f) * containerHeightPx).toInt()
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .offset { IntOffset(0, pillYOffsetPx) }
-                        .safeDrawingPadding()
-                        .padding(end = 3.dp)
-                        .alpha(ZeroOcclusionHudPolicy.edgePillAlpha(touching = false, imeVisible = typing))
-                        .clip(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp, topEnd = 4.dp, bottomEnd = 4.dp))
-                        .background(ColorSurfaceElevated.copy(alpha = 0.88f))
-                        .border(1.dp, ColorAccentCyan.copy(alpha = 0.45f), RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp, topEnd = 4.dp, bottomEnd = 4.dp))
-                        .pointerInput(sessionKey, containerHeightPx) {
-                            detectVerticalDragGestures { change, dragAmount ->
-                                change.consume()
-                                edgePillFraction = ZeroOcclusionHudPolicy.dragEdgePillFraction(
-                                    currentFraction = edgePillFraction,
-                                    deltaY = dragAmount,
-                                    containerHeightPx = containerHeightPx
-                                )
-                            }
-                        }
-                        .clickable {
-                            hudVisible = true
-                            hudInteraction++
-                        }
-                        .padding(horizontal = 6.dp, vertical = 14.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Box(Modifier.size(5.dp).background(if (state.connected) ColorAccentEmerald else ColorAccentGold, CircleShape))
-                        Box(Modifier.width(3.dp).height(20.dp).background(ColorAccentCyan, RoundedCornerShape(2.dp)))
-                    }
-                }
-            }
-            if (backExitPromptVisible) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .safeDrawingPadding()
-                        .padding(bottom = 58.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(ColorSurfaceElevated.copy(alpha = 0.95f))
-                        .border(1.dp, ColorAccentGold.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(Modifier.size(7.dp).background(ColorAccentGold, CircleShape))
-                    Text(
-                        text = "Swipe Back again within 3s to disconnect · or tap Back in top bar",
-                        color = ColorTextPrimary,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
+            if (!hudVisible && state.panes.isNotEmpty() && !typing) MobileAction(MobileSymbol.More, "Show stream controls",
+                modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp).size(36.dp)
+                    .background(ColorSurfaceCard.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))) {
+                hudVisible = true; hudInteraction++
             }
         }
         selectedSettings?.let { pane ->
@@ -481,7 +399,9 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String) -> Unit)
 }
 
 @Composable
-private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long, hudVisible: Boolean, onHudInteraction: () -> Unit, onError: (String) -> Unit) {
+private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long,
+    mobileTarget: Boolean, isPhoneScreen: Boolean, canRemoteBack: Boolean,
+    onMore: () -> Unit, onError: (String) -> Unit) {
     pane.videoError?.let { reason ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -505,29 +425,51 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val token = surfaceToken
     var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
     var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
-    var isModifierBarVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
-    var heldModifiers by remember(pane.id,sessionKey,generation,token) { mutableStateOf(emptySet<String>()) }
-    val virtualKeys = remember(pane.id,sessionKey,generation,token) {
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var imeWasVisible by remember(pane.id, sessionKey, generation, token) { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (imeWasVisible && !imeVisible) keyboardVisible = false
+        imeWasVisible = imeVisible
+    }
+    var handleFraction by rememberSaveable(pane.id, sessionKey, generation) { mutableFloatStateOf(0.5f) }
+    var mobileControls by remember(pane.id, sessionKey, generation) { mutableStateOf(false) }
+    var mobileMore by remember(pane.id, sessionKey, generation) { mutableStateOf(false) }
+    var heldModifiers by remember(pane.id, sessionKey, generation, token) { mutableStateOf(emptySet<String>()) }
+    var modifierBinding by remember(pane.id, sessionKey, generation, token) { mutableStateOf<String?>(null) }
+    val virtualKeys = remember(pane.id, sessionKey, generation, token) {
         StickyKeyController { key, pressed ->
-            val owner = keyboardBinding ?: WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)?.also { keyboardBinding = it }
-            if (owner != null) {
+            modifierBinding?.let { owner ->
                 WorkspaceClient.keyboard(pane.id, sessionKey, generation, token, owner, key = key, pressed = pressed)
             }
         }
     }
     DisposableEffect(virtualKeys) { onDispose { virtualKeys.releaseAll() } }
-    LaunchedEffect(pane.input, token, isModifierBarVisible) {
-        if (!pane.input || token == 0L || !isModifierBarVisible) {
-            virtualKeys.releaseAll()
-            heldModifiers = emptySet()
+    LaunchedEffect(pane.input, token, imeVisible) {
+        if (!pane.input || token == 0L || !imeVisible) {
+            virtualKeys.releaseAll(); heldModifiers = emptySet(); modifierBinding = null
         }
     }
-    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val heldOwner = modifierBinding
+    LaunchedEffect(imeVisible, heldModifiers, pane.input, token, heldOwner, pane.inputError) {
+        if (heldModifiers.isNotEmpty() && pane.inputError != null) {
+            virtualKeys.forgetAll(); heldModifiers = emptySet(); modifierBinding = null
+            keyboardVisible = false; keyboardBinding = null
+            onError("Keyboard control changed. Reopen the keyboard and select shortcuts again.")
+        } else if (imeVisible && heldModifiers.isNotEmpty() && pane.input && token != 0L && heldOwner != null) {
+            while (isActive) {
+                delay(100)
+                WorkspaceClient.keyboardAlive(pane.id, sessionKey, generation, token, heldOwner)
+            }
+        }
+    }
+    BackHandler(enabled = keyboardVisible || mobileMore || mobileControls) {
+        when { mobileMore -> mobileMore = false; keyboardVisible -> keyboardVisible = false; else -> mobileControls = false }
+    }
     var videoStatus by remember(pane.id, sessionKey, generation) { mutableStateOf<String?>("Waiting for video…") }
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
-    var touchMode by remember(pane.id, sessionKey, generation, pane.maxTouchPoints) {
-        mutableStateOf(if(pane.maxTouchPoints>0) TouchMode.NATIVE else TouchMode.DIRECT)
+    var touchMode by remember(pane.id, sessionKey, generation, pane.maxTouchPoints, pane.input) {
+        mutableStateOf(if (!pane.input) TouchMode.VIEW else if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT)
     }
     var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
@@ -574,14 +516,22 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         enabled = pane.input && token != 0L && keyboardOwner != null,
         onText = { text -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,text=text) } },
         onKey = { key,pressed -> keyboardOwner?.let { WorkspaceClient.keyboard(pane.id,sessionKey,generation,token,it,key=key,pressed=pressed) } })
-    Box(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
+      BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+        val viewportHeightPx = with(LocalDensity.current) { maxHeight.toPx().coerceAtLeast(1f) }
+        LaunchedEffect(maxWidth, maxHeight, imeVisible) {
+            mobileMore = false
+            mobileControls = false
+        }
         RemoteViewport(
             dimensions = dimensions, transformState = transform,
             rotation = pane.source.rotation,
             enabled = pane.input && token != 0L,
             touchMode = touchMode,
             contentKey = token to dimensions,
-            modifier = Modifier.fillMaxSize(),
+            // The 44 dp handle target lives in this local gutter, outside the
+            // measured video and its inverse input transform even when collapsed.
+            modifier = Modifier.fillMaxSize().padding(end = if (mobileTarget) 44.dp else 0.dp),
             onViewportSizeChanged = { measured = it },
             sendTouch = { action, id, x, y, pressure, eventTime ->
                 val presentation = nativeViewport.get()?.presentation
@@ -784,85 +734,122 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
             }
         )
-        if (hudVisible && !imeVisible && (pane.input || transform.value.scale > 1.05f)) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .safeDrawingPadding()
-                    .padding(6.dp)
-                    .pointerInput(sessionKey) {
-                        awaitPointerEventScope { while (true) if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) onHudInteraction() }
-                    },
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (isModifierBarVisible && pane.input) {
-                    Row(
-                        modifier = Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(ColorSurfaceElevated.copy(alpha = 0.94f))
-                            .border(1.dp, ColorBorderFine, RoundedCornerShape(999.dp))
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
-                            VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = pane.input && token != 0L) {
-                                onHudInteraction()
-                                virtualKeys.tap(key, pane.input && token != 0L)
-                                heldModifiers = virtualKeys.selected()
-                            }
+        if (mobileTarget && !imeVisible) {
+            Box(Modifier.align(Alignment.CenterEnd)
+                .offset { IntOffset(0, ((handleFraction - .5f) * viewportHeightPx).toInt()) }
+                .size(width = 44.dp, height = 64.dp)
+                .systemGestureExclusion { coordinates ->
+                    Rect(0f, 0f, coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
+                }
+                .pointerInput(pane.id, sessionKey, generation, token, viewportHeightPx) {
+                    var horizontal = 0f
+                    detectDragGestures(onDragStart = { horizontal = 0f }, onDragEnd = {
+                        if (ZeroOcclusionHudPolicy.revealsControls(horizontal, 24.dp.toPx())) {
+                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                            pointers.clear(); touching = false; mobileControls = true
                         }
+                    }) { change, drag ->
+                        change.consume(); horizontal += drag.x
+                        handleFraction = ZeroOcclusionHudPolicy.dragEdgePillFraction(handleFraction, drag.y, viewportHeightPx)
                     }
                 }
-                Row(
-                    modifier = Modifier
-                        .heightIn(min = 40.dp)
-                        .background(ColorSurfaceCard.copy(alpha = .92f), RoundedCornerShape(18.dp))
-                        .border(1.dp, ColorBorderFine, RoundedCornerShape(18.dp))
-                        .padding(horizontal = 4.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (transform.value.scale > 1.05f) {
-                        TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset zoom") }
+                .clickable(onClickLabel = "Show remote controls") {
+                    WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                    pointers.clear(); touching = false; mobileControls = !mobileControls
+                }
+                .padding(start = 39.dp, top = 12.dp, bottom = 12.dp)
+                .background(ColorAccentCyan, RoundedCornerShape(4.dp)))
+            if (mobileControls) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
+                .background(ColorSurfaceCard, RoundedCornerShape(18.dp)).padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                TextButton(enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
+                    val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                    owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.BACK) }
+                }) { Text("Back") }
+                TextButton(enabled = pane.input && token != 0L && pane.accepted && isPhoneScreen, onClick = {
+                    val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                    owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.HOME) }
+                }) { Text("Home") }
+                TextButton(enabled = pane.input && token != 0L, onClick = {
+                    if (keyboardVisible) keyboardVisible = false else {
+                        keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                        keyboardVisible = keyboardBinding != null
                     }
-                    if (pane.input) TextButton(onClick = {
-                        WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
-                        pointers.clear();touching=false
-                        touchMode = if(touchMode==TouchMode.TRACKPAD) {
-                            if(pane.maxTouchPoints>0) TouchMode.NATIVE else TouchMode.DIRECT
-                        } else TouchMode.TRACKPAD
-                    }) {
-                        Icon(if (touchMode != TouchMode.TRACKPAD) MobileSymbol.Touch.image else MobileSymbol.Trackpad.image,
-                            contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(when(touchMode){TouchMode.NATIVE->"Multi-touch";TouchMode.TRACKPAD->"Touchpad";TouchMode.VIEW->"Adjust view";else->"Direct touch"})
-                    }
-                    if(pane.input && pane.maxTouchPoints>0) TextButton(onClick={
-                        WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
-                        pointers.clear();touching=false
-                        touchMode=if(touchMode==TouchMode.VIEW) TouchMode.NATIVE else TouchMode.VIEW
-                    }) { Text(if(touchMode==TouchMode.VIEW) "Control" else "Adjust view") }
-                    if (pane.input) {
-                        TextButton(onClick = { isModifierBarVisible = !isModifierBarVisible }, enabled = token != 0L) {
-                            Text(
-                                text = if (heldModifiers.isNotEmpty()) "Keys (${heldModifiers.size})" else if (isModifierBarVisible) "Hide keys" else "Keys",
-                                color = if (heldModifiers.isNotEmpty()) ColorAccentGold else if (isModifierBarVisible) ColorAccentCyan else ColorTextPrimary
-                            )
-                        }
-                    }
-                    if (pane.input) MobileAction(MobileSymbol.Keyboard, if (keyboardVisible) "Hide keyboard" else "Show keyboard",
-                        enabled = token != 0L, modifier = Modifier.size(40.dp)) {
-                        if (keyboardVisible) keyboardVisible = false else {
-                            keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
-                            keyboardVisible = keyboardBinding != null
-                        }
+                }) { Text("Keyboard") }
+                Box {
+                    TextButton(onClick = { mobileMore = true }) { Text("More") }
+                    DropdownMenu(expanded = mobileMore, onDismissRequest = { mobileMore = false }) {
+                        DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.VIEW) "Control" else "Adjust view") }, onClick = {
+                            mobileMore = false
+                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                            pointers.clear(); touching = false
+                            touchMode = if (touchMode == TouchMode.VIEW) {
+                                if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
+                            } else TouchMode.VIEW
+                        })
+                        DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.TRACKPAD) {
+                            if (pane.maxTouchPoints > 0) "Use multi-touch" else "Use direct touch"
+                        } else "Use trackpad") }, onClick = {
+                            mobileMore = false
+                            WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                            pointers.clear(); touching = false
+                            touchMode = if (touchMode == TouchMode.TRACKPAD) {
+                                if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
+                            } else TouchMode.TRACKPAD
+                        })
+                        if (!pane.input) DropdownMenuItem(
+                            text = { Text("Remote control is unavailable; you can adjust the view") },
+                            enabled = false, onClick = {})
+                        if (!canRemoteBack) DropdownMenuItem(
+                            text = { Text("Back is available for an Android screen or app window") },
+                            enabled = false, onClick = {})
+                        if (!isPhoneScreen) DropdownMenuItem(
+                            text = { Text("Home is available for the shared Android screen") },
+                            enabled = false, onClick = {})
+                        DropdownMenuItem(text = { Text("Reset zoom") }, onClick = { mobileMore = false; transform.value = transform.value.reset() })
+                        DropdownMenuItem(text = { Text("Connection actions") }, onClick = { mobileMore = false; onMore() })
                     }
                 }
             }
         }
+      }
+      if (!mobileTarget && !imeVisible) {
+        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            TextButton(enabled = pane.input && token != 0L, onClick = {
+                WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                pointers.clear(); touching = false; touchMode = TouchMode.TRACKPAD
+            }) { Text(if (touchMode == TouchMode.TRACKPAD) "Trackpad ✓" else "Trackpad") }
+            TextButton(enabled = pane.input && token != 0L, onClick = {
+                WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                pointers.clear(); touching = false
+                touchMode = if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
+            }) { Text(if (touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE) "Direct ✓" else "Direct") }
+            TextButton(enabled = pane.input && token != 0L, onClick = {
+                if (keyboardVisible) keyboardVisible = false else {
+                    keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                    keyboardVisible = keyboardBinding != null
+                }
+            }) { Text("Keyboard") }
+            TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset") }
+        }
+      }
+      if (imeVisible && pane.input) {
+        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
+                VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = token != 0L) {
+                    val owner = if (heldModifiers.isNotEmpty()) modifierBinding else keyboardBinding
+                    if (owner != null) {
+                        modifierBinding = owner
+                        virtualKeys.tap(key, token != 0L)
+                        heldModifiers = virtualKeys.selected()
+                        if (heldModifiers.isEmpty()) modifierBinding = null
+                    }
+                }
+            }
+        }
+      }
     }
 }
 

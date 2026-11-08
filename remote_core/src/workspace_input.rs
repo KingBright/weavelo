@@ -13,13 +13,14 @@ pub struct TextInputOwner {
     pub generation: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct InputState {
     slots: HashMap<u32, Slot>,
     next_request: u64,
     next_text: u64,
     next_owner: u64,
 }
+#[derive(Clone)]
 struct Slot {
     enabled: bool,
     revision: u32,
@@ -28,6 +29,7 @@ struct Slot {
     lease: Option<Lease>,
     owner: u64,
 }
+#[derive(Clone)]
 struct Lease {
     binding: InputBinding,
     host_ms: u64,
@@ -212,10 +214,15 @@ impl InputState {
     /// Only a healthy input frontend can extend its current held assertion.
     /// Grants/transport snapshots never call this and cannot revive expired keys.
     pub(crate) fn refresh_bound(&mut self,binding:InputBinding)->bool {
-        if self.binding(binding.subscription_id,binding.source_revision)!=Some(binding){return false;}
+        self.refresh_bound_with_age(binding,std::time::Duration::ZERO)
+    }
+    pub(crate) fn refresh_bound_with_age(&mut self,binding:InputBinding,age:std::time::Duration)->bool {
+        if age>std::time::Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS)
+            || self.binding(binding.subscription_id,binding.source_revision)!=Some(binding){return false;}
+        let now=Instant::now();let Some(produced)=now.checked_sub(age) else{return false;};
         let lease=self.slots.get_mut(&binding.subscription_id).unwrap().lease.as_mut().unwrap();
-        let now=Instant::now();if lease.expire_frontend(now)||lease.frontend_expired{return false;}
-        if !lease.held.snapshot().is_empty(){lease.frontend_intent=Some(now);}
+        if lease.expire_frontend(now)||lease.frontend_expired{return false;}
+        if !lease.held.snapshot().is_empty(){lease.frontend_intent=Some(lease.frontend_intent.map_or(produced,|previous|previous.max(produced)));}
         true
     }
     pub(crate) fn snapshots(&mut self) -> Vec<RealtimeInput> {
@@ -680,6 +687,19 @@ mod tests {
         state.seal_bound(binding,Some(protocol::InputEvent::MouseDown(0))).unwrap();assert!(state.refresh_bound(binding));
         grant(&mut state,2);assert!(!state.refresh_bound(binding));assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()));
     }
+    #[test]
+    fn delayed_keyboard_liveness_retains_age_and_cannot_revive_expired_holds() {
+        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
+        let binding=state.binding(7,0).unwrap();
+        state.seal_bound(binding,Some(protocol::InputEvent::ModifiersChanged(2))).unwrap();
+        state.slots.get_mut(&7).unwrap().lease.as_mut().unwrap().frontend_intent=Some(Instant::now()-std::time::Duration::from_millis(250));
+        assert!(state.refresh_bound_with_age(binding,std::time::Duration::from_millis(240)));
+        assert!(state.slots.get(&7).unwrap().lease.as_ref().unwrap().frontend_intent.unwrap().elapsed().as_millis()>=240);
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        assert!(!state.refresh_bound_with_age(binding,std::time::Duration::ZERO));
+        assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()));
+    }
+
     #[test]
     fn transport_snapshot_does_not_refresh_the_frontends_timestamp(){
         let mut state=InputState::default();state.source(7,0);grant(&mut state,1);

@@ -478,12 +478,40 @@ impl WorkspaceConnection {
     pub fn refresh_bound_input(&self,binding:protocol::realtime_input::InputBinding)->bool {
         self.input.lock().unwrap().refresh_bound(binding)
     }
+    /// UI keyboard liveness includes time already spent waiting in the native adapter.
+    pub fn refresh_bound_input_with_age(&self,binding:protocol::realtime_input::InputBinding,age:Duration)->bool {
+        self.input.lock().unwrap().refresh_bound_with_age(binding,age)
+    }
     /// Bind a gesture to the exact grant observed before translation, including its epoch.
     /// None releases that grant's held state; a newer grant is never substituted.
     pub fn try_bound_input(&self, binding: protocol::realtime_input::InputBinding, event: Option<protocol::InputEvent>) -> bool {
         let mut input = self.input.lock().unwrap();
         let Ok(SessionCommand::RealtimeInput(packet)) = input.seal_bound(binding, event) else { return false; };
         self.pointer_queue.lock().unwrap().try_send(&self.commands,Command::Realtime(packet, Instant::now())).is_ok()
+    }
+    /// Admit a complete local button action or neither edge. Retain the UI event's
+    /// original age through the transport queue; no stale callback becomes fresh.
+    pub fn try_bound_button_tap(&self, binding: protocol::realtime_input::InputBinding,
+        button: u8, age: Duration) -> Result<(), String> {
+        if button > 2 || age > Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS) {
+            return Err("invalid or expired navigation event".into());
+        }
+        let queued=Instant::now().checked_sub(age).ok_or("invalid navigation age")?;
+        let mut input=self.input.lock().unwrap();
+        let permits=self.commands.try_reserve_many(2).map_err(|_|"navigation queue is full or closed")?;
+        // Only small control ownership state is copied, never media buffers.
+        // A failed edge (e.g. duplicate press) must not change existing held input.
+        let mut next=input.clone();
+        let mut packets=Vec::with_capacity(2);
+        for event in [protocol::InputEvent::MouseDown(button),protocol::InputEvent::MouseUp(button)] {
+            let SessionCommand::RealtimeInput(mut packet)=next.seal_bound(binding,Some(event))? else {unreachable!()};
+            packet.created_host_ms=packet.created_host_ms.saturating_sub(age.as_millis() as u64);
+            packets.push(packet);
+        }
+        self.pointer_queue.lock().unwrap().barrier();
+        *input=next;
+        for (permit,packet) in permits.zip(packets) {permit.send(Command::Realtime(packet,queued));}
+        Ok(())
     }
     pub fn control(&self, command: SessionCommand) -> impl std::future::Future<Output=Result<(),String>> + Send + '_ {
         // async fn bodies are lazy: seal at API invocation, before the returned
@@ -607,6 +635,31 @@ mod input_api_tests {
             file_commands,file_activity:Default::default(),clipboard_file_owner:Default::default(),commands,cancel:broadcast::channel(1).0,
             task:tokio::spawn(async {}),
         },queued,binding)
+    }
+
+    #[tokio::test]
+    async fn navigation_tap_reserves_both_edges_and_preserves_original_age() {
+        use protocol::realtime_input::{InputPayload,Press};
+        let (conn,mut queue,binding)=motion_connection(2).await;
+        assert!(conn.try_bound_input(binding,Some(protocol::InputEvent::MouseDown(0))));
+        assert!(conn.try_bound_button_tap(binding,2,Duration::ZERO).is_err());
+        assert_eq!(queue.len(),1,"one free slot must admit neither navigation edge");
+        let snapshots=conn.input.lock().unwrap().snapshots();
+        assert!(matches!(&snapshots[0].payload,InputPayload::Held(held) if held.len()==1&&held[0].0==Press::Button(0)));
+        queue.recv().await.unwrap();
+        assert!(conn.try_bound_button_tap(binding,0,Duration::ZERO).is_err(),"duplicate button leaves prior hold intact");
+        assert!(queue.is_empty());
+        conn.try_bound_button_tap(binding,2,Duration::from_millis(200)).unwrap();
+        for pressed in [true,false] {
+            let Command::Realtime(packet,queued)=queue.recv().await.unwrap() else {panic!("navigation packet")};
+            assert_eq!(packet.binding,binding);
+            assert!(matches!(packet.payload,InputPayload::Event(protocol::InputEvent::MouseDown(2)))==pressed);
+            assert!(queued.elapsed()>=Duration::from_millis(200));
+            assert!(now_unix_ms().saturating_sub(packet.created_host_ms)>=200);
+            tokio::time::sleep(Duration::from_millis(55)).await;
+            assert!(queued.elapsed().as_millis()>protocol::realtime_input::MAX_INPUT_AGE_MS as u128,
+                "queue delay must count on top of the original UI age");
+        }
     }
 
     #[tokio::test]

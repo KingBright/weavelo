@@ -1320,6 +1320,9 @@ pub struct VirtualKeyboard {
 }
 
 impl VirtualKeyboard {
+    pub fn holds_modifiers_for(&self, grant: protocol::realtime_input::InputBinding) -> bool {
+        self.grant == Some(grant) && self.held_modifiers != 0
+    }
     pub fn event_for_grant(&mut self, grant: protocol::realtime_input::InputBinding, name: &str, pressed: bool) -> Vec<InputEvent> {
         if self.grant != Some(grant) {
             *self = Self::default();

@@ -26,7 +26,8 @@ internal fun StreamOrientation(active: Boolean) {
             .filter { insets?.isVisible(it) != false }.fold(0) { mask, type -> mask or type }
         val previousBehavior = controller?.systemBarsBehavior
         if (active) {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            // Let phone and desktop streams follow the device in either orientation.
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller?.hide(bars)
         }

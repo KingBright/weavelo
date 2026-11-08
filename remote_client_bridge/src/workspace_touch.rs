@@ -5,6 +5,7 @@ use std::time::Instant;
 
 pub(crate) struct WorkspaceTouch {
     pub revision: u32,
+    pub source: Option<protocol::session::CaptureSource>,
     supported: bool,
     native_touch_points: u8,
     visible: bool,
@@ -23,6 +24,7 @@ impl WorkspaceTouch {
     pub fn new() -> Self {
         Self {
             revision: 0,
+            source: None,
             supported: false,
             native_touch_points: 0,
             visible: true,
@@ -202,6 +204,9 @@ impl WorkspaceTouch {
         else if !self.supported {Some("This source supports viewing only.")}
         else if current.is_none() {Some("Control is waiting for this device connection.")}
         else {None}
+    }
+    pub fn keyboard_holds_modifiers(&self,binding:InputBinding)->bool {
+        self.keyboard.holds_modifiers_for(binding)
     }
     pub fn key_events(&mut self,binding:InputBinding,name:&str,pressed:bool)->Vec<InputEvent> {
         self.keyboard.event_for_grant(binding,name,pressed)

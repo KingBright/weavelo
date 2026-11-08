@@ -27,6 +27,17 @@ class StickyKeyControllerTest {
         keys.tap("Alt", true); keys.releaseAll(); keys.releaseAll()
         assertEquals(listOf("alt" to true, "alt" to false), events)
     }
+    @Test fun expiredBindingForgetsKeysWithoutReplayingThem() {
+        val events = mutableListOf<Pair<String, Boolean>>()
+        val keys = StickyKeyController { name, down -> events.add(name to down) }
+        keys.tap("Ctrl", true)
+        keys.forgetAll()
+        keys.releaseAll()
+        assertTrue(keys.selected().isEmpty())
+        assertEquals(listOf("ctrl" to true), events)
+        keys.tap("Shift", true)
+        assertEquals(listOf("ctrl" to true, "shift" to true), events)
+    }
     @Test fun disabledViewportCannotStartKeyOrModifier() {
         val events = mutableListOf<Pair<String, Boolean>>()
         val keys = StickyKeyController { name, down -> events.add(name to down) }

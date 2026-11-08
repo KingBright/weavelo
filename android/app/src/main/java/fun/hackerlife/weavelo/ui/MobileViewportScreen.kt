@@ -46,12 +46,17 @@ fun MobileViewportScreen(
 ) {
     StreamOrientation(active = true)
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
-    var isModifierBarVisible by remember { mutableStateOf(false) }
+    val isModifierBarVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
     var controlsExpanded by remember { mutableStateOf(false) }
     var heldModifiers by remember { mutableStateOf(emptySet<String>()) }
     val virtualKeys = remember { StickyKeyController(WeaveloClient::sendVirtualKey) }
     var showKeyboard by remember { mutableStateOf(false) }
     var textInputToken by remember { mutableStateOf<WeaveloClient.TextInputToken?>(null) }
+    var imeWasVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(isModifierBarVisible) {
+        if (imeWasVisible && !isModifierBarVisible) { showKeyboard = false; textInputToken = null }
+        imeWasVisible = isModifierBarVisible
+    }
     val viewportTransform = remember { mutableStateOf(ViewportTransform()) }
     var transform by viewportTransform
     val sessionState by WeaveloClient.sessionState.collectAsState()
@@ -147,12 +152,8 @@ fun MobileViewportScreen(
             dismissButton = { TextButton(onClick = { showStreamSettings = false }) { Text("Cancel") } })
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .safeDrawingPadding()
-    ) {
+    Column(Modifier.fillMaxSize().imePadding().background(Color.Black).safeDrawingPadding()) {
+    Box(Modifier.weight(1f).fillMaxWidth()) {
         val gestureOwner = inputSessionToken
         RemoteViewport(
             dimensions = videoDimensions,
@@ -167,28 +168,6 @@ fun MobileViewportScreen(
                 }
             },
             overlay = {
-            // 局部放大状态下右上角浮现的复位药丸按钮 (Tap to Reset)
-            if (transform.scale > 1.05f) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(16.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.Black.copy(alpha = 0.75f))
-                        .border(1.dp, ColorBorderFine, RoundedCornerShape(12.dp))
-                        .clickable {
-                            transform = transform.reset()
-                        }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text(
-                        text = "${String.format(java.util.Locale.US, "%.1f", transform.scale)}x · ⟲ RESET",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
             },
                 factory = { context ->
                     SurfaceView(context).apply {
@@ -351,7 +330,7 @@ fun MobileViewportScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Box(modifier = Modifier.size(6.dp).background(ColorAccentEmerald, CircleShape))
+                Box(modifier = Modifier.size(6.dp).background(ColorStatusGreen, CircleShape))
                 Text(
                     text = "Remote session",
                     color = ColorTextPrimary,
@@ -361,7 +340,7 @@ fun MobileViewportScreen(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(9999.dp))
-                        .background(Color(0xFF132832))
+                        .background(Color(0xFFEFF6FF))
                         .border(1.dp, ColorAccentCyan, RoundedCornerShape(9999.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
@@ -382,33 +361,6 @@ fun MobileViewportScreen(
             // 细分隔线
             Box(modifier = Modifier.width(1.dp).height(12.dp).background(ColorBorderFine))
 
-            // 快捷控制开关
-            TouchIslandIconButton(
-                text = if (touchMode == TouchMode.DIRECT) "TOUCH" else "TRACKPAD",
-                active = touchMode == TouchMode.DIRECT
-            ) {
-                touchMode = if (touchMode == TouchMode.DIRECT) TouchMode.TRACKPAD else TouchMode.DIRECT
-                WeaveloClient.setTouchMode(touchMode)
-            }
-
-            // 虚拟修饰键条折叠/展开开关
-            TouchIslandIconButton(
-                text = if (isModifierBarVisible) "KEYS ON" else "KEYS OFF",
-                active = isModifierBarVisible
-            ) {
-                isModifierBarVisible = !isModifierBarVisible
-            }
-
-            // 系统软键盘唤起开关
-            TouchIslandIconButton(
-                text = if (showKeyboard) "KB ON" else "KB",
-                enabled = inputEnabled,
-                active = showKeyboard
-            ) {
-                if (showKeyboard) { showKeyboard=false; textInputToken=null }
-                else { textInputToken=WeaveloClient.textInputToken(); showKeyboard=textInputToken!=null }
-            }
-
             TouchIslandIconButton(text = "DISCONNECT", active = false, isDestructive = true) {
                 virtualKeys.releaseAll()
                 onDisconnect()
@@ -416,28 +368,32 @@ fun MobileViewportScreen(
             }
         }
 
-        // 3. 底部浮动虚拟修饰键条 (Floating Modifier Bar)
-        if (isModifierBarVisible) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 12.dp)
-                    .horizontalScroll(rememberScrollState())
-                    .clip(RoundedCornerShape(9999.dp))
-                    .background(ColorSurfaceCard)
-                    .border(1.dp, ColorBorderFine, RoundedCornerShape(9999.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
-                    VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = inputEnabled) {
-                        virtualKeys.tap(key, inputEnabled)
-                        heldModifiers = virtualKeys.selected()
-                    }
+    }
+    if (!isModifierBarVisible) {
+        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) }) {
+                Text(if (touchMode == TouchMode.TRACKPAD) "Trackpad ✓" else "Trackpad")
+            }
+            TextButton(onClick = { touchMode = TouchMode.DIRECT; WeaveloClient.setTouchMode(touchMode) }) {
+                Text(if (touchMode == TouchMode.DIRECT) "Direct ✓" else "Direct")
+            }
+            TextButton(enabled = inputEnabled, onClick = {
+                if (showKeyboard) { showKeyboard = false; textInputToken = null }
+                else { textInputToken = WeaveloClient.textInputToken(); showKeyboard = textInputToken != null }
+            }) { Text("Keyboard") }
+            TextButton(onClick = { transform = transform.reset() }) { Text("Reset") }
+        }
+    } else {
+        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
+                VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = inputEnabled) {
+                    virtualKeys.tap(key, inputEnabled); heldModifiers = virtualKeys.selected()
                 }
             }
         }
+    }
     }
 }
 
@@ -454,15 +410,15 @@ fun TouchIslandIconButton(
             .clip(RoundedCornerShape(9999.dp))
             .background(
                 when {
-                    isDestructive -> ColorDanger.copy(alpha = 0.22f)
-                    active -> ColorAccentCyan.copy(alpha = 0.18f)
-                    else -> ColorSurfaceElevated
+                    isDestructive -> Color(0xFFFFEBE9)
+                    active -> Color(0xFFEFF6FF)
+                    else -> Color(0xFFF1F5F9)
                 }
             )
             .border(
                 1.dp,
                 when {
-                    isDestructive -> ColorDanger.copy(alpha = 0.7f)
+                    isDestructive -> Color(0xFFFF5252)
                     active -> ColorAccentCyan
                     else -> ColorBorderFine
                 },
@@ -470,13 +426,12 @@ fun TouchIslandIconButton(
             )
             .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        contentAlignment = Alignment.Center
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Text(
             text = text,
             color = when {
-                isDestructive -> ColorDanger
+                isDestructive -> Color(0xFFB42318)
                 active -> ColorAccentCyan
                 else -> ColorTextSecondary
             },
@@ -491,20 +446,20 @@ fun TouchIslandIconButton(
 fun VirtualKeyPill(name: String, active: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (active) ColorAccentGold.copy(alpha = 0.2f) else ColorSurfaceCard)
-            .border(1.dp, if (active) ColorAccentGold else ColorBorderFine, RoundedCornerShape(8.dp))
-            .sizeIn(minWidth = 44.dp, minHeight = 40.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (active) Color(0xFFEFF6FF) else Color(0xFFF1F5F9))
+            .border(1.dp, if (active) ColorAccentCyan else ColorBorderFine, RoundedCornerShape(6.dp))
+            .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = name,
-            color = if (active) ColorAccentGold else ColorTextPrimary,
+            color = ColorTextPrimary,
             fontSize = 10.sp,
             fontFamily = FontFamily.Monospace,
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium
+            fontWeight = FontWeight.Medium
         )
     }
 }

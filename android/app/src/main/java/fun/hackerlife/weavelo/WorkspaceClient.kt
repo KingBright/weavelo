@@ -22,9 +22,15 @@ data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null,
     val maxTouchPoints: Int = 0)
+internal enum class WorkspaceNavigation(val wireValue: String) { BACK("back"), HOME("home") }
+
+internal fun isAndroidProjectionSource(source: String, application: String): Boolean =
+    source == "MainDisplay" && application == "MediaProjection"
+
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val deviceId: String = "", val transferring: Boolean = false, val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
+    val androidHost: Boolean = false,
     val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
     val incomingEnded: Boolean = false, val connectionId: Long = 0)
 
@@ -129,7 +135,7 @@ object WorkspaceClient {
                     closeNative()
                     this.context = context.applicationContext
                     endpoint = request.endpoint; deviceId = request.deviceId
-                    mutable.value = if (sameSession) mutable.value.copy(connected = false, status = "Connecting…")
+                    mutable.value = if (sameSession) mutable.value.copy(connected = false, androidHost = false, status = "Connecting…")
                         else WorkspaceState(sessionKey = request.sessionKey, deviceId = request.deviceId).also { applicationIcons.clear() }
                     if (!sameSession) nextId = 256
                     revision = 0; asleep = false
@@ -155,7 +161,7 @@ object WorkspaceClient {
                             val seconds = BackgroundConnectionPolicy.currentSeconds(context)
                             if (seconds > 0 && !transfersActive && SystemClock.elapsedRealtime() - lastFileAction >= 5_000 && SystemClock.elapsedRealtime() - backgroundAt >= seconds * 1000L) {
                                 action(1); asleep = true; retainingConnection = false
-                                mutable.value = mutable.value.copy(connected = false, status = "Connection sleeping to save power")
+                                mutable.value = mutable.value.copy(connected = false, androidHost = false, status = "Connection sleeping to save power")
                             }
                         }
                         delay(if (background) 1000 else 50)
@@ -182,7 +188,7 @@ object WorkspaceClient {
     fun closeFromService(owner: Any, preserveForForeground: Boolean) = guarded {
         if (!ownership.release(owner, preserveForForeground)) return@guarded
         closeNative()
-        mutable.value = if (preserveForForeground) mutable.value.copy(connected = false,
+        mutable.value = if (preserveForForeground) mutable.value.copy(connected = false, androidHost = false,
             panes = mutable.value.panes.map { it.copy(input = false, accepted = false) },
             status = if (mutable.value.connected) "Connection sleeping; reopen to reconnect" else mutable.value.status)
             else WorkspaceState(status = "Disconnected")
@@ -197,7 +203,7 @@ object WorkspaceClient {
         incomingInitialized = false; incomingEnded = false
         retainingConnection = true
         pendingShareList = 0L
-        mutable.value = mutable.value.copy(connected = true, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
+        mutable.value = mutable.value.copy(connected = true, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
             connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected")
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
@@ -437,6 +443,42 @@ object WorkspaceClient {
                 inputIssue(id, it.message ?: "Keyboard is unavailable")
         }
     }
+    internal fun keyboardAlive(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
+        eventTime: Long = SystemClock.uptimeMillis()) = guarded {
+        if (!currentView(id, sessionKey, generation, true) ||
+            mutable.value.panes.none { it.id == id && it.input && it.accepted }) return@guarded
+        val age = SystemClock.uptimeMillis() - eventTime
+        if (age !in 0L..250L) {
+            inputIssue(id, "Keyboard shortcuts expired. Reopen the keyboard and select them again.")
+            return@guarded
+        }
+        val event = JSONObject().put("id", id).put("token", token).put("binding", JSONObject(binding))
+            .put("age_ms", age).put("alive", true)
+        runCatching { action(14, event.toString()) }.onFailure {
+            inputIssue(id, "Keyboard shortcuts expired. Reopen the keyboard and select them again.")
+        }
+    }
+    internal fun navigation(id: Int, sessionKey: String, generation: Long, token: Long, binding: String,
+        navigation: WorkspaceNavigation, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
+        if (!currentView(id, sessionKey, generation, true) || SystemClock.uptimeMillis() - eventTime !in 0L..250L) return@guarded
+        val state = mutable.value
+        val pane = state.panes.firstOrNull { it.id == id } ?: return@guarded
+        val mainDisplay = pane.source.source == "MainDisplay"
+        val supportedSource = when (navigation) {
+            WorkspaceNavigation.BACK -> mainDisplay || pane.source.isWindow
+            WorkspaceNavigation.HOME -> mainDisplay
+        }
+        if (!state.androidHost || !pane.accepted || !pane.input || pane.source.isCamera || !supportedSource) {
+            inputIssue(id, "Remote navigation is unavailable for this source")
+            return@guarded
+        }
+        val event = JSONObject().put("id", id).put("token", token).put("binding", JSONObject(binding))
+            .put("age_ms", SystemClock.uptimeMillis() - eventTime).put("navigation", navigation.wireValue)
+        runCatching { action(14, event.toString()) }.onFailure {
+            if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
+                inputIssue(id, it.message ?: "Remote navigation is unavailable")
+        }
+    }
     fun surface(id: Int, sessionKey: String, generation: Long, token: Long, phase: String, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
         if (!currentView(id, sessionKey, generation, phase == "begin" || phase == "ready" || phase == "alive")) return@guarded
         val currentPhase = if (phase == "alive" && SystemClock.uptimeMillis() - eventTime !in 0L..250L) "cancel" else phase
@@ -493,7 +535,7 @@ object WorkspaceClient {
         // A lost unsubscribe acknowledgment must not leave a completed offer
         // visible/busy forever. The retained connection closes after files drain.
         mutable.value.panes.forEach { pane -> runCatching { command("Unsubscribe", JSONObject().put("id", pane.id)) } }
-        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), incomingEnded = true, status = reason)
+        mutable.value = mutable.value.copy(panes = emptyList(), sources = emptyList(), androidHost = false, incomingEnded = true, status = reason)
         ownership.request()?.incomingId?.let { DirectedDelivery.finish(it, reason, rejected) }
     }
     private fun retireEndedIncoming() {
@@ -501,7 +543,7 @@ object WorkspaceClient {
                 SystemClock.elapsedRealtime() - lastFileAction < 5_000)) return
         closeNative()
         applicationIcons.clear()
-        mutable.value = mutable.value.copy(connected = false, files = false, clipboard = false,
+        mutable.value = mutable.value.copy(connected = false, androidHost = false, files = false, clipboard = false,
             clipboardAvailable = false, sharedBusy = false, remoteFiles = emptyList(), sharedNext = null)
     }
     private fun drainEvents() {
@@ -543,7 +585,7 @@ object WorkspaceClient {
                 }
             }
             control?.optJSONObject("Opened")?.let { mutable.value = mutable.value.copy(connectionId = it.getLong("connection_id"), maxSubscriptions = it.getInt("max_subscriptions"), files = it.getBoolean("files"), clipboardAvailable = it.getBoolean("clipboard")) }
-            control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, status = it.getString("reason")) }
+            control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, androidHost = false, status = it.getString("reason")) }
             control?.optJSONObject("TextRejected")?.let {
                 val id = it.getJSONObject("binding").getInt("subscription_id")
                 if (mutable.value.panes.firstOrNull { pane -> pane.id == id }?.inputError == null)
@@ -592,6 +634,7 @@ object WorkspaceClient {
                     WorkspaceSource(source.get("source"), source.getString("title"), source.getInt("width"), source.getInt("height"),
                         source.getString("application"), artwork[source.get("source").toString()], source.optJSONObject("camera"))
                 }
+                val androidHost = directory.any { isAndroidProjectionSource(it.source.toString(), it.application) }
                 val incoming = ownership.request()?.incomingId
                 val expected = incoming?.let { DirectedDelivery.sources(it) }
                 val initialVisible = if (expected == null) directory else directory.filter { it.source.toString() in expected }
@@ -603,7 +646,7 @@ object WorkspaceClient {
                     directory.firstOrNull { it.source.toString()==pane.source.source.toString() }
                         ?.takeIf { pane.accepted && it.isCamera && it.rotation!=pane.source.rotation }?.let { pane to it }
                 }
-                mutable.value = mutable.value.copy(sources = visible, panes = mutable.value.panes.map { pane ->
+                mutable.value = mutable.value.copy(sources = visible, androidHost = androidHost, panes = mutable.value.panes.map { pane ->
                     directory.firstOrNull { it.source.toString() == pane.source.source.toString() }?.let { pane.copy(source = it) } ?: pane
                 })
                 rotated.forEach { (pane,source)->replaceCameraView(pane,source) }

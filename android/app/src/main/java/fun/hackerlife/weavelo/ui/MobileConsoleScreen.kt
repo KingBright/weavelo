@@ -44,17 +44,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import `fun`.hackerlife.weavelo.SessionState
 
-// Philharmonie Nocturne & Obsidian Stream 统一设计系统色彩定义
-val ColorBaseBg = Color(0xFF080B11)
-val ColorSurfaceCard = Color(0xFF111622)
-val ColorSurfaceElevated = Color(0xFF171F30)
-val ColorBorderFine = Color(0x24FFFFFF)
-val ColorAccentCyan = Color(0xFF38BDF8)
-val ColorAccentGold = Color(0xFFE5A93C)
-val ColorAccentEmerald = Color(0xFF10B981)
-val ColorDanger = Color(0xFFF43F5E)
-val ColorTextPrimary = Color(0xFFF8FAFC)
-val ColorTextSecondary = Color(0xFF94A3B8)
+// Air management palette
+val ColorBaseBg = Color(0xFFF7F9FB)
+val ColorSurfaceCard = Color(0xFFFFFFFF)
+val ColorBorderFine = Color(0xFFE2E8F0)
+val ColorAccentCyan = Color(0xFF2563EB)
+val ColorAccentEmerald = Color(0xFF047857) // accessible green text
+val ColorStatusGreen = Color(0xFF10B981)
+val ColorTextPrimary = Color(0xFF172033)
+val ColorTextSecondary = Color(0xFF526174)
 
 @Composable
 fun MobileConsoleScreen(
@@ -122,38 +120,9 @@ fun MobileConsoleScreen(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(9999.dp))
-                            .background(ColorSurfaceElevated)
-                            .border(1.dp, if (nativeAvailable) ColorAccentEmerald.copy(alpha = 0.45f) else ColorBorderFine, RoundedCornerShape(9999.dp))
-                            .clickable(enabled = nativeAvailable) { activeTab = "Mesh P2P" }
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .background(if (nativeAvailable) ColorAccentEmerald else ColorTextSecondary, CircleShape)
-                        )
-                        Text(
-                            text = if (!nativeAvailable) "Offline" else "Mesh · ${devices.size} Peers",
-                            color = if (nativeAvailable) ColorAccentEmerald else ColorTextSecondary,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    MobileAction(MobileSymbol.Scan, "Scan QR to join", nativeAvailable,
-                        modifier = Modifier.size(44.dp), onClick = onScanQr)
-                    MobileAction(MobileSymbol.Network, "Pair devices", nativeAvailable,
-                        modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
-                }
+                Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                MobileAction(MobileSymbol.Network, "Pair devices", nativeAvailable,
+                    modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
             }
             Spacer(Modifier.height(8.dp))
 
@@ -188,7 +157,7 @@ fun MobileConsoleScreen(
             if (!pairingMessage.isNullOrBlank()) {
                 Text(
                     text = pairingMessage,
-                    color = if (pairingMessage.startsWith("error:")) Color(0xFFFF8A80) else ColorAccentEmerald,
+                    color = if (pairingMessage.startsWith("error:")) Color(0xFFB42318) else ColorAccentEmerald,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
@@ -310,36 +279,23 @@ fun HostCard(name: String, tag: String, subtext: String, enabled: Boolean = true
     var sendMenu by remember(name) { mutableStateOf(false) }
     var expanded by remember(name) { mutableStateOf(false) }
     val badge = remember(deviceBadge) { DeviceArtwork.badge(deviceBadge).asImageBitmap() }
-    val isActiveStream = sending || onEnd != null || subtext.contains("Receiving") || subtext.contains("Sharing")
-    val cardBorder = when {
-        sending -> ColorAccentGold.copy(alpha = 0.65f)
-        isActiveStream -> ColorAccentCyan.copy(alpha = 0.65f)
-        else -> ColorBorderFine
-    }
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-        .background(if (isActiveStream) ColorSurfaceElevated else ColorSurfaceCard)
-        .border(1.dp, cardBorder, RoundedCornerShape(14.dp))
-        .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 12.dp, vertical = 8.dp)) {
+    val activeStream = sending || onEnd != null || subtext.contains("Receiving") || subtext.contains("Sharing")
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+        .background(if (activeStream) Color(0xFFEFF6FF) else ColorSurfaceCard)
+        .border(1.dp, if (activeStream) ColorAccentCyan.copy(alpha = .5f) else ColorBorderFine, RoundedCornerShape(12.dp))
+        .clickable(enabled = enabled, onClick = onConnect).padding(horizontal = 10.dp, vertical = 6.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Image(badge, contentDescription = "Device type: ${deviceBadge.displayName}",
                 modifier = Modifier.size(24.dp))
             Text(name, modifier = Modifier.weight(1f), color = ColorTextPrimary, fontSize = 15.sp,
                 lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(ColorBaseBg.copy(alpha = 0.65f))
-                    .border(0.5.dp, ColorBorderFine, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(tag, color = ColorAccentEmerald, fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-            }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(subtext, color = if (isActiveStream) ColorAccentCyan else ColorTextSecondary,
-                    fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(tag, color = ColorAccentEmerald, fontSize = 10.sp, lineHeight = 14.sp)
+                Text(subtext, color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis)
             }
             MobileAction(MobileSymbol.View, "Open device $name", enabled, modifier = Modifier.size(48.dp), onClick = onConnect)
             Box {
@@ -389,15 +345,14 @@ fun NavTab(text: String, active: Boolean, onClick: () -> Unit = {}) {
         "Sharing" -> MobileSymbol.Permissions
         else -> MobileSymbol.Settings
     }
-    Column(modifier = Modifier.width(76.dp).heightIn(min = 48.dp)
+    Column(modifier = Modifier.width(72.dp).heightIn(min = 48.dp)
         .clip(RoundedCornerShape(18.dp))
-        .background(if (active) ColorAccentCyan.copy(alpha = 0.14f) else Color.Transparent)
-        .border(if (active) 1.dp else 0.dp, if (active) ColorAccentCyan.copy(alpha = 0.45f) else Color.Transparent, RoundedCornerShape(18.dp))
+        .background(if (active) ColorAccentEmerald.copy(alpha = .1f) else Color.Transparent)
         .clickable(onClick = onClick).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
         androidx.compose.material3.Icon(symbol.image, contentDescription = null,
-            tint = if (active) ColorAccentCyan else ColorTextSecondary, modifier = Modifier.size(20.dp))
+            tint = if (active) ColorAccentEmerald else ColorTextSecondary, modifier = Modifier.size(20.dp))
         Text(text, color = if (active) ColorTextPrimary else ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
     }
@@ -585,7 +540,7 @@ private fun MeshP2pTabContent(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(9999.dp))
-                            .background(Color(0xFF132832))
+                            .background(Color(0xFFEFF6FF))
                             .border(1.dp, ColorAccentCyan, RoundedCornerShape(9999.dp))
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
@@ -669,7 +624,7 @@ private fun MeshP2pTabContent(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF22262E))
+                                .background(Color(0xFFF1F5F9))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
@@ -874,7 +829,7 @@ private fun SettingsTabContent(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                TelemetryLaneRow("Bridge Status", if (nativeAvailable) "Loaded (.so ready)" else "Missing native library", if (nativeAvailable) ColorAccentEmerald else Color(0xFFFF8A80))
+                TelemetryLaneRow("Bridge Status", if (nativeAvailable) "Loaded (.so ready)" else "Missing native library", if (nativeAvailable) ColorAccentEmerald else Color(0xFFB42318))
                 TelemetryLaneRow("Session State", sessionState.name, ColorAccentCyan)
                 TelemetryLaneRow("Decoders", "Hardware MediaCodec (H.264/HEVC)", ColorTextPrimary)
                 TelemetryLaneRow("Audio Engine", "AudioTrack + Opus Decoder", ColorTextPrimary)

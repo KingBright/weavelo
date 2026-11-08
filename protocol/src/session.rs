@@ -63,6 +63,19 @@ pub struct CaptureSourceInfo {
     pub camera: Option<CameraInfo>,
 }
 
+/// Android navigation reuses its native secondary/middle button adapter.
+/// Touch support alone is not an operating-system or navigation capability.
+pub fn android_navigation_button(sources: &[CaptureSourceInfo], source: CaptureSource, action: &str) -> Option<u8> {
+    let android = sources.iter().any(|item| item.source == CaptureSource::MainDisplay && item.application == "MediaProjection");
+    let selected = sources.iter().find(|item| item.source == source && item.supports_input)?;
+    if !android || selected.camera.is_some() { return None; }
+    match (action, source) {
+        ("back", CaptureSource::MainDisplay | CaptureSource::Window(_)) => Some(1),
+        ("home", CaptureSource::MainDisplay) => Some(2),
+        _ => None,
+    }
+}
+
 impl CaptureSourceInfo {
     /// Camera metadata is never permission to inject desktop input.
     pub fn validate_camera(&self) -> Result<(), &'static str> {
@@ -349,5 +362,28 @@ impl SessionCommand {
     /// A source directory without application artwork (e.g. a physical display).
     pub fn sources(request_id: u32, sources: Vec<CaptureSourceInfo>) -> Self {
         Self::Sources { request_id, sources, source_icons: Vec::new(), icons: Vec::new() }
+    }
+}
+
+#[cfg(test)]
+mod android_navigation_tests {
+    use super::*;
+    fn source(source:CaptureSource, application:&str)->CaptureSourceInfo {
+        CaptureSourceInfo {source,title:"Source".into(),application:application.into(),process_id:None,
+            width:100,height:200,supports_input:true,camera:None}
+    }
+    #[test]
+    fn native_navigation_requires_android_catalog_and_selected_source() {
+        let mut catalog=vec![source(CaptureSource::MainDisplay,"Desktop"),source(CaptureSource::Window(7),"app")];
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::MainDisplay,"home"),None);
+        catalog[0].application="MediaProjection".into();
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::MainDisplay,"back"),Some(1));
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::MainDisplay,"home"),Some(2));
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::Window(7),"back"),Some(1));
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::Window(7),"home"),None);
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::Window(8),"back"),None);
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::MainDisplay,"rotate"),None);
+        catalog[0].supports_input=false;
+        assert_eq!(android_navigation_button(&catalog,CaptureSource::MainDisplay,"home"),None);
     }
 }
