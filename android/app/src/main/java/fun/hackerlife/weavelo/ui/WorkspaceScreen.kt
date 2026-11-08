@@ -338,7 +338,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title) } }
             }
             }
-            if (!hudVisible && state.panes.isNotEmpty() && !typing) MobileAction(MobileSymbol.More, "Show stream controls",
+            if (!hudVisible && state.panes.isNotEmpty() && !typing && state.panes.any {
+                !ZeroOcclusionHudPolicy.isMobileTarget(state.androidHost, it.source.isCamera)
+            }) MobileAction(MobileSymbol.More, "Show stream controls",
                 modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp).size(36.dp)
                     .background(ColorSurfaceCard.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))) {
                 hudVisible = true; hudInteraction++
@@ -762,22 +764,22 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             if (mobileControls) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
                 .background(ColorSurfaceCard, RoundedCornerShape(18.dp)).padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                TextButton(enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
+                MobileAction(MobileSymbol.Back, "Remote Back", enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
                     val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.BACK) }
-                }) { Text("Back") }
-                TextButton(enabled = pane.input && token != 0L && pane.accepted && isPhoneScreen, onClick = {
+                })
+                MobileAction(MobileSymbol.Home, "Remote Home", enabled = pane.input && token != 0L && pane.accepted && isPhoneScreen, onClick = {
                     val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.HOME) }
-                }) { Text("Home") }
-                TextButton(enabled = pane.input && token != 0L, onClick = {
+                })
+                MobileAction(MobileSymbol.Keyboard, "Keyboard", enabled = pane.input && token != 0L, onClick = {
                     if (keyboardVisible) keyboardVisible = false else {
                         keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                         keyboardVisible = keyboardBinding != null
                     }
-                }) { Text("Keyboard") }
+                })
                 Box {
-                    TextButton(onClick = { mobileMore = true }) { Text("More") }
+                    MobileAction(MobileSymbol.More, "More remote actions", onClick = { mobileMore = true })
                     DropdownMenu(expanded = mobileMore, onDismissRequest = { mobileMore = false }) {
                         DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.VIEW) "Control" else "Adjust view") }, onClick = {
                             mobileMore = false
