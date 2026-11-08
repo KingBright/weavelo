@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
@@ -51,6 +53,39 @@ class IndependentWindowsTests(unittest.TestCase):
                       'commit':'a'*40,'archive_sha256':gate.hash_file(self.archive),
                       'files':original.inventory(self.candidate,gate)}
         self.bound['receipt'].write_text(json.dumps({'build_identity':{},'product_info':{}}))
+
+    def test_installer_scope_preserves_unrelated_work_but_rejects_changed_install_inputs(self):
+        repo = self.root/'source'
+        repo.mkdir()
+        def git(*args):
+            subprocess.run(['git', '-C', str(repo), *args], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        git('init', '--initial-branch=main')
+        for name in ('scripts/install.py', 'deploy/desktop/product-identity.json', 'host/audio.rs'):
+            path = repo/name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('committed')
+        git('add', '.')
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture')
+        (repo/'host/audio.rs').write_text('unrelated in-progress change')
+        (repo/'host/untracked.rs').write_text('unrelated new source')
+        args = SimpleNamespace(build_receipt_sha256='a'*64)
+        class ProducerValidationReached(Exception):
+            pass
+        with patch.object(install, 'ROOT', repo), patch.object(gate, 'read_json',
+                side_effect=ProducerValidationReached) as read_receipt:
+            with self.assertRaises(ProducerValidationReached):
+                install.reviewed(args)
+            self.assertEqual(read_receipt.call_count, 1)
+            for name in ('scripts/install.py', 'deploy/desktop/product-identity.json'):
+                with self.subTest(name=name):
+                    (repo/name).write_text('uncommitted installer input')
+                    with self.assertRaisesRegex(RuntimeError, 'installer source must be committed'):
+                        install.reviewed(args)
+                    self.assertEqual(read_receipt.call_count, 1)
+                    (repo/name).write_text('committed')
+        self.assertEqual((repo/'host/audio.rs').read_text(), 'unrelated in-progress change')
+        self.assertEqual((repo/'host/untracked.rs').read_text(), 'unrelated new source')
 
     def archive_payload(self):
         with zipfile.ZipFile(self.archive,'w') as z:

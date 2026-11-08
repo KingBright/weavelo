@@ -59,7 +59,10 @@ def revalidate(bound):
 def reviewed(args):
     gate.require(gate.git(ROOT, 'branch', '--show-current').strip() == b'main',
                  'Use the primary main installer checkout')
-    gate.require(not gate.git(ROOT, 'status', '--porcelain=v1', '-uall').strip(),
+    # Runtime bytes are independently bound below to the observed build receipt.
+    # Unrelated source work must not block installing that immutable producer.
+    gate.require(not gate.git(ROOT, 'status', '--porcelain=v1', '-uall', '--',
+                              'scripts', 'deploy/desktop').strip(),
                  'Reviewed installer source must be committed')
     receipt_path = ROOT/'target/package/windows/windows-current-build-receipt.json'
     receipt = gate.read_json(receipt_path, args.build_receipt_sha256)
