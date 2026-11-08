@@ -326,7 +326,7 @@ impl RestoredDashboard {
             .id("android-navigation-gutter")
             .occlude()
             .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
-            .h_full()
+            .py_1().rounded_full()
             .flex_none()
             .flex()
             .flex_col()

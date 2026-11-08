@@ -14,13 +14,11 @@ pub(super) const FULLSCREEN_RAIL_HIT_HEIGHT_PX: f32 = 24.0;
 
 type FitKey = ([u32; 2], [u32; 2], u32, u64, [u32; 2]);
 
-pub(super) fn stream_window_chrome(companion: bool, computer_use_status: bool) -> [f32; 2] {
-    let width = 2.0 * STREAM_WINDOW_GUTTER_PX
-        + if companion { ANDROID_COMPANION_WIDTH_PX + ANDROID_COMPANION_GAP_PX } else { 0.0 };
-    let header = STREAM_HEADER_HEIGHT_PX + if computer_use_status { 28.0 } else { 0.0 };
-    let height = STREAM_HEADER_TOP_PX + header + STREAM_VIDEO_GAP_PX + STREAM_WINDOW_GUTTER_PX;
-    [width, height]
+pub(super) fn stream_window_chrome(_companion: bool, _computer_use_status: bool) -> [f32; 2] {
+    // Transient controls overlay the video and never change its fit geometry.
+    [0.0, 0.0]
 }
+
 #[derive(Debug)]
 pub(super) struct WindowFit {
     auto: bool,
@@ -262,9 +260,9 @@ mod tests {
     }
 
     #[test]
-    fn windowed_header_and_android_gutter_are_added_outside_source_fit() {
+    fn windowed_video_uses_full_fit_budget_with_transient_controls() {
         let chrome = stream_window_chrome(true, false);
-        assert_eq!(chrome, [72.0, 64.0]);
+        assert_eq!(chrome, [0.0, 0.0]);
         let now = Instant::now();
         let mut fit = WindowFit::new([1000.0, 700.0]);
         let key = WindowFit::key([1080, 720], [1440.0, 900.0], 1.0, 0, chrome);
@@ -276,15 +274,15 @@ mod tests {
 
         fit.request_fit();
         let constrained = fit.target(key, [700.0, 500.0], 1.0, now).unwrap();
-        assert_eq!(constrained, [700.0, 483.0]);
+        assert_eq!(constrained, [700.0, 467.0]);
         let constrained_video = [constrained[0] - chrome[0], constrained[1] - chrome[1]];
         assert!(constrained[0] <= 700.0 && constrained[1] <= 500.0);
         assert!((constrained_video[0] / constrained_video[1] - 1080.0 / 720.0).abs() < 0.002);
     }
 
     #[test]
-    fn normal_header_and_ai_status_chrome_are_distinct_fit_inputs() {
-        assert_eq!(stream_window_chrome(false, false), [16.0, 64.0]);
-        assert_eq!(stream_window_chrome(false, true), [16.0, 92.0]);
+    fn transient_controls_never_reserve_fit_space() {
+        assert_eq!(stream_window_chrome(false, false), [0.0, 0.0]);
+        assert_eq!(stream_window_chrome(false, true), [0.0, 0.0]);
     }
 }

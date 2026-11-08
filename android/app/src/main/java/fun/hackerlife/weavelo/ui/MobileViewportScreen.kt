@@ -48,6 +48,12 @@ fun MobileViewportScreen(
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
     val isModifierBarVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
     var controlsExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(controlsExpanded) {
+        if (controlsExpanded) {
+            kotlinx.coroutines.delay(4000)
+            controlsExpanded = false
+        }
+    }
     var heldModifiers by remember { mutableStateOf(emptySet<String>()) }
     val virtualKeys = remember { StickyKeyController(WeaveloClient::sendVirtualKey) }
     var showKeyboard by remember { mutableStateOf(false) }
@@ -300,8 +306,11 @@ fun MobileViewportScreen(
                     .background(Color.Black.copy(alpha = 0.85f)).padding(16.dp))
         }
 
-        // 2. 顶部微型悬浮 Dynamic Touch Island
-        FlowRow(
+        if (!controlsExpanded) TextButton(
+            onClick = { controlsExpanded = true },
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) { Text("⋯") }
+        if (controlsExpanded) FlowRow(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 12.dp)
@@ -368,8 +377,8 @@ fun MobileViewportScreen(
             }
         }
 
-    }
-    if (!isModifierBarVisible) {
+    if (!isModifierBarVisible && controlsExpanded) {
+        Box(Modifier.align(Alignment.BottomCenter)) {
         MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD, direct = touchMode == TouchMode.DIRECT,
             inputEnabled = inputEnabled,
             onTrackpad = { touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) },
@@ -378,7 +387,10 @@ fun MobileViewportScreen(
                 if (showKeyboard) { showKeyboard = false; textInputToken = null }
                 else { textInputToken = WeaveloClient.textInputToken(); showKeyboard = textInputToken != null }
             }, onReset = { transform = transform.reset() })
-    } else {
+        }
+    }
+    }
+    if (isModifierBarVisible) {
         Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->

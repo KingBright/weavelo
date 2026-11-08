@@ -821,7 +821,7 @@ impl RestoredDashboard {
             window_visible: window.is_window_visible(),
             telemetry_engine: remote_core::PipelineTelemetryEngine::new(0, 300),
             show_apps_menu: false,
-            toolbar_revealed: true,
+            toolbar_revealed: false,
             toolbar_hovered: false,
             last_toolbar_activity: Instant::now(),
             capture_error_seen: None,
@@ -2674,55 +2674,11 @@ impl Render for RestoredDashboard {
             matches!(role, RoleState::Idle).then(|| self.idle_stream_stage(cx)),
             cx,
         );
-        let mut stream_content = div()
+        let stream_content = div()
             .id("stream-window-content")
             .size_full()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .min_h_0();
-        if !is_fullscreen {
-            stream_content = stream_content.child(self.stream_toolbar(
-                &snapshot,
-                false,
-                compact,
-                tiny,
-                input_hint.as_deref(),
-                cx,
-            ));
-        }
-        let mut video_row = div()
-            .id("stream-presentation-row")
-            .relative()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .min_h_0();
-        if is_fullscreen {
-            video_row = video_row.size_full().bg(rgb(0x000000));
-        } else {
-            video_row = video_row
-                .mx(px(window_fit::STREAM_WINDOW_GUTTER_PX))
-                .mt(px(window_fit::STREAM_VIDEO_GAP_PX))
-                .mb(px(window_fit::STREAM_WINDOW_GUTTER_PX))
-                .gap_2();
-        }
-        stream_content = stream_content.child(
-            video_row
-                .child(
-                    div()
-                        .id("stream-video-viewport")
-                        .relative()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .bg(rgb(0x000000))
-                        .child(stream_viewport),
-                )
-                .when(android_companion, |row| {
-                    row.child(self.android_companion_controls(&snapshot, is_fullscreen, cx))
-                }),
-        );
+            .bg(rgb(0x000000))
+            .child(stream_viewport);
         let fullscreen_controls_visible = self.toolbar_revealed
             || self.toolbar_hovered
             || self.show_apps_menu
@@ -2833,7 +2789,7 @@ impl Render for RestoredDashboard {
                         }),
                 )
             })
-            .when(is_fullscreen && fullscreen_controls_visible, |tree| {
+            .when(fullscreen_controls_visible, |tree| {
                 tree.child(self.stream_toolbar(
                     &snapshot,
                     true,
@@ -2843,8 +2799,12 @@ impl Render for RestoredDashboard {
                     cx,
                 ))
             })
-            .when(is_fullscreen && !fullscreen_controls_visible, |tree| {
+            .when(!fullscreen_controls_visible, |tree| {
                 tree.child(self.fullscreen_micro_rail(cx))
+            })
+            .when(android_companion && fullscreen_controls_visible, |tree| {
+                tree.child(div().absolute().right(px(8.)).top(px(60.))
+                    .child(self.android_companion_controls(&snapshot, is_fullscreen, cx)))
             })
             .child(self.paint_acknowledgement())
             .when(show_drawer, |tree| tree.child(self.stream_controls_panel(

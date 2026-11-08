@@ -63,7 +63,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
     StreamOrientation(active = state.panes.isNotEmpty())
     val typing = state.panes.isNotEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    var hudVisible by remember(sessionKey) { mutableStateOf(true) }
+    var hudVisible by remember(sessionKey) { mutableStateOf(false) }
     var hudInteraction by remember(sessionKey) { mutableLongStateOf(0L) }
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
@@ -436,6 +436,13 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     var handleFraction by rememberSaveable(pane.id, sessionKey, generation) { mutableFloatStateOf(0.5f) }
     var mobileControls by remember(pane.id, sessionKey, generation) { mutableStateOf(false) }
     var mobileMore by remember(pane.id, sessionKey, generation) { mutableStateOf(false) }
+    LaunchedEffect(mobileControls, mobileMore, keyboardVisible) {
+        if (mobileControls && !mobileMore && !keyboardVisible) {
+            kotlinx.coroutines.delay(4000)
+            mobileControls = false
+        }
+    }
+
     var heldModifiers by remember(pane.id, sessionKey, generation, token) { mutableStateOf(emptySet<String>()) }
     var modifierBinding by remember(pane.id, sessionKey, generation, token) { mutableStateOf<String?>(null) }
     val virtualKeys = remember(pane.id, sessionKey, generation, token) {
@@ -531,9 +538,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             enabled = pane.input && token != 0L,
             touchMode = touchMode,
             contentKey = token to dimensions,
-            // The 44 dp handle target lives in this local gutter, outside the
-            // measured video and its inverse input transform even when collapsed.
-            modifier = Modifier.fillMaxSize().padding(end = if (mobileTarget) 44.dp else 0.dp),
+            // Controls overlay the viewport; opening them never changes input geometry.
+            modifier = Modifier.fillMaxSize(),
             onViewportSizeChanged = { measured = it },
             sendTouch = { action, id, x, y, pressure, eventTime ->
                 val presentation = nativeViewport.get()?.presentation
@@ -736,7 +742,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
             }
         )
-        if (mobileTarget && !imeVisible) {
+        if (!imeVisible) {
             Box(Modifier.align(Alignment.CenterEnd)
                 .offset { IntOffset(0, ((handleFraction - .5f) * viewportHeightPx).toInt()) }
                 .size(width = 44.dp, height = 64.dp)
@@ -761,7 +767,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
                 .padding(start = 39.dp, top = 12.dp, bottom = 12.dp)
                 .background(ColorAccentCyan, RoundedCornerShape(4.dp)))
-            if (mobileControls) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
+            if (mobileControls && mobileTarget) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
                 .background(ColorSurfaceCard, RoundedCornerShape(18.dp)).padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 MobileAction(MobileSymbol.Back, "Remote Back", enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
@@ -814,8 +820,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
             }
         }
-      }
-      if (!mobileTarget && !imeVisible) {
+      if (!mobileTarget && !imeVisible && mobileControls) {
+        Box(Modifier.align(Alignment.BottomCenter)) {
         MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD,
             direct = touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE,
             inputEnabled = pane.input && token != 0L,
@@ -832,6 +838,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     keyboardVisible = keyboardBinding != null
                 }
             }, onReset = { transform.value = transform.value.reset() })
+      }
+      }
       }
       if (imeVisible && pane.input) {
         Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
