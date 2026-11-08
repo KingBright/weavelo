@@ -66,6 +66,7 @@ fun MobileViewportScreen(
     val viewportTransform = remember { mutableStateOf(ViewportTransform()) }
     var transform by viewportTransform
     val sessionState by WeaveloClient.sessionState.collectAsState()
+    val telemetry by WeaveloClient.telemetry.collectAsState()
     var playbackError by remember { mutableStateOf<String?>(null) }
     var playbackErrorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     var decodedFps by remember { mutableStateOf<Int?>(null) }
@@ -312,6 +313,8 @@ fun MobileViewportScreen(
                     .background(Color.Black.copy(alpha = 0.85f)).padding(16.dp))
         }
 
+        NetworkStatusChip(sessionState, telemetry,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp))
         if (!controlsExpanded) TextButton(
             onClick = { controlsExpanded = true },
             modifier = Modifier.align(Alignment.TopCenter)

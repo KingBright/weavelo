@@ -51,7 +51,8 @@ data class TelemetrySnapshot(
     val audioBitrateKbps: Int = 0,
     val controlBitrateKbps: Int = 0,
     val fileBitrateKbps: Int = 0,
-    val transportHealthScore: Float = 0.0f
+    val transportHealthScore: Float = 0.0f,
+    val observedAtElapsedMs: Long = 0
 )
 
 object WeaveloClient {
@@ -425,6 +426,7 @@ object WeaveloClient {
                 try {
                     val obj = JSONObject(jsonStr)
                     val snap = TelemetrySnapshot(
+                        observedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
                         fps = obj.optDouble("fps", 0.0).toFloat(),
                         latencyMs = obj.optDouble("latency_ms", 0.0).toFloat(),
                         captureReceiveEstimateMs = nullableTelemetryNumber(obj.opt("capture_receive_estimate_ms")),

@@ -5,6 +5,19 @@ internal enum class AppLanguage { ENGLISH, CHINESE }
 
 internal object LanguageCatalog {
     val chinese: Map<String, String> = mapOf(
+        "Network details" to "网络详情",
+        "Unknown" to "未知",
+        "Network RTT" to "网络往返延迟",
+        "Packet loss rate" to "丢包率",
+        "Video bitrate" to "视频码率",
+        "Connection" to "连接",
+        "Network unknown" to "网络未知",
+        "Network good" to "网络良好",
+        "Network fair" to "网络一般",
+        "Network poor" to "网络较差",
+        "Not connected" to "未连接",
+        "Connecting" to "正在连接",
+        "Reconnecting" to "正在重连",
         "Join with invitation" to "使用邀请码加入",
         "Invitation from an existing network member" to "现有网络成员提供的邀请码",
         "Cancel" to "取消",

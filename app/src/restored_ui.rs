@@ -1,3 +1,5 @@
+#[path="restored_network_status.rs"]
+mod network_status;
 #[path="restored_management.rs"]
 mod management;
 #[path="restored_streams.rs"]
@@ -598,6 +600,7 @@ struct RestoredDashboard {
     status: String,
 
     drawer_open: bool,
+    network_details_open: bool,
     active_tab: DrawerTab,
     device_list_state: DeviceListState,
     #[cfg(target_os = "linux")]
@@ -795,6 +798,7 @@ impl RestoredDashboard {
             input_session_id: None,
             status: "Ready".into(),
             drawer_open: purpose == WindowPurpose::Management,
+            network_details_open: false,
             active_tab: DrawerTab::Devices,
             device_list_state: DeviceListState::default(),
             #[cfg(target_os = "linux")]
@@ -2806,6 +2810,8 @@ impl Render for RestoredDashboard {
                 tree.child(div().absolute().right(px(8.)).top(px(60.))
                     .child(self.android_companion_controls(&snapshot, is_fullscreen, cx)))
             })
+            .child(div().absolute().right(px(12.)).bottom(px(12.)).child(self.network_status_chip(&role, host_stats.as_ref(), cx)))
+            .when(self.network_details_open, |tree| tree.child(self.network_status_panel(&role, host_stats.as_ref(), cx)))
             .child(self.paint_acknowledgement())
             .when(show_drawer, |tree| tree.child(self.stream_controls_panel(
                 &snapshot, host_stats.as_ref(), viewport_width, viewport_height, cx)))
@@ -2829,10 +2835,11 @@ impl Render for RestoredDashboard {
                     }
                     if keystroke.key == "escape"
                         && !keystroke.modifiers.control
-                        && (this.drawer_open || this.show_apps_menu || this.source_selection.is_some())
+                        && (this.drawer_open || this.show_apps_menu || this.source_selection.is_some() || this.network_details_open)
                     {
                         this.owner.release_input();
                         this.drawer_open = false;
+                        this.network_details_open = false;
                         this.show_apps_menu = false;
                         this.cancel_source_selection(cx);
                         cx.stop_propagation();

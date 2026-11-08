@@ -677,5 +677,10 @@
   "Video only · remembered": "仅视频 · 已记住",
   "Use automatic device badge": "使用自动设备图标",
   "Remember selection · On": "记住选择 · 开启",
-  "Remember selection · Off": "记住选择 · 关闭"
+  "Remember selection · Off": "记住选择 · 关闭",
+  "Network details": "网络详情",
+  "Connection": "连接",
+  "Close": "关闭",
+  "Reconnecting": "正在重连",
+  "Streaming": "传输中"
 }
