@@ -612,7 +612,6 @@ struct RestoredDashboard {
     source_commands: SessionCommandState,
     discovery_commands: SessionCommandState,
     scale_mode: ViewportScaleMode,
-    telemetry_hud_collapsed: bool,
     input_locked: bool,
     capture_supports_input: bool,
     stream_settings: StreamSettingsState,
@@ -810,7 +809,6 @@ impl RestoredDashboard {
             source_commands: SessionCommandState::default(),
             discovery_commands: SessionCommandState::default(),
             scale_mode,
-            telemetry_hud_collapsed: prefs.ui.telemetry_hud_collapsed,
             input_locked: true,
             capture_supports_input: false,
             stream_settings: StreamSettingsState::new(StreamSettingsValues {
@@ -880,7 +878,6 @@ impl RestoredDashboard {
                 ViewportScaleMode::AspectFit => "aspect_fit".to_string(),
                 ViewportScaleMode::Fill => "fill".to_string(),
             };
-            prefs.ui.telemetry_hud_collapsed = self.telemetry_hud_collapsed;
             prefs.ui.pause_when_inactive = self.pause_when_inactive;
         }) {
             eprintln!("Failed to persist user preferences: {err}");
@@ -2852,12 +2849,6 @@ impl Render for RestoredDashboard {
             .child(self.paint_acknowledgement())
             .when(show_drawer, |tree| tree.child(self.stream_controls_panel(
                 &snapshot, host_stats.as_ref(), viewport_width, viewport_height, cx)))
-            .child(telemetry_waterfall_overlay(
-                self.telemetry_hud_collapsed,
-                role.kind(),
-                host_stats.as_ref(),
-                cx,
-            ))
             .when_some(self.source_selection.as_ref(),|tree,selection|tree.child(source_selection::render(selection,#[cfg(target_os="linux")] self.local_share_state.pending(),cx)))
             // Local window commands must also see the root focus itself. The
             // remote-input surface remains inside the scope and keeps its focus guard.
@@ -5078,91 +5069,6 @@ fn network_quality_icon(quality:NetworkQuality,theme:&Theme)->crate::product_com
         NetworkQuality::Poor=>(IconName::PingIndicator(1),Hsla::from(crate::design_system::color_accent_rose())),
     };
     icon(symbol).color(color)
-}
-
-fn telemetry_waterfall_overlay(
-    collapsed: bool,
-    role:remote_core::role::RoleKind,
-    host_stats: Option<&UiHostStats>,
-    cx: &mut Context<RestoredDashboard>,
-) -> Div {
-    let theme = cx.theme().clone();
-    let view = cx.weak_entity();
-    let network=UiHostStats::network_quality(role,host_stats);
-
-    if collapsed {
-        div()
-            .absolute()
-            .bottom(px(48.0))
-            .right(px(16.0))
-            .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
-                cx.stop_propagation();
-            }))
-            .child(
-                command_button("expand_hud_btn", ActionVariantKind::Neutral, cx)
-                    .size(px(28.0))
-                    .rounded_full()
-                    .tooltip(tooltip(format!("{} · Show telemetry",UiHostStats::network_detail(network, host_stats))).build())
-                    .on_click(move |_event, _window, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            this.telemetry_hud_collapsed = false;
-                            this.persist_preferences();
-                            cx.notify();
-                        });
-                    })
-                    .child(network_quality_icon(network,&theme).size(px(13.0))),
-            )
-    } else {
-        div()
-            .absolute()
-            .bottom(px(48.0))
-            .right(px(16.0))
-            .w(px(244.0))
-            .max_w(relative(0.95))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_2()
-            .bg(color_glass_card())
-            .border_1()
-            .border_color(color_border_fine())
-            .rounded(px(8.0))
-            .shadow_lg()
-            .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
-                cx.stop_propagation();
-            }))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(color_accent_cyan())
-                            .child("Network"),
-                    )
-                    .child(
-                        command_button("collapse_hud_btn", ActionVariantKind::Neutral, cx)
-                            .size(px(18.0))
-                            .rounded_full()
-                            .text_size(px(8.0))
-                            .tooltip(tooltip("Collapse live telemetry").build())
-                            .on_click(move |_event, _window, cx| {
-                                let _ = view.update(cx, |this, cx| {
-                                    this.telemetry_hud_collapsed = true;
-                                    this.persist_preferences();
-                                    cx.notify();
-                                });
-                            })
-                            .child(icon(IconName::Minimize).size(px(10.0))),
-                    ),
-            )
-            .child(telemetry_hud_metrics_list(host_stats, network, &theme))
-    }
 }
 
 fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: NetworkQuality, theme: &Theme) -> Div {
