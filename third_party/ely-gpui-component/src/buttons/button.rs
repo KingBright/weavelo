@@ -327,7 +327,7 @@ impl RenderOnce for Button {
                     .when_some(self.on_click, |el, handler| el.on_click(handler))
             })
             .map(|mut element| {
-                gpui::Refineable::refine(element.style(), &override_style);
+                refine_button_style(element.style(), &override_style);
                 element
             })
     }
@@ -342,4 +342,40 @@ impl gpui::InteractiveElement for Button {
 impl gpui::StatefulInteractiveElement for Button {}
 impl gpui::ParentElement for Button {
     fn extend(&mut self, children: impl IntoIterator<Item = gpui::AnyElement>) { self.children.extend(children); }
+}
+
+// GPUI replaces the optional text refinement as a whole. Merge its fields here
+// so a caller's font size does not erase the variant's foreground or weight.
+fn refine_button_style(style: &mut gpui::StyleRefinement, overrides: &gpui::StyleRefinement) {
+    let text = match (&style.text, &overrides.text) {
+        (Some(base), Some(overrides)) => Some(gpui::Refineable::refined(base.clone(), overrides.clone())),
+        _ => None,
+    };
+    gpui::Refineable::refine(style, overrides);
+    if let Some(text) = text { style.text = Some(text); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{px, rgb};
+
+    #[test]
+    fn custom_size_keeps_primary_foreground_and_explicit_color_still_wins() {
+        let white: Hsla = rgb(0xffffff).into();
+        let red: Hsla = rgb(0xff0000).into();
+        let mut button = div().text_color(white).font_weight(FontWeight::MEDIUM).h(px(32.));
+        let mut size = div().text_size(px(12.)).h(px(28.));
+        refine_button_style(button.style(), size.style());
+        let text = button.style().text.as_ref().unwrap();
+        assert_eq!(text.color, Some(white));
+        assert_eq!(text.font_weight, Some(FontWeight::MEDIUM));
+        assert_eq!(text.font_size, Some(px(12.).into()));
+        assert_eq!(button.style().size.height, size.style().size.height);
+        let mut color = div().text_color(red);
+        refine_button_style(button.style(), color.style());
+        let text = button.style().text.as_ref().unwrap();
+        assert_eq!(text.color, Some(red));
+        assert_eq!(text.font_size, Some(px(12.).into()));
+    }
 }

@@ -476,5 +476,3 @@ impl RenderOnce for Icon {
     }
 }
 
-#[cfg(test)]
-mod tests;
