@@ -9,3 +9,5 @@ The overlay does not reserve video layout space or change the video/input transf
 Validation and actual rendered acceptance are recorded separately in the task evidence. No cross-platform physical acceptance is implied by source tests.
 
 Source verification: nine existing desktop telemetry tests passed; all 104 Android JVM tests passed (including fresh/missing/reconnecting/latency/loss cases); the release regression entry passed 1053 tests with 25 environment skips. Actual rendered acceptance and deployment remain pending at this source checkpoint.
+
+The Android workspace remote view also exposes the same collapsed indicator for each active pane. Its native subscription measurements are sampled once per second, expire at the source, and reset on reconnection. The bridge missing-measurement regression and Android debug unit suite pass; the release regression remains 1053 passing tests with 25 skips.

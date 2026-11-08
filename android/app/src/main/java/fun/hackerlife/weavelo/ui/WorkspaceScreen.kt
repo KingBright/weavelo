@@ -219,6 +219,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                 state.androidHost, pane.source.isCamera,
                                                 pane.source.source.toString(), pane.source.isWindow),
                                             onMore = { hudVisible = true; hudInteraction++; actionsOpen = true }, onError = { message, text -> localError = message; localErrorText = text; hudVisible = true; hudInteraction++ })
+                                        NetworkStatusChip(
+                                            if (!state.connected) SessionState.DISCONNECTED else if (pane.accepted) SessionState.STREAMING else SessionState.CONNECTING,
+                                            pane.telemetry, modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp))
                                         if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
                                             .safeDrawingPadding().padding(top = 56.dp)
                                             .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {

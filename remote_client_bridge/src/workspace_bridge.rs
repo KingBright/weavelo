@@ -142,6 +142,8 @@ pub struct MobileWorkspace {
     connection: Arc<WorkspaceConnection>,
     queues: Arc<Mutex<Queues>>,
     pumps: Mutex<HashMap<u32, tokio::task::AbortHandle>>,
+    telemetry: Mutex<HashMap<u32, Arc<SharedHostStats>>>,
+    telemetry_sent_at: Mutex<Option<std::time::Instant>>,
     touches: Arc<Mutex<HashMap<u32, WorkspaceTouch>>>,
     events: tokio::task::JoinHandle<()>,
     clipboard: MobileClipboard,
@@ -286,6 +288,8 @@ impl MobileWorkspace {
             connection,
             queues,
             pumps: Mutex::new(HashMap::new()),
+            telemetry: Mutex::new(HashMap::new()),
+            telemetry_sent_at: Mutex::new(None),
             touches,
             events: task,
             clipboard,
@@ -330,6 +334,7 @@ impl MobileWorkspace {
         match command {
             SessionCommand::Subscribe(request) => self.subscribe(request).await,
             SessionCommand::Unsubscribe { id } => {
+                self.telemetry.lock().unwrap().remove(&id);
                 if let Some(task) = self.pumps.lock().unwrap().remove(&id) {
                     task.abort();
                 }
@@ -351,14 +356,16 @@ impl MobileWorkspace {
         touch.source=Some(request.source);
         self.touches.lock().unwrap().insert(id,touch);
         let (tx, mut rx) = remote_core::video_queue::channel(4);
+        let telemetry = Arc::new(SharedHostStats::default());
         self.connection
             .subscribe(
                 request,
                 tx,
                 Statistics::new(),
-                Arc::new(SharedHostStats::default()),
+                telemetry.clone(),
             )
             .await?;
+        self.telemetry.lock().unwrap().insert(id, telemetry);
         let state = self.queues.clone();
         let connection = Arc::downgrade(&self.connection);
         let task = tokio::spawn(async move {
@@ -672,6 +679,13 @@ impl MobileWorkspace {
             .events
             .drain(..)
             .collect::<Vec<_>>();
+        let mut sent_at = self.telemetry_sent_at.lock().unwrap();
+        if sent_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1)) {
+            let telemetry = self.telemetry.lock().unwrap().iter()
+                .map(|(id, stats)| subscription_telemetry(*id, stats)).collect::<Vec<_>>();
+            events.push(serde_json::json!({"telemetry":telemetry}));
+            *sent_at = Some(std::time::Instant::now());
+        }
         events.push(serde_json::json!({"transfers_active":self.connection.file_activity.load(std::sync::atomic::Ordering::Relaxed)}));
         serde_json::to_string(&events).unwrap_or_else(|_| "[]".into())
     }
@@ -705,9 +719,28 @@ impl MobileWorkspace {
     }
 }
 
+/// Only current measurements from this subscription; never substitute configuration targets.
+fn subscription_telemetry(id: u32, shared: &SharedHostStats) -> serde_json::Value {
+    let stats = shared.snapshot();
+    let fresh = stats.updated_at.is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(5));
+    let rtt = shared.rtt_summary().map(|rtt| rtt.latest_ms).filter(|rtt| rtt.is_finite() && *rtt >= 0.0);
+    let loss = (fresh && stats.packet_loss_rate.is_finite() && (0.0..=100.0).contains(&stats.packet_loss_rate))
+        .then_some(stats.packet_loss_rate);
+    serde_json::json!({"id":id,"network_rtt_ms":rtt,"packet_loss_percent":loss,
+        "video_bitrate_kbps":fresh.then_some(stats.bitrate_kbps)})
+}
+
 #[cfg(test)]
 mod file_status_tests {
     use super::*;
+    #[test]
+    fn absent_subscription_measurements_are_null_not_healthy_zeroes() {
+        let value = subscription_telemetry(7, &SharedHostStats::default());
+        assert_eq!(value["id"], 7);
+        for field in ["network_rtt_ms", "packet_loss_percent", "video_bitrate_kbps"] {
+            assert!(value[field].is_null(), "{field}");
+        }
+    }
     fn progress(done:u64,total:u64)->FileTransferEvent {
         FileTransferEvent::IncomingProgress {transfer_id:9,file_object_id:7,received_chunks:1,
             total_chunks:1,received_bytes:done,total_size:total}

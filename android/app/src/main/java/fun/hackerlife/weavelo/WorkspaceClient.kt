@@ -21,7 +21,7 @@ data class WorkspaceSource(val source: Any, val title: String, val width: Int, v
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null,
-    val maxTouchPoints: Int = 0, val inputErrorText: AppText? = null, val videoErrorText: AppText? = null)
+    val maxTouchPoints: Int = 0, val inputErrorText: AppText? = null, val videoErrorText: AppText? = null, val telemetry: TelemetrySnapshot = TelemetrySnapshot())
 internal enum class WorkspaceNavigation(val wireValue: String) { BACK("back"), HOME("home") }
 
 internal fun isAndroidProjectionSource(source: String, application: String): Boolean =
@@ -207,7 +207,7 @@ object WorkspaceClient {
         pendingShareList = 0L
         mutable.value = mutable.value.copy(connected = true, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
-            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
+            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
     private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); if (active) action(1); active = false; retainingConnection = false }
@@ -567,6 +567,18 @@ object WorkspaceClient {
             if (event.has("transfers_active")) {
                 transfersActive = event.getBoolean("transfers_active")
                 mutable.value = mutable.value.copy(transferring = transfersActive)
+            }
+            event.optJSONArray("telemetry")?.let { samples ->
+                val byId = (0 until samples.length()).map { samples.getJSONObject(it) }.associateBy { it.getInt("id") }
+                val now = SystemClock.elapsedRealtime()
+                mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
+                    val sample = byId[pane.id]
+                    pane.copy(telemetry = if (sample == null) TelemetrySnapshot() else TelemetrySnapshot(
+                        networkRttMs = nullableTelemetryNumber(sample.opt("network_rtt_ms")),
+                        packetLossPercent = nullableTelemetryNumber(sample.opt("packet_loss_percent"))?.toFloat() ?: Float.NaN,
+                        videoBitrateKbps = if (sample.isNull("video_bitrate_kbps")) -1 else sample.optInt("video_bitrate_kbps", -1),
+                        observedAtElapsedMs = now))
+                })
             }
             val control = event.optJSONObject("control")
             control?.optJSONObject("CameraSwitchResult")?.let { reply ->
