@@ -370,20 +370,14 @@ fun MobileViewportScreen(
 
     }
     if (!isModifierBarVisible) {
-        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) }) {
-                Text(if (touchMode == TouchMode.TRACKPAD) "Trackpad ✓" else "Trackpad")
-            }
-            TextButton(onClick = { touchMode = TouchMode.DIRECT; WeaveloClient.setTouchMode(touchMode) }) {
-                Text(if (touchMode == TouchMode.DIRECT) "Direct ✓" else "Direct")
-            }
-            TextButton(enabled = inputEnabled, onClick = {
+        MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD, direct = touchMode == TouchMode.DIRECT,
+            inputEnabled = inputEnabled,
+            onTrackpad = { touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) },
+            onDirect = { touchMode = TouchMode.DIRECT; WeaveloClient.setTouchMode(touchMode) },
+            onKeyboard = {
                 if (showKeyboard) { showKeyboard = false; textInputToken = null }
                 else { textInputToken = WeaveloClient.textInputToken(); showKeyboard = textInputToken != null }
-            }) { Text("Keyboard") }
-            TextButton(onClick = { transform = transform.reset() }) { Text("Reset") }
-        }
+            }, onReset = { transform = transform.reset() })
     } else {
         Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {

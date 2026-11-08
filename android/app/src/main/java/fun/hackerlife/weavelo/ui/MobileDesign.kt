@@ -1,5 +1,8 @@
 package `fun`.hackerlife.weavelo.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -48,10 +51,11 @@ enum class MobileSymbol(path: String) {
 
 @Composable
 fun MobileAction(symbol: MobileSymbol, label: String, enabled: Boolean = true,
-    modifier: Modifier = Modifier, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = modifier) {
+    modifier: Modifier = Modifier, selected: Boolean = false, onClick: () -> Unit) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = modifier
+        .background(if (selected) ColorAccentCyan.copy(alpha = .12f) else Color.Transparent, RoundedCornerShape(24.dp))) {
         Icon(symbol.image, contentDescription = label,
-            tint = if (enabled) ColorTextPrimary else ColorTextSecondary.copy(alpha = .4f))
+            tint = if (!enabled) ColorTextSecondary.copy(alpha = .4f) else if (selected) ColorAccentCyan else ColorTextPrimary)
     }
 }
 
@@ -70,4 +74,21 @@ private val mobileShapes = Shapes(small = RoundedCornerShape(12.dp), medium = Ro
 @Composable
 fun WeaveloTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = mobileColorScheme, shapes = mobileShapes, content = content)
+}
+
+/** The four persistent input actions live outside the measured video rectangle. */
+@Composable
+internal fun MobileInputControls(trackpad: Boolean, direct: Boolean, inputEnabled: Boolean,
+    onTrackpad: () -> Unit, onDirect: () -> Unit, onKeyboard: () -> Unit, onReset: () -> Unit) {
+    Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
+        .padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Surface(shape = RoundedCornerShape(28.dp), color = ColorSurfaceCard.copy(alpha = .94f), shadowElevation = 6.dp) {
+            Row(Modifier.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                MobileAction(MobileSymbol.Trackpad, "Trackpad", inputEnabled, Modifier.size(48.dp), selected = trackpad, onClick = onTrackpad)
+                MobileAction(MobileSymbol.Touch, "Direct touch", inputEnabled, Modifier.size(48.dp), selected = direct, onClick = onDirect)
+                MobileAction(MobileSymbol.Keyboard, "Keyboard", inputEnabled, Modifier.size(48.dp), onClick = onKeyboard)
+                MobileAction(MobileSymbol.Refresh, "Reset zoom", modifier = Modifier.size(48.dp), onClick = onReset)
+            }
+        }
+    }
 }

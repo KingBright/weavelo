@@ -195,7 +195,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         }
     }
     WeaveloTheme {
-        Box(Modifier.fillMaxSize().background(ColorBaseBg)) {
+        Box(Modifier.fillMaxSize().background(if (state.panes.isEmpty()) ColorBaseBg else Color.Black)) {
             Column(Modifier.fillMaxSize().imePadding()) {
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
             if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
@@ -814,25 +814,22 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         }
       }
       if (!mobileTarget && !imeVisible) {
-        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(enabled = pane.input && token != 0L, onClick = {
+        MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD,
+            direct = touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE,
+            inputEnabled = pane.input && token != 0L,
+            onTrackpad = {
                 WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                 pointers.clear(); touching = false; touchMode = TouchMode.TRACKPAD
-            }) { Text(if (touchMode == TouchMode.TRACKPAD) "Trackpad ✓" else "Trackpad") }
-            TextButton(enabled = pane.input && token != 0L, onClick = {
+            }, onDirect = {
                 WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                 pointers.clear(); touching = false
                 touchMode = if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
-            }) { Text(if (touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE) "Direct ✓" else "Direct") }
-            TextButton(enabled = pane.input && token != 0L, onClick = {
+            }, onKeyboard = {
                 if (keyboardVisible) keyboardVisible = false else {
                     keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     keyboardVisible = keyboardBinding != null
                 }
-            }) { Text("Keyboard") }
-            TextButton(onClick = { transform.value = transform.value.reset() }) { Text("Reset") }
-        }
+            }, onReset = { transform.value = transform.value.reset() })
       }
       if (imeVisible && pane.input) {
         Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
@@ -874,13 +871,13 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
             .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
     }
     AlertDialog(onDismissRequest = onClose,
-        modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(.9f),
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.imePadding().navigationBarsPadding().widthIn(max = 560.dp).fillMaxWidth(.9f),
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
         title = { Text("Sources", maxLines = 1) }, text = {
         Column(Modifier.fillMaxWidth()) {
             OutlinedTextField(query, { query = it }, label = { Text("Search apps and windows") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
-            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+            LazyColumn(Modifier.weight(1f, fill = false).fillMaxWidth().heightIn(max = 300.dp)) {
                 itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
                   Column(Modifier.fillMaxWidth()) {
                     if (index == 0 || matches[index - 1].group != source.group) {
