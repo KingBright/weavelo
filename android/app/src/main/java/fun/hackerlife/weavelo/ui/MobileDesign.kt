@@ -87,7 +87,7 @@ internal fun MobileInputControls(trackpad: Boolean, direct: Boolean, inputEnable
             Row(Modifier.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(48.dp), selected = trackpad, onClick = onTrackpad)
                 MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(48.dp), selected = direct, onClick = onDirect)
-                MobileAction(MobileSymbol.Keyboard, tr("Keyboard"), inputEnabled, Modifier.size(48.dp), onClick = onKeyboard)
+                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(48.dp), onClick = onKeyboard)
                 MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(48.dp), onClick = onReset)
             }
         }

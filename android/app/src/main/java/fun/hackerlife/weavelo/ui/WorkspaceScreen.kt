@@ -196,6 +196,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             WorkspaceClient.sendFile(fileToSend, sessionKey)
         }
     }
+    LaunchedEffect(state.sessionKey, state.connected, state.connectionGeneration, state.incomingEnded) {
+        if (state.sessionKey == sessionKey && state.connected && !state.incomingEnded && state.sources.isEmpty()) {
+            WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+        }
+    }
     WeaveloTheme {
         Box(Modifier.fillMaxSize().background(if (state.panes.isEmpty()) ColorBaseBg else Color.Black)) {
             Column(Modifier.fillMaxSize().imePadding()) {
@@ -211,6 +216,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                 key(pane.id, state.connectionGeneration) {
                                     Box(Modifier.weight(1f).fillMaxHeight().padding(if (visible.size > 1) 2.dp else 0.dp)) {
                                         if (foreground && state.connected) WorkspaceVideo(pane, state.sessionKey, state.connectionGeneration,
+                                            hudVisible = hudVisible,
                                             mobileTarget = ZeroOcclusionHudPolicy.isMobileTarget(
                                                 state.androidHost, pane.source.isCamera),
                                             isPhoneScreen = ZeroOcclusionHudPolicy.supportsRemoteHome(
@@ -226,6 +232,10 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                             .safeDrawingPadding().padding(top = 56.dp)
                                             .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
                                             TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                            MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded) {
+                                                WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                                                pickerGeneration = state.connectionGeneration; sourcePicker = true
+                                            }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
                                                 MobileAction(MobileSymbol.CameraSwitch, tr("Switch camera"), state.connected) {
                                                     WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
@@ -241,6 +251,13 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }
             }
             if (state.panes.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val quickScreen = state.sources.firstOrNull { !it.isWindow && !it.isCamera }
+                val quickSources = remember(state.sources) {
+                    val hasDisplay = state.sources.any { (it.source as? JSONObject)?.has("Display") == true }
+                    state.sources.filter { !(hasDisplay && it.source == "MainDisplay") }
+                        .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
+                        .take(4)
+                }
                 Column(horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
                     Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
@@ -250,11 +267,39 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         else tr("Open a display or application window. File transfers stay independent."),
                         color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    if (!state.incomingEnded) Button(onClick = {
-                        WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
-                        pickerGeneration = state.connectionGeneration; sourcePicker = true
-                    }, enabled = state.connected) {
-                        Text(tr("Browse screens and windows"))
+                    if (!state.incomingEnded) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (quickScreen != null) {
+                                Button(onClick = {
+                                    localError = null; localErrorText = null
+                                    WorkspaceClient.add(quickScreen, sessionKey, state.connectionGeneration)
+                                }, enabled = state.connected) {
+                                    Text(tr("Open main screen"))
+                                }
+                            }
+                            OutlinedButton(onClick = {
+                                WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                                pickerGeneration = state.connectionGeneration; sourcePicker = true
+                            }, enabled = state.connected) {
+                                Text(tr("Browse screens and windows"))
+                            }
+                        }
+                        if (quickSources.isNotEmpty()) {
+                            Column(Modifier.widthIn(max = 420.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                quickSources.forEach { source ->
+                                    OutlinedButton(onClick = {
+                                        localError = null; localErrorText = null
+                                        WorkspaceClient.add(source, sessionKey, state.connectionGeneration)
+                                    }, enabled = state.connected, modifier = Modifier.fillMaxWidth()) {
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                            SourceIcon(source)
+                                            Text(source.title, modifier = Modifier.weight(1f), maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -408,6 +453,7 @@ private fun WorkspaceAudio(owner: Int, volume: Float, onError: (String, `fun`.ha
 
 @Composable
 private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: Long,
+    hudVisible: Boolean = false,
     mobileTarget: Boolean, isPhoneScreen: Boolean, canRemoteBack: Boolean,
     onMore: () -> Unit, onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit) {
     pane.videoError?.let { reason ->
@@ -748,6 +794,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             }
         )
         if (!imeVisible) {
+            val pillAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = imeVisible)
             Box(Modifier.align(Alignment.CenterEnd)
                 .offset { IntOffset(0, ((handleFraction - .5f) * viewportHeightPx).toInt()) }
                 .size(width = 44.dp, height = 64.dp)
@@ -770,9 +817,9 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                     pointers.clear(); touching = false; mobileControls = !mobileControls
                 }
-                .padding(start = 39.dp, top = 12.dp, bottom = 12.dp)
-                .background(ColorAccentCyan, RoundedCornerShape(4.dp)))
-            if (mobileControls && mobileTarget) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
+                .padding(start = 36.dp, end = 2.dp, top = 10.dp, bottom = 10.dp)
+                .background(ColorAccentCyan.copy(alpha = pillAlpha), RoundedCornerShape(6.dp)))
+            if ((mobileControls || hudVisible) && mobileTarget) Row(Modifier.align(Alignment.CenterEnd).padding(end = 48.dp)
                 .background(ColorSurfaceCard, RoundedCornerShape(18.dp)).padding(4.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 MobileAction(MobileSymbol.Back, tr("Remote Back"), enabled = pane.input && token != 0L && pane.accepted && canRemoteBack, onClick = {
@@ -783,7 +830,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     val owner = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.HOME) }
                 })
-                MobileAction(MobileSymbol.Keyboard, tr("Keyboard"), enabled = pane.input && token != 0L, onClick = {
+                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), enabled = pane.input && token != 0L, onClick = {
                     if (keyboardVisible) keyboardVisible = false else {
                         keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                         keyboardVisible = keyboardBinding != null
@@ -825,7 +872,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 }
             }
         }
-      if (!mobileTarget && !imeVisible && mobileControls) {
+      if (!mobileTarget && !imeVisible && (mobileControls || hudVisible)) {
         Box(Modifier.align(Alignment.BottomCenter)) {
         MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD,
             direct = touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE,
@@ -879,6 +926,7 @@ private fun SourceIcon(source: WorkspaceSource) {
 @Composable
 private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
     var query by remember { mutableStateOf("") }
+    val quickScreen = remember(sources) { sources.firstOrNull { !it.isWindow && !it.isCamera } }
     val matches = remember(sources, query) {
         val hasDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
         sources.filter { !(hasDisplay && it.source == "MainDisplay") }
@@ -888,7 +936,14 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
     AlertDialog(onDismissRequest = onClose,
         modifier = Modifier.imePadding().navigationBarsPadding().widthIn(max = 560.dp).fillMaxWidth(.9f),
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        title = { Text(tr("Sources"), maxLines = 1) }, text = {
+        title = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(tr("Sources"), maxLines = 1)
+                if (quickScreen != null) {
+                    TextButton(onClick = { onSelect(quickScreen) }) { Text(tr("Open main screen")) }
+                }
+            }
+        }, text = {
         Column(Modifier.fillMaxWidth()) {
             OutlinedTextField(query, { query = it }, label = { Text(tr("Search apps and windows")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
