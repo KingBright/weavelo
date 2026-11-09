@@ -1758,7 +1758,9 @@ async fn dispatch_realtime_input(
     }
     if owns_input && probe_released && owner.owner == Some((addr,id)) && owner.binding == Some(packet.binding) {
         peer.resources.focus_probe.accepted_primary_release();
-        owner.focus_release = Some((packet.binding, packet.sequence, deadline));
+        // The release was already injected within its packet deadline. The
+        // following read-only AX probe may use the remaining exact owner lease.
+        owner.focus_release = owner.deadline.map(|until| (packet.binding, packet.sequence, until));
     } else if active_intent {
         owner.focus_release = None;
         owner.focus_pending = None;
@@ -3432,6 +3434,7 @@ mod failure_admission_tests {
         assert!(peer.focus_query.is_some(),"query must wait for actual release");
         dispatch_realtime_input(&mut peer,&mut owner,&injector,&udp,addr,packet(2,InputEvent::MouseUp(0))).await;
         assert_eq!(owner.focus_release.map(|(_,sequence,_)|sequence),Some(2));
+        assert_eq!(owner.focus_release.map(|(_,_,until)|until),owner.deadline);
         schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
         assert!(peer.focus_query.is_none());
         assert!(tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap().4);
