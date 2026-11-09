@@ -47,6 +47,7 @@ pub struct ViewportPlanner {
     last_applied: Option<Instant>,
     last_visible: Option<PixelRect>,
     last_limits:Option<([u32;2],Option<[u32;2]>)>,
+    resize_pending: bool,
     current: Option<FrameGeometry>,
     next_revision: u64,
 }
@@ -76,6 +77,7 @@ impl ViewportPlanner {
         self.current=None;
         self.last_visible=None;
         self.last_limits=None;
+        self.resize_pending=false;
         self.next_revision.checked_add(1)
     }
     pub fn plan(&mut self,source:[u32;2],cap:[u32;2],source_revision:u32,now:Instant)->Result<FrameGeometry,&'static str> {
@@ -104,6 +106,7 @@ impl ViewportPlanner {
         } else {cap};
         let mut output=fit_pixels([crop.width,crop.height],target);
         if output.iter().any(|v|*v<2) {return Err("Viewport is too narrow to encode");}
+        let mut resize_pending = false;
         if let Some(old)=old {
             let proposed=[old.width,old.height]!=output;
             let settled=self.changed.is_none_or(|t|now.saturating_duration_since(t)>=ZOOM_SETTLE);
@@ -114,9 +117,14 @@ impl ViewportPlanner {
             // Keep the old codec during active navigation. Per-frame geometry
             // restores the crop's true display aspect after GPU scaling, even
             // when integer alignment changes its aspect by a few pixels.
-            if proposed&&old_fits&&stable_pan&&old.width<=crop.width&&old.height<=crop.height {
+            if proposed && old_fits && stable_pan && !self.resize_pending
+                && old.width <= crop.width && old.height <= crop.height
+            {
                 output=[old.width,old.height];
             }else if proposed && old_fits && (!settled||!interval) {
+                // Keep retrying this resize after the gesture settles. The
+                // new crop by itself must not turn it into a stable pan.
+                resize_pending = true;
                 // While zooming in, keep enough real source pixels for the
                 // current codec instead of upsampling or recreating it at 20Hz.
                 // The local GPU still follows every gesture immediately.
@@ -140,7 +148,9 @@ impl ViewportPlanner {
             self.last_applied=Some(now);
         }
         g.revision=if changed {self.next_revision}else{old.unwrap().revision};
-        g.validate()?;self.last_visible=Some(visible);self.last_limits=Some(limits);self.current=Some(g);Ok(g)
+        g.validate()?;
+        self.resize_pending = resize_pending;
+        self.last_visible=Some(visible);self.last_limits=Some(limits);self.current=Some(g);Ok(g)
     }
 }
 
@@ -194,6 +204,34 @@ mod tests {
         assert!(!planner.update(demand(1,0,4),now).unwrap());
         assert!(planner.update(ViewportDemand{source_revision:4,..latest},now).is_err());
         assert_eq!(planner.demand(),Some(latest));
+    }
+    #[test]
+    fn repeated_zoom_out_recovers_the_full_view_coded_size_after_settling() {
+        let start = Instant::now();
+        let source = [3840, 2160];
+        let cap = [1920, 1080];
+        let mut planner = ViewportPlanner::default();
+        planner.update(demand(1, 0, 1), start).unwrap();
+        let full = planner.plan(source, cap, 3, start).unwrap();
+
+        for (cycle, zoom) in [4, 6, 8].into_iter().enumerate() {
+            let now = start + Duration::from_secs(cycle as u64 * 2 + 1);
+            let revision = 2 + cycle as u64 * 2;
+            planner.update(demand(revision, 0, zoom), now).unwrap();
+            planner.plan(source, cap, 3, now).unwrap();
+            let now = now + ZOOM_SETTLE;
+            let zoomed = planner.plan(source, cap, 3, now).unwrap();
+            assert!(zoomed.width < full.width);
+
+            let now = now + Duration::from_millis(1);
+            planner.update(demand(revision + 1, 0, 1), now).unwrap();
+            let immediate = planner.plan(source, cap, 3, now).unwrap();
+            assert_eq!(immediate.crop, full.crop);
+            assert_eq!((immediate.width, immediate.height), (zoomed.width, zoomed.height));
+
+            let recovered = planner.plan(source, cap, 3, now + RESIZE_INTERVAL).unwrap();
+            assert_eq!((recovered.width, recovered.height), (full.width, full.height));
+        }
     }
     #[test]
     fn continuous_window_zoom_keeps_codec_dimensions_until_the_gesture_settles() {
