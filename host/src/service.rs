@@ -363,6 +363,7 @@ struct Connection {
     talkback_settings: Option<watch::Sender<crate::talkback_player::TalkbackPlaybackSettings>>,
     subscriptions: HashMap<u32, Subscription>,
     input_leases: HashMap<u32, InputLeaseSlot>,
+    focus_query: Option<(InputBinding, u64, std::time::Instant)>,
     // First terminal result is immutable, including unknown/failed cleanup.
     retired: HashMap<u32, Result<(), String>>,
     worker_failure: bool,
@@ -634,6 +635,18 @@ impl Connection {
         }
         self.versioned_control=true;
         Some(SessionCommand::InputBinding{binding:self.input_leases.get(&id)?.lease.binding,request,host_time_ms:now})
+    }
+    fn focus_query_valid(&self, binding: InputBinding) -> bool {
+        let id=binding.subscription_id;
+        let Some((revision,target,generation))=self.input_signature(id) else {return false;};
+        self.can_input(id) && binding.connection_id==self.id && binding.source_revision==revision
+            && self.input_leases.get(&id).is_some_and(|slot|slot.lease.binding==binding
+                && slot.target==target && slot.portal_generation==generation && !slot.lease.expired(host_input_time_ms()))
+    }
+    fn remember_focus_query(&mut self, binding: InputBinding, sequence:u64, now:std::time::Instant) {
+        if sequence==0 || !self.focus_query_valid(binding) {return;}
+        if self.focus_query.is_some_and(|(old,old_sequence,until)| old==binding && old_sequence>sequence && now<until) {return;}
+        self.focus_query=Some((binding,sequence,now+Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS)));
     }
     fn accept_input(&mut self,packet:&RealtimeInput) -> Option<Vec<InputEvent>> {
         // Desktop sources advertise zero native touch points; do not accept
@@ -1004,6 +1017,7 @@ impl Connection {
             talkback_settings,
             subscriptions: HashMap::new(),
             input_leases: HashMap::new(),
+            focus_query: None,
             retired: HashMap::new(),
             worker_failure: false,
             audio_groups: HashMap::new(),
@@ -1568,9 +1582,9 @@ struct ActiveInput {
     capture: Option<PreparedPortalCapture>,
 }
 impl ActiveInput {
-    fn take_focus_release(&mut self, addr: SocketAddr, binding: InputBinding, sequence: u64,
+    fn focus_release_deadline(&self, addr: SocketAddr, binding: InputBinding, sequence: u64,
         now: std::time::Instant) -> Option<std::time::Instant> {
-        let (actual, release_sequence, deadline) = self.focus_release.take()?;
+        let (actual, release_sequence, deadline) = self.focus_release?;
         (self.owner == Some((addr,binding.subscription_id)) && self.binding == Some(binding)
             && actual == binding && release_sequence == sequence && now < deadline).then_some(deadline)
     }
@@ -2006,6 +2020,28 @@ impl InputInjector for LazyInputInjector {
     }
 }
 
+fn schedule_waiting_focus(peer:&mut Connection, owner:&mut ActiveInput, injector:&LazyInputInjector,
+    addr:SocketAddr, limit:&Arc<tokio::sync::Semaphore>, tx:&mpsc::Sender<(SocketAddr,InputBinding,u64,std::time::Instant,bool)>) {
+    let Some((binding,sequence,query_deadline))=peer.focus_query else{return;};
+    let now=std::time::Instant::now();
+    if now>=query_deadline || !peer.focus_query_valid(binding) {peer.focus_query=None;return;}
+    let Some(deadline)=owner.focus_release_deadline(addr,binding,sequence,now) else{return;};
+    let Some(probe)=injector.focused_editor_probe() else {peer.focus_query=None;return;};
+    let Ok(permit)=limit.clone().try_acquire_owned() else{return;};
+    peer.focus_query=None;
+    owner.focus_release=None;
+    owner.focus_pending=Some((binding,sequence,deadline));
+    let tx=tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        if std::time::Instant::now()<deadline {
+            let result=tokio::task::spawn_blocking(probe).await.unwrap_or(false);
+            let _=tx.try_send((addr,binding,sequence,deadline,result));
+        }
+        drop(permit);
+    });
+}
+
 fn upgrade_stop_idle(peers:usize,closing:usize,authenticated:usize,handshakes_empty:bool)->bool {
     peers==0 && closing==0 && authenticated==0 && handshakes_empty
 }
@@ -2017,12 +2053,15 @@ fn focus_release_requires_exact_live_owner_and_is_single_use() {
     let binding=InputBinding {connection_id:1, subscription_id:2, source_revision:3, epoch:[4;16]};
     let now=std::time::Instant::now();
     let make=|| ActiveInput {owner:Some((addr,2)),binding:Some(binding),focus_release:Some((binding,5,now+Duration::from_millis(50))),..Default::default()};
-    assert!(make().take_focus_release(addr,binding,5,now).is_some());
-    assert!(make().take_focus_release(addr,binding,4,now).is_none());
-    assert!(make().take_focus_release(addr,InputBinding{epoch:[9;16],..binding},5,now).is_none());
-    assert!(make().take_focus_release(addr,binding,5,now+Duration::from_millis(51)).is_none());
-    let mut owner=make(); assert!(owner.take_focus_release(addr,binding,5,now).is_some());
-    assert!(owner.take_focus_release(addr,binding,5,now).is_none());
+    assert!(make().focus_release_deadline(addr,binding,5,now).is_some());
+    assert!(make().focus_release_deadline(addr,binding,4,now).is_none());
+    assert!(make().focus_release_deadline(addr,InputBinding{epoch:[9;16],..binding},5,now).is_none());
+    assert!(make().focus_release_deadline(addr,binding,5,now+Duration::from_millis(51)).is_none());
+    let mut owner=make();
+    assert!(owner.focus_release_deadline(addr,binding,4,now).is_none());
+    assert!(owner.focus_release_deadline(addr,binding,5,now).is_some(), "old queries cannot consume a newer release");
+    owner.focus_release=None;
+    assert!(owner.focus_release_deadline(addr,binding,5,now).is_none());
     let deadline=now+Duration::from_millis(50);
     owner.focus_pending=Some((binding,6,deadline));
     assert!(!owner.take_focus_result(binding,5,deadline));
@@ -2403,23 +2442,13 @@ async fn run_host_service_inner(
                                 SessionCommand::RealtimeInput(packet) => {
                                     if let Some(peer)=peers.get_mut(&addr) {
                                         dispatch_realtime_input(peer,&mut input_owner,&injector,&udp_sender,addr,packet).await;
+                                        schedule_waiting_focus(peer,&mut input_owner,&injector,addr,&focus_limit,&focus_tx);
                                     }
                                 }
                                 SessionCommand::ProbeEditorFocus { binding, sequence } => {
-                                    let deadline = input_owner.take_focus_release(addr,binding,sequence,std::time::Instant::now());
-                                    if let Some(deadline) = deadline.filter(|_| peers.get(&addr).is_some_and(|peer| peer.can_input(binding.subscription_id)))
-                                        && let Some(probe) = injector.focused_editor_probe()
-                                        && let Ok(permit) = focus_limit.clone().try_acquire_owned() {
-                                        input_owner.focus_pending=Some((binding,sequence,deadline));
-                                        let tx=focus_tx.clone();
-                                        tokio::spawn(async move {
-                                            tokio::time::sleep(Duration::from_millis(25)).await;
-                                            if std::time::Instant::now() < deadline {
-                                                let result=tokio::task::spawn_blocking(probe).await.unwrap_or(false);
-                                                let _=tx.try_send((addr,binding,sequence,deadline,result));
-                                            }
-                                            drop(permit);
-                                        });
+                                    if let Some(peer)=peers.get_mut(&addr) {
+                                        peer.remember_focus_query(binding,sequence,std::time::Instant::now());
+                                        schedule_waiting_focus(peer,&mut input_owner,&injector,addr,&focus_limit,&focus_tx);
                                     }
                                 }
                                 SessionCommand::Configure { id, revision, width, height, fps, bitrate_kbps } => {
@@ -3366,6 +3395,46 @@ mod failure_admission_tests {
         };
         (Connection::new(id, addr, sender, &config), addr)
     }
+    #[tokio::test]
+    async fn editor_focus_query_pairs_with_exact_accepted_release_in_either_order() {
+        struct FocusProbe;
+        impl InputInjector for FocusProbe {
+            fn inject_input(&self,_:InputEvent)->Result<(),Box<dyn Error+Send+Sync>> {Ok(())}
+            fn focused_editor_probe(&self)->Option<Box<dyn FnOnce()->bool+Send>> {Some(Box::new(||true))}
+        }
+        let (mut peer,addr)=fixture_peer(31).await;
+        let (sub,_)=mock_subscription(CaptureSource::MainDisplay);
+        sub.settings.send_modify(|s|s.paused=false);peer.subscriptions.insert(100,sub);
+        let SessionCommand::InputBinding{binding,..}=peer.input_binding(31,100,10,1).unwrap() else {panic!()};
+        let injector=LazyInputInjector(std::sync::Mutex::new(Some((InputTarget::Desktop,Box::new(FocusProbe)))));
+        let limit=Arc::new(tokio::sync::Semaphore::new(1));let (tx,mut rx)=mpsc::channel(1);
+        let now=std::time::Instant::now(); let deadline=now+Duration::from_secs(2);
+        let mut owner=ActiveInput {owner:Some((addr,100)),binding:Some(binding),..Default::default()};
+        peer.remember_focus_query(binding,5,now);
+        schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
+        assert!(peer.focus_query.is_some(),"query must wait for actual release");
+        owner.focus_release=Some((binding,5,deadline));
+        schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
+        assert!(peer.focus_query.is_none());
+        assert!(tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap().4);
+        drop(limit.acquire().await.unwrap());
+        owner.focus_release=Some((binding,8,deadline));
+        peer.remember_focus_query(binding,7,std::time::Instant::now());
+        schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
+        assert_eq!(owner.focus_release.map(|(_,sequence,_)|sequence),Some(8),"old query cannot consume new release");
+        peer.remember_focus_query(binding,8,std::time::Instant::now());
+        schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
+        assert!(tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap().4);
+        peer.remember_focus_query(InputBinding{epoch:[9;16],..binding},9,std::time::Instant::now());
+        assert!(peer.focus_query.is_none(),"old lease cannot queue a query");
+        let stale=std::time::Instant::now()-Duration::from_millis(251);
+        peer.remember_focus_query(binding,10,stale);
+        owner.focus_release=Some((binding,10,deadline));
+        schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
+        assert!(peer.focus_query.is_none());
+        assert!(owner.focus_release.is_some(),"expired query cannot consume a release");
+    }
+
     struct NativeStopFixture(Arc<crate::lifecycle::Resources>);
     impl Drop for NativeStopFixture {
         fn drop(&mut self) {
