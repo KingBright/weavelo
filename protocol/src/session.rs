@@ -245,6 +245,12 @@ pub enum SessionCommand {
     SourceAppearance { request_id: u32, id: u32, source: CaptureSource, appearance: Box<Result<crate::appearance::SourceAppearance, String>> },
     EditorFocus { binding: crate::realtime_input::InputBinding, sequence: u64, editable: bool },
     ProbeEditorFocus { binding: crate::realtime_input::InputBinding, sequence: u64 },
+    SetAudioOutput(crate::audio_output::AudioOutputRequest),
+    AudioOutputState {
+        request: crate::audio_output::AudioOutputRequest,
+        generation: u64,
+        status: crate::audio_output::AudioOutputStatus,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,9 @@
 #[cfg(target_os = "macos")]
 mod audio_capture;
+#[cfg(target_os = "macos")]
+mod macos_audio_tap;
+#[cfg(target_os = "macos")]
+mod system_audio_output;
 mod audio_encode;
 #[cfg(target_os = "linux")]
 mod linux_system_audio;
@@ -884,6 +888,8 @@ struct SubscriptionAudioConfig {
     include_audio: bool,
     include_microphone: bool,
     resources: Arc<crate::lifecycle::Resources>,
+    #[cfg(target_os = "macos")]
+    output_control: Option<crate::system_audio_output::OutputControl>,
 }
 
 fn start_subscription_audio(config: SubscriptionAudioConfig) -> Vec<tokio::task::JoinHandle<()>> {
@@ -899,6 +905,8 @@ fn start_subscription_audio(config: SubscriptionAudioConfig) -> Vec<tokio::task:
         include_audio,
         include_microphone,
         resources,
+        #[cfg(target_os = "macos")]
+        output_control,
     } = config;
     let scheduled_media_sender = Some(scheduled_sender);
     let use_data_plane_media = true;
@@ -950,9 +958,13 @@ fn start_subscription_audio(config: SubscriptionAudioConfig) -> Vec<tokio::task:
         if use_data_plane_media {
             Some(spawn_audio_capture_task(
                 "Remote system",
-                crate::audio_capture::MacSystemAudioCapturer::new()
-                    .for_source(source)
-                    .with_resources(resources.clone()),
+                crate::system_audio_output::SystemAudio::new(
+                    source,
+                    resources.clone(),
+                    output_control,
+                    udp_sender.clone(),
+                    client_addr,
+                ),
                 AudioCaptureTaskRuntime {
                     stream_id: remote_system_audio_stream_id(session_id),
                     udp_sender: udp_sender.clone(),

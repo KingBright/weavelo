@@ -11,6 +11,7 @@ use protocol::session::{
     CaptureSource, MAX_SUBSCRIPTIONS, SESSION_VERSION, SessionCommand, SubscriptionRequest,
 };
 use protocol::{AudioControlTarget, ContentKind, ControlMessage, DataEnvelope, InputEvent};
+use protocol::audio_output::{AudioOutputRequest, AudioOutputStatus, LocalPlayback};
 use remote_core::net::{MultiplexedPacket, UdpMultiplexer, UdpSender};
 use remote_core::scheduled_sender::{ScheduledDataSender, ScheduledDataSenderConfig};
 use remote_core::session_crypto::{
@@ -249,6 +250,8 @@ struct Subscription {
     task: tokio::task::JoinHandle<()>,
     task_joined: bool,
     audio_group: Option<AudioGroupKey>,
+    #[cfg(target_os = "macos")]
+    audio_rejection: Option<(AudioOutputRequest, AudioOutputStatus)>,
     audio_active: bool,
     supports_input: bool,
     input_target: Option<InputTarget>,
@@ -321,6 +324,8 @@ struct AudioGroup {
     settings: watch::Sender<crate::StreamSettings>,
     cancel: broadcast::Sender<()>,
     _tasks: Vec<tokio::task::JoinHandle<()>>,
+    #[cfg(target_os = "macos")]
+    output: Option<crate::system_audio_output::OutputControl>,
 }
 impl Drop for AudioGroup {
     fn drop(&mut self) {
@@ -1077,6 +1082,87 @@ impl Connection {
         });
     }
 
+    fn set_audio_output(&mut self, request: AudioOutputRequest, authenticated: bool) -> Option<(u64, AudioOutputStatus)> {
+        let unavailable = |private_supported, reason: &str| AudioOutputStatus {
+            requested: request.mode,
+            local_playback: LocalPlayback::Unknown,
+            private_supported,
+            message: Some(reason.to_owned()),
+        };
+        if !authenticated || !self.versioned_control {
+            return Some((1, unavailable(false, "Host audio output requires an authenticated viewing session")));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if !crate::macos_audio_tap::private_mode_available() {
+                return Some((1, unavailable(false, "Private audio requires macOS 14.2 or later")));
+            }
+            let Some(sub) = self.subscriptions.get(&request.id) else {
+                return Some((1, unavailable(true, "The audio source ended")));
+            };
+            if request.revision == 0 || request.source_revision != sub.source_revision || sub.task.is_finished()
+                || self.delivery_cancel.as_ref().is_some_and(|lease| *lease.borrow() || lease.has_changed().is_err())
+            {
+                return Some((1, unavailable(true, "The audio source changed or ended")));
+            }
+            if let Some((previous, status)) = &sub.audio_rejection
+                && previous.source_revision == request.source_revision && previous.revision >= request.revision
+            {
+                return (*previous == request).then(|| (1, status.clone()));
+            }
+            let outcome = (|| {
+                let (key, group) = sub.audio_group.and_then(|key| self.audio_groups.get(&key).map(|group| (key, group)))
+                    .ok_or((false, "This source does not have remote audio"))?;
+                let output = group.output.as_ref().ok_or((false, "Private audio is available when viewing a complete Mac display"))?;
+                if output.submitted(request) { return Ok(output.submit(request)); }
+                if !sub.audio_active || sub.settings.borrow().paused {
+                    return Err((true, "Resume the screen before changing host audio output"));
+                }
+                if group.owner != request.id || self.subscriptions.values().filter(|sub| sub.audio_group == Some(key)).count() != 1 {
+                    return Err((true, "Close the other views of this display before changing host audio output"));
+                }
+                Ok(output.submit(request))
+            })();
+            match outcome {
+                Ok(receipt) => receipt,
+                Err((supported, reason)) => {
+                    let status = unavailable(supported, reason);
+                    self.subscriptions.get_mut(&request.id).unwrap().audio_rejection = Some((request, status.clone()));
+                    Some((1, status))
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        Some((1, unavailable(false, "Private audio is unavailable on this host")))
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn retire_private_audio(&mut self, id: u32) -> Result<(), String> {
+        if let Some(key) = self.subscriptions.get(&id).and_then(|existing| existing.audio_group)
+            && self.audio_groups.get(&key).is_some_and(|group| group.owner == id && group.output.as_ref()
+                .is_some_and(crate::system_audio_output::OutputControl::has_private_request))
+        {
+            let mut group = self.audio_groups.remove(&key).unwrap();
+            let _ = group.cancel.send(());
+            for task in group._tasks.drain(..) {
+                task.abort();
+                self.retiring_tasks.push(task);
+            }
+            while let Some(task) = self.retiring_tasks.last_mut() {
+                let result = tokio::time::timeout(crate::lifecycle::CLEANUP_WAIT, task).await
+                    .map_err(|_| "Previous host audio is still stopping".to_string())?;
+                self.retiring_tasks.pop();
+                if let Err(error) = joined(result) {
+                    self.worker_failure = true;
+                    return Err(error);
+                }
+            }
+            tokio::time::timeout(crate::lifecycle::CLEANUP_WAIT, crate::lifecycle::wait_native_stops(&self.resources))
+                .await.map_err(|_| "Previous host audio teardown is still unconfirmed".to_string())?;
+        }
+        Ok(())
+    }
+
     async fn subscribe(
         &mut self,
         request: SubscriptionRequest,
@@ -1163,6 +1249,7 @@ impl Connection {
             && existing.request.source == request.source
             && existing.request.audio == request.audio
             && native_current
+            && existing.audio_group.is_none_or(|key| self.audio_groups.contains_key(&key))
             && !existing.task.is_finished()
         {
             // Updating rates on an unchanged source must not restart capture,
@@ -1280,12 +1367,28 @@ impl Connection {
             input_target
         };
         let supports_input = supports_input && input_target.is_some();
+        let wants_audio_group = !matches!(request.source,CaptureSource::Camera(_))
+            && (request.audio || (legacy && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE")));
+        let audio_key = wants_audio_group.then(|| {
+            selected.and_then(|s| s.process_id).map_or(AudioGroupKey::System, AudioGroupKey::Application)
+        });
+        #[cfg(target_os = "macos")]
+        if let Some(group) = audio_key.and_then(|key| self.audio_groups.get(&key))
+            && group.owner != request.id
+            && group.output.as_ref().is_some_and(crate::system_audio_output::OutputControl::has_private_request)
+        {
+            return Err("Restore host speakers or close the private audio view before opening another display".into());
+        }
         let mut initial_settings = stream_settings(&request);
         let mut activity_revision = 0;
         let mut settings_revision = 0;
         let mut source_revision = 0;
         let mut audio_active = true;
         let mut video_sequence = Arc::new(std::sync::atomic::AtomicU16::new(0));
+        #[cfg(target_os = "macos")]
+        if self.subscriptions.get(&request.id).is_some_and(|existing| existing.request.source != request.source || !request.audio) {
+            self.retire_private_audio(request.id).await?;
+        }
         if let Some(existing) = self.subscriptions.get_mut(&request.id) {
             initial_settings.paused = existing.settings.borrow().paused;
             activity_revision = existing.revision;
@@ -1358,21 +1461,13 @@ impl Connection {
         let capture_reservation = Arc::new(WindowsVideoCaptureReservation::acquire()?);
         #[cfg(target_os = "windows")]
         let task_reservation = capture_reservation.clone();
-        let wants_audio_group = !matches!(request.source,CaptureSource::Camera(_))
-            && (request.audio || (legacy && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE")));
-        let audio_key = if wants_audio_group {
-            Some(
-                selected
-                    .and_then(|s| s.process_id)
-                    .map_or(AudioGroupKey::System, AudioGroupKey::Application),
-            )
-        } else {
-            None
-        };
         if let Some(key) = audio_key {
             self.audio_groups.entry(key).or_insert_with(|| {
                 let (cancel, cancel_rx) = broadcast::channel(4);
                 let (settings, rx) = watch::channel(stream_settings(&request));
+                #[cfg(target_os = "macos")]
+                let output = (!legacy && request.audio && request.source.category() == protocol::session::SourceCategory::Screen)
+                    .then(crate::system_audio_output::OutputControl::new);
                 let tasks = start_subscription_audio(SubscriptionAudioConfig {
                     resources: self.resources.clone(),
                     session_id: request.id,
@@ -1387,6 +1482,8 @@ impl Connection {
                     // Legacy screen viewing is not consent to capture the host microphone.
                     include_microphone: legacy
                         && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE"),
+                    #[cfg(target_os = "macos")]
+                    output_control: output.clone(),
                 });
                 let bridge=forward_delivery_cancel(self.delivery_cancel.clone(),cancel.clone(),tasks.iter().map(tokio::task::JoinHandle::abort_handle).collect());
                 AudioGroup {
@@ -1395,6 +1492,8 @@ impl Connection {
                     settings,
                     cancel,
                     _tasks: tasks,
+                    #[cfg(target_os = "macos")]
+                    output,
                 }
             });
         }
@@ -1456,6 +1555,8 @@ impl Connection {
                 task,
                 task_joined: false,
                 audio_group: audio_key,
+                #[cfg(target_os = "macos")]
+                audio_rejection: None,
                 audio_active,
                 supports_input,
                 input_target,
@@ -1506,6 +1607,10 @@ impl Connection {
                 supports_input: current.supports_input_now(), max_touch_points: 0 });
         }
         let mut request = current.request.clone();
+        #[cfg(target_os = "macos")]
+        if request.source == source {
+            self.retire_private_audio(id).await?;
+        }
         request.source = source;
         self.subscribe(request, addr, udp, stats, false).await?;
         let current = self
@@ -2685,6 +2790,12 @@ async fn run_host_service_inner(
                                     }
                                     if let Some(reply) = peers.get_mut(&addr).and_then(|p| p.set_activity(id, revision, video, audio)) { input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await; }
                                 }
+                                SessionCommand::SetAudioOutput(request) => {
+                                    let authorized = authenticated.contains_key(&addr) && psk.is_some() && load_session_psk() == psk;
+                                    if let Some((generation, status)) = peers.get_mut(&addr).and_then(|peer| peer.set_audio_output(request, authorized)) {
+                                        input_owner.during_control(&injector, send_session(&udp_sender, addr, SessionCommand::AudioOutputState { request, generation, status })).await;
+                                    }
+                                }
                                 _ => {}
                             },
                             ControlMessage::StopStream => {
@@ -3410,6 +3521,48 @@ mod failure_admission_tests {
             enable_talkback: false,
         };
         (Connection::new(id, addr, sender, &config), addr)
+    }
+
+    #[tokio::test]
+    async fn host_audio_output_requires_authenticated_versioned_viewing() {
+        use protocol::audio_output::AudioOutputMode;
+        let (mut peer, _) = fixture_peer(78112).await;
+        let request = AudioOutputRequest { id: 7, source_revision: 0, revision: 1, mode: AudioOutputMode::Private };
+        let denied = peer.set_audio_output(request, true).unwrap();
+        assert!(!denied.1.private_supported);
+        assert_eq!(denied.1.local_playback, LocalPlayback::Unknown);
+        peer.versioned_control = true;
+        assert_eq!(peer.set_audio_output(request, false), Some(denied));
+        assert_eq!(peer.set_audio_output(request, true).unwrap().1.local_playback, LocalPlayback::Unknown);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn host_audio_replays_paused_rejection_without_muting_on_resume() {
+        use protocol::audio_output::AudioOutputMode;
+        if !crate::macos_audio_tap::private_mode_available() { return; }
+        let (mut peer, _) = fixture_peer(78113).await;
+        peer.versioned_control = true;
+        let (mut subscription, _) = mock_subscription(CaptureSource::MainDisplay);
+        let id = subscription.request.id;
+        let request = AudioOutputRequest { id, source_revision: subscription.source_revision,
+            revision: 1, mode: AudioOutputMode::Private };
+        let (cancel, _) = broadcast::channel(4);
+        let output = crate::system_audio_output::OutputControl::new();
+        peer.audio_groups.insert(AudioGroupKey::System, AudioGroup {
+            _delivery_cancel: None, owner: id, settings: subscription.settings.clone(),
+            cancel, _tasks: Vec::new(), output: Some(output.clone()),
+        });
+        subscription.audio_group = Some(AudioGroupKey::System);
+        peer.subscriptions.insert(id, subscription);
+        let denied = peer.set_audio_output(request, true).unwrap();
+        assert_eq!(denied.1.local_playback, LocalPlayback::Unknown);
+        assert!(denied.1.message.as_deref().unwrap().starts_with("Resume"));
+        peer.set_activity(id, 8, true, true).unwrap();
+        assert_eq!(peer.set_audio_output(request, true), Some(denied));
+        assert!(!output.has_private_request());
+        assert_eq!(peer.set_audio_output(AudioOutputRequest { revision: 2, ..request }, true), None);
+        assert!(output.has_private_request());
     }
     #[tokio::test]
     async fn editor_focus_query_pairs_with_exact_accepted_release_in_either_order() {
@@ -4482,6 +4635,8 @@ mod failure_admission_tests {
                 task,
                 task_joined: false,
                 audio_group: None,
+                #[cfg(target_os = "macos")]
+                audio_rejection: None,
                 audio_active: false,
                 supports_input: true,
                 input_target: Some(InputTarget::Desktop),

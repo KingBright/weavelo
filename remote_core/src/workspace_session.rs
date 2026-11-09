@@ -598,6 +598,8 @@ impl WorkspaceConnection {
 
 struct View {
     source: CaptureSource,
+    source_revision: u32,
+    audio_output: Option<(protocol::audio_output::AudioOutputRequest, u64)>,
     host_stats: Arc<SharedHostStats>,
     handler: MediaPacketHandler,
     accepted: bool,
@@ -846,6 +848,9 @@ fn request_key(command: &SessionCommand) -> Option<(u8, u32)> {
         SessionCommand::SetActivity { id, .. } | SessionCommand::Activity { id, .. } => {
             Some((4, *id))
         }
+        SessionCommand::SetAudioOutput(request) | SessionCommand::AudioOutputState { request, .. } => {
+            Some((11, request.id))
+        }
         _ => None,
     }
 }
@@ -855,7 +860,8 @@ fn confirmation_timeout_reason(category:u8) -> &'static str {
         3=>"host video stop confirmation timed out", 4=>"host media activity confirmation timed out",
         5=>"host clipboard confirmation timed out", 6=>"host video settings confirmation timed out",
         7=>"host input release confirmation timed out", 8=>"host source switch confirmation timed out",
-        9=>"host connection close confirmation timed out", 10=>"host artwork request timed out", _=>"host confirmation timed out",
+        9=>"host connection close confirmation timed out", 10=>"host artwork request timed out",
+        11=>"host audio output confirmation timed out", _=>"host confirmation timed out",
     }
 }
 /// Classify only the local, category-preserving timeout messages emitted below.
@@ -920,6 +926,13 @@ impl Actor {
             .await;
     }
     async fn request(&mut self, command: SessionCommand) {
+        if let SessionCommand::SetAudioOutput(request) = &command
+            && let Some(view) = self.subscriptions.get_mut(&request.id)
+            && view.source_revision == request.source_revision
+        {
+            if view.audio_output.is_some_and(|(latest, _)| latest.revision >= request.revision) { return; }
+            view.audio_output = Some((*request, 0));
+        }
         if let SessionCommand::SetClipboard { revision, .. } = &command {
             if *revision <= self.latest_clipboard_revision { return; }
             self.latest_clipboard_revision = *revision;
@@ -928,6 +941,7 @@ impl Actor {
             self.pending.retain(|_,pending|!matches!(pending.command,SessionCommand::GetSourceAppearance {id:previous,..} if previous == *id));
         }
         if let SessionCommand::SwitchSource { id, .. } = &command {
+            self.pending.remove(&(11, *id));
             // Only the latest intent for this subscription may reopen video.
             // Late acknowledgements of superseded requests are ignored.
             self.pending.retain(|_, pending| {
@@ -968,6 +982,7 @@ impl Actor {
                 self.pending.remove(&(4, *id));
                 self.pending.remove(&(6, *id));
                 self.pending.remove(&(7, *id));
+                self.pending.remove(&(11, *id));
                 self.pending.retain(|_, pending|
                     !matches!(pending.command, SessionCommand::SwitchSource { id: requested, .. } | SessionCommand::GetSourceAppearance { id: requested, .. } if requested == *id));
             }
@@ -1059,7 +1074,7 @@ impl Actor {
                 _ => None,
             })
             .collect();
-        self.pending.retain(|key, _| key.1 != request_id);
+        self.pending.retain(|key, _| key.0 == 11 || key.1 != request_id);
         // Video was gated while waiting, so even a rejected switch has skipped
         // compressed references. Recover the retained source from a keyframe.
         for id in video {
@@ -1100,6 +1115,11 @@ impl Actor {
                          SessionCommand::SourceSwitched { id: accepted_id, request_id: accepted_request, source: accepted_source, .. })
                         if id == accepted_id && request_id == accepted_request && source == accepted_source)
                 }),
+                SessionCommand::AudioOutputState { request, generation, status } => {
+                    status.requested == request.mode && self.subscriptions.get(&request.id).is_some_and(|view|
+                        view.source_revision == request.source_revision && view.audio_output.is_some_and(|(latest, previous)|
+                            latest == *request && *generation > previous))
+                },
                 _ => pending.is_none_or(|pending| match (&pending.command, command) {
                     (SessionCommand::Configure { revision, .. }, SessionCommand::Configured { revision: accepted, .. }) => accepted >= revision,
                     (SessionCommand::SetActivity { revision, .. }, SessionCommand::Activity { revision: accepted, .. }) => accepted >= revision,
@@ -1123,12 +1143,17 @@ impl Actor {
                 pending.map(|p| p.started.elapsed()),
                 None,
             );
-            if let SessionCommand::SourceSwitched { id, source, .. } = command {
+            if let SessionCommand::SourceSwitched { id, request_id, source, .. } = command {
                 let Some(view) = self.subscriptions.get_mut(id) else {
                     return false;
                 };
                 view.source = *source;
+                view.source_revision = *request_id;
+                view.audio_output = None;
                 view.handler.reset_video_source();
+            }
+            if let SessionCommand::AudioOutputState { request, generation, .. } = command {
+                self.subscriptions.get_mut(&request.id).unwrap().audio_output = Some((*request, *generation));
             }
             self.pending.remove(&key);
             if let SessionCommand::ClipboardState { revision, .. } = command { self.acknowledged_clipboard_revision = *revision; }
@@ -1189,6 +1214,19 @@ impl Actor {
         // settings request whose independent acknowledgement is still pending.
         let Some(pending) = self.pending.remove(&key) else { return; };
         trace_control_event(self.id,"expired",&pending.command,Some(pending.started.elapsed()),None);
+        if let SessionCommand::SetAudioOutput(request) = pending.command {
+            let _ = self.control_tx.send(SessionCommand::AudioOutputState {
+                request,
+                generation: 0,
+                status: protocol::audio_output::AudioOutputStatus {
+                    requested: request.mode,
+                    local_playback: protocol::audio_output::LocalPlayback::Unknown,
+                    private_supported: true,
+                    message: Some(confirmation_timeout_reason(key.0).into()),
+                },
+            });
+            return;
+        }
         if let SessionCommand::Subscribe(request) = &pending.command {
             // A timed-out initial request is terminal for this subscription ID.
             // Retire ingress before reporting failure; late native startup/acks
@@ -1305,7 +1343,7 @@ impl Actor {
                             let _ = self.control_tx.send(SessionCommand::Error { request_id: request.id, reason: "decoder subscription limit reached".into() }); continue;
                         }
                         let handler = MediaPacketHandler::new(stats, Arc::new(AtomicU32::new(request.id)), host_stats.clone(), self.audio_tx.clone(), video, None);
-                        self.subscriptions.insert(request.id, View { source: request.source, handler, host_stats, accepted: false, active: false, audio_active: false, audio_owner: None, wanted: crate::media_demand::MediaDemand { video: true, audio: request.audio }, activity_revision: 0 });
+                        self.subscriptions.insert(request.id, View { source: request.source, source_revision: 0, audio_output: None, handler, host_stats, accepted: false, active: false, audio_active: false, audio_owner: None, wanted: crate::media_demand::MediaDemand { video: true, audio: request.audio }, activity_revision: 0 });
                         self.refresh_audio_activity();
                         self.request(SessionCommand::Subscribe(request)).await;
                     }
@@ -1852,6 +1890,8 @@ mod tests {
             id,
             View {
                 source: CaptureSource::MainDisplay,
+                source_revision: 0,
+                audio_output: None,
                 host_stats: Arc::new(SharedHostStats::default()),
                 handler,
                 accepted: true,
@@ -2250,6 +2290,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_audio_reply_requires_the_exact_request_and_current_source() {
+        use protocol::audio_output::{AudioOutputMode, AudioOutputRequest, AudioOutputStatus, LocalPlayback};
+        let (mut actor, _) = source_switch_actor().await;
+        let _view = source_switch_view(&mut actor, 7);
+        let first = AudioOutputRequest { id: 7, source_revision: 0, revision: 1, mode: AudioOutputMode::Private };
+        let second = AudioOutputRequest { revision: 2, ..first };
+        let reply = |request: AudioOutputRequest, generation, local_playback| SessionCommand::AudioOutputState { request, generation, status: AudioOutputStatus {
+            requested: request.mode, local_playback, private_supported: true, message: None,
+        }};
+        assert!(!actor.accept_control(&reply(first, 1, LocalPlayback::Disabled)));
+        actor.request(SessionCommand::SetAudioOutput(first)).await;
+        actor.request(SessionCommand::SetAudioOutput(second)).await;
+        assert!(!actor.accept_control(&reply(first, 1, LocalPlayback::Disabled)));
+        assert!(actor.accept_control(&SessionCommand::Error { request_id: 7, reason: "INPUT_UNAVAILABLE".into() }));
+        assert!(actor.pending.contains_key(&(11, 7)));
+        assert!(actor.accept_control(&reply(second, 1, LocalPlayback::Disabled)));
+        assert!(actor.accept_control(&reply(second, 2, LocalPlayback::Enabled)));
+        assert!(!actor.accept_control(&reply(second, 1, LocalPlayback::Disabled)));
+        actor.request(SessionCommand::SwitchSource { id: 7, request_id: 50, source: CaptureSource::Display(88) }).await;
+        assert!(actor.accept_control(&SessionCommand::SourceSwitched { id: 7, request_id: 50, source: CaptureSource::Display(88), supports_input: false, max_touch_points: 0 }));
+        assert!(!actor.accept_control(&reply(second, 3, LocalPlayback::Disabled)));
+    }
+
+    #[tokio::test]
     async fn source_switch_gates_own_video_discards_old_reorder_and_preserves_other_media() {
         let (mut actor,mut audio)=source_switch_actor().await;
         let mut ours=source_switch_view(&mut actor,7);
@@ -2598,6 +2662,8 @@ mod tests {
         let stats = Statistics::new();
         let view = View {
             source: CaptureSource::MainDisplay,
+            source_revision: 0,
+            audio_output: None,
             host_stats: Arc::new(SharedHostStats::default()),
             accepted: true,
             active: true,

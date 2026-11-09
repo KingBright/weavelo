@@ -37,6 +37,15 @@ pub enum LocalPlayback {
     Unknown,
 }
 
+/// A viewer's output choice applies only to its current source generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioOutputRequest {
+    pub id: u32,
+    pub source_revision: u32,
+    pub revision: u64,
+    pub mode: AudioOutputMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioOutputStatus {
     pub requested: AudioOutputMode,

@@ -866,7 +866,9 @@ impl RestoredDashboard {
     }
 
     fn stream_sound_panel(&self, cx: &mut Context<Self>) -> Div {
+        use protocol::audio_output::{AudioOutputMode, LocalPlayback};
         let (volume, muted) = self.owner.audio();
+        let host_audio = self.owner.host_audio();
         div()
             .flex()
             .flex_col()
@@ -902,6 +904,32 @@ impl RestoredDashboard {
                             })),
                     ),
             )
+            .when_some(host_audio, |panel, (pending, status)| {
+                let playback = status.as_ref().map(|status| status.local_playback);
+                let supported = status.as_ref().is_none_or(|status| status.private_supported);
+                let caption = if pending { "Changing host audio output…" } else {
+                    match playback {
+                        None | Some(LocalPlayback::Enabled) => "Play on both",
+                        Some(LocalPlayback::Disabled) => "Remote only",
+                        _ => "Host audio output is unconfirmed",
+                    }
+                };
+                panel.child(div().flex().flex_col().gap_2()
+                    .child(div().text_size(px(11.)).child(crate::i18n::tr("Host audio output")))
+                    .child(div().flex().gap_2()
+                        .child(command_button("host_audio_mirror", ActionVariantKind::Neutral, cx)
+                            .disabled(pending || !supported || matches!(playback, None | Some(LocalPlayback::Enabled)))
+                            .child(crate::i18n::tr("Play on both"))
+                            .on_click(cx.listener(|this, _, _, cx| { this.owner.set_host_audio(AudioOutputMode::Mirror); cx.notify(); })))
+                        .child(command_button("host_audio_private", ActionVariantKind::Neutral, cx)
+                            .disabled(pending || !supported || playback == Some(LocalPlayback::Disabled))
+                            .child(crate::i18n::tr("Remote only"))
+                            .on_click(cx.listener(|this, _, _, cx| { this.owner.set_host_audio(AudioOutputMode::Private); cx.notify(); }))))
+                    .child(div().text_size(px(11.)).child(crate::i18n::tr(caption)))
+                    .when_some(status.and_then(|status| status.message), |row, message| {
+                        row.child(div().text_size(px(11.)).child(crate::i18n::message(&message)))
+                    }))
+            })
             .child(security_toggle_row(
                 crate::i18n::tr("Microphone to this connection"),
                 crate::i18n::tr("Shared by this device connection"),

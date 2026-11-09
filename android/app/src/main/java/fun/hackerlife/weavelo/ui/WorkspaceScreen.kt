@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -101,6 +102,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     var keepService by remember { mutableStateOf(WeaveloClient.backgroundServiceEnabled()) }
     val scope = rememberCoroutineScope()
     var selectedSettings by remember { mutableStateOf<WorkspacePane?>(null) }
+    var settingsGeneration by remember { mutableLongStateOf(0L) }
     BackHandler(enabled = foreground) {
         val hasOverlay = sourcePicker || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || backgroundSettings
         when {
@@ -231,7 +233,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                         if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
                                             .safeDrawingPadding().padding(top = 56.dp)
                                             .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
-                                            TextButton(onClick = { selectedSettings = pane }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                                            TextButton(onClick = { selectedSettings = pane; settingsGeneration = state.connectionGeneration }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
                                             MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded) {
                                                 WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
                                                 pickerGeneration = state.connectionGeneration; sourcePicker = true
@@ -397,21 +399,45 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 hudVisible = true; hudInteraction++
             }
         }
-        selectedSettings?.let { pane ->
+        selectedSettings?.let { selectedPane ->
+            val pane = state.panes.firstOrNull { it.id == selectedPane.id && state.connectionGeneration == settingsGeneration }
+                ?: selectedPane
+            val settingsCurrent = state.connected && state.connectionGeneration == settingsGeneration &&
+                state.panes.any { it.id == pane.id && it.accepted } && (state.grid || state.selected == pane.id)
             var fps by remember(pane.id) { mutableStateOf(pane.fps.toString()) }
             var kbps by remember(pane.id) { mutableStateOf(pane.kbps.toString()) }
             AlertDialog(onDismissRequest = { selectedSettings = null }, title = { Text(tr("Stream settings")) },
-                text = { Column {
+                text = { Column(Modifier.verticalScroll(rememberScrollState())) {
                     OutlinedTextField(fps, { fps = it }, label = { Text(tr("Frames per second")) })
                     OutlinedTextField(kbps, { kbps = it }, label = { Text(tr("Bitrate (kbps)")) })
                     pane.audioOwner?.let { owner ->
                         Text(tr("Volume"))
                         Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it })
                     }
+                    if (pane.source.isDisplay && !state.androidHost) {
+                        val output = pane.audioOutput
+                        Text(tr("Sound on controlled device"))
+                        Text(tr(when {
+                            output.pendingRevision != null -> "Changing host audio output…"
+                            output.localPlayback == "Enabled" -> "Host sound is on"
+                            output.localPlayback == "Disabled" -> "Host sound is off"
+                            output.localPlayback == "Partial" -> "Host sound is partially on"
+                            else -> "Host sound state is unknown"
+                        }))
+                        output.messageText?.let { Text(appText(it)) }
+                        output.message?.takeIf { it.isNotBlank() }?.let { Text(tr(it)) }
+                        if (output.privateSupported == false) Text(tr("Private output is unavailable on this host"))
+                        Row {
+                            TextButton(onClick = { WorkspaceClient.setAudioOutput(pane.id, sessionKey, settingsGeneration, "Mirror") },
+                                enabled = settingsCurrent && output.pendingRevision == null && output.privateSupported != false) { Text(tr("Play on both")) }
+                            TextButton(onClick = { WorkspaceClient.setAudioOutput(pane.id, sessionKey, settingsGeneration, "Private") },
+                                enabled = settingsCurrent && output.pendingRevision == null && output.privateSupported != false) { Text(tr("Remote only")) }
+                        }
+                    }
                 } },
                 confirmButton = { TextButton(onClick = {
                     val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
-                    if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, state.sessionKey, state.connectionGeneration, fps = f, kbps = k); selectedSettings = null }
+                    if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, sessionKey, settingsGeneration, fps = f, kbps = k); selectedSettings = null }
                 }) { Text(tr("Apply")) } })
         }
         if (sharedFilesOpen) AlertDialog(onDismissRequest = { sharedFilesOpen = false }, title = { Text(tr("Remote shared files")) },

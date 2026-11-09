@@ -17,12 +17,19 @@ import java.util.concurrent.Executors
 data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null, val camera: JSONObject? = null) {
     val isWindow: Boolean get() = (source as? JSONObject)?.has("Window") == true
     val isCamera: Boolean get() = (source as? JSONObject)?.has("Camera") == true
+    val isDisplay: Boolean get() = source == "MainDisplay" || (source as? JSONObject)?.has("Display") == true
     val rotation: Int get() = camera?.optInt("rotation", 0) ?: 0
     val group: String get() = if (isCamera) "Cameras" else if (isWindow) "App windows" else "Entire screens"
 }
+data class WorkspaceAudioOutput(val pendingRevision: Long? = null,
+    val requestRevision: Long? = null, val stateGeneration: Long = -1,
+    val localPlayback: String = "Unknown", val privateSupported: Boolean? = null,
+    val message: String? = null, val messageText: AppText? = null)
+
 data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int, val kbps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null,
+    val audioOutput: WorkspaceAudioOutput = WorkspaceAudioOutput(),
     val maxTouchPoints: Int = 0, val inputErrorText: AppText? = null, val videoErrorText: AppText? = null, val telemetry: TelemetrySnapshot = TelemetrySnapshot())
 internal enum class WorkspaceNavigation(val wireValue: String) { BACK("back"), HOME("home") }
 
@@ -81,6 +88,8 @@ object WorkspaceClient {
     private val cameraReplacements = HashMap<Int, Pair<Int, Long>>()
     private data class CameraSwitch(val pane: Int, val source: WorkspaceSource, val deadline: Long)
     private val cameraSwitches = HashMap<Long, CameraSwitch>()
+    private data class PendingAudioOutput(val pane: Int, val deadline: Long)
+    private val pendingAudioOutputs = HashMap<Long, PendingAudioOutput>()
 
     private fun action(op: Int, payload: String = ""): String {
         val result = nativeAction(op, payload)
@@ -215,10 +224,10 @@ object WorkspaceClient {
         pendingShareList = 0L
         mutable.value = mutable.value.copy(connected = true, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
-            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
+            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, audioOutput = WorkspaceAudioOutput(), telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
-    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); if (active) action(1); active = false; retainingConnection = false }
+    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
         ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
     }
@@ -326,6 +335,29 @@ object WorkspaceClient {
             val visible = !background && (s.grid || s.selected == pane.id)
             command("SetActivity", JSONObject().put("id", pane.id).put("revision", ++revision).put("video", visible).put("audio", visible))
         }
+    }
+    fun setAudioOutput(id: Int, sessionKey: String, generation: Long, mode: String) = guarded {
+        if ((mode != "Mirror" && mode != "Private") || mutable.value.androidHost || !currentView(id, sessionKey, generation, true)) return@guarded
+        val pane = mutable.value.panes.firstOrNull { it.id == id && it.accepted && it.source.isDisplay } ?: return@guarded
+        if (pane.audioOutput.pendingRevision != null) return@guarded
+        val requestRevision = ++revision
+        val pending = PendingAudioOutput(id, SystemClock.elapsedRealtime() + 10_000)
+        pendingAudioOutputs[requestRevision] = pending
+        updateAudioOutput(id) { it.copy(pendingRevision = requestRevision, requestRevision = requestRevision,
+            stateGeneration = -1, message = null, messageText = null) }
+        runCatching {
+            command("SetAudioOutput", JSONObject().put("id", id).put("source_revision", 0)
+                .put("revision", requestRevision).put("mode", mode))
+        }.onFailure {
+            pendingAudioOutputs.remove(requestRevision)
+            updateAudioOutput(id) { output -> output.copy(pendingRevision = null,
+                localPlayback = "Unknown", message = null, messageText = AppText("Could not request host audio output")) }
+        }
+    }
+    private fun updateAudioOutput(id: Int, update: (WorkspaceAudioOutput) -> WorkspaceAudioOutput) {
+        mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
+            if (pane.id == id) pane.copy(audioOutput = update(pane.audioOutput)) else pane
+        })
     }
     fun settings(id: Int, sessionKey: String, generation: Long, width: Int? = null, height: Int? = null, fps: Int? = null, kbps: Int? = null) = guarded {
         if (!currentView(id, sessionKey, generation, false)) return@guarded
@@ -563,6 +595,14 @@ object WorkspaceClient {
             clipboardAvailable = false, sharedBusy = false, remoteFiles = emptyList(), sharedNext = null)
     }
     private fun drainEvents() {
+        pendingAudioOutputs.entries.toList().forEach { (requestRevision, pending) ->
+            if (mutable.value.panes.none { it.id == pending.pane }) pendingAudioOutputs.remove(requestRevision)
+            else if (pending.deadline < SystemClock.elapsedRealtime()) {
+                pendingAudioOutputs.remove(requestRevision)
+                updateAudioOutput(pending.pane) { it.copy(pendingRevision = null,
+                    localPlayback = "Unknown", message = null, messageText = AppText("Host audio request timed out; state unknown")) }
+            }
+        }
         cameraSwitches.entries.removeAll { (_, pending) ->
             if (pending.deadline < SystemClock.elapsedRealtime()) {
                 mutable.value = mutable.value.copy(status = "Camera switch timed out; retry", statusText = AppText("Camera switch timed out; retry"))
@@ -593,6 +633,21 @@ object WorkspaceClient {
                 })
             }
             val control = event.optJSONObject("control")
+            control?.optJSONObject("AudioOutputState")?.let { reply ->
+                val request = reply.getJSONObject("request")
+                val requestRevision = request.getLong("revision")
+                val pane = mutable.value.panes.firstOrNull { it.id == request.getInt("id") && it.accepted }
+                val resultGeneration = reply.getLong("generation")
+                if (pane != null && pane.audioOutput.requestRevision == requestRevision && request.getInt("source_revision") == 0 &&
+                    resultGeneration > pane.audioOutput.stateGeneration) {
+                    val status = reply.getJSONObject("status")
+                    pendingAudioOutputs.remove(requestRevision)
+                    updateAudioOutput(pane.id) { it.copy(pendingRevision = null, stateGeneration = resultGeneration,
+                        localPlayback = status.getString("local_playback"),
+                        privateSupported = status.getBoolean("private_supported"),
+                        message = if (status.isNull("message")) null else status.getString("message"), messageText = null) }
+                }
+            }
             control?.optJSONObject("CameraSwitchResult")?.let { reply ->
                 val request = reply.getJSONObject("request")
                 cameraSwitches.remove(request.getLong("request_id"))?.let { pending ->

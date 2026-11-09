@@ -3,6 +3,7 @@ use super::requests::{FileRequests, RequestKind};
 use client::{ClientMediaRuntime, TransferCenterState};
 use protocol::{
     InputEvent,
+    audio_output::{AudioOutputMode, AudioOutputRequest, AudioOutputStatus, LocalPlayback},
     session::{CaptureSource, CaptureSourceInfo, SessionCommand, SubscriptionRequest},
     shared_files::{SharedFileInfo, SharedFileRequest, SharedFileResponse},
 };
@@ -67,6 +68,8 @@ pub struct SessionState<Texture, Pan: Default> {
     clipboard_gate: Option<Arc<AtomicBool>>,
     pub volume: u8,
     pub muted: bool,
+    host_audio_request: Option<AudioOutputRequest>,
+    host_audio_status: Option<(u64, AudioOutputStatus)>,
     pub zoom: f32,
     pub pan: Pan,
     pub fit: bool,
@@ -186,6 +189,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             source: CaptureSource::MainDisplay,
             video_id: 1,
             source_revision: 0,
+            host_audio_request: None,
+            host_audio_status: None,
             confirmed: false,
             supports_input: false,
             // The authenticated connection authorizes control. Source, lease,
@@ -263,6 +268,27 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             }
         }
     }
+    pub(crate) fn host_audio(&self) -> Option<(bool, Option<AudioOutputStatus>)> {
+        (self.confirmed && self.connected && self.request.audio
+            && !self.paused && !self.presentation_hidden
+            && self.source.category() == protocol::session::SourceCategory::Screen)
+            .then(|| (self.host_audio_request.is_some() && self.host_audio_status.is_none(),
+                self.host_audio_status.as_ref().map(|(_, status)| status.clone())))
+    }
+    pub(crate) fn set_host_audio(&mut self, mode: AudioOutputMode) {
+        if !matches!(self.host_audio(), Some((false, _))) { return; }
+        self.next_request = self.next_request.wrapping_add(1).max(1000);
+        let request = AudioOutputRequest { id: self.video_id, source_revision: self.source_revision,
+            revision: u64::from(self.next_request), mode };
+        match self.conn.try_control_checked(SessionCommand::SetAudioOutput(request)) {
+            Ok(()) => {
+                self.host_audio_request = Some(request);
+                self.host_audio_status = None;
+            }
+            Err(reason) => self.host_audio_status = Some((0, AudioOutputStatus { requested: mode,
+                local_playback: LocalPlayback::Unknown, private_supported: true, message: Some(reason) })),
+        }
+    }
     pub fn start_video(&mut self) {
         if self.pending.is_some() || !self.connected {
             return;
@@ -276,6 +302,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             };
             self.video_id = id;
             self.source_revision = 0;
+            self.host_audio_request = None;
+            self.host_audio_status = None;
             self.activity_revision = 0;
             self.activity_pending = None;
             self.last_activity = Some(remote_core::media_demand::MediaDemand::BOTH);
@@ -834,6 +862,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     supports_input, .. } if id == self.video_id && self.pending.is_some_and(|p| p.0 == request_id) => {
                     self.source = source;
                     self.source_revision = request_id;
+                    self.host_audio_request = None;
+                    self.host_audio_status = None;
                     self.request.source = source;
                     self.supports_input = supports_input;
                     self.clear_transient_error();
@@ -859,6 +889,11 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                         self.error =
                             "The host did not resume video; retry before enabling input".into();
                     }
+                }
+                SessionCommand::AudioOutputState { request, generation, status } if self.host_audio_request == Some(request)
+                    && request.id == self.video_id && request.source_revision == self.source_revision
+                    && self.host_audio_status.as_ref().is_none_or(|(previous, _)| generation > *previous) => {
+                    self.host_audio_status = Some((generation, status));
                 }
                 SessionCommand::Closed { reason, .. } => {
                     self.camera_switch=None;self.pending=None;

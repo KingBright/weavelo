@@ -2011,6 +2011,14 @@ impl OriginalOwner {
             .map(|e| (e.session.volume, e.session.muted))
             .unwrap_or((100, false))
     }
+    pub(crate) fn host_audio(&self) -> Option<(bool, Option<protocol::audio_output::AudioOutputStatus>)> {
+        self.pool.lock().unwrap().active().and_then(|entry| entry.session.host_audio())
+    }
+    pub(crate) fn set_host_audio(&self, mode: protocol::audio_output::AudioOutputMode) {
+        if let Some(entry) = self.pool.lock().unwrap().active_mut() {
+            entry.session.set_host_audio(mode);
+        }
+    }
     pub fn file_transfer_snapshot(&self) -> Vec<TransferEntrySnapshot> {
         let p = self.pool.lock().unwrap();
         p.active()

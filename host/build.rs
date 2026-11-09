@@ -19,6 +19,16 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
         build_camera_bridge();
+        println!("cargo:rerun-if-changed=native/macos_audio_tap.m");
+        cc::Build::new()
+            .file("native/macos_audio_tap.m")
+            .flag("-fobjc-arc")
+            .flag("-mmacosx-version-min=13.0")
+            .warnings(true)
+            .extra_warnings(true)
+            .compile("weavelo_audio_tap");
+        println!("cargo:rustc-link-lib=framework=CoreAudio");
+        println!("cargo:rustc-link-lib=framework=AudioToolbox");
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=native/windows_camera.cpp");

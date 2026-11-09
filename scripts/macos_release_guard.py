@@ -347,6 +347,7 @@ def assemble_app(stage: Path, binary: Path, version: str, build: str, policy: Po
             'WeaveloReleaseVersion': version, 'CFBundlePackageType': 'APPL',
             'LSMinimumSystemVersion': '13.0', 'NSHighResolutionCapable': True,
             'NSMicrophoneUsageDescription': 'Weavelo uses the microphone when talkback is enabled.',
+            'NSAudioCaptureUsageDescription': 'Weavelo captures system audio when an authorized viewer requests private playback.',
             'NSCameraUsageDescription': 'Weavelo shares your selected camera with your paired devices when you enable camera sharing.',
             'NSScreenCaptureUsageDescription': 'Weavelo captures your screen only for authorized remote viewing.'}
     icon = Path(__file__).resolve().parents[1] / 'assets/brand/weavelo/AppIcon.icns'
