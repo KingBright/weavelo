@@ -1808,6 +1808,11 @@ impl Window {
         self.active.get()
     }
 
+    /// Queries native focus during input dispatch, before an activation observer may run.
+    pub fn is_window_active_now(&self) -> bool {
+        self.platform_window.is_active()
+    }
+
     /// Presentation visibility, independently of keyboard focus. Unknown
     /// visibility must not be interpreted as an invisible consumer.
     pub fn is_window_visible(&self) -> Option<bool> {

@@ -3011,6 +3011,17 @@ fn full_video_surface(
             this.ime_anchor=Some(event.position);
             if let Some(input)=&this.remote_text {input.update(cx,|input,_|input.anchor=Some(event.position));}
             window.focus(&this.input_focus);
+            // AppKit can deliver the focusing click before GPUI's queued activation observer.
+            let active = window.is_window_active_now();
+            if active != this.window_active {
+                this.window_active = active;
+                this.window_visible = window.is_window_visible();
+                this.sync_media_pause();
+            }
+            if !active {
+                cx.stop_propagation();
+                return;
+            }
             if this.queue_pointer_move(event.position, true) {
                 this.queue_pointer_button(event.button, true);
             }
