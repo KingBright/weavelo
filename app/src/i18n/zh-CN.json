@@ -265,6 +265,7 @@
   "No files published by this device. Publish on the other device, then refresh.": "此设备未发布文件。请在另一台设备上发布文件，然后刷新。",
   "No fresh round-trip measurement.": "暂无最新往返时间测量值。",
   "No matching sources": "没有匹配的画面来源",
+  "No current route to the selected device": "当前没有到所选设备的可用连接。",
   "No shared sources are available on the remote device.": "远端设备上没有可用的共享画面来源。",
   "Not connected": "未连接",
   "Offline": "离线",

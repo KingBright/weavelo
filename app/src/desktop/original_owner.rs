@@ -74,6 +74,8 @@ fn diagnostic_telemetry(
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum ConnectionPurpose { View, Files, Sources }
 
+pub(crate) const PHONE_NOT_SHARING: &str = "Screen not shared. Start sharing on the remote device.";
+
 #[derive(Clone,Copy)]
 struct RetryBinding {
     attempt: u64,
@@ -900,7 +902,12 @@ impl OriginalOwner {
         let rejected = if device.as_ref().is_none_or(|d| !d.online) {
             Some("Device is not currently online")
         } else if routes.is_empty() {
-            Some("No current route to the selected device")
+            if purpose == ConnectionPurpose::Sources && device.as_ref().is_some_and(|d|
+                !d.can_stream && d.badge == protocol::appearance::DeviceBadgePreset::Phone) {
+                Some(PHONE_NOT_SHARING)
+            } else {
+                Some("No current route to the selected device")
+            }
         } else { None };
         if let Some(message) = rejected {
             let mut p = self.pool.lock().unwrap();

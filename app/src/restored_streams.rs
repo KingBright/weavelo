@@ -1,9 +1,8 @@
 //! Device/source actions for one stream window. Every new view captures its
 //! own target; reconnecting a transport never selects a different window.
 use super::*;
+use crate::desktop::original_owner::PHONE_NOT_SHARING;
 use protocol::session::{CaptureSource, CaptureSourceInfo};
-
-const PHONE_NOT_SHARING: &str = "Screen not shared. Start sharing on the remote device.";
 
 impl RestoredDashboard {
     pub(super) fn prepare_stream_close(&mut self, cx: &mut Context<Self>) {
@@ -66,18 +65,8 @@ impl RestoredDashboard {
             return;
         }
         self.stream_device = Some(device.clone());
-        let ticket = self.session_commands.begin();
-        let phone_without_listener=self.runtime.owner.runtime().lock().unwrap().devices().iter().any(|d| {
-            d.device_id==device && d.online && d.endpoint.port()==0
-                && d.badge==protocol::appearance::DeviceBadgePreset::Phone
-        });
-        if phone_without_listener && self.runtime.owner.discovery_snapshot_rx().is_none_or(|rx|
-            crate::desktop::model::candidate_routes(&rx.borrow(),&device).is_empty()) {
-            self.status=PHONE_NOT_SHARING.into();
-            cx.notify();
-            return;
-        }
         self.status = "Connecting to source directory".into();
+        let ticket = self.session_commands.begin();
         let owner = self.owner.clone();
         cx.spawn(async move |view, cx| {
             if !view
