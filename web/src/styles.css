@@ -80,6 +80,21 @@ body, html {
   white-space: nowrap;
 }
 
+#hud-micro-rail {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 84px;
+  height: 6px;
+  border-radius: 9999px;
+  background: rgba(0, 242, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  z-index: 100;
+}
+
 .status-dot {
   width: 7px;
   height: 7px;

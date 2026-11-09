@@ -70,10 +70,43 @@ document.addEventListener('DOMContentLoaded', () => {
     drawerTrigger.querySelector('button').focus();
   });
 
-  // 控制岛按钮交互
+  // 控制栏可收起，通过顶部短条恢复。
+  const floatingIsland = document.getElementById('floating-island');
+  const modifierBar = document.getElementById('modifier-bar');
+  const hudMicroRail = document.getElementById('hud-micro-rail');
+  const btnKeys = document.getElementById('btn-keys');
+  const btnFullscreen = document.getElementById('btn-fullscreen');
+  const btnHideHud = document.getElementById('btn-hide-hud');
+  const setHudHidden = (hidden) => {
+    if (floatingIsland) floatingIsland.hidden = hidden;
+    if (hudMicroRail) hudMicroRail.hidden = !hidden;
+  };
+  if (btnHideHud) btnHideHud.addEventListener('click', () => setHudHidden(true));
+  if (hudMicroRail) {
+    hudMicroRail.addEventListener('click', () => setHudHidden(false));
+    hudMicroRail.addEventListener('pointerenter', () => setHudHidden(false));
+  }
+  if (btnKeys && modifierBar) {
+    btnKeys.classList.add('active');
+    btnKeys.addEventListener('click', () => {
+      modifierBar.hidden = !modifierBar.hidden;
+      btnKeys.classList.toggle('active', !modifierBar.hidden);
+    });
+  }
+  if (btnFullscreen) {
+    btnFullscreen.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.().catch(() => {});
+      } else {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    });
+  }
+
   btnDisconnect.addEventListener('click', () => {
     releaseInput();
     client.disconnect();
+    setHudHidden(false);
     setText(status, 'Disconnected. Enter a gateway endpoint to reconnect.');
   });
 

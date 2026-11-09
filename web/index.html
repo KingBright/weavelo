@@ -39,10 +39,16 @@
     <div class="island-divider"></div>
     
     <button class="glass-btn active" id="btn-touch-mode" disabled title="Direct touch mode" data-i18n-title="Direct touch mode" data-i18n="TOUCH">TOUCH</button>
+    <button class="glass-btn" id="btn-keys" title="Toggle virtual shortcut bar" data-i18n-title="Toggle virtual shortcut bar" data-i18n="KEYS">KEYS</button>
+    <button class="glass-btn" id="btn-fullscreen" title="Toggle fullscreen" data-i18n-title="Toggle fullscreen" data-i18n="FULLSCREEN">FULLSCREEN</button>
     <button class="glass-btn" id="btn-mic" disabled title="Microphone transport is not connected in the web client" data-i18n-title="Microphone transport is not connected in the web client" data-i18n="MIC">MIC</button>
     <button class="glass-btn" id="btn-clip" disabled title="Clipboard transport is not connected in the web client" data-i18n-title="Clipboard transport is not connected in the web client" data-i18n="CLIP">CLIP</button>
     <button class="glass-btn destructive" id="btn-disconnect" disabled data-i18n="DISCONNECT">DISCONNECT</button>
+    <button class="glass-btn" id="btn-hide-hud" title="Hide top controls" data-i18n-title="Hide top controls" data-i18n="HIDE">HIDE</button>
   </div>
+
+  <!-- 3b. 零遮挡顶部微导轨 (HUD 隐藏时悬停/点击呼出) -->
+  <button id="hud-micro-rail" hidden aria-label="Show top controls" data-i18n-aria-label="Show top controls" title="Show top controls" data-i18n-title="Show top controls"></button>
 
   <!-- 4. 底部浮动虚拟修饰键条 (Floating Modifier Bar) -->
   <div id="modifier-bar">
