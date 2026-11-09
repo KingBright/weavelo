@@ -807,6 +807,18 @@ private fun SettingsTabContent(
     discoveryDiagnostics: DiscoveryDiagnostics,
     sessionState: SessionState
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val backgroundPrefs = remember(context) { context.getSharedPreferences("stream", android.content.Context.MODE_PRIVATE) }
+    var keepOnline by remember(backgroundPrefs) { mutableStateOf(`fun`.hackerlife.weavelo.DevicePresenceService.enabled(context)) }
+    androidx.compose.runtime.DisposableEffect(backgroundPrefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == `fun`.hackerlife.weavelo.DevicePresenceService.PREFERENCE) {
+                keepOnline = `fun`.hackerlife.weavelo.DevicePresenceService.enabled(context)
+            }
+        }
+        backgroundPrefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { backgroundPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     var connectionDetails by remember { mutableStateOf<String?>(null) }
     connectionDetails?.let { evidence ->
         AlertDialog(onDismissRequest = { connectionDetails = null },
@@ -822,6 +834,17 @@ private fun SettingsTabContent(
     ) {
         item { LanguageSelector() }
         item { AppUpdateCard(update, updateAllowed) }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text(tr("Stay online in background"), color = ColorTextPrimary)
+                    Text(tr("Keep this phone reachable by paired devices when you leave Weavelo or lock the screen."),
+                        color = ColorTextSecondary, fontSize = 12.sp)
+                }
+                androidx.compose.material3.Switch(checked = keepOnline, enabled = nativeAvailable,
+                    onCheckedChange = { `fun`.hackerlife.weavelo.DevicePresenceService.setEnabled(context, it) })
+            }
+        }
         item { DeviceBadgeSettings() }
         item {
             Text(

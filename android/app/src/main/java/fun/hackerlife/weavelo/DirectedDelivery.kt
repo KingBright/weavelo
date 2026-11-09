@@ -15,49 +15,70 @@ object DirectedDelivery {
     private val mutableNotice = kotlinx.coroutines.flow.MutableStateFlow<PublisherNotice?>(null)
     val notice = mutableNotice.asStateFlow()
     fun failed(reason: String?, text: AppText? = null) { mutableError.value = reason; mutableNotice.value = reason?.let { PublisherNotice(it, text) } }
-    private var foregroundOwner: Any? = null
+    private val listenerOwners = mutableSetOf<Any>()
     private var listening = false
+    private var pending: JSONObject? = null
     private var incoming: JSONObject? = null
     private var submitted = mutableSetOf<Int>()
     private var submittedGeneration = 0L
     @Volatile var request: WorkspaceSessionRequest? = null
         private set
 
-    @Synchronized fun listen(context: Context, owner: Any) {
+    @Synchronized fun listen(context: Context, owner: Any, checkHealth: Boolean = false) {
+        if (checkHealth && listening && !JSONObject(PublisherClient.action(23)).optBoolean("incoming_ready")) {
+            stopListener()
+        }
         if (!listening) {
             val directory = File(context.filesDir, "received").apply { mkdirs() }
             PublisherClient.action(20, JSONObject().put("directory", directory.absolutePath).toString())
             listening = true
         }
-        foregroundOwner = owner
+        listenerOwners.add(owner)
     }
 
     @Synchronized fun leave(owner: Any) {
-        if (foregroundOwner !== owner) return
-        foregroundOwner = null
-        stopIdleListener()
+        if (listenerOwners.remove(owner)) stopIdleListener()
     }
 
     /** Network changes are allowed while idle, without retaining an old endpoint. */
-    @Synchronized fun pauseForNetworkChange() {
+    @Synchronized fun <T> changeNetwork(change: () -> T): T {
         appCheck(incoming == null, "Stop the incoming screen before changing networks")
-        if (listening) PublisherClient.action(21)
-        listening = false
+        stopListener()
+        return change()
     }
 
     private fun stopIdleListener() {
-        if (foregroundOwner == null && incoming == null && listening) {
+        if (listenerOwners.isEmpty() && incoming == null) stopListener()
+    }
+
+    private fun stopListener() {
+        pending = null
+        if (listening) {
             PublisherClient.action(21)
             listening = false
         }
     }
 
+    /** Leave an authenticated offer available for the normal foreground acceptance path. */
+    @Synchronized fun hasPendingOffer(): Boolean {
+        if (!listening || incoming != null) return false
+        if (pending?.let { PublisherClient.action(18, it.getString("id")) == "true" } != true) {
+            val raw = PublisherClient.action(16)
+            pending = if (raw == "null") null else JSONObject(raw)
+        }
+        return pending != null
+    }
+
     /** Called only while the Activity is foreground; never launches it from background. */
     @Synchronized fun poll(busy: Boolean): WorkspaceSessionRequest? {
         incoming?.optString("id")?.takeIf { !alive(it) }?.let { finish(it, "Sending stopped") }
-        val raw = PublisherClient.action(16)
-        if (raw == "null") return null
-        val offer = JSONObject(raw)
+        val queued = pending
+        pending = null
+        val offer = queued?.takeIf { PublisherClient.action(18, it.getString("id")) == "true" } ?: run {
+            val raw = PublisherClient.action(16)
+            if (raw == "null") return null
+            JSONObject(raw)
+        }
         val id = offer.getString("id")
         val sources = offer.getJSONArray("sources")
         val device = WeaveloClient.devices.value.firstOrNull {

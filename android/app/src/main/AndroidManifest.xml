@@ -32,6 +32,8 @@
             android:exported="true" />
         <service android:name=".SessionConnectionService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service android:name=".DevicePresenceService" android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
         <service android:name=".FileReceiverService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service android:name=".RemoteControlService" android:exported="true"

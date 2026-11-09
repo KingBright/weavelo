@@ -79,7 +79,8 @@ object WeaveloClient {
     private val _networkName = MutableStateFlow("")
     val networkName: StateFlow<String> = _networkName.asStateFlow()
 
-    private var isNativeLoaded = false
+    @Volatile private var isNativeLoaded = false
+    private var nativeInitialized = false
     var nativeStartupError: String = ""
         private set
     private fun startupFailed(code: String) {
@@ -89,7 +90,7 @@ object WeaveloClient {
     }
     private var appContext: Context? = null
     private val pauseExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-    @Volatile var backgrounded = false
+    @Volatile var backgrounded = true
         private set
     private var surfaceUnavailable = false
     private var backgroundSinceMs = 0L
@@ -121,7 +122,8 @@ object WeaveloClient {
     val nativeAvailable: Boolean
         get() = isNativeLoaded
 
-    fun initialize(context: Context): Boolean {
+    @Synchronized fun initialize(context: Context): Boolean {
+        if (nativeInitialized) return true
         appContext = context.applicationContext
         DeviceArtwork.initialize(context)
         if (networkObservation == null) {
@@ -145,12 +147,14 @@ object WeaveloClient {
         if (!initialized) startupFailed("native-initialization-rejected")
         else nativeStartupError = ""
         if (initialized) {
+            nativeSetNetworkEnabled(!backgrounded)
             val prefs = context.getSharedPreferences("stream", Context.MODE_PRIVATE)
             streamFps = prefs.getInt("fps", 60)
             streamBitrateKbps = prefs.getInt("bitrate_kbps", 20_000)
             backgroundKeepAliveSeconds = prefs.getInt("background_keepalive_seconds", 300).coerceIn(0, 86400)
             nativeUpdateStreamRates(streamFps, streamBitrateKbps)
             refreshNetworkIdentity()
+            nativeInitialized = true
         }
         return initialized
     }

@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         WeaveloClient.setBackgrounded(false)
+        DevicePresenceService.startIfEnabled(this)
         WorkspaceClient.resumeOnForeground(this)
         WorkspaceClient.backgrounded(false)
         `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.resume(this)
@@ -116,8 +117,7 @@ class MainActivity : ComponentActivity() {
                 scope.launch {
                     try {
                         pairingMessage = withContext(Dispatchers.IO) {
-                            DirectedDelivery.pauseForNetworkChange()
-                            WeaveloClient.joinPairingPayload(raw)
+                            DirectedDelivery.changeNetwork { WeaveloClient.joinPairingPayload(raw) }
                         }
                         pairingText = pairingResultText(pairingMessage, WeaveloClient.networkName.value)
                     } catch (cancelled: kotlinx.coroutines.CancellationException) {
