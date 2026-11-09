@@ -4757,6 +4757,8 @@ pub mod restored_ui;
 /// Default product presentation and side-effect-free build identity.
 pub mod gui_backend;
 mod build_identity;
+#[cfg(all(feature = "gpui-restoration", any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+mod desktop_update;
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod product_components;

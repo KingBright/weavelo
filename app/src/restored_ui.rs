@@ -612,6 +612,12 @@ struct RestoredDashboard {
     local_share_polling: bool,
     local_permissions: Option<Result<crate::sharing_permissions::Status, String>>,
     checking_permissions: bool,
+    update_check: Option<Result<crate::desktop_update::Release, String>>,
+    checking_update: bool,
+    #[cfg(target_os="macos")]
+    installing_update: bool,
+    #[cfg(target_os="macos")]
+    update_install_result: Option<Result<String, String>>,
     session_commands: SessionCommandState,
     source_commands: SessionCommandState,
     discovery_commands: SessionCommandState,
@@ -811,6 +817,12 @@ impl RestoredDashboard {
             local_share_polling: false,
             local_permissions: None,
             checking_permissions: false,
+            update_check: None,
+            checking_update: false,
+            #[cfg(target_os="macos")]
+            installing_update: false,
+            #[cfg(target_os="macos")]
+            update_install_result: None,
             session_commands: SessionCommandState::default(),
             source_commands: SessionCommandState::default(),
             discovery_commands: SessionCommandState::default(),
@@ -3905,7 +3917,9 @@ fn slide_over_management_drawer(
                             owner, cx)
                             .into_any_element()
                     }
-                    DrawerTab::Network => drawer_network_telemetry_tab(
+                    DrawerTab::Network => div().flex().flex_col().gap_3()
+                    .child(desktop_update_card(cx))
+                    .child(drawer_network_telemetry_tab(
                         selected_resolution,
                         selected_fps,
                         selected_bitrate_kbps,
@@ -3914,7 +3928,7 @@ fn slide_over_management_drawer(
                         owner,
                         management,
                         cx,
-                    )
+                    ))
                     .into_any_element(),
                 }),
         )
@@ -3945,6 +3959,7 @@ fn drawer_tab_button(
         let _ = view.update(cx, |this, cx| {
             this.active_tab = tab;
             if tab == DrawerTab::Security { this.refresh_local_permissions(cx); }
+            if tab == DrawerTab::Network && this.update_check.is_none() { this.check_for_updates(cx); }
             cx.notify();
         });
     })
@@ -3989,6 +4004,41 @@ fn drawer_devices_tab(
 }
 
 impl RestoredDashboard {
+    #[cfg(target_os="macos")]
+    fn install_latest_update(&mut self, cx: &mut Context<Self>) {
+        if self.installing_update { return; }
+        self.installing_update = true;
+        self.update_install_result = None;
+        // The installer asks this GUI to exit. A Tokio blocking task would keep
+        // its runtime alive while the installer waits for the process to stop.
+        let (sender, work) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || { let _ = sender.send(crate::desktop_update::install_latest_macos()); });
+        cx.spawn(async move |view, cx| {
+            let result = work.await.unwrap_or_else(|_| Err("Update failed".into()));
+            let _ = view.update(cx, |this, cx| {
+                this.installing_update = false;
+                this.update_install_result = Some(result);
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if self.checking_update { return; }
+        self.checking_update = true;
+        let work = tokio::task::spawn_blocking(crate::desktop_update::check);
+        cx.spawn(async move |view, cx| {
+            let result = work.await.unwrap_or_else(|_| Err("Update check unavailable".into()));
+            let _ = view.update(cx, |this, cx| {
+                this.checking_update = false;
+                this.update_check = Some(result);
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
     #[cfg(any(target_os="macos",target_os="linux"))]
     fn request_local_camera_permission(&mut self,cx:&mut Context<Self>) {
         if self.checking_permissions{return;}
@@ -4877,6 +4927,56 @@ fn interface_language_controls(cx: &mut Context<RestoredDashboard>) -> Div {
                     }))
             })
         ))
+}
+
+fn desktop_update_card(cx: &mut Context<RestoredDashboard>) -> Div {
+    let theme = cx.theme().clone();
+    let dashboard = cx.entity();
+    let state = dashboard.read(cx);
+    let checking = state.checking_update;
+    #[cfg(target_os="macos")]
+    let installing = state.installing_update;
+    #[cfg(target_os="macos")]
+    let install_result = state.update_install_result.clone();
+    let result = state.update_check.clone();
+    let text = match result {
+        Some(Ok(release)) => {
+            let relation = match release.same_source {
+                Some(true) => "Published package uses the same source",
+                Some(false) => "Published package uses different source",
+                None => "Current build source is unknown",
+            };
+            format!("{} · {} · {}", crate::i18n::tr(relation), release.version, &release.source_commit[..7])
+        }
+        Some(Err(error)) => crate::i18n::message(&error),
+        None if checking => crate::i18n::tr("Checking…").to_owned(),
+        None => crate::i18n::tr("Check for updates").to_owned(),
+    };
+    div().p_3().bg(theme.surface.sunken).border_1().border_color(color_border_fine())
+        .rounded(px(6.)).flex().flex_col().gap_2()
+        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(crate::i18n::tr("Application updates")))
+        .child(div().text_size(px(10.)).text_color(theme.content.secondary).child(text))
+        .when(cfg!(not(target_os="macos")), |card| card.child(div().text_size(px(10.)).text_color(theme.content.secondary)
+            .child(crate::i18n::tr("Installation and signing compatibility are not yet available in the app."))))
+        .child(command_button("check-application-update", ActionVariantKind::Neutral, cx)
+            .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx)))
+            .child(crate::i18n::tr(if checking { "Checking…" } else { "Check for updates" })))
+        .when(cfg!(target_os="macos"), |card| {
+            #[cfg(target_os="macos")]
+            let card = card.when_some(install_result, |card, result| card.child(
+                div().text_size(px(10.)).text_color(theme.content.secondary)
+                    .child({
+                        let text = match &result { Ok(text) | Err(text) => text };
+                        let prefix = "Published package failed signing or identity verification";
+                        if let Some(detail) = text.strip_prefix(prefix) {
+                            format!("{}{}", crate::i18n::tr(prefix), detail)
+                        } else { crate::i18n::message(text) }
+                    })
+            )).child(command_button("install-application-update", ActionVariantKind::Primary, cx)
+                .on_click(cx.listener(|this, _, _, cx| this.install_latest_update(cx)))
+                .child(crate::i18n::tr(if installing { "Installing update…" } else { "Install latest update" })));
+            card
+        })
 }
 
 fn drawer_network_telemetry_tab(

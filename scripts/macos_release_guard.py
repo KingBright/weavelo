@@ -357,6 +357,32 @@ def assemble_app(stage: Path, binary: Path, version: str, build: str, policy: Po
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (resources / 'VERSION').write_text(version + '\n')
     if desktop is not None:
+        # These are signed as resources of the application, before sign_app.
+        # Keep the existing transaction and its dependencies together with the
+        # public identity policies; no installer code is fetched at runtime.
+        updater = resources / 'desktop-updater'
+        names = ('desktop_in_app_update.py', 'upgrade_macos_desktop.py',
+                 'desktop_upgrade_rollback.py', 'migrate_macos_desktop_signer.py',
+                 'install_macos_desktop.py', 'macos_release_guard.py',
+                 'build_identity_gate.py', 'desktop_identity.py', 'verify_desktop_gui.py')
+        for name in names:
+            source = ROOT / 'scripts' / name
+            if not source.is_file() or source.is_symlink():
+                raise ReleaseRejected('Updater module missing or linked: ' + name)
+            destination = updater / 'scripts' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        for name in ('deploy/desktop/product-identity.json',
+                     'deploy/macos/signing-policy.json',
+                     'deploy/macos/desktop-signing-policy.json',
+                     'deploy/macos/book-desktop-signing-policy.json'):
+            source = ROOT / name
+            if not source.is_file() or source.is_symlink():
+                raise ReleaseRejected('Updater policy missing or linked: ' + name)
+            destination = updater / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+    if desktop is not None:
         (resources / 'desktop-identity.json').write_text(json.dumps(desktop, indent=2) + '\n')
     (resources / 'release-identity.json').write_text(json.dumps({
         'schema': 1, 'version': version, 'build': build, 'bundle_id': policy.bundle_id,

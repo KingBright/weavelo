@@ -138,5 +138,61 @@ class ReceiverTests(unittest.TestCase):
         self.assertFalse((self.target / 'macos-new.zip').exists())
 
 
+    def prepare_signer(self, signer, build, name, content):
+        for path in self.stage.iterdir(): path.unlink()
+        archive = self.stage / name; archive.write_bytes(content)
+        entry = {'file': name, 'sha256': hashlib.sha256(content).hexdigest(), 'size_bytes': len(content),
+                 'signer_sha1': signer, 'build': build, 'source_commit': 'a' * 40,
+                 'build_identity_expectations': {'commit': 'a' * 40}}
+        (self.stage / 'desktop-releases.json').write_text(json.dumps({'schema': 1, 'releases': [entry]}))
+        return entry
+
+    def test_signer_publication_requires_guard_verified_build_and_signer(self):
+        signer = 'a' * 40
+        self.prepare_signer(signer, '20261109.9', 'Weavelo-desktop-macos-arm64-current.zip', b'current')
+        script = (Path(__file__).parents[1] / 'publish_desktop_nas.sh').read_text()
+        begin = script.index("<<'PREFLIGHT'") + len("<<'PREFLIGHT'\n")
+        code = script[begin:script.index('\nPREFLIGHT\n', begin)]
+        def preflight(signed):
+            report = 'MACOS_RELEASE_VERIFIED ' + json.dumps([signed])
+            return subprocess.run([sys.executable, '-B', '-c', code, str(self.stage), 'signer', report],
+                                  capture_output=True, text=True)
+        self.assertEqual(preflight({'certificate_sha1': signer, 'build': '20261109.9'}).returncode, 0)
+        for bad in ({'certificate_sha1': 'b' * 40, 'build': '20261109.9'},
+                    {'certificate_sha1': signer, 'build': '20261107.148'}):
+            self.assertNotEqual(preflight(bad).returncode, 0)
+
+    def test_signer_manifests_are_separate_and_preserve_generic_publication(self):
+        self.assertEqual(self.receive().returncode, 0)
+        generic = (self.target / 'desktop-releases.json').read_bytes()
+        index = (self.target / 'index.html').read_bytes()
+        a, b = 'a' * 40, 'b' * 40
+        first = self.prepare_signer(a, '20261109.9', 'macos-signer-a.zip', b'first')
+        result = self.receive('signer'); self.assertEqual(result.returncode, 0, result.stderr)
+        second = self.prepare_signer(b, '20261109.10', 'macos-signer-b.zip', b'second')
+        result = self.receive('signer'); self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.target / 'desktop-releases.json').read_bytes(), generic)
+        self.assertEqual((self.target / 'index.html').read_bytes(), index)
+        self.assertEqual(json.loads((self.target / ('desktop-releases-macos-'+a+'.json')).read_bytes())['releases'], [first])
+        self.assertEqual(json.loads((self.target / ('desktop-releases-macos-'+b+'.json')).read_bytes())['releases'], [second])
+
+    def test_signer_manifest_rejects_downgrade_and_same_build_different_package(self):
+        self.assertEqual(self.receive().returncode, 0)
+        signer = 'a' * 40
+        self.prepare_signer(signer, '20261109.9', 'macos-current.zip', b'current')
+        self.assertEqual(self.receive('signer').returncode, 0)
+        manifest = self.target / ('desktop-releases-macos-'+signer+'.json')
+        old = manifest.read_bytes()
+        for build, name in [('20261107.148', 'macos-older.zip'), ('20261109.9', 'macos-other.zip')]:
+            self.prepare_signer(signer, build, name, name.encode())
+            rejected = self.receive('signer')
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertEqual(manifest.read_bytes(), old)
+            self.assertFalse((self.target / name).exists())
+        self.prepare_signer(signer, '20271201.1', 'macos-newer.zip', b'newer')
+        updated = self.receive('signer'); self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertEqual(json.loads(manifest.read_bytes())['releases'][0]['build'], '20271201.1')
+        self.assertEqual((self.target / 'macos-current.zip').read_bytes(), b'current')
+
 if __name__ == '__main__':
     unittest.main()
