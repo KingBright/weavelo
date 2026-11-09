@@ -306,6 +306,106 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(record['retired_staged'], result['retired_staged'])
         self.assertEqual((upgrade.retirement_root(self.selected) / 'original-upgrade.json').read_bytes(), raw)
 
+    def test_idle_stop_uses_exact_owner_pins_and_verified_receipts(self):
+        control = NativeControlOriginal(self.selected)
+        sha = self.current()['executable']
+        before = {'gui': {'pid': 102, 'generation': 'gui-generation'},
+                  'background': {'pid': 101, 'network_diagnostics': {'generation': 'bg-generation'},
+                                 'service_contract': {'capabilities': ['shutdown-idle.v1']}}}
+        status = {'ok': True, 'pid': 102, 'generation': 'gui-generation',
+                  'executable_sha256': sha, 'upgrade_quit': 'gui-upgrade-quit.v1'}
+        gui = {'kind': 'gui-upgrade-quit.v1', 'pid': 102, 'generation': 'gui-generation',
+               'executable_sha256': sha, 'cleanup_verified': True, 'process_exit_observed': True}
+        bg = {'pid': 101, 'generation': 'bg-generation', 'executable_sha256': sha,
+              'idle_only': True, 'cleanup_verified': True, 'process_exit_observed': True}
+        with patch.object(control, 'query', return_value=status), \
+             patch.object(control, 'idle_command', side_effect=[gui, bg]) as command, \
+             patch.object(control, 'owners', return_value=set()):
+            control.stop_idle(before, sha)
+        self.assertEqual(command.call_args_list, [
+            unittest.mock.call('--gui-upgrade-quit-json', 'gui-generation', sha),
+            unittest.mock.call('--background-upgrade-stop-json', 'bg-generation', sha, '101')])
+        status['generation'] = 'replacement'
+        with patch.object(control, 'query', return_value=status), \
+             patch.object(control, 'idle_command') as command:
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'exact idle-only'):
+                control.stop_idle(before, sha)
+            command.assert_not_called()
+
+    def test_idle_busy_is_distinct_from_unknown_stop_outcome(self):
+        control = NativeControlOriginal(self.selected)
+        busy = subprocess.CompletedProcess([], 1, b'',
+            b'Error: Background stop not confirmed: Active background work prevents upgrade shutdown')
+        unknown = subprocess.CompletedProcess([], 1, b'', b'Error: connection timed out')
+        with patch.object(upgrade.subprocess, 'run', return_value=busy):
+            with self.assertRaises(upgrade.IdleBusy): control.idle_command('--background-upgrade-stop-json')
+        with patch.object(upgrade.subprocess, 'run', return_value=unknown):
+            with self.assertRaises(guard.ReleaseRejected) as error: control.idle_command('--background-upgrade-stop-json')
+            self.assertNotIsInstance(error.exception, upgrade.IdleBusy)
+
+    def test_real_subprocess_busy_receipt_is_not_a_normal_quit(self):
+        control = NativeControlOriginal(self.selected)
+        command = self.home / 'idle-cli-fixture'
+        command.write_text('#!/bin/sh\necho "GUI quit was not completed: Close active or pending sessions and transfers before upgrading" >&2\nexit 1\n')
+        command.chmod(0o700); control.exe = command
+        with self.assertRaises(upgrade.IdleBusy):
+            control.idle_command('--gui-upgrade-quit-json', 'generation', 'a'*64)
+
+    def test_idle_refusal_requires_original_background_and_no_replacement_gui(self):
+        control = NativeControlOriginal(self.selected)
+        before = {'background': {'pid': 101, 'network_diagnostics': {'generation': 'g1'}},
+                  'gui': {'pid': 102, 'generation': 'g2'}}
+        with patch.object(control, 'before', return_value=before):
+            self.assertEqual(control.verify_idle_refusal(before, 'sha'), before)
+        with patch.object(control, 'before', return_value={'background': before['background'], 'gui': None}):
+            control.verify_idle_refusal(before, 'sha')
+        replacement = {'background': {'pid': 101, 'network_diagnostics': {'generation': 'new'}}, 'gui': None}
+        with patch.object(control, 'before', return_value=replacement):
+            with self.assertRaisesRegex(guard.ReleaseRejected, 'Background owner changed'):
+                control.verify_idle_refusal(before, 'sha')
+
+    @unittest.skipUnless(sys.platform=='darwin','native atomic directory exchange')
+    def test_busy_idle_quit_restores_old_journal_and_allows_the_next_latest_package(self):
+        pins = self.current(); profile_before = upgrade.membership_metadata(self.selected['profile'])
+        archive_sha = upgrade.gate.hash_file(self.archive)
+        journal = self.selected['state'] / 'upgrade.json'
+        old = b'{"schema":1,"phase":"completed"}\n'
+        journal.write_bytes(old); journal.chmod(0o600)
+        self.control.idle_plan = lambda control, before, sha: None
+        self.control.verify_idle_refusal = lambda control, before, sha: None
+        self.control.stop_idle = lambda control, before, sha: (_ for _ in ()).throw(upgrade.IdleBusy('busy transfer'))
+        with self.assertRaises(upgrade.IdleBusy):
+            upgrade.apply(self.archive, self.home, self.pins, archive_sha, pins,
+                          no_new_rollback=True, idle_only=True)
+        self.assertEqual(journal.read_bytes(), old)
+        self.assertFalse((self.selected['app'].parent / '.desktop-upgrade.pending').exists())
+        self.assertEqual(self.app_bytes(), b'old-image')
+        self.assertEqual(profile_before, upgrade.membership_metadata(self.selected['profile']))
+        self.control.stop_idle = lambda control, before, sha: self.calls.append('idle-stop')
+        latest = dict(self.pins, commit='1'*40)
+        self.archive.write_bytes(b'newer complete archive')
+        result = upgrade.apply(self.archive, self.home, latest, upgrade.gate.hash_file(self.archive), pins,
+                               no_new_rollback=True, idle_only=True)
+        self.assertTrue(result['applied']); self.assertEqual(result['phase'], 'completed')
+        self.assertEqual(self.app_bytes(), b'new-image')
+        self.assertEqual(result['source'], latest)
+        self.assertIn('idle-stop', self.calls)
+
+    def test_unconfirmed_idle_stop_is_not_marked_retryable(self):
+        pins = self.current(); archive_sha = upgrade.gate.hash_file(self.archive)
+        self.control.idle_plan = lambda control, before, sha: None
+        self.control.stop_idle = lambda control, before, sha: (_ for _ in ()).throw(guard.ReleaseRejected('unknown outcome'))
+        self.control.verify_idle_refusal = lambda control, before, sha: self.fail('unknown outcome was treated as busy')
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'unknown outcome'):
+            upgrade.apply(self.archive, self.home, self.pins, archive_sha, pins,
+                          no_new_rollback=True, idle_only=True)
+        state, digest = upgrade.read_record(self.selected['state'] / 'upgrade.json')
+        self.assertEqual(state['phase'], 'stopping')
+        self.assertEqual(self.app_bytes(), b'old-image')
+        with self.assertRaisesRegex(guard.ReleaseRejected, 'Unconfirmed idle stop'):
+            upgrade.apply(self.archive, self.home, self.pins, archive_sha, pins,
+                          resume_sha=digest, no_new_rollback=True, idle_only=True)
+
     def test_gui_owned_dock_tile_does_not_block_normal_quit(self):
         control = NativeControlOriginal(self.selected)
         digest = self.current()['executable']

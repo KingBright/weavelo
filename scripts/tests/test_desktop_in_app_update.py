@@ -52,6 +52,15 @@ class UpdateAdapterTests(unittest.TestCase):
         with self.assertRaises(guard.ReleaseRejected):
             updater.NoRedirect().redirect_request(None, None, 302, '', {}, 'https://example.test/')
 
+    def test_download_sends_no_cache_header(self):
+        class Opener:
+            def open(self, request, timeout):
+                self.request = request
+                return io.BytesIO(b'abc')
+        opener = Opener()
+        updater.download(opener, 'https://example.test/', io.BytesIO(), 3)
+        self.assertEqual(opener.request.get_header('Cache-control'), 'no-cache')
+
     def test_signer_lookup_falls_back_only_for_404(self):
         signer = 'a' * 40
         item = self.item(); item.update(signer_sha1=signer, build='20261109.10')
@@ -65,7 +74,7 @@ class UpdateAdapterTests(unittest.TestCase):
             self.assertEqual(calls, [updater.BASE + 'desktop-releases-macos-' + signer + '.json'])
         def missing(opener, url, output, limit, expected_size=None):
             calls.append(url)
-            if 'macos-' in url: raise urllib.error.HTTPError(url, 404, 'missing', {}, None)
+            if 'macos-' in url: raise urllib.error.HTTPError(url, 404, 'missing', {}, io.BytesIO())
             output.write(raw)
         calls.clear()
         with patch.object(updater, 'download', side_effect=missing):
@@ -74,7 +83,7 @@ class UpdateAdapterTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
         calls.clear()
         def forbidden(opener, url, output, limit, expected_size=None):
-            calls.append(url); raise urllib.error.HTTPError(url, 403, 'forbidden', {}, None)
+            calls.append(url); raise urllib.error.HTTPError(url, 403, 'forbidden', {}, io.BytesIO())
         with patch.object(updater, 'download', side_effect=forbidden):
             with self.assertRaises(urllib.error.HTTPError): updater.fetch_metadata(None, signer)
             self.assertEqual(len(calls), 1)
@@ -164,7 +173,7 @@ class UpdateAdapterTests(unittest.TestCase):
             self.assertEqual(updater.run(), {'applied': True})
             args = apply.call_args.args
             self.assertEqual(args[1:], (home, item['build_identity_expectations'], item['sha256'], context['pins']))
-            self.assertEqual(apply.call_args.kwargs, {'no_new_rollback': True})
+            self.assertEqual(apply.call_args.kwargs, {'no_new_rollback': True, 'idle_only': True})
 
     def test_release_direction_uses_signed_build_and_allows_version_jumps(self):
         def signed(build, executable):

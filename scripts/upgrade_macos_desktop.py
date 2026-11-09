@@ -36,6 +36,10 @@ RETIRED = 'retired_before_stop'
 RETIREMENT = 'independent-desktop-prestop-retirement'
 
 
+class IdleBusy(guard.ReleaseRejected):
+    """A native idle-only request explicitly rejected active work."""
+
+
 def require(ok, text):
     if not ok:
         raise guard.ReleaseRejected(text)
@@ -331,6 +335,81 @@ class NativeControl:
                     'Native background exit was not confirmed')
         require(not self.owners(), 'Independent process remains; application was not replaced')
 
+    def idle_plan(self, before, expected_sha):
+        """Pin both private IPC owners before sending either idle-only stop."""
+        gui = before['gui']
+        if gui:
+            status = self.query('--gui-status-json')
+            require(status.get('ok') is True and status.get('upgrade_quit') == 'gui-upgrade-quit.v1'
+                    and status.get('pid') == gui['pid'] and status.get('executable_sha256') == expected_sha
+                    and isinstance(status.get('generation'), str) and status['generation']
+                    and status['generation'] == gui.get('generation'),
+                    'GUI owner does not support the exact idle-only upgrade quit')
+        background = before['background']
+        if background:
+            diagnostics = background.get('network_diagnostics') or {}
+            contract = background.get('service_contract') or {}
+            require(isinstance(diagnostics.get('generation'), str) and diagnostics['generation']
+                    and isinstance(contract.get('capabilities'), list)
+                    and 'shutdown-idle.v1' in contract['capabilities'],
+                    'Background owner does not support exact idle-only shutdown')
+
+    def idle_command(self, *args):
+        result = subprocess.run([str(self.exe), *args], env=clean_environment(self.paths['profile']),
+                                capture_output=True, timeout=20)
+        if result.returncode:
+            detail = result.stderr.decode('utf-8', errors='replace').strip()[-1600:]
+            busy = ('GUI quit was not completed: Close active or pending sessions and transfers before upgrading',
+                    'GUI quit was not completed: GUI delivery, receive lease or local command is still active',
+                    'Background stop not confirmed: Active background work prevents upgrade shutdown',
+                    'Background stop not confirmed: Active or pending host connections prevent upgrade shutdown')
+            if any(reason in detail for reason in busy):
+                raise IdleBusy(detail)
+            raise guard.ReleaseRejected('Idle-only stop was not confirmed; inspect the transaction: ' + detail)
+        require(len(result.stdout) <= LIMIT, 'Idle-only stop receipt exceeds limit')
+        try: return json.loads(result.stdout)
+        except (ValueError, TypeError) as error:
+            raise guard.ReleaseRejected('Idle-only stop receipt is invalid') from error
+
+    def stop_idle(self, before, expected_sha):
+        self.idle_plan(before, expected_sha)
+        gui = before['gui']
+        if gui:
+            stopped = self.idle_command('--gui-upgrade-quit-json', gui['generation'], expected_sha)
+            require(stopped.get('kind') == 'gui-upgrade-quit.v1' and stopped.get('pid') == gui['pid']
+                    and stopped.get('generation') == gui['generation']
+                    and stopped.get('executable_sha256') == expected_sha
+                    and stopped.get('cleanup_verified') is True and stopped.get('process_exit_observed') is True,
+                    'Exact idle-only GUI exit was not confirmed')
+        background = before['background']
+        if background:
+            generation = background['network_diagnostics']['generation']
+            stopped = self.idle_command('--background-upgrade-stop-json', generation, expected_sha, str(background['pid']))
+            require(stopped.get('pid') == background['pid'] and stopped.get('generation') == generation
+                    and stopped.get('executable_sha256') == expected_sha and stopped.get('idle_only') is True
+                    and stopped.get('cleanup_verified') is True and stopped.get('process_exit_observed') is True,
+                    'Exact idle-only background exit was not confirmed')
+        require(not self.owners(), 'Independent process remains; application was not replaced')
+
+    def verify_idle_refusal(self, before, expected_sha):
+        # A busy response is retryable only if the same background is still
+        # running and the GUI is the same owner or was already closed idle.
+        current = self.before(expected_sha)
+        old_bg, new_bg = before['background'], current['background']
+        if old_bg:
+            require(new_bg and new_bg['pid'] == old_bg['pid']
+                    and (new_bg.get('network_diagnostics') or {}).get('generation')
+                        == (old_bg.get('network_diagnostics') or {}).get('generation'),
+                    'Background owner changed after idle refusal; preserve transaction')
+        else:
+            require(new_bg is None, 'Background owner appeared; preserve transaction')
+        old_gui, new_gui = before['gui'], current['gui']
+        if new_gui:
+            require(old_gui and new_gui['pid'] == old_gui['pid']
+                    and new_gui.get('generation') == old_gui.get('generation'),
+                    'GUI owner changed after idle refusal; preserve transaction')
+        return current
+
     def start(self, before, expected_sha):
         if self.loaded():
             subprocess.run(['/bin/launchctl', 'kickstart', self.job], check=True,
@@ -547,7 +626,10 @@ def retire_staged(home, current_pins, upgrade_sha, *, apply=False):
 
 
 def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=None,
-          *, no_new_rollback=False):
+          *, no_new_rollback=False, idle_only=False):
+    require(not idle_only or no_new_rollback, 'In-app idle upgrades must preserve the existing rollback slot')
+    require(not idle_only or resume_sha is None,
+            'Unconfirmed idle stop requires inspection; automatic retry refused')
     rollback_policy = 'none_new' if no_new_rollback else 'verified_slot'
     require(gate.hash_file(archive) == gate.sha(archive_sha), 'Candidate archive digest differs')
     policy = guard.desktop_policy(desktop.paths(home)['app'])
@@ -579,6 +661,10 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                     'Prior upgrade staging exists; inspect original transaction')
             journal = selected['state'] / 'upgrade.json'
             prior_journal_sha = gate.hash_file(journal) if journal.exists() else None
+            original_journal = journal.read_bytes() if idle_only and prior_journal_sha else None
+            if original_journal is not None:
+                require(gate.digest(original_journal) == prior_journal_sha,
+                        'Installation journal changed before upgrade')
             if resume_sha is not None:
                 data, observed_sha = read_record(journal)
                 require(observed_sha == resume_sha and (data.get('phase') == 'staged'
@@ -593,6 +679,7 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 data = {'schema': 1, 'kind': 'independent-desktop-upgrade', 'source': candidate_pins,
                         'archive_sha256': archive_sha, 'current': current_pins,
                         'staging': str(stage), 'retained_client_modified': False}
+                if idle_only: data['in_app_idle_only'] = True
                 if (context['previous_transaction'] or {}).get('phase') == RETIRED:
                     data['retired_staged'] = context['previous_transaction']['retirement']
             data['rollback_policy'] = rollback_policy
@@ -614,18 +701,23 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
             if no_new_rollback:
                 new_record['rollback_policy'] = 'none_new'
             require(len((json.dumps(new_record, indent=2) + '\n').encode()) < LIMIT - 4096, 'Installation history full; no content discarded')
+            control = NativeControl(selected)
+            if idle_only:
+                before = control.before(current_pins['executable'])
+                control.idle_plan(before, current_pins['executable'])
             staged = stage / 'Weavelo.app'
             if resume_sha is None:
                 checkpoint('verified')
                 stage.mkdir(mode=0o700)
                 shutil.copytree(candidate, staged, symlinks=False)
+            stage_owner = private(stage, True) if idle_only else None
             guard.verify_app(staged, policy)
             candidate_tree = tree_digest(candidate)
             require(tree_digest(staged) == candidate_tree, 'Staged signed application differs')
             if not stopped_resume:
                 checkpoint('staged')
-            control = NativeControl(selected)
-            before = control.before(current_pins['executable'])
+            if not idle_only:
+                before = control.before(current_pins['executable'])
             if stopped_resume:
                 require(not before['loaded'] and before['background'] is None and before['gui'] is None,
                         'Prior stop must be confirmed with no owners and the existing service unloaded')
@@ -656,7 +748,33 @@ def apply(archive, home, candidate_pins, archive_sha, current_pins, resume_sha=N
                 data['owners_before'] = {'background_pid': (before.get('background') or {}).get('pid'),
                                          'frontend_pid': (before.get('gui') or {}).get('pid')}
                 checkpoint('stopping')
-                control.stop(before)
+                try:
+                    if idle_only: control.stop_idle(before, current_pins['executable'])
+                    else: control.stop(before)
+                except IdleBusy:
+                    if not idle_only: raise
+                    # Do not guess after an unknown stop. Only an explicit native
+                    # busy refusal plus the same observed owners permits retry.
+                    control.verify_idle_refusal(before, current_pins['executable'])
+                    latest = inspect(home, current_pins, transaction_sha=prior_journal_sha)
+                    require(latest['tree'] == context['tree'] and latest['membership'] == context['membership']
+                            and tree_digest(staged) == candidate_tree, 'State changed after idle refusal; preserve transaction')
+                    owner = private(stage, True)
+                    require((owner.st_dev, owner.st_ino) == (stage_owner.st_dev, stage_owner.st_ino)
+                            and {p.name for p in stage.iterdir()} == {'Weavelo.app'}
+                            and gate.hash_file(journal) == prior_journal_sha,
+                            'Unexpected idle-refused stage contents; preserve transaction')
+                    # Only this attempt's uninstalled candidate is removed. Restore
+                    # the exact old journal so a later click can select a newer package.
+                    shutil.rmtree(stage)
+                    fsync(stage.parent)
+                    if original_journal is None:
+                        require(gate.hash_file(journal) == prior_journal_sha, 'Upgrade journal changed')
+                        journal.unlink()
+                        fsync(journal.parent)
+                    else:
+                        atomic_bytes(journal, original_journal, prior_journal_sha)
+                    raise
             checkpoint('stopped')
             with idle_locks(selected['profile']):
                 latest = inspect(home, current_pins, transaction_sha=prior_journal_sha)

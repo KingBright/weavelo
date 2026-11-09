@@ -19,6 +19,35 @@ for option in "$@"; do
     *) echo "Unknown publication option: $option" >&2; exit 2 ;;
   esac
 done
+# A publisher's mutable staging directory must not be re-read after the native
+# verifier authorizes a package. Use one private snapshot for verification and upload.
+SNAPSHOT="$(mktemp -d "${TMPDIR:-/tmp}/weavelo-desktop-publish.XXXXXX")"
+trap 'rm -rf -- "$SNAPSHOT"' EXIT
+SNAPSHOT="$(cd -- "$SNAPSHOT" && pwd -P)"
+python3 - "$STAGE" "$SNAPSHOT" "$SCOPE" <<'SNAPSHOT_STAGE'
+from pathlib import Path
+import json, shutil, sys
+source, snapshot = map(Path, sys.argv[1:3])
+scope = sys.argv[3]
+def copy(name):
+ assert Path(name).name == name and name not in ('', '.', '..'), 'invalid snapshot name'
+ path = source / name
+ assert path.is_file() and not path.is_symlink(), 'missing or linked snapshot source'
+ shutil.copyfile(path, snapshot / name)
+copy('desktop-releases.json')
+doc = json.loads((snapshot / 'desktop-releases.json').read_text())
+entries = doc['releases']
+for entry in entries:
+ if scope == 'all' or 'macos' in entry['file'].lower():
+  copy(entry['file'])
+if scope != 'signer':
+ copy(doc.get('acceptance_file', 'acceptance-2.0.0-alpha.2.html'))
+ copy('index.html')
+if scope == 'macos':
+ copy('desktop-releases.before.json')
+ copy('index.before.html')
+SNAPSHOT_STAGE
+STAGE="$SNAPSHOT"
 # The exact macOS signature and source identity are checked before networking.
 GUARD_REPORT="$(python3 "$ROOT/scripts/macos_release_guard.py" verify-stage "$STAGE" "${VERIFY_OPTIONS[@]}")"
 printf '%s\n' "$GUARD_REPORT"
@@ -71,32 +100,45 @@ PLAN
   exit 0
 fi
 
-ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/rp-desktop.XXXXXX.tar")"
-VERIFY="$(mktemp "${TMPDIR:-/tmp}/rp-download.XXXXXX")"
-trap 'rm -f "$ARCHIVE" "$VERIFY"' EXIT
-python3 - "$STAGE" "$ARCHIVE" "$SCOPE" <<'PY'
+ARCHIVE="$(mktemp "$SNAPSHOT/rp-desktop.XXXXXX")"
+VERIFY="$(mktemp "$SNAPSHOT/rp-download.XXXXXX")"
+python3 - "$STAGE" "$ARCHIVE" "$SCOPE" "$GUARD_REPORT" <<'PACK_VERIFIED_STAGE'
 from pathlib import Path
-import hashlib,json,sys,tarfile
+import hashlib,io,json,sys,tarfile
 stage=Path(sys.argv[1]);doc=json.loads((stage/'desktop-releases.json').read_text());scope=sys.argv[3]
 entries=[e for e in doc['releases'] if scope=='all' or 'macos' in e['file'].lower()]
+guard=json.loads(sys.argv[4].removeprefix('MACOS_RELEASE_VERIFIED '))[0]
 with tarfile.open(sys.argv[2],'w') as archive:
  for entry in entries:
   name=entry['file'];assert Path(name).name==name
   p=stage/name;assert p.is_file() and not p.is_symlink()
-  assert p.stat().st_size==entry['size_bytes'] and hashlib.sha256(p.read_bytes()).hexdigest()==entry['sha256']
-  archive.add(p,arcname=name,recursive=False)
+  with p.open('rb') as source:
+   data=source.read()
+  actual=hashlib.sha256(data).hexdigest()
+  assert len(data)==entry['size_bytes'] and actual==entry['sha256']
+  if 'macos' in name.lower():
+   assert actual==guard['archive_sha256'] and len(data)==guard['size_bytes'],'upload bytes differ from native guard'
+  member=tarfile.TarInfo(name)
+  member.size=len(data);member.mode=0o644
+  archive.addfile(member,io.BytesIO(data))
  names=['desktop-releases.json'] if scope=='signer' else ['desktop-releases.json',doc.get('acceptance_file','acceptance-2.0.0-alpha.2.html'),'index.html']
  if scope=='macos':names+=['desktop-releases.before.json','index.before.html']
+ if scope!='signer':
+  mac=next(e for e in entries if 'macos' in e['file'].lower())
+  if mac.get('build_identity_expectations'):
+   pinned=dict(mac,signer_sha1=guard['certificate_sha1'],build=guard['build'])
+   (stage/'macos-signer-current.json').write_text(json.dumps({'schema':1,'releases':[pinned]})+'\n')
+   names+=['macos-signer-current.json']
  for name in names:
   assert Path(name).name==name
   archive.add(stage/name,arcname=name,recursive=False)
-PY
+PACK_VERIFIED_STAGE
 REMOTE_ARCHIVE="/tmp/weavelo-desktop-$(basename "$ARCHIVE")"
 if [[ "$MODE" != --verify-only ]]; then
 scp -O -P "$NAS_PORT" -o BatchMode=yes -o ConnectTimeout=10 "$ARCHIVE" "$NAS_HOST:$REMOTE_ARCHIVE"
 ssh -p "$NAS_PORT" -o BatchMode=yes -o ConnectTimeout=10 "$NAS_HOST" "python3 - '$REMOTE_ARCHIVE' '$REMOTE_DIR' '$SCOPE'" <<'PY'
 from pathlib import Path
-import fcntl,hashlib,json,os,shutil,sys,tarfile,tempfile
+import fcntl,hashlib,json,os,re,shutil,sys,tarfile,tempfile
 archive=Path(sys.argv[1]);root=Path(sys.argv[2]);scope=sys.argv[3] if len(sys.argv)>3 else 'all'
 assert scope in ('all','macos','signer')
 assert not root.is_symlink(),'linked publication root'
@@ -138,17 +180,22 @@ try:
   for entry in entries:assert Path(entry['file']).name==entry['file'] and entry['file'].endswith(('.zip','.tar.gz','.tgz'))
   acceptance=doc.get('acceptance_file','acceptance-2.0.0-alpha.2.html')
   assert Path(acceptance).name==acceptance
-  if scope=='signer':
-   import re
-   assert doc.get('schema')==1 and len(entries)==1 and len(selected)==1,'invalid signer manifest'
-   entry=selected[0];signer=entry.get('signer_sha1','');build=entry.get('build','')
+  metadata={} if scope=='signer' else {name:name for name in (acceptance,'index.html','desktop-releases.json')}
+  signer_source='desktop-releases.json' if scope=='signer' else 'macos-signer-current.json'
+  if signer_source in names:
+   signer_doc=json.loads((temp/signer_source).read_text())
+   assert signer_doc.get('schema')==1 and len(signer_doc['releases'])==1,'invalid signer manifest'
+   signer_entry=signer_doc['releases'][0];signer=signer_entry.get('signer_sha1','');build=signer_entry.get('build','')
    assert re.fullmatch('[0-9a-f]{40}',signer),'invalid signer'
    assert re.fullmatch(r'\d+(?:\.\d+){0,2}',build),'invalid build'
-   assert entry.get('build_identity_expectations'),'missing verified source identity'
+   assert signer_entry.get('build_identity_expectations'),'missing verified source identity'
+   mac=[entry for entry in selected if 'macos' in entry['file'].lower()]
+   assert len(mac)==1 and dict(mac[0],signer_sha1=signer,build=build)==signer_entry,'signer manifest does not match the runtime release'
+   if scope=='signer':assert len(entries)==1,'unexpected signer publication entries'
    destination='desktop-releases-macos-'+signer+'.json'
-   metadata=['desktop-releases.json']
-  else:metadata=[acceptance,'index.html','desktop-releases.json']
-  allowed={e['file'] for e in selected}|set(metadata)
+   metadata[destination]=signer_source
+  else:assert scope!='signer','missing signer manifest'
+  allowed={e['file'] for e in selected}|set(metadata.values())
   if scope=='macos':allowed|={'desktop-releases.before.json','index.before.html'}
   assert names==allowed,'unexpected or missing publication files'
   lock=root/'.desktop-publish.lock'
@@ -176,7 +223,7 @@ try:
     if (root/acceptance).exists():
      regular(root/acceptance)
      assert (root/acceptance).read_bytes()==(temp/acceptance).read_bytes(),'immutable acceptance conflict'
-   if scope=='signer':
+   if signer_source in names:
     current=root/destination
     assert not current.is_symlink(),'linked signer manifest'
     if current.exists():
@@ -188,7 +235,7 @@ try:
      def build_key(value):
       numbers=tuple(map(int,value.split('.')));return numbers+(0,)*(3-len(numbers))
      assert build_key(build)>=build_key(old['build']),'signer manifest downgrade refused'
-     if build_key(build)==build_key(old['build']):assert entry==old,'same build different release refused'
+     if build_key(build)==build_key(old['build']):assert signer_entry==old,'same build different release refused'
      assert Path(old['file']).name==old['file'],'invalid current artifact name'
      exact(root/old['file'],old)
    # Validate every incoming archive and immutable collision before any content write.
@@ -196,21 +243,16 @@ try:
     name=entry['file'];exact(temp/name,entry);target=root/name
     assert not target.is_symlink(),'linked runtime destination'
     if target.exists():assert digest(target)==entry['sha256'],'immutable artifact conflict'
-   for name in metadata:
-    regular(temp/name);assert not (root/(destination if scope=='signer' else name)).is_symlink(),'linked metadata destination'
+   for name,source in metadata.items():
+    regular(temp/source);assert not (root/name).is_symlink(),'linked metadata destination'
    for entry in selected:
     name=entry['file'];changed=install(temp/name,root/name)
     print('INSTALLED' if changed else 'UNCHANGED',name,entry['sha256'],flush=True)
-   if scope=='signer':
-    changed=install(temp/'desktop-releases.json',root/destination)
-    print('INSTALLED' if changed else 'UNCHANGED',destination,flush=True)
-    continue_signer=True
-   else:continue_signer=False
-   previous={name:(root/name).read_bytes() if (root/name).exists() else None for name in ([] if continue_signer else metadata)}
+   previous={name:(root/name).read_bytes() if (root/name).exists() else None for name in metadata}
    changed=[]
    try:
-    for name in ([] if continue_signer else metadata):
-     if install(temp/name,root/name):changed.append(name);print('INSTALLED',name,flush=True)
+    for name,source in metadata.items():
+     if install(temp/source,root/name):changed.append(name);print('INSTALLED',name,flush=True)
      else:print('UNCHANGED',name,flush=True)
    except BaseException:
     for name in reversed(changed):
@@ -243,3 +285,8 @@ else
 fi
 curl -fLsS --connect-timeout 15 --max-time 30 "$BASE/$MANIFEST" > "$STAGE/public-desktop-releases.json"
 cmp "$STAGE/desktop-releases.json" "$STAGE/public-desktop-releases.json"
+if [[ -f "$STAGE/macos-signer-current.json" ]]; then
+  SIGNER="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["releases"][0]["signer_sha1"])' "$STAGE/macos-signer-current.json")"
+  curl -fLsS --connect-timeout 15 --max-time 30 "$BASE/desktop-releases-macos-$SIGNER.json" > "$STAGE/public-signer-current.json"
+  cmp "$STAGE/macos-signer-current.json" "$STAGE/public-signer-current.json"
+fi

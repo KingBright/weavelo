@@ -67,7 +67,7 @@ def metadata(data, expected_signer=None):
 def download(opener, url, output, limit, expected_size=None):
     digest = hashlib.sha256()
     total = 0
-    with opener.open(url, timeout=30) as response:
+    with opener.open(urllib.request.Request(url, headers={'Cache-Control': 'no-cache'}), timeout=30) as response:
         while True:
             block = response.read(min(1024 * 1024, limit + 1 - total))
             if not block: break
@@ -118,9 +118,10 @@ def run():
         raise guard.ReleaseRejected('Installed signer changed')
     opener = urllib.request.build_opener(NoRedirect())
     with tempfile.TemporaryDirectory(prefix='weavelo-update-') as directory:
+        directory = Path(directory).resolve(strict=True)
         os.chmod(directory, 0o700)
         item, signer_specific = fetch_metadata(opener, policy.certificate_sha1)
-        archive = Path(directory) / 'candidate.zip'
+        archive = directory / 'candidate.zip'
         with archive.open('xb') as output:
             digest = download(opener, BASE + item['file'], output, item['size_bytes'], item['size_bytes'])
         if digest != item['sha256']: raise guard.ReleaseRejected('Release download digest differs from metadata')
@@ -133,8 +134,10 @@ def run():
                 decision = release_decision(context['signed'], signed, context['tree'], upgrade.tree_digest(candidate))
         except Exception as error:
             raise guard.ReleaseRejected('Published package failed signing or identity verification: ' + str(error)) from error
-        if decision == 'already_installed': return {'outcome': decision, 'applied': False}
-        return upgrade.apply(archive, home, pins, digest, context['pins'], no_new_rollback=True)
+        if decision == 'already_installed':
+            return {'outcome': decision, 'applied': False}
+        return upgrade.apply(archive, home, pins, digest, context['pins'],
+                             no_new_rollback=True, idle_only=True)
 
 
 def main():

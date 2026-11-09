@@ -64,7 +64,8 @@ fn fetch_metadata(url: &str) -> Result<Option<Vec<u8>>, String> {
     let curl = std::path::PathBuf::from("/usr/bin/curl");
     let mut child = std::process::Command::new(curl)
         .args(["-q", "--silent", "--show-error", "--proto", "=https", "--connect-timeout", "10",
-            "--max-time", "20", "--max-filesize", "131072", "--write-out", "%{http_code}", url])
+            "--max-time", "20", "--max-filesize", "131072", "--header", "Cache-Control: no-cache",
+            "--write-out", "%{http_code}", url])
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
         .spawn().map_err(|_| "Update check unavailable")?;
     let mut data = Vec::new();

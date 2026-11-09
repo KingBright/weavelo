@@ -112,11 +112,18 @@ def regular(path: Path) -> Path:
     return path
 
 
+def hash_stream(incoming) -> str:
+    digest = hashlib.sha256()
+    for block in iter(lambda: incoming.read(1024 * 1024), b''):
+        digest.update(block)
+    return digest.hexdigest()
+
+
 def hash_file(path: Path) -> str:
     regular(path)
     before = path.stat()
     with path.open('rb') as incoming:
-        value = hashlib.file_digest(incoming, 'sha256').hexdigest()
+        value = hash_stream(incoming)
         opened = os.fstat(incoming.fileno())
     after = path.stat()
     keys = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
@@ -1036,7 +1043,7 @@ def verify_package(path: Path, expected_manifest: str, expected_commit: str, exp
                 continue
             if name == MANIFEST: continue
             require(name in files and size == files[name]['bytes'], 'Unlisted/wrong-size package member')
-            with opener() as f: value = hashlib.file_digest(f, 'sha256').hexdigest()
+            with opener() as f: value = hash_stream(f)
             require(value == files[name]['sha256'], 'Package payload/hash mismatch')
             actual[name] = value
         require(set(actual) == set(files), 'Package payload missing')
@@ -1087,7 +1094,7 @@ def verify_running_linux(pid: int, canonical_executable: Path, expected_binary: 
         with (process / 'exe').open('rb') as image:
             live = os.fstat(image.fileno()); disk = canonical_executable.stat()
             require((live.st_dev, live.st_ino) == (disk.st_dev, disk.st_ino), 'Old image still owns daily entry')
-            require(hashlib.file_digest(image, 'sha256').hexdigest() == expected_binary, 'Loaded image is another build')
+            require(hash_stream(image) == expected_binary, 'Loaded image is another build')
         after = (process / 'stat').read_bytes()
         require(after[after.rfind(b')') + 2:].split()[19] == start and
                 os.readlink(process / 'exe') == path and hash_file(canonical_executable) == expected_binary,

@@ -162,6 +162,46 @@ class ReceiverTests(unittest.TestCase):
                     {'certificate_sha1': signer, 'build': '20261107.148'}):
             self.assertNotEqual(preflight(bad).returncode, 0)
 
+    def test_signer_upload_uses_the_native_verified_snapshot(self):
+        name = 'Weavelo-desktop-macos-arm64-current.zip'
+        entry = self.prepare_signer('a' * 40, '20261109.9', name, b'verified bytes')
+        script = (Path(__file__).parents[1] / 'publish_desktop_nas.sh').read_text()
+
+        def run_stage(marker, *args):
+            start = script.index(f"<<'{marker}'\n") + len(f"<<'{marker}'\n")
+            return subprocess.run([sys.executable, '-B', '-c',
+                                   script[start:script.index(f'\n{marker}\n', start)],
+                                   *map(str, args)], capture_output=True, text=True)
+
+        snapshot = self.root / 'snapshot'
+        snapshot.mkdir()
+        copied = run_stage('SNAPSHOT_STAGE', self.stage, snapshot, 'signer')
+        self.assertEqual(copied.returncode, 0, copied.stderr)
+        self.prepare_signer('a' * 40, '20261109.9', name, b'replacement')
+        report = 'MACOS_RELEASE_VERIFIED ' + json.dumps([
+            {'archive_sha256': entry['sha256'], 'size_bytes': entry['size_bytes']}
+        ])
+        archive = self.root / 'upload.tar'
+        packed = run_stage('PACK_VERIFIED_STAGE', snapshot, archive, 'signer', report)
+        self.assertEqual(packed.returncode, 0, packed.stderr)
+        with tarfile.open(archive) as data:
+            self.assertEqual(data.extractfile(name).read(), b'verified bytes')
+        rejected = run_stage('PACK_VERIFIED_STAGE', self.stage, archive, 'signer', report)
+        self.assertIn('upload bytes differ from native guard', rejected.stderr)
+        self.assertNotEqual(rejected.returncode, 0)
+
+    def test_generic_macos_publication_also_advances_its_signer_manifest(self):
+        self.prepare_macos_update()
+        manifest = json.loads((self.stage / 'desktop-releases.json').read_text())
+        signer = 'a' * 40
+        entry = dict(manifest['releases'][0], signer_sha1=signer, build='20261109.9')
+        (self.stage / 'macos-signer-current.json').write_text(json.dumps({'schema': 1, 'releases': [entry]}))
+        received = self.receive('macos')
+        self.assertEqual(received.returncode, 0, received.stderr)
+        current = self.target / ('desktop-releases-macos-' + signer + '.json')
+        self.assertEqual(json.loads(current.read_bytes())['releases'], [entry])
+        self.assertEqual(json.loads((self.target / 'desktop-releases.json').read_bytes()), manifest)
+
     def test_signer_manifests_are_separate_and_preserve_generic_publication(self):
         self.assertEqual(self.receive().returncode, 0)
         generic = (self.target / 'desktop-releases.json').read_bytes()
