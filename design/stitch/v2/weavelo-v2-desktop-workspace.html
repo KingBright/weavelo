@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Weavelo · 跨平台桌面与手机远程控制中心</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            outline: "#a08e7a",
+            "inverse-on-surface": "#2b303b",
+            "on-secondary-container": "#00374d",
+            "tertiary-container": "#e0a800",
+            secondary: "#7bd0ff",
+            "primary-fixed-dim": "#ffb95f",
+            "on-tertiary-fixed-variant": "#5c4300",
+            "on-primary-fixed-variant": "#653e00",
+            "surface-tint": "#ffb95f",
+            surface: "#0e131d",
+            "on-background": "#dee2f1",
+            primary: "#ffc174",
+            "secondary-fixed": "#c4e7ff",
+            "on-secondary-fixed": "#001e2c",
+            "on-surface": "#dee2f1",
+            "surface-container-low": "#171c26",
+            background: "#0e131d",
+            "surface-container-high": "#252a35",
+            tertiary: "#ffc32d",
+            "surface-bright": "#343944",
+            "on-primary-fixed": "#2a1700",
+            error: "#ffb4ab",
+            "inverse-surface": "#dee2f1",
+            "on-surface-variant": "#d8c3ad",
+            "primary-fixed": "#ffddb8",
+            "inverse-primary": "#855300",
+            "on-tertiary": "#402d00",
+            "secondary-container": "#00a6e0",
+            "on-error": "#690005",
+            "secondary-fixed-dim": "#7bd0ff",
+            "tertiary-fixed": "#ffdf9f",
+            "surface-variant": "#303540",
+            "on-primary": "#472a00",
+            "surface-dim": "#0e131d",
+            "surface-container": "#1b202a",
+            "surface-container-highest": "#303540",
+            "surface-container-lowest": "#090e18",
+            "on-secondary-fixed-variant": "#004c69",
+            "on-secondary": "#00354a",
+            "tertiary-fixed-dim": "#f9bd22",
+            "primary-container": "#f59e0b",
+            "on-primary-container": "#613b00",
+            "error-container": "#93000a",
+            "outline-variant": "#534434",
+            "on-tertiary-fixed": "#261a00",
+            "on-error-container": "#ffdad6",
+            "on-tertiary-container": "#584000"
+          },
+          borderRadius: {
+            DEFAULT: "0.25rem",
+            lg: "0.5rem",
+            xl: "0.75rem",
+            "2xl": "1.25rem",
+            "3xl": "1.75rem",
+            full: "9999px"
+          },
+          spacing: {
+            "space-md": "1rem",
+            gutter: "1.5rem",
+            "space-xl": "2.5rem",
+            "space-xs": "0.25rem",
+            "space-lg": "1.5rem",
+            "margin-mobile": "1rem",
+            "gutter-mobile": "0.75rem",
+            "space-sm": "0.5rem",
+            margin: "2rem"
+          },
+          fontFamily: {
+            "body-lg": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "label-lg": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "label-sm": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "label-md": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "headline-xl": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "headline-sm": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "body-md": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "body-sm": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "headline-md": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"],
+            "headline-lg": ["Inter", "-apple-system", "BlinkMacSystemFont", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "sans-serif"]
+          },
+          fontSize: {
+            "body-lg": ["16px", { lineHeight: "26px", fontWeight: "400" }],
+            "label-lg": ["14px", { lineHeight: "20px", letterSpacing: "0.01em", fontWeight: "500" }],
+            "label-sm": ["11px", { lineHeight: "14px", letterSpacing: "0.04em", fontWeight: "500" }],
+            "label-md": ["12px", { lineHeight: "16px", letterSpacing: "0.02em", fontWeight: "500" }],
+            "headline-xl": ["36px", { lineHeight: "44px", letterSpacing: "-0.02em", fontWeight: "600" }],
+            "headline-sm": ["16px", { lineHeight: "24px", letterSpacing: "-0.005em", fontWeight: "600" }],
+            "body-md": ["14px", { lineHeight: "22px", fontWeight: "400" }],
+            "body-sm": ["12px", { lineHeight: "18px", fontWeight: "400" }],
+            "headline-md": ["20px", { lineHeight: "28px", letterSpacing: "-0.01em", fontWeight: "600" }],
+            "headline-lg": ["28px", { lineHeight: "36px", letterSpacing: "-0.015em", fontWeight: "600" }]
+          }
+        }
+      }
+    };
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-family: 'Material Symbols Outlined';
+      font-weight: normal;
+      font-style: normal;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: normal;
+      text-transform: none;
+      display: inline-block;
+      white-space: nowrap;
+      word-wrap: normal;
+      direction: ltr;
+      -webkit-font-feature-settings: 'liga';
+      -webkit-font-smoothing: antialiased;
+    }
+    /* 琥珀金微光与导轨动画 */
+    @keyframes amberPulse {
+      0%, 100% { opacity: 0.75; filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.4)); }
+      50% { opacity: 1; filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.8)); }
+    }
+    .amber-rail-glow {
+      animation: amberPulse 3s ease-in-out infinite;
+    }
+    /* 自定义柔和滚动条 */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-[#0b0f17] via-[#0e131d] to-[#111622] text-on-surface antialiased h-screen w-screen overflow-hidden flex flex-col font-body-md select-none">
+<!-- 1. 顶部 Forge-Collab 风格圆润悬浮导航条 -->
+<header class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center justify-between px-5 h-12 w-[calc(100%-2.5rem)] max-w-7xl rounded-full bg-surface-container/80 backdrop-blur-xl border border-outline-variant/30 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.65)]">
+<!-- 左侧：品牌 Logo 与暖金徽章 -->
+<div class="flex items-center gap-3">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded-full bg-gradient-to-tr from-primary-container via-primary to-amber-200 flex items-center justify-center text-surface shadow-[0_2px_10px_rgba(245,158,11,0.35)]">
+<span class="material-symbols-outlined text-[16px] font-bold" data-icon="hub">hub</span>
+</div>
+<span class="text-headline-md font-headline-md font-extrabold text-primary tracking-tight">Weavelo</span>
+</div>
+<div class="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-container/10 border border-primary-container/20">
+<span class="inline-block w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="text-label-sm font-label-sm text-primary">✨ 远控中心 · 3 台设备在线</span>
+</div>
+</div>
+<!-- 中间：核心视图切换胶囊 -->
+<nav class="hidden md:flex items-center p-1 rounded-full bg-surface-container-low/70 border border-outline-variant/20 shadow-inner">
+<button class="flex items-center gap-1.5 px-4 py-1 rounded-full text-label-md font-label-md text-primary font-semibold bg-surface-container-high/80 shadow-sm transition-all duration-200">
+<span class="material-symbols-outlined text-[16px]" data-icon="devices">devices</span>
+<span>设备与画面</span>
+</button>
+<button class="flex items-center gap-1.5 px-4 py-1 rounded-full text-label-md font-label-md text-on-surface-variant hover:text-on-surface hover:bg-surface-bright/20 transition-all duration-200">
+<span class="material-symbols-outlined text-[16px]" data-icon="folder_shared">folder_shared</span>
+<span>文件快传</span>
+</button>
+</nav>
+<!-- 右侧：主题胶囊组与主操作按钮 -->
+<div class="flex items-center gap-3">
+<!-- 主题切换胶囊 -->
+<div class="hidden lg:flex items-center p-0.5 rounded-full bg-surface-container-low/70 border border-outline-variant/20">
+<button class="flex items-center gap-1 px-2.5 py-0.5 rounded-full text-label-sm font-label-sm bg-primary-container/15 text-primary font-medium">
+<span class="material-symbols-outlined text-[14px]" data-icon="dark_mode">dark_mode</span>
+<span>暗夜黑金</span>
+</button>
+<button class="flex items-center gap-1 px-2.5 py-0.5 rounded-full text-label-sm font-label-sm text-on-surface-variant hover:text-on-surface">
+<span class="material-symbols-outlined text-[14px]" data-icon="light_mode">light_mode</span>
+<span>现代极简</span>
+</button>
+</div>
+<!-- 扫码/邀请码添加设备 主按钮 -->
+<button class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-primary-container to-primary text-surface font-semibold text-label-md font-label-md shadow-[0_4px_16px_rgba(245,158,11,0.25)] hover:shadow-[0_6px_20px_rgba(245,158,11,0.35)] active:scale-95 transition-all duration-150">
+<span class="material-symbols-outlined text-[16px] font-bold" data-icon="add_circle">add_circle</span>
+<span>添加新设备</span>
+</button>
+<!-- 辅助图标与头像 -->
+<div class="flex items-center gap-1 pl-1">
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-bright/20 transition-all">
+<span class="material-symbols-outlined text-[18px]" data-icon="tune">tune</span>
+</button>
+<div class="w-7 h-7 rounded-full bg-gradient-to-br from-secondary/40 to-primary/40 border border-outline-variant/40 flex items-center justify-center text-label-sm font-label-sm text-on-surface font-semibold">
+          WL
+        </div>
+</div>
+</div>
+</header>
+<!-- 主布局体系：左侧设备栏 + 右侧宽阔画布 -->
+<main class="flex-1 pt-20 px-5 pb-4 flex gap-4 h-screen overflow-hidden max-w-[1920px] mx-auto w-full">
+<!-- 2. 左侧优雅的「我的设备」列表栏 (300px) -->
+<aside class="w-[300px] flex-shrink-0 flex flex-col justify-between rounded-2xl bg-surface-container-low/80 backdrop-blur-md border border-outline-variant/20 p-4 shadow-[10px_0_30px_-10px_rgba(0,0,0,0.45)]">
+<div class="flex flex-col gap-3.5 overflow-hidden">
+<!-- 侧边栏头部信息 -->
+<div class="flex items-center justify-between px-1">
+<div>
+<h2 class="text-headline-sm font-headline-sm font-bold text-on-surface">我的受控节点</h2>
+<p class="text-body-sm font-body-sm text-on-surface-variant/80 mt-0.5">4台在线 · 0.8ms低延迟</p>
+</div>
+<span class="px-2 py-0.5 rounded-full bg-secondary/10 border border-secondary/20 text-secondary text-label-sm font-label-sm">
+            局域网优先
+          </span>
+</div>
+<!-- 搜索输入框 -->
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant/70" data-icon="search">search</span>
+<input class="w-full h-10 pl-9 pr-3 rounded-xl bg-surface/80 border border-outline-variant/30 text-on-surface placeholder:text-on-surface-variant/60 text-body-sm font-body-sm focus:outline-none focus:border-secondary focus:ring-1 focus:ring-secondary/30 transition-all" placeholder="搜索设备名称…" type="text"/>
+</div>
+<!-- 机器列表滚动区 -->
+<div class="flex flex-col gap-2.5 overflow-y-auto pr-0.5 max-h-[calc(100vh-290px)]">
+<!-- 本机状态小卡片 -->
+<div class="p-3 rounded-xl bg-surface-container/50 border border-outline-variant/15 hover:border-outline-variant/30 transition-all">
+<div class="flex items-center justify-between mb-1.5">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant" data-icon="laptop_mac">laptop_mac</span>
+<span class="text-label-lg font-label-lg font-medium text-on-surface">Mac Studio（本机）</span>
+</div>
+<span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+</div>
+<div class="flex items-center gap-1.5 text-body-sm font-body-sm text-on-surface-variant/80">
+<span class="material-symbols-outlined text-[14px] text-emerald-400" data-icon="content_copy">content_copy</span>
+<span>正在共享屏幕与剪贴板</span>
+</div>
+</div>
+<!-- 在线设备卡片 1（激活选中态：Windows 工作站） -->
+<div class="p-3 rounded-xl bg-surface-container-high/90 border border-secondary/40 shadow-[0_0_16px_rgba(123,208,255,0.08)] relative overflow-hidden group">
+<div class="absolute top-0 right-0 w-24 h-24 bg-secondary/5 rounded-full blur-xl pointer-events-none"></div>
+<div class="flex items-center justify-between mb-1">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px] text-secondary" data-icon="desktop_windows">desktop_windows</span>
+<span class="text-label-lg font-label-lg font-semibold text-on-surface">Windows 工作站 (HO5)</span>
+</div>
+<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary/15 text-secondary font-medium">4K 60帧</span>
+</div>
+<p class="text-body-sm font-body-sm text-on-surface-variant/80 mb-3">局域网直连 · 画面流畅</p>
+<div class="flex items-center gap-2">
+<button class="flex-1 py-1.5 px-2.5 rounded-full bg-gradient-to-r from-primary-container to-primary text-surface text-label-md font-label-md font-semibold flex items-center justify-center gap-1 shadow-sm active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[14px] font-bold" data-icon="desktop_windows">desktop_windows</span>
+<span>正在控制桌面</span>
+</button>
+<button class="py-1.5 px-3 rounded-full bg-surface-container border border-outline-variant/30 text-on-surface text-label-md font-label-md hover:bg-surface-bright/30 active:scale-95 transition-all">
+                发送文件
+              </button>
+</div>
+</div>
+<!-- 在线设备卡片 2（激活选中态：我的 Redmi 手机） -->
+<div class="p-3 rounded-xl bg-surface-container-high/90 border border-primary-container/40 shadow-[0_0_16px_rgba(245,158,11,0.08)] relative overflow-hidden">
+<div class="absolute top-0 right-0 w-24 h-24 bg-primary/5 rounded-full blur-xl pointer-events-none"></div>
+<div class="flex items-center justify-between mb-1">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px] text-primary" data-icon="smartphone">smartphone</span>
+<span class="text-label-lg font-label-lg font-semibold text-on-surface">我的 Redmi 手机</span>
+</div>
+<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-medium">投屏中</span>
+</div>
+<p class="text-body-sm font-body-sm text-on-surface-variant/80 mb-3">点对点直连 · 竖屏投屏中</p>
+<div class="flex items-center gap-2">
+<button class="flex-1 py-1.5 px-2.5 rounded-full bg-surface-container border border-primary/30 text-primary text-label-md font-label-md font-medium flex items-center justify-center gap-1 hover:bg-primary-container/10 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[14px]" data-icon="open_in_new">open_in_new</span>
+<span>独立伴侣窗</span>
+</button>
+<button class="py-1.5 px-3 rounded-full bg-surface-container border border-outline-variant/30 text-on-surface text-label-md font-label-md hover:bg-surface-bright/30 active:scale-95 transition-all">
+                发送文件
+              </button>
+</div>
+</div>
+<!-- 备用非激活节点 -->
+<div class="p-3 rounded-xl bg-surface-container/30 border border-outline-variant/10 opacity-70 hover:opacity-100 transition-opacity">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant" data-icon="dns">dns</span>
+<span class="text-label-lg font-label-lg text-on-surface">群晖私有存储节点</span>
+</div>
+<span class="text-[11px] text-on-surface-variant/70">待机中</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 底部直连通道温和提示 -->
+<div class="pt-3 border-t border-outline-variant/15 flex items-center gap-2 text-body-sm font-body-sm text-on-surface-variant/80">
+<span class="material-symbols-outlined text-[18px] text-secondary" data-icon="verified_user">verified_user</span>
+<span>低延迟传输保护：已启用直连通道</span>
+</div>
+</aside>
+<!-- 3. 右侧主工作区：并排呈现「电脑拉电脑」与「电脑拉手机」零遮挡交互 -->
+<section class="flex-1 flex gap-4 h-full overflow-hidden">
+<!-- 3.1 左半部主画布：电脑拉电脑（Windows 工作站画面，大圆角 20px） -->
+<div class="flex-1 flex flex-col rounded-2xl bg-surface-container-lowest border border-outline-variant/30 overflow-hidden shadow-2xl relative">
+<!-- 纤细标题栏 -->
+<div class="h-9 px-4 bg-surface-container/90 border-b border-outline-variant/20 flex items-center justify-between flex-shrink-0 z-20">
+<div class="flex items-center gap-2">
+<span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+<span class="text-label-md font-label-md text-on-surface font-medium">Windows 工作站 (HO5) · 3840×2160 · 4K 60帧流畅</span>
+</div>
+<!-- 窗口操作微小圆点 -->
+<div class="flex items-center gap-1.5">
+<span class="w-3 h-3 rounded-full bg-surface-bright/60 hover:bg-amber-400/80 transition-colors cursor-pointer"></span>
+<span class="w-3 h-3 rounded-full bg-surface-bright/60 hover:bg-emerald-400/80 transition-colors cursor-pointer"></span>
+<span class="w-3 h-3 rounded-full bg-surface-bright/60 hover:bg-rose-400/80 transition-colors cursor-pointer"></span>
+</div>
+</div>
+<!-- 零遮挡核心机制：顶部 5px 防误触微导轨胶囊 -->
+<div class="absolute top-9 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center group cursor-pointer">
+<div class="w-[72px] h-[5px] rounded-full bg-gradient-to-r from-primary-container via-primary to-primary-container shadow-[0_0_10px_rgba(245,158,11,0.6)] amber-rail-glow group-hover:h-[8px] transition-all duration-200"></div>
+<div class="opacity-0 group-hover:opacity-100 transition-opacity duration-200 mt-1.5 px-3 py-1 rounded-full bg-surface-container-high/90 border border-primary/30 text-primary text-[11px] font-label-sm shadow-xl whitespace-nowrap pointer-events-none">
+            顶部 5px 防误触微导轨：拖拽窗口或切换浏览器标签时不弹窗，点击才展开控制条
+          </div>
+</div>
+<!-- 画布内容区：100% 纯净现代桌面（运行真实工作流，无任何遮挡层） -->
+<div class="flex-1 bg-[#121620] p-4 flex flex-col gap-3 overflow-hidden relative">
+<!-- 模拟真实的现代办公桌面内容 -->
+<div class="flex-1 rounded-xl bg-surface-container/60 border border-outline-variant/15 p-4 flex flex-col gap-4 overflow-hidden">
+<!-- 模拟桌面应用：设计系统与画布 -->
+<div class="flex items-center justify-between border-b border-outline-variant/15 pb-3">
+<div class="flex items-center gap-3">
+<div class="w-6 h-6 rounded-lg bg-[#303540] flex items-center justify-center text-primary text-xs font-bold">F</div>
+<span class="text-label-md font-label-md text-on-surface font-semibold">移动应用交互设计规范 · 2024最终稿</span>
+<span class="px-2 py-0.5 rounded bg-surface-bright/30 text-on-surface-variant text-[11px]">实时编辑中</span>
+</div>
+<div class="flex items-center gap-2 text-label-sm font-label-sm text-on-surface-variant">
+<span>缩放 100%</span>
+<span class="w-1 h-1 rounded-full bg-outline-variant"></span>
+<span>网格已对齐</span>
+</div>
+</div>
+<!-- 设计稿瀑布流微缩图与画板 -->
+<div class="flex-1 grid grid-cols-2 gap-4 overflow-hidden">
+<div class="rounded-xl bg-surface-container-lowest/80 border border-outline-variant/20 p-3.5 flex flex-col gap-3">
+<div class="flex items-center justify-between text-body-sm font-body-sm text-on-surface-variant">
+<span class="text-on-surface font-medium">界面架构图谱 · 手机伴侣模式</span>
+<span>画板 A</span>
+</div>
+<div class="flex-1 rounded-lg bg-surface-container/40 border border-outline-variant/10 p-3 flex flex-col justify-center items-center text-center">
+<span class="material-symbols-outlined text-[32px] text-secondary/60 mb-2" data-icon="space_dashboard">space_dashboard</span>
+<span class="text-label-md font-label-md text-on-surface">纯净无界工作区架构</span>
+<p class="text-[12px] text-on-surface-variant/70 mt-1 max-w-[200px]">把全屏操作空间完整还给工作流，无任何常驻遮挡浮层</p>
+</div>
+</div>
+<div class="rounded-xl bg-surface-container-lowest/80 border border-outline-variant/20 p-3.5 flex flex-col gap-3">
+<div class="flex items-center justify-between text-body-sm font-body-sm text-on-surface-variant">
+<span class="text-on-surface font-medium">文件同步通道监控</span>
+<span class="text-emerald-400">持续传输中</span>
+</div>
+<div class="flex-1 rounded-lg bg-surface-container/40 border border-outline-variant/10 p-3 flex flex-col justify-center gap-2">
+<div class="flex items-center justify-between text-label-sm font-label-sm">
+<span class="text-on-surface">设计素材打包.zip</span>
+<span class="text-primary font-semibold">82%</span>
+</div>
+<div class="w-full h-1.5 rounded-full bg-surface-bright/40 overflow-hidden">
+<div class="w-4/5 h-full rounded-full bg-gradient-to-r from-primary-container to-primary"></div>
+</div>
+<span class="text-[11px] text-on-surface-variant/70">直连速度：94 MB/s · 剩余 4 秒</span>
+</div>
+</div>
+</div>
+<!-- 底部工作区状态条 -->
+<div class="h-7 px-3 rounded-lg bg-surface-container-lowest/50 flex items-center justify-between text-[11px] text-on-surface-variant/70">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+<span>输入捕获：触控板与按键直接映射</span>
+</div>
+<span>画面延迟：0.6ms · 丢包率：0.0%</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 3.2 右半部并排陈列：电脑拉手机（iPhone Mirroring 风格零遮挡手机伴侣窗） -->
+<div class="w-[360px] flex-shrink-0 flex flex-col items-center justify-between">
+<!-- 核心并排容器：手机屏幕 + 独立外部伴侣条 -->
+<div class="flex items-center gap-3 w-full justify-center flex-1 py-1">
+<!-- 手机真机机身 (比例 9:19.5，24px 优雅真机大圆角铝合金质感边框) -->
+<div class="w-[260px] h-[550px] rounded-[32px] bg-[#05080e] p-2.5 border-[3px] border-[#343944] shadow-[0_25px_50px_-12px_rgba(0,0,0,0.85)] flex flex-col relative overflow-hidden ring-1 ring-white/10">
+<!-- 手机顶部听筒与灵动微孔 -->
+<div class="h-4 w-full flex items-center justify-between px-3 mb-1 flex-shrink-0">
+<span class="text-[10px] text-on-surface/80 font-semibold tracking-tight">14:38</span>
+<div class="w-16 h-3 rounded-full bg-black flex items-center justify-center">
+<span class="w-1.5 h-1.5 rounded-full bg-surface-bright"></span>
+</div>
+<div class="flex items-center gap-1 text-on-surface/80 text-[10px]">
+<span class="material-symbols-outlined text-[11px]" data-icon="wifi">wifi</span>
+<span class="material-symbols-outlined text-[11px]" data-icon="battery_full">battery_full</span>
+</div>
+</div>
+<!-- 手机屏幕内部：完全真实系统界面，0 悬浮球，0 遮挡！ -->
+<div class="flex-1 rounded-[22px] bg-gradient-to-b from-[#131a29] to-[#0c101a] p-3 flex flex-col justify-between overflow-hidden relative border border-white/5">
+<!-- 顶部下拉通知与搜索区（无悬浮球干扰） -->
+<div class="flex flex-col gap-2.5">
+<div class="flex items-center justify-between">
+<span class="text-headline-sm font-headline-sm font-bold text-on-surface text-[15px]">今日信息流</span>
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant" data-icon="more_horiz">more_horiz</span>
+</div>
+<!-- 对话卡片瀑布流 -->
+<div class="p-2.5 rounded-xl bg-surface-container/70 border border-outline-variant/15 flex items-start gap-2.5">
+<div class="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs font-bold">
+                    产品
+                  </div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between">
+<span class="text-label-md font-label-md font-semibold text-on-surface">产品设计评审组</span>
+<span class="text-[10px] text-on-surface-variant/60">刚刚</span>
+</div>
+<p class="text-[11px] text-on-surface-variant truncate mt-0.5">外部伴侣条完全不挡手机键盘与返回手势！</p>
+</div>
+</div>
+<!-- 便签待办小卡片 -->
+<div class="p-2.5 rounded-xl bg-surface-container/70 border border-outline-variant/15 flex flex-col gap-1.5">
+<div class="flex items-center gap-1.5 text-label-sm font-label-sm text-secondary font-medium">
+<span class="material-symbols-outlined text-[14px]" data-icon="task_alt">task_alt</span>
+<span>投屏控制已联锁</span>
+</div>
+<p class="text-[11px] text-on-surface-variant/80 leading-relaxed">
+                    在电脑端可直接使用滚轮翻页、打字与拖放照片。
+                  </p>
+</div>
+<!-- 精美相册缩略卡片 -->
+<div class="grid grid-cols-2 gap-2 mt-1">
+<div class="h-16 rounded-lg bg-surface-bright/20 border border-outline-variant/15 flex flex-col items-center justify-center text-center p-1">
+<span class="material-symbols-outlined text-[18px] text-primary mb-0.5" data-icon="image">image</span>
+<span class="text-[10px] text-on-surface">即时相册快传</span>
+</div>
+<div class="h-16 rounded-lg bg-surface-bright/20 border border-outline-variant/15 flex flex-col items-center justify-center text-center p-1">
+<span class="material-symbols-outlined text-[18px] text-secondary mb-0.5" data-icon="sms">sms</span>
+<span class="text-[10px] text-on-surface">验证码自动填</span>
+</div>
+</div>
+</div>
+<!-- 底部手势横条（100% 通透无任何浮层压迫） -->
+<div class="w-full flex justify-center py-1">
+<div class="w-24 h-1 rounded-full bg-on-surface/40"></div>
+</div>
+</div>
+</div>
+<!-- 独立外部竖向伴侣条（Out-of-Frame Companion Strip） -->
+<div class="flex flex-col items-center gap-2 p-1.5 rounded-2xl bg-surface-container/90 backdrop-blur-xl border border-outline-variant/30 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.5)]">
+<!-- 1. 返回 -->
+<button class="group relative w-10 h-10 rounded-xl flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-primary-container/15 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]" data-icon="arrow_back">arrow_back</span>
+<span class="absolute left-full ml-2.5 px-2 py-1 rounded-lg bg-surface-container-high/95 text-on-surface text-[11px] font-label-sm border border-outline-variant/30 shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
+                ◀ 返回
+              </span>
+</button>
+<!-- 2. 桌面 -->
+<button class="group relative w-10 h-10 rounded-xl flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-primary-container/15 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]" data-icon="home">home</span>
+<span class="absolute left-full ml-2.5 px-2 py-1 rounded-lg bg-surface-container-high/95 text-on-surface text-[11px] font-label-sm border border-outline-variant/30 shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
+                ● 桌面
+              </span>
+</button>
+<!-- 3. 多任务 -->
+<button class="group relative w-10 h-10 rounded-xl flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-primary-container/15 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]" data-icon="filter_none">filter_none</span>
+<span class="absolute left-full ml-2.5 px-2 py-1 rounded-lg bg-surface-container-high/95 text-on-surface text-[11px] font-label-sm border border-outline-variant/30 shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
+                ❐ 多任务
+              </span>
+</button>
+<div class="w-6 h-[1px] bg-outline-variant/20 my-0.5"></div>
+<!-- 4. 旋转 -->
+<button class="group relative w-10 h-10 rounded-xl flex items-center justify-center text-on-surface-variant hover:text-secondary hover:bg-secondary/15 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]" data-icon="screen_rotation">screen_rotation</span>
+<span class="absolute left-full ml-2.5 px-2 py-1 rounded-lg bg-surface-container-high/95 text-on-surface text-[11px] font-label-sm border border-outline-variant/30 shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
+                ↻ 旋转
+              </span>
+</button>
+<!-- 5. 传文件 -->
+<button class="group relative w-10 h-10 rounded-xl flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-primary-container/15 active:scale-95 transition-all">
+<span class="material-symbols-outlined text-[20px]" data-icon="drive_folder_upload">drive_folder_upload</span>
+<span class="absolute left-full ml-2.5 px-2 py-1 rounded-lg bg-surface-container-high/95 text-on-surface text-[11px] font-label-sm border border-outline-variant/30 shadow-lg whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-50">
+                📁 传文件
+              </span>
+</button>
+</div>
+</div>
+<!-- 伴侣窗底部舒适的中文说明文案 -->
+<div class="w-full text-center py-2 px-2">
+<p class="text-body-sm font-body-sm text-on-surface-variant/80 text-[12px] leading-relaxed">
+            外部伴侣条专利设计：全屏手势 100% 留给手机画面，永不遮挡返回键与键盘
+          </p>
+</div>
+</div>
+</section>
+</main>
+</body></html>

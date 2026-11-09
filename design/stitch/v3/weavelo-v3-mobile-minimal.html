@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport"/>
+<title>Weavelo Remote - 极简远程控制</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Plus Jakarta Sans & Inter Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Plus+Jakarta+Sans:wght@500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "inverse-on-surface": "#eff1f3",
+            "tertiary-fixed-dim": "#4edea3",
+            "surface-bright": "#f7f9fb",
+            "primary-fixed-dim": "#b4c5ff",
+            "on-tertiary-container": "#bdffdb",
+            "error": "#ba1a1a",
+            "tertiary-fixed": "#6ffbbe",
+            "surface-dim": "#d8dadc",
+            "secondary-container": "#d0e1fb",
+            "on-surface": "#191c1e",
+            "on-secondary-fixed-variant": "#38485d",
+            "on-primary-fixed-variant": "#003ea8",
+            "surface": "#f7f9fb",
+            "on-primary-container": "#eeefff",
+            "surface-container-highest": "#e0e3e5",
+            "secondary-fixed-dim": "#b7c8e1",
+            "primary-fixed": "#dbe1ff",
+            "on-error-container": "#93000a",
+            "secondary": "#505f76",
+            "surface-container-low": "#f2f4f6",
+            "outline": "#737686",
+            "surface-tint": "#0053db",
+            "primary": "#004ac6",
+            "surface-container-lowest": "#ffffff",
+            "on-tertiary-fixed-variant": "#005236",
+            "background": "#f7f9fb",
+            "on-primary": "#ffffff",
+            "outline-variant": "#c3c6d7",
+            "on-tertiary": "#ffffff",
+            "tertiary-container": "#007d55",
+            "on-secondary-fixed": "#0b1c30",
+            "surface-container": "#eceef0",
+            "on-secondary-container": "#54647a",
+            "on-secondary": "#ffffff",
+            "on-background": "#191c1e",
+            "inverse-surface": "#2d3133",
+            "error-container": "#ffdad6",
+            "on-primary-fixed": "#00174b",
+            "surface-variant": "#e0e3e5",
+            "surface-container-high": "#e6e8ea",
+            "primary-container": "#2563eb",
+            "inverse-primary": "#b4c5ff",
+            "on-tertiary-fixed": "#002113",
+            "on-error": "#ffffff",
+            "tertiary": "#006242",
+            "on-surface-variant": "#434655",
+            "secondary-fixed": "#d3e4fe"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "margin-mobile": "1rem",
+            "gutter-mobile": "0.75rem",
+            "space-md": "1rem",
+            "gutter": "1.5rem",
+            "space-xs": "0.25rem",
+            "space-sm": "0.5rem",
+            "space-xl": "2.5rem",
+            "space-lg": "1.5rem",
+            "margin": "2rem"
+          },
+          "fontFamily": {
+            "headline-sm": [
+              ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "label-sm": [
+              ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "label-md": [
+              ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "headline-xl-mobile": [
+              ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "headline-xl": [
+              ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "body-md": [
+              ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "body-lg": [
+              ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "label-lg": [
+              ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "headline-lg-mobile": [
+              ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "body-sm": [
+              ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "headline-md": [
+              ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ],
+            "headline-lg": [
+              ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'sans-serif']
+            ]
+          },
+          "fontSize": {
+            "headline-sm": [
+              "16px",
+              { "lineHeight": "24px", "letterSpacing": "-0.005em", "fontWeight": "600" }
+            ],
+            "label-sm": [
+              "11px",
+              { "lineHeight": "14px", "letterSpacing": "0.04em", "fontWeight": "500" }
+            ],
+            "label-md": [
+              "12px",
+              { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }
+            ],
+            "headline-xl-mobile": [
+              "28px",
+              { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "600" }
+            ],
+            "headline-xl": [
+              "36px",
+              { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "600" }
+            ],
+            "body-md": [
+              "14px",
+              { "lineHeight": "22px", "fontWeight": "400" }
+            ],
+            "body-lg": [
+              "16px",
+              { "lineHeight": "26px", "fontWeight": "400" }
+            ],
+            "label-lg": [
+              "14px",
+              { "lineHeight": "20px", "letterSpacing": "0.01em", "fontWeight": "500" }
+            ],
+            "headline-lg-mobile": [
+              "22px",
+              { "lineHeight": "30px", "letterSpacing": "-0.01em", "fontWeight": "600" }
+            ],
+            "body-sm": [
+              "12px",
+              { "lineHeight": "18px", "fontWeight": "400" }
+            ],
+            "headline-md": [
+              "20px",
+              { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }
+            ],
+            "headline-lg": [
+              "28px",
+              { "lineHeight": "36px", "letterSpacing": "-0.015em", "fontWeight": "600" }
+            ]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 350, 'GRAD' 0, 'opsz' 20;
+      font-size: 20px;
+      line-height: 1;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    @keyframes subtle-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.9); }
+    }
+    .pulse-dot {
+      animation: subtle-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-surface h-full flex flex-col antialiased selection:bg-secondary-container overflow-hidden select-none">
+<!-- ==================== 1. TOP APP BAR (Shared Component Anchor) ==================== -->
+<!-- TopAppBar JSON execution: style_shell_layout, style_bg_color, style_typography -->
+<header class="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 h-12 w-full bg-surface-container-lowest/90 backdrop-blur-md shadow-sm">
+<!-- Left: Return Action + Remote Machine Identity -->
+<div class="flex items-center space-x-2.5">
+<button aria-label="返回连接列表" class="w-8 h-8 -ml-1 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-container active:scale-95 transition-all duration-150" type="button">
+<span class="material-symbols-outlined" data-icon="arrow_back">arrow_back</span>
+</button>
+<div class="flex items-center space-x-2 pl-0.5">
+<span class="font-headline-sm text-headline-sm font-semibold tracking-tight text-on-surface">
+          Mac Studio
+        </span>
+<span class="text-outline-variant font-body-sm text-body-sm">·</span>
+<div class="flex items-center space-x-1.5 py-0.5 px-2 bg-surface-container-low rounded-full">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary pulse-dot"></span>
+<span class="font-label-sm text-label-sm text-on-surface-variant tracking-normal">已连接</span>
+<span class="font-label-sm text-label-sm text-tertiary font-semibold ml-0.5">0.8ms</span>
+</div>
+</div>
+</div>
+<!-- Right: Minimalist Fullscreen Toggle -->
+<div class="flex items-center space-x-1">
+<button aria-label="全屏显示" class="w-8 h-8 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-container active:scale-95 transition-all duration-150" title="全屏视窗" type="button">
+<span class="material-symbols-outlined" data-icon="fullscreen">fullscreen</span>
+</button>
+<button aria-label="网络传感器" class="w-8 h-8 flex items-center justify-center rounded-lg text-primary hover:bg-surface-container active:scale-95 transition-all duration-150" type="button">
+<span class="material-symbols-outlined" data-icon="sensors">sensors</span>
+</button>
+</div>
+</header>
+<!-- ==================== 2. MAIN VIEWPORT (Zero-Occlusion Remote Canvas) ==================== -->
+<main class="flex-1 w-full pt-12 pb-24 px-3 flex flex-col justify-start pt-4 items-center relative overflow-hidden">
+<!-- Remote Stream Frame: 16:10 High-res Screen Canvas -->
+<div class="w-full max-w-5xl h-full max-h-[724px] bg-surface-container-lowest rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-outline-variant/40 flex flex-col overflow-hidden relative transition-all">
+<!-- Realistic macOS Light Environment Stream Window -->
+<div class="w-full h-full relative bg-[#F5F5F7] flex flex-col overflow-hidden select-none">
+<!-- Stream Fake macOS Top Menu Bar (Visual Authentic Experience) -->
+<div class="w-full h-7 px-3 bg-white/70 backdrop-blur-md flex items-center justify-between border-b border-black/[0.04] text-[11px] font-medium text-slate-800 tracking-tight z-10 shrink-0">
+<div class="flex items-center space-x-3.5">
+<span class="font-bold text-slate-900 text-xs"></span>
+<span class="font-semibold text-slate-900">Figma</span>
+<span class="text-slate-600 hidden sm:inline">文件</span>
+<span class="text-slate-600 hidden sm:inline">编辑</span>
+<span class="text-slate-600 hidden sm:inline">视图</span>
+<span class="text-slate-600 hidden sm:inline">对象</span>
+<span class="text-slate-600 hidden sm:inline">文本</span>
+<span class="text-slate-600 hidden sm:inline">窗口</span>
+<span class="text-slate-600 hidden sm:inline">帮助</span>
+</div>
+<div class="flex items-center space-x-3 text-slate-700 text-[11px]">
+<span class="hidden sm:inline">4K · 120 FPS</span>
+<span>Metal 3</span>
+<span class="material-symbols-outlined text-[14px]">wifi</span>
+<span class="font-semibold">周四 14:48</span>
+</div>
+</div>
+<!-- Realistic Wallpaper & Remote Workspace Canvas -->
+<div class="flex-1 w-full relative p-3 sm:p-6 flex items-center justify-center overflow-hidden">
+<!-- Background Atmospheric Gradient Wallpaper -->
+<div class="absolute inset-0 bg-gradient-to-br from-[#EAEFF8] via-[#F2F5FA] to-[#E5ECF6]"></div>
+<!-- Active App Window: Modern Clean Figma Design File -->
+<div class="relative w-full h-full max-w-4xl bg-surface-container-lowest/95 backdrop-blur-xl rounded-xl shadow-[0_20px_50px_rgba(15,23,42,0.08)] border border-outline-variant/30 flex flex-col overflow-hidden">
+<!-- Figma Window Header -->
+<div class="h-9 px-3 bg-surface-container-low/70 border-b border-outline-variant/30 flex items-center justify-between shrink-0">
+<div class="flex items-center space-x-2">
+<span class="w-2.5 h-2.5 rounded-full bg-[#FF5F56] border border-[#E0443E]/30 inline-block"></span>
+<span class="w-2.5 h-2.5 rounded-full bg-[#FFBD2E] border border-[#DEA123]/30 inline-block"></span>
+<span class="w-2.5 h-2.5 rounded-full bg-[#27C93F] border border-[#1AAB29]/30 inline-block"></span>
+<span class="font-label-md text-label-md text-on-surface-variant ml-3 font-medium">Weavelo Design</span>
+</div>
+<div class="flex items-center space-x-2 text-outline">
+<span class="text-xs px-2 py-0.5 rounded bg-surface-container text-on-surface font-mono">100%</span>
+<span class="material-symbols-outlined text-base">share</span>
+</div>
+</div>
+<!-- Figma Workspace Viewport Simulation -->
+<div class="flex-1 grid grid-cols-12 bg-surface-bright/50">
+<!-- Sidebar Layers -->
+<div class="col-span-3 border-r border-outline-variant/20 p-3 hidden md:flex flex-col space-y-2 bg-surface-container-lowest/40">
+<div class="text-[11px] font-semibold text-outline uppercase tracking-wider">Layers</div>
+<div class="flex items-center space-x-2 py-1 px-1.5 rounded bg-secondary-container/40 text-primary font-medium text-xs">
+<span class="material-symbols-outlined text-xs">grid_view</span>
+<span class="truncate">Hero Viewport</span>
+</div>
+<div class="flex items-center space-x-2 py-1 px-1.5 text-on-surface-variant text-xs">
+<span class="material-symbols-outlined text-xs">widgets</span>
+<span class="truncate">Navigation Pill</span>
+</div>
+<div class="flex items-center space-x-2 py-1 px-1.5 text-on-surface-variant text-xs">
+<span class="material-symbols-outlined text-xs">tune</span>
+<span class="truncate">Telemetry Matrix</span>
+</div>
+</div>
+<!-- Main Canvas Display -->
+<div class="col-span-12 md:col-span-9 p-4 sm:p-8 flex flex-col justify-start pt-4 items-center relative">
+<div class="w-full max-w-md bg-surface-container-lowest rounded-xl p-5 shadow-sm border border-outline-variant/30 space-y-4">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-2.5">
+<div class="w-7 h-7 rounded-lg bg-primary-container text-on-primary flex items-center justify-center text-xs font-bold font-headline-sm">
+                        W
+                      </div>
+<div>
+<div class="font-headline-sm text-headline-sm font-semibold text-on-surface">Weavelo Ultra-Link</div>
+<div class="font-body-sm text-body-sm text-outline">端到端直接渲染通道</div>
+</div>
+</div>
+<span class="px-2 py-0.5 rounded-full text-xs font-medium bg-tertiary-container/15 text-tertiary">
+                      HEVC 4:4:4
+                    </span>
+</div>
+<!-- Simulated Telemetry Strip Inside App -->
+<div class="grid grid-cols-3 gap-2 pt-2 border-t border-outline-variant/20">
+<div class="bg-surface-container-low p-2 rounded-lg text-center">
+<div class="text-[10px] text-outline font-label-sm">传输帧率</div>
+<div class="font-headline-sm text-headline-sm text-on-surface font-semibold">120 fps</div>
+</div>
+<div class="bg-surface-container-low p-2 rounded-lg text-center">
+<div class="text-[10px] text-outline font-label-sm">网络抖动</div>
+<div class="font-headline-sm text-headline-sm text-tertiary font-semibold">0.2 ms</div>
+</div>
+<div class="bg-surface-container-low p-2 rounded-lg text-center">
+<div class="text-[10px] text-outline font-label-sm">色彩深度</div>
+<div class="font-headline-sm text-headline-sm text-on-surface font-semibold">10-bit</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Stream macOS Minimalist Dock -->
+<div class="absolute bottom-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-surface-container-lowest/70 backdrop-blur-xl rounded-2xl border border-outline-variant/40 shadow-lg flex items-center space-x-2.5 z-10 scale-90 sm:scale-100">
+<div class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-xs font-bold shadow-sm">Fi</div>
+<div class="w-8 h-8 rounded-lg bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-white text-xs shadow-sm"><span class="material-symbols-outlined text-sm">terminal</span></div>
+<div class="w-8 h-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white text-xs shadow-sm"><span class="material-symbols-outlined text-sm">code</span></div>
+<div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-white text-xs shadow-sm"><span class="material-symbols-outlined text-sm">folder</span></div>
+<div class="w-px h-5 bg-outline-variant/40 mx-0.5"></div>
+<div class="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-on-surface-variant text-xs shadow-sm"><span class="material-symbols-outlined text-sm">settings</span></div>
+</div>
+</div>
+</div>
+<!-- ==================== MICRO-GESTURE SLIDEOUT TRIGGER (Edge Handle & Capsule) ==================== -->
+<!-- 5px Invisible/Subtle Magnetic Micro-Handle -->
+<div class="absolute bottom-24 right-0 w-[5px] h-16 bg-outline/20 rounded-l-full cursor-pointer hover:w-2 hover:bg-primary-container transition-all z-20" title="侧滑呼出远控快捷面板"></div>
+<!-- Expanded State Demo: Ultra-thin iOS 18 Translucent Capsule Panel -->
+<div class="absolute bottom-16 right-3 z-30 flex flex-col items-end pointer-events-auto">
+<!-- Floating Glass Capsule (4 Micro Actions) -->
+<div class="flex items-center space-x-1.5 p-1.5 bg-surface-container-lowest/85 backdrop-blur-2xl rounded-full shadow-[0_12px_28px_rgba(15,23,42,0.12)] border border-outline-variant/40">
+<button aria-label="返回操作" class="w-9 h-9 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container hover:text-on-surface active:scale-90 transition-all" title="返回" type="button">
+<span class="material-symbols-outlined text-[18px]">undo</span>
+</button>
+<button aria-label="显示桌面" class="w-9 h-9 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container hover:text-on-surface active:scale-90 transition-all" title="桌面" type="button">
+<span class="material-symbols-outlined text-[18px]">desktop_windows</span>
+</button>
+<button aria-label="虚拟快捷按键" class="w-9 h-9 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container hover:text-on-surface active:scale-90 transition-all" title="键盘" type="button">
+<span class="material-symbols-outlined text-[18px]" data-icon="keyboard">keyboard</span>
+</button>
+<div class="w-px h-4 bg-outline-variant/50 mx-0.5"></div>
+<button aria-label="断开远程会话" class="w-9 h-9 flex items-center justify-center rounded-full text-error hover:bg-error-container/40 active:scale-90 transition-all" title="断开" type="button">
+<span class="material-symbols-outlined text-[18px]">power_settings_new</span>
+</button>
+</div>
+<!-- Elegant Low-Key Footnote -->
+<div class="mt-2 text-right pr-1">
+<span class="text-[10px] font-label-sm text-outline/80 tracking-tight select-none">
+            全屏时贴边隐形 · 侧滑直接转发给远端手机，绝不误退
+          </span>
+</div>
+</div>
+</div>
+</main>
+<!-- ==================== 3. BOTTOM FLOATING PILL BAR (Shared Component Execution) ==================== -->
+<!-- BottomNavBar JSON execution: style_shell_layout, style_bg_color, style_component_shape -->
+<nav class="fixed bottom-0 left-0 right-0 z-50 flex justify-center items-center pb-safe pointer-events-none [&amp;&gt;*]:pointer-events-auto">
+<div class="floating rounded-full mb-6 mx-auto bg-surface-container-lowest/90 backdrop-blur-xl border border-outline-variant/40 shadow-lg px-2 py-1.5 flex items-center space-x-1.5">
+<!-- 1. 触控板 (Trackpad - Active State matching style_active_navigation) -->
+<button aria-current="page" class="flex items-center justify-center px-3.5 h-10 bg-primary text-on-primary rounded-full shadow-[0_4px_14px_rgba(37,99,235,0.35)] active:scale-90 transition-all duration-150 space-x-1.5" type="button">
+<span class="material-symbols-outlined text-[19px]" data-icon="touch_app">touch_app</span>
+<span class="font-label-sm text-label-sm font-medium tracking-normal whitespace-nowrap text-on-primary">触控板</span>
+</button>
+<!-- 2. 直触画面 (Direct Touch - Inactive State matching style_inactive_navigation) -->
+<button class="flex items-center justify-center px-3 h-10 text-on-surface-variant hover:text-primary active:scale-90 transition-all duration-150 rounded-full hover:bg-surface-container/60 space-x-1.5" type="button">
+<span class="material-symbols-outlined text-[19px]" data-icon="pan_tool">pan_tool</span>
+<span class="font-label-sm text-label-sm font-medium tracking-normal whitespace-nowrap text-on-surface-variant">直触画面</span>
+</button>
+<!-- 3. 呼出键盘 (Keyboard - Inactive State matching style_inactive_navigation) -->
+<button class="flex items-center justify-center px-3 h-10 text-on-surface-variant hover:text-primary active:scale-90 transition-all duration-150 rounded-full hover:bg-surface-container/60 space-x-1.5" type="button">
+<span class="material-symbols-outlined text-[19px]" data-icon="keyboard">keyboard</span>
+<span class="font-label-sm text-label-sm font-medium tracking-normal whitespace-nowrap text-on-surface-variant">呼出键盘</span>
+</button>
+<!-- 4. 1:1 复位 (Reset 1:1 - Inactive State matching style_inactive_navigation) -->
+<button class="flex items-center justify-center px-3 h-10 text-on-surface-variant hover:text-primary active:scale-90 transition-all duration-150 rounded-full hover:bg-surface-container/60 space-x-1.5" type="button">
+<span class="material-symbols-outlined text-[19px]" data-icon="restart_alt">restart_alt</span>
+<span class="font-label-sm text-label-sm font-medium tracking-normal whitespace-nowrap text-on-surface-variant">1:1 复位</span>
+</button>
+</div>
+</nav>
+</body></html>
