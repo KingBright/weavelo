@@ -59,7 +59,7 @@ impl Selection {
         remote_core::source_picker::sort(&mut sources);
         self.selected.retain(|id| sources.iter().any(|source| source.source == *id));
         self.sources=sources;self.artwork=artwork;self.loading=false;
-        self.error=self.sources.is_empty().then(||if self.is_delivery() {"Choose a local source in Sharing & permissions."}else{"No shared sources are available on the remote device."}.into());
+        self.error=self.sources.is_empty().then(||if self.is_delivery() {"Choose a local source in Sharing & permissions."}else{"Screen not shared. Start sharing on the remote device."}.into());
         if self.error.is_none() && had_selection && self.selected.is_empty() {
             self.error=Some("Selected sources ended. Choose another source.".into());
         }
