@@ -280,6 +280,8 @@ pub trait InputInjector {
         if std::time::Instant::now()>=deadline {return Err(InputExpired("before native dispatch").into());}
         self.inject_input(event)
     }
+    /// Snapshot the native target; a potentially blocking accessibility read runs separately.
+    fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> { None }
     fn release_all_input(&self) {}
 }
 

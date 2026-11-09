@@ -479,10 +479,24 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     val token = surfaceToken
     var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
     var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
+    val focusGate = remember(pane.id,sessionKey,generation,token) { EditorFocusGate<Pair<JSONObject,Long>>() }
+    DisposableEffect(focusGate) { onDispose { focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus() } }
+    LaunchedEffect(pane.id, sessionKey, generation, token, pane.input, pane.accepted) {
+        WorkspaceClient.editorFocus.collect { result ->
+            if (result.id == pane.id && pane.input && pane.accepted && token != 0L) {
+                val candidate = focusGate.take(result.sequence, android.os.SystemClock.uptimeMillis())
+                if (candidate != null && candidate.second == WorkspaceClient.editorFocusIntent()) {
+                    val owner = WorkspaceClient.keyboardBinding(pane.id,sessionKey,generation,token,result.binding,candidate.first)
+                    if (owner != null) { keyboardBinding = owner; keyboardVisible = true }
+                }
+            }
+        }
+    }
+
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     var imeWasVisible by remember(pane.id, sessionKey, generation, token) { mutableStateOf(false) }
     LaunchedEffect(imeVisible) {
-        if (imeWasVisible && !imeVisible) keyboardVisible = false
+        if (imeWasVisible && !imeVisible) { focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus(); keyboardVisible = false }
         imeWasVisible = imeVisible
     }
     var handleFraction by rememberSaveable(pane.id, sessionKey, generation) { mutableFloatStateOf(0.5f) }
@@ -524,6 +538,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
         }
     }
     BackHandler(enabled = keyboardVisible || mobileMore || mobileControls) {
+        focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
         when { mobileMore -> mobileMore = false; keyboardVisible -> keyboardVisible = false; else -> mobileControls = false }
     }
     var videoStatus by remember(pane.id, sessionKey, generation) { mutableStateOf<String?>("Waiting for video…") }
@@ -572,6 +587,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             delay(100)
         }
     }
+    LaunchedEffect(measured, dimensions, mobileControls, mobileMore, touchMode) { focusGate.invalidate() }
     val keyboardOwner = keyboardBinding
     RemoteKeyboard(identity = listOf(pane.id,sessionKey,generation,token,keyboardOwner), visible = keyboardVisible,
         enabled = pane.input && token != 0L && keyboardOwner != null,
@@ -594,6 +610,9 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
             modifier = Modifier.fillMaxSize(),
             onViewportSizeChanged = { measured = it },
             sendTouch = { action, id, x, y, pressure, eventTime ->
+                if (action == 0) { focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus() }
+                val gestureIntent = focusGate.intent()
+                val globalIntent = WorkspaceClient.editorFocusIntent()
                 val presentation = nativeViewport.get()?.presentation
                 val geometry = presentation?.geometry
                 if (action != 3 && (presentation?.ready != true || geometry != null &&
@@ -611,7 +630,8 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 WorkspaceClient.touch(pane.id, sessionKey, generation, token, eventTime,
                     touchMode, geometry?.sourceWidth ?: pane.source.width, geometry?.sourceHeight ?: pane.source.height,
                     JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
-                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure),geometry) { cx, cy ->
+                        .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure),geometry,
+                    onProbe = { sequence, geometry -> if (surfaceToken == token) focusGate.record(gestureIntent,sequence,eventTime,geometry to globalIntent) }) { cx, cy ->
                     if (surfaceToken == token) cursor = Offset(cx, cy)
                 if (surfaceToken == token && touchMode == TouchMode.TRACKPAD && transform.value.scale>1f) {
                     transform.value=transform.value.reveal(cx,cy,measured.width.toFloat(),measured.height.toFloat())
@@ -663,7 +683,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 if (imeVisible && pane.input) MobileAction(MobileSymbol.Keyboard, tr("Hide keyboard"),
                     modifier = Modifier.align(Alignment.TopEnd).size(36.dp)
                         .background(ColorSurfaceCard.copy(alpha = .85f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))) {
-                    keyboardVisible = false
+                    focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus(); keyboardVisible = false
                 }
                 (videoStatus ?: pane.inputError)?.let { message ->
                     Text(if (videoStatus != null) tr(message) else pane.inputErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
@@ -814,6 +834,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     }
                 }
                 .clickable(onClickLabel = tr("Show remote controls")) {
+                    focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                     pointers.clear(); touching = false; mobileControls = !mobileControls
                 }
@@ -831,6 +852,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     owner?.let { WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.HOME) }
                 })
                 MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), enabled = pane.input && token != 0L, onClick = {
+                    focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
                     if (keyboardVisible) keyboardVisible = false else {
                         keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                         keyboardVisible = keyboardBinding != null
@@ -885,6 +907,7 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                 pointers.clear(); touching = false
                 touchMode = if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
             }, onKeyboard = {
+                focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
                 if (keyboardVisible) keyboardVisible = false else {
                     keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     keyboardVisible = keyboardBinding != null

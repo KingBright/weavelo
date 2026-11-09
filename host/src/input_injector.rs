@@ -813,6 +813,18 @@ fn unicode_event_chunks(text:&str)->impl Iterator<Item=&str> {
 }
 
 impl InputInjector for MacInputInjector {
+    fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> {
+        if self.target_pointer.lock().ok()?.is_none() { return None; }
+        let point = self.pointer_position();
+        let target = self.window.as_ref().map(|window| (window.id,window.pid));
+        Some(Box::new(move || {
+            for attempt in 0..3 {
+                if crate::window_input::focused_editor_at(point,target) { return true; }
+                if attempt < 2 { std::thread::sleep(std::time::Duration::from_millis(20)); }
+            }
+            false
+        }))
+    }
     fn inject_input(&self, event: InputEvent) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Consent can be revoked after the injector was created. Propagate a
         // real error through INPUT_UNAVAILABLE before changing held state or

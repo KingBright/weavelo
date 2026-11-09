@@ -22,6 +22,7 @@ unsafe extern "C" {
         result: *mut CFTypeRef,
     ) -> i32;
     fn AXUIElementGetPid(element: CFTypeRef, pid: *mut i32) -> i32;
+    fn AXUIElementIsAttributeSettable(element: CFTypeRef, name: CFTypeRef, settable: *mut bool) -> i32;
     fn AXUIElementCopyAttributeValue(
         element: CFTypeRef,
         name: CFTypeRef,
@@ -62,6 +63,33 @@ fn ax_window_bounds(window: &CFType) -> Option<CGRect> {
         }
     }
     Some(CGRect::new(&origin, &dimensions))
+}
+/// Fail closed: require a focused, enabled editable text element at the clicked
+/// point, in the foreground application's actual focused window. For a window
+/// capture additionally require the exact selected WindowServer identity.
+pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bool {
+    if !permission_available() { return false; }
+    let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+    unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), 0.05); }
+    let Some(app) = attr(&system, "AXFocusedApplication") else { return false; };
+    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), 0.05); }
+    let Some(window) = attr(&app, "AXFocusedWindow") else { return false; };
+    let Some(editor) = attr(&app, "AXFocusedUIElement") else { return false; };
+    unsafe { AXUIElementSetMessagingTimeout(window.as_CFTypeRef(), 0.05); AXUIElementSetMessagingTimeout(editor.as_CFTypeRef(), 0.05); }
+    if attr(&editor, "AXWindow").as_ref() != Some(&window) { return false; }
+    let role = attr(&editor, "AXRole").and_then(|v| v.downcast::<CFString>()).map(|v| v.to_string());
+    if !matches!(role.as_deref(), Some("AXTextField" | "AXTextArea" | "AXComboBox")) { return false; }
+    if !attr(&editor, "AXEnabled").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| bool::from(v)) { return false; }
+    let mut settable = false;
+    let value = CFString::new("AXValue");
+    if unsafe { AXUIElementIsAttributeSettable(editor.as_CFTypeRef(), value.as_CFTypeRef(), &mut settable) } != 0 || !settable { return false; }
+    if !ax_window_bounds(&editor).is_some_and(|bounds| contains(bounds, point)) { return false; }
+    let mut pid = 0;
+    if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 { return false; }
+    let Ok(list) = windows(1 | 16, 0) else { return false; };
+    let Some(id) = ax_window_bounds(&window).and_then(|bounds| focused_window_id(&list, pid, bounds)) else { return false; };
+    if target.is_some_and(|target| target != (id,pid)) { return false; }
+    top_at(&list, point) == Some(id) && keyboard_focus(&list, id, pid, |_| Some(id))
 }
 fn value(dictionary: &CFType, key: &str) -> Option<CFType> {
     let dictionary = dictionary.downcast::<CFDictionary>()?;

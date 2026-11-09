@@ -18,6 +18,23 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+fn focus_tap(mode: crate::touch_mapper::TouchMode, events: &[protocol::InputEvent]) -> bool {
+    mode != crate::touch_mapper::TouchMode::NativeTouch && events.len() >= 2
+        && matches!(&events[events.len()-2..], [protocol::InputEvent::MouseDown(0), protocol::InputEvent::MouseUp(0)])
+}
+
+#[cfg(test)]
+#[test]
+fn editor_probe_only_follows_a_translated_primary_tap() {
+    use protocol::InputEvent::*;
+    use crate::touch_mapper::TouchMode::*;
+    assert!(focus_tap(DirectTouch, &[MouseMoveAbsolute{x:1,y:2},MouseDown(0),MouseUp(0)]));
+    assert!(focus_tap(VirtualTrackpad, &[MouseDown(0),MouseUp(0)]));
+    assert!(!focus_tap(DirectTouch, &[MouseMoveAbsolute{x:1,y:2},MouseUp(0)]));
+    assert!(!focus_tap(DirectTouch, &[MouseDown(1),MouseUp(1)]));
+    assert!(!focus_tap(NativeTouch, &[MouseDown(0),MouseUp(0)]));
+}
+
 fn file_status(event:&FileTransferEvent)->String {
     let progress=|done:u64,total:u64| (u128::from(done.min(total))*100).checked_div(u128::from(total)).unwrap_or(0);
     match event {
@@ -452,14 +469,16 @@ impl MobileWorkspace {
         Ok(())
     }
     pub fn keyboard_context(&self,json:&str)->Result<String,String> {
-        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64}
+        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,#[serde(default)] focus_binding:Option<protocol::realtime_input::InputBinding>,#[serde(default)] focus_geometry:Option<protocol::viewport::FrameGeometry>}
         let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
         let touches=self.touches.lock().unwrap();
         let touch=touches.get(&request.id).ok_or("video surface is unavailable")?;
         let current=self.connection.input_binding(request.id,touch.revision);
         if let Some(reason)=touch.unavailable_reason(request.token,current) {return Err(reason.into());}
         let binding=touch.keyboard_binding(request.token,current).ok_or("remote keyboard is unavailable")?;
-        let owner=self.connection.text_input_owner(request.id,binding.source_revision).ok_or("remote keyboard is unavailable")?;
+        if request.focus_binding.is_some_and(|expected| expected != binding) { return Err("remote input binding changed".into()); }
+        if request.focus_binding.is_some() && !request.focus_geometry.is_some_and(|geometry| touch.exact_presented_geometry(geometry)) { return Err("displayed source geometry changed".into()); }
+        let owner=self.connection.text_input_owner_for_binding(binding).ok_or("remote keyboard is unavailable")?;
         serde_json::to_string(&owner).map_err(|e|e.to_string())
     }
     pub fn keyboard(&self,json:&str)->Result<(),String> {
@@ -498,7 +517,7 @@ impl MobileWorkspace {
             Ok(())
         } else {Err("missing remote keyboard event".into())}
     }
-    pub fn touch(&self, json: &str) -> Result<Option<(f64,f64)>, String> {
+    pub fn touch(&self, json: &str) -> Result<serde_json::Value, String> {
         #[derive(serde::Deserialize)]
         struct Touch {
             id: u32,
@@ -515,11 +534,11 @@ impl MobileWorkspace {
         }
         let mut touches = self.touches.lock().unwrap();
         let Some(touch) = touches.get_mut(&event.id) else {
-            return Ok(None);
+            return Ok(serde_json::Value::Null);
         };
         // An old surface cannot replace the current frame's geometry or cancel
         // a fresh gesture, even if its delayed payload is malformed.
-        if !touch.current_surface(event.token) { return Ok(None); }
+        if !touch.current_surface(event.token) { return Ok(serde_json::Value::Null); }
         let current = self.connection.input_binding(event.id, touch.revision);
         if let Some(g)=event.geometry {
             g.validate()?;
@@ -543,7 +562,7 @@ impl MobileWorkspace {
         };
         let Some(releases)=touch.select_mode(event.token,mode,
             crate::touch_mapper::RemoteScreenBounds {width:event.width,height:event.height},starting)
-        else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(None)}; };
+        else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(serde_json::Value::Null)}; };
         if let Some(binding)=touch.binding() {
             for release in releases {self.connection.try_bound_input(binding,Some(release));}
         }
@@ -560,17 +579,26 @@ impl MobileWorkspace {
                 protocol::InputEvent::MouseMoveAbsolute{x,y} if !g.contains_source_point(f32::from(*x)/65535.,f32::from(*y)/65535.))
                 || matches!(event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action!=protocol::TouchAction::Cancel&&!g.contains_source_point(p.normalized_x,p.normalized_y))))) {
                 touch.cancel();self.connection.try_bound_input(binding,None);
-                return Ok(None);
+                return Ok(serde_json::Value::Null);
             }
-            for event in events {
+            let is_tap = focus_tap(mode, &events);
+            let mut probe = None;
+            let event_count = events.len();
+            for (index, event) in events.into_iter().enumerate() {
+                if is_tap && index + 1 == event_count {
+                    probe = self.connection.try_bound_focus_release(binding);
+                    if probe.is_some() { continue; }
+                    touch.cancel(); self.connection.try_bound_input(binding, None); break;
+                }
                 if !self.connection.try_bound_input(binding, Some(event)) {
                     touch.cancel();
                     self.connection.try_bound_input(binding, None);
                     break;
                 }
             }
+            return Ok(serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":probe.map(|sequence|sequence.to_string())}));
         }
-        Ok(touch.cursor(event.token,current))
+        Ok(serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":null}))
     }
     pub async fn send_file(&self, path: PathBuf) -> Result<(), String> {
         if !self.connection.files_available {

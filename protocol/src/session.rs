@@ -243,6 +243,8 @@ pub enum SessionCommand {
     // Keep optional artwork off every control message's inline storage. Serde
     // encodes Box transparently, so this changes memory layout only.
     SourceAppearance { request_id: u32, id: u32, source: CaptureSource, appearance: Box<Result<crate::appearance::SourceAppearance, String>> },
+    EditorFocus { binding: crate::realtime_input::InputBinding, sequence: u64, editable: bool },
+    ProbeEditorFocus { binding: crate::realtime_input::InputBinding, sequence: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

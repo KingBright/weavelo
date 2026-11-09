@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
@@ -47,6 +49,12 @@ object WorkspaceClient {
     private val mutable = MutableStateFlow(WorkspaceState())
     private val applicationIcons = HashMap<String, android.graphics.Bitmap>()
     val state = mutable.asStateFlow()
+    data class EditorFocus(val id: Int, val sequence: String, val binding: JSONObject)
+    private val focusEvents = MutableSharedFlow<EditorFocus>(extraBufferCapacity = 16)
+    val editorFocus = focusEvents.asSharedFlow()
+    private val editorFocusEpoch = java.util.concurrent.atomic.AtomicLong()
+    internal fun invalidateEditorFocus() { editorFocusEpoch.incrementAndGet() }
+    internal fun editorFocusIntent(): Long = editorFocusEpoch.get()
     @Volatile var active = false
         private set
     @Volatile private var background = false
@@ -419,13 +427,13 @@ object WorkspaceClient {
         }
         inputIssue(id, message, AppText(message))
     }
-    fun keyboardBinding(id: Int, sessionKey: String, generation: Long, token: Long): String? = synchronized(this) {
+    fun keyboardBinding(id: Int, sessionKey: String, generation: Long, token: Long, focusBinding: JSONObject? = null, focusGeometry: JSONObject? = null): String? = synchronized(this) {
         if (!currentView(id,sessionKey,generation,true)) {
             guarded { inputViewIssue(id,sessionKey,generation) }
             return@synchronized null
         }
-        val result = runCatching { action(13,JSONObject().put("id",id).put("token",token).toString()).takeIf { JSONObject(it).has("generation") } }
-        guarded {
+        val result = runCatching { action(13,JSONObject().put("id",id).put("token",token).put("focus_binding",focusBinding ?: JSONObject.NULL).put("focus_geometry",focusGeometry ?: JSONObject.NULL).toString()).takeIf { JSONObject(it).has("generation") } }
+        if (focusBinding == null) guarded {
             if (currentView(id,sessionKey,generation,false)) {
                 val message = if (result.isFailure) result.exceptionOrNull()?.message ?: "Keyboard is unavailable"
                     else if (result.getOrNull() == null) "Control is not ready yet." else null
@@ -501,6 +509,7 @@ object WorkspaceClient {
         mode: TouchMode, width: Int, height: Int, event: JSONObject,
         geometry: VideoFrameGeometry? = null,
         contacts: JSONArray? = null,
+        onProbe: (String, JSONObject) -> Unit = { _, _ -> },
         onCursor: (Float, Float) -> Unit = { _, _ -> }) = guarded {
         if (!currentView(id, sessionKey, generation, true)) {
             inputViewIssue(id,sessionKey,generation)
@@ -525,7 +534,10 @@ object WorkspaceClient {
             .onSuccess { result ->
                 if (event.optString("action") == "Down") inputIssue(id, null)
                 if (result != "null") {
-                    val cursor = JSONArray(result)
+                    val response = JSONObject(result)
+                    if (!response.isNull("focus_sequence") && presented != null && currentView(id, sessionKey, generation, true))
+                        onProbe(response.getString("focus_sequence"), presented)
+                    val cursor = response.optJSONArray("cursor") ?: return@onSuccess
                     // Compose snapshot state accepts this serialized update;
                     // no extra UI queue may accumulate old pointer positions.
                     if (currentView(id, sessionKey, generation, true))
@@ -599,6 +611,12 @@ object WorkspaceClient {
                         } else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"), statusText = if (ready.has("Err")) null else AppText("Camera switch was rejected"))
                     }
                 }
+            }
+            control?.optJSONObject("EditorFocus")?.let { reply ->
+                val binding = reply.getJSONObject("binding")
+                val id = binding.getInt("subscription_id")
+                if (reply.optBoolean("editable") && currentView(id, mutable.value.sessionKey, mutable.value.connectionGeneration, true))
+                    focusEvents.tryEmit(EditorFocus(id, reply.getString("sequence"), binding))
             }
             control?.optJSONObject("Opened")?.let { mutable.value = mutable.value.copy(connectionId = it.getLong("connection_id"), maxSubscriptions = it.getInt("max_subscriptions"), files = it.getBoolean("files"), clipboardAvailable = it.getBoolean("clipboard")) }
             control?.optJSONObject("Closed")?.let { action(1); asleep = true; retainingConnection = false; mutable.value = mutable.value.copy(connected = false, androidHost = false, status = it.getString("reason"), statusText = null) }

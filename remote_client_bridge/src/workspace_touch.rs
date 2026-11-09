@@ -152,6 +152,7 @@ impl WorkspaceTouch {
         if visible { None } else { self.invalidate() }
     }
     pub fn presented_geometry(&mut self,geometry:Option<protocol::viewport::FrameGeometry>) {self.geometry=geometry;}
+    pub fn exact_presented_geometry(&self,geometry:protocol::viewport::FrameGeometry)->bool { self.geometry == Some(geometry) }
     pub fn matches_presented_geometry(&self,geometry:Option<protocol::viewport::FrameGeometry>)->bool {
         self.geometry.is_none() || self.geometry==geometry
     }

@@ -1562,10 +1562,23 @@ struct ActiveInput {
     binding: Option<InputBinding>,
     lease_revocation: Option<InputLeaseRevocation>,
     deadline:Option<std::time::Instant>,
+    focus_release: Option<(InputBinding, u64, std::time::Instant)>,
+    focus_pending: Option<(InputBinding, u64, std::time::Instant)>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     capture: Option<PreparedPortalCapture>,
 }
 impl ActiveInput {
+    fn take_focus_release(&mut self, addr: SocketAddr, binding: InputBinding, sequence: u64,
+        now: std::time::Instant) -> Option<std::time::Instant> {
+        let (actual, release_sequence, deadline) = self.focus_release.take()?;
+        (self.owner == Some((addr,binding.subscription_id)) && self.binding == Some(binding)
+            && actual == binding && release_sequence == sequence && now < deadline).then_some(deadline)
+    }
+    fn take_focus_result(&mut self, binding: InputBinding, sequence: u64, deadline: std::time::Instant) -> bool {
+        if self.focus_pending != Some((binding,sequence,deadline)) { return false; }
+        self.focus_pending = None;
+        true
+    }
     /// Keep the same native input owner serialized while a different control
     /// operation waits. Expiry releases only this owner, then resumes the same
     /// pinned operation; no replacement capture or ownership is synthesized.
@@ -1587,6 +1600,8 @@ impl ActiveInput {
         self.owner = None;
         self.binding = None;
         self.deadline=None;
+        self.focus_release=None;
+        self.focus_pending=None;
         injector.release_all_input();
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = self.capture.take()
@@ -1703,6 +1718,7 @@ async fn dispatch_realtime_input(
         return;
     };
     let owns_input = owner.owner == Some((addr, id)) && owner.binding == Some(packet.binding);
+    let probe_released = matches!(events.as_slice(), [InputEvent::MouseUp(0)]);
     // accept_input still consumes sequence/held state for suppressed cleanup;
     // Release acknowledgements below remain available to the old sender.
     if owns_input || active_intent {
@@ -1723,6 +1739,12 @@ async fn dispatch_realtime_input(
     }
     if owner.owner==Some((addr,id))&&owner.binding==Some(packet.binding){
         owner.deadline=peer.input_leases.get(&id).map(|slot|slot.lease.deadline());
+    }
+    if owns_input && probe_released && owner.owner == Some((addr,id)) && owner.binding == Some(packet.binding) {
+        owner.focus_release = Some((packet.binding, packet.sequence, deadline));
+    } else if active_intent {
+        owner.focus_release = None;
+        owner.focus_pending = None;
     }
     if matches!(packet.payload, InputPayload::Release) {
         owner.during_control(injector, send_session(
@@ -1972,6 +1994,9 @@ impl InputInjector for LazyInputInjector {
     fn inject_input(&self, event: InputEvent) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.inject_target(InputTarget::Desktop, event)
     }
+    fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> {
+        self.0.lock().ok().and_then(|current| current.as_ref().and_then(|(_, injector)| injector.focused_editor_probe()))
+    }
     fn release_all_input(&self) {
         if let Ok(current) = self.0.lock()
             && let Some((_, injector)) = current.as_ref()
@@ -1983,6 +2008,26 @@ impl InputInjector for LazyInputInjector {
 
 fn upgrade_stop_idle(peers:usize,closing:usize,authenticated:usize,handshakes_empty:bool)->bool {
     peers==0 && closing==0 && authenticated==0 && handshakes_empty
+}
+
+#[cfg(test)]
+#[test]
+fn focus_release_requires_exact_live_owner_and_is_single_use() {
+    let addr: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+    let binding=InputBinding {connection_id:1, subscription_id:2, source_revision:3, epoch:[4;16]};
+    let now=std::time::Instant::now();
+    let make=|| ActiveInput {owner:Some((addr,2)),binding:Some(binding),focus_release:Some((binding,5,now+Duration::from_millis(50))),..Default::default()};
+    assert!(make().take_focus_release(addr,binding,5,now).is_some());
+    assert!(make().take_focus_release(addr,binding,4,now).is_none());
+    assert!(make().take_focus_release(addr,InputBinding{epoch:[9;16],..binding},5,now).is_none());
+    assert!(make().take_focus_release(addr,binding,5,now+Duration::from_millis(51)).is_none());
+    let mut owner=make(); assert!(owner.take_focus_release(addr,binding,5,now).is_some());
+    assert!(owner.take_focus_release(addr,binding,5,now).is_none());
+    let deadline=now+Duration::from_millis(50);
+    owner.focus_pending=Some((binding,6,deadline));
+    assert!(!owner.take_focus_result(binding,5,deadline));
+    assert!(owner.take_focus_result(binding,6,deadline));
+    assert!(!owner.take_focus_result(binding,6,deadline));
 }
 
 #[cfg(test)]
@@ -2120,10 +2165,22 @@ async fn run_host_service_inner(
     let mut input_watchdog = tokio::time::interval(Duration::from_millis(
         protocol::realtime_input::INPUT_WATCHDOG_INTERVAL_MS));
     input_watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (focus_tx, mut focus_rx) = mpsc::channel::<(SocketAddr,InputBinding,u64,std::time::Instant,bool)>(1);
+    // At most one potentially slow AX read is alive; input dispatch never waits for it.
+    let focus_limit = Arc::new(tokio::sync::Semaphore::new(1));
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            Some((addr,binding,sequence,deadline,editable)) = focus_rx.recv() => {
+                let valid = input_owner.take_focus_result(binding,sequence,deadline) && std::time::Instant::now() < deadline
+                    && input_owner.owner == Some((addr,binding.subscription_id))
+                    && input_owner.binding == Some(binding)
+                    && input_owner.deadline.is_some_and(|until| std::time::Instant::now() < until)
+                    && peers.get(&addr).is_some_and(|peer| peer.can_input(binding.subscription_id));
+                if valid { input_owner.during_control(&injector,send_session(&udp_sender,addr,
+                    SessionCommand::EditorFocus {binding,sequence,editable})).await; }
+            }
             request = async {
                 if let Some(receiver) = &mut read_only_idle { receiver.recv().await }
                 else { std::future::pending().await }
@@ -2346,6 +2403,23 @@ async fn run_host_service_inner(
                                 SessionCommand::RealtimeInput(packet) => {
                                     if let Some(peer)=peers.get_mut(&addr) {
                                         dispatch_realtime_input(peer,&mut input_owner,&injector,&udp_sender,addr,packet).await;
+                                    }
+                                }
+                                SessionCommand::ProbeEditorFocus { binding, sequence } => {
+                                    let deadline = input_owner.take_focus_release(addr,binding,sequence,std::time::Instant::now());
+                                    if let Some(deadline) = deadline.filter(|_| peers.get(&addr).is_some_and(|peer| peer.can_input(binding.subscription_id)))
+                                        && let Some(probe) = injector.focused_editor_probe()
+                                        && let Ok(permit) = focus_limit.clone().try_acquire_owned() {
+                                        input_owner.focus_pending=Some((binding,sequence,deadline));
+                                        let tx=focus_tx.clone();
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(Duration::from_millis(25)).await;
+                                            if std::time::Instant::now() < deadline {
+                                                let result=tokio::task::spawn_blocking(probe).await.unwrap_or(false);
+                                                let _=tx.try_send((addr,binding,sequence,deadline,result));
+                                            }
+                                            drop(permit);
+                                        });
                                     }
                                 }
                                 SessionCommand::Configure { id, revision, width, height, fps, bitrate_kbps } => {

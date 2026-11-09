@@ -35,6 +35,9 @@ pub(crate) fn encode_control(command: &SessionCommand) -> Value {
     {
         value["CameraSwitchResult"]["request"]["delivery_request_id"] = id.to_string().into();
     }
+    if let SessionCommand::EditorFocus { sequence, .. } = command {
+        value["EditorFocus"]["sequence"] = sequence.to_string().into();
+    }
     value
 }
 

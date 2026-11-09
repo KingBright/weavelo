@@ -420,6 +420,11 @@ impl WorkspaceConnection {
     pub fn text_input_owner(&self, id: u32, revision: u32) -> Option<TextInputOwner> {
         self.input.lock().unwrap().text_owner(id, revision)
     }
+    pub fn text_input_owner_for_binding(&self, binding: protocol::realtime_input::InputBinding) -> Option<TextInputOwner> {
+        let input = self.input.lock().unwrap();
+        (input.binding(binding.subscription_id, binding.source_revision) == Some(binding))
+            .then(|| input.text_owner(binding.subscription_id, binding.source_revision)).flatten()
+    }
     pub fn text_input_binding(&self, owner: TextInputOwner) -> Option<protocol::realtime_input::InputBinding> {
         self.input.lock().unwrap().text_binding(owner)
     }
@@ -488,6 +493,21 @@ impl WorkspaceConnection {
         let mut input = self.input.lock().unwrap();
         let Ok(SessionCommand::RealtimeInput(packet)) = input.seal_bound(binding, event) else { return false; };
         self.pointer_queue.lock().unwrap().try_send(&self.commands,Command::Realtime(packet, Instant::now())).is_ok()
+    }
+    /// A normal release always reaches older hosts; the optional probe is a
+    /// separate message correlated with that release's exact grant/sequence.
+    pub fn try_bound_focus_release(&self, binding: protocol::realtime_input::InputBinding) -> Option<u64> {
+        let mut input = self.input.lock().unwrap();
+        let permits = self.commands.try_reserve_many(2).ok()?;
+        let Ok(SessionCommand::RealtimeInput(packet)) = input.seal_bound(binding, Some(protocol::InputEvent::MouseUp(0))) else { return None; };
+        let sequence = packet.sequence;
+        self.pointer_queue.lock().unwrap().barrier();
+        input.focus_probe(binding, sequence);
+        for (permit, command) in permits.zip([
+            Command::Realtime(packet, Instant::now()),
+            Command::Control(SessionCommand::ProbeEditorFocus { binding, sequence }),
+        ]) { permit.send(command); }
+        Some(sequence)
     }
     /// Admit a complete local button action or neither edge. Retain the UI event's
     /// original age through the transport queue; no stale callback becomes fresh.
@@ -635,6 +655,18 @@ mod input_api_tests {
             file_commands,file_activity:Default::default(),clipboard_file_owner:Default::default(),commands,cancel:broadcast::channel(1).0,
             task:tokio::spawn(async {}),
         },queued,binding)
+    }
+
+    #[tokio::test]
+    async fn focus_probe_keeps_normal_release_and_correlates_exact_sequence() {
+        use protocol::realtime_input::InputPayload;
+        let (conn,mut queue,binding)=motion_connection(3).await;
+        assert!(conn.try_bound_input(binding,Some(protocol::InputEvent::MouseDown(0))));
+        let sequence=conn.try_bound_focus_release(binding).unwrap();
+        assert!(matches!(queue.recv().await.unwrap(),Command::Realtime(packet,_) if matches!(packet.payload,InputPayload::Event(protocol::InputEvent::MouseDown(0)))));
+        assert!(matches!(queue.recv().await.unwrap(),Command::Realtime(packet,_) if packet.sequence==sequence && matches!(packet.payload,InputPayload::Event(protocol::InputEvent::MouseUp(0)))));
+        assert!(matches!(queue.recv().await.unwrap(),Command::Control(SessionCommand::ProbeEditorFocus{binding: actual, sequence: actual_sequence}) if actual==binding && actual_sequence==sequence));
+        assert!(conn.input.lock().unwrap().accept_focus_probe(binding,sequence));
     }
 
     #[tokio::test]
@@ -1317,6 +1349,12 @@ impl Actor {
                                 }
                                 SessionCommand::InputBinding{binding,request,host_time_ms} => {
                                     self.input.lock().unwrap().grant(self.id,*binding,*request,*host_time_ms);
+                                    continue;
+                                }
+                                SessionCommand::EditorFocus{binding,sequence,..} => {
+                                    if self.input.lock().unwrap().accept_focus_probe(*binding,*sequence) {
+                                        let _ = self.control_tx.send(command);
+                                    }
                                     continue;
                                 }
                                 SessionCommand::InputHandled{binding,sequence} => {

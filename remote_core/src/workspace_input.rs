@@ -39,6 +39,7 @@ struct Lease {
     release: Option<u64>,
     frontend_intent: Option<Instant>,
     frontend_expired: bool,
+    focus_probe: Option<(u64, Instant)>,
 }
 impl Lease {
     fn expire_frontend(&mut self,now:Instant)->bool {
@@ -79,6 +80,7 @@ impl InputState {
             if slot.presented_geometry_revision!=geometry_revision {
                 let regressed=geometry_revision<slot.presented_geometry_revision;
                 slot.presented_geometry_revision=geometry_revision;
+                if let Some(lease) = slot.lease.as_mut() { lease.focus_probe = None; }
                 // An outstanding grant is tied to the frame in its request.
                 slot.request=0;
                 if geometry_revision==0 || regressed {slot.lease=None;}
@@ -104,6 +106,18 @@ impl InputState {
     }
     pub(crate) fn binding(&self, id: u32, revision: u32) -> Option<InputBinding> {
         self.ready(id, revision).then(|| self.slots[&id].lease.as_ref().unwrap().binding)
+    }
+    pub(crate) fn focus_probe(&mut self, binding: InputBinding, sequence: u64) {
+        if let Some(lease) = self.slots.get_mut(&binding.subscription_id).and_then(|slot| slot.lease.as_mut()).filter(|lease| lease.binding == binding) {
+            lease.focus_probe = Some((sequence, Instant::now()));
+        }
+    }
+    pub(crate) fn accept_focus_probe(&mut self, binding: InputBinding, sequence: u64) -> bool {
+        if self.binding(binding.subscription_id, binding.source_revision) != Some(binding) { return false; }
+        let Some(lease) = self.slots.get_mut(&binding.subscription_id).and_then(|slot| slot.lease.as_mut()) else { return false; };
+        if !lease.focus_probe.is_some_and(|(expected, at)| expected == sequence && at.elapsed().as_millis() <= 600) { return false; }
+        lease.focus_probe = None;
+        true
     }
     pub(crate) fn text_owner(&self, id: u32, revision: u32) -> Option<TextInputOwner> {
         let binding = self.binding(id, revision)?;
@@ -172,6 +186,7 @@ impl InputState {
             release: None,
             frontend_intent:None,
             frontend_expired:false,
+            focus_probe:None,
         });
     }
     #[cfg(test)]
@@ -382,6 +397,26 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editor_probe_requires_exact_live_sequence_and_painted_geometry() {
+        let mut state=InputState::default(); state.source(7,0); state.presented_geometry(7,0,1); grant(&mut state,1);
+        let binding=state.binding(7,0).unwrap();
+        state.focus_probe(binding,9);
+        assert!(!state.accept_focus_probe(binding,8));
+        assert!(!state.accept_focus_probe(InputBinding {epoch:[8;16],..binding},9));
+        assert!(state.accept_focus_probe(binding,9));
+        assert!(!state.accept_focus_probe(binding,9));
+        state.focus_probe(binding,10);
+        state.presented_geometry(7,0,2);
+        assert!(!state.accept_focus_probe(binding,10));
+        state.focus_probe(binding,11);
+        grant(&mut state,2);
+        assert!(!state.accept_focus_probe(binding,11));
+        let current=state.binding(7,0).unwrap();
+        state.focus_probe(current,12);
+        state.slots.get_mut(&7).unwrap().lease.as_mut().unwrap().focus_probe=Some((12,Instant::now()-std::time::Duration::from_millis(601)));
+        assert!(!state.accept_focus_probe(current,12));
+    }
     #[test]
     fn composition_survives_lease_renewal_but_keeps_the_commit_age() {
         let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
