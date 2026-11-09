@@ -644,8 +644,10 @@ impl Connection {
                 && slot.target==target && slot.portal_generation==generation && !slot.lease.expired(host_input_time_ms()))
     }
     fn remember_focus_query(&mut self, binding: InputBinding, sequence:u64, now:std::time::Instant) {
-        if sequence==0 || !self.focus_query_valid(binding) {return;}
-        if self.focus_query.is_some_and(|(old,old_sequence,until)| old==binding && old_sequence>sequence && now<until) {return;}
+        let valid = sequence != 0 && self.focus_query_valid(binding)
+            && !self.focus_query.is_some_and(|(old,old_sequence,until)| old==binding && old_sequence>sequence && now<until);
+        self.resources.focus_probe.request(valid);
+        if !valid {return;}
         self.focus_query=Some((binding,sequence,now+Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS)));
     }
     fn accept_input(&mut self,packet:&RealtimeInput) -> Option<Vec<InputEvent>> {
@@ -1755,6 +1757,7 @@ async fn dispatch_realtime_input(
         owner.deadline=peer.input_leases.get(&id).map(|slot|slot.lease.deadline());
     }
     if owns_input && probe_released && owner.owner == Some((addr,id)) && owner.binding == Some(packet.binding) {
+        peer.resources.focus_probe.accepted_primary_release();
         owner.focus_release = Some((packet.binding, packet.sequence, deadline));
     } else if active_intent {
         owner.focus_release = None;
@@ -2021,23 +2024,31 @@ impl InputInjector for LazyInputInjector {
 }
 
 fn schedule_waiting_focus(peer:&mut Connection, owner:&mut ActiveInput, injector:&LazyInputInjector,
-    addr:SocketAddr, limit:&Arc<tokio::sync::Semaphore>, tx:&mpsc::Sender<(SocketAddr,InputBinding,u64,std::time::Instant,bool)>) {
+    addr:SocketAddr, limit:&Arc<tokio::sync::Semaphore>, tx:&mpsc::Sender<(SocketAddr,InputBinding,u64,std::time::Instant,bool,Arc<crate::lifecycle::Resources>)>) {
     let Some((binding,sequence,query_deadline))=peer.focus_query else{return;};
     let now=std::time::Instant::now();
-    if now>=query_deadline || !peer.focus_query_valid(binding) {peer.focus_query=None;return;}
+    if now>=query_deadline {peer.resources.focus_probe.expired_before_ax();peer.focus_query=None;return;}
+    if !peer.focus_query_valid(binding) {peer.resources.focus_probe.invalidated_before_ax();peer.focus_query=None;return;}
     let Some(deadline)=owner.focus_release_deadline(addr,binding,sequence,now) else{return;};
-    let Some(probe)=injector.focused_editor_probe() else {peer.focus_query=None;return;};
-    let Ok(permit)=limit.clone().try_acquire_owned() else{return;};
+    peer.resources.focus_probe.exact_match();
+    let Some(probe)=injector.focused_editor_probe() else {peer.resources.focus_probe.probe_unavailable();peer.focus_query=None;return;};
+    let Ok(permit)=limit.clone().try_acquire_owned() else {peer.resources.focus_probe.probe_busy();return;};
     peer.focus_query=None;
     owner.focus_release=None;
     owner.focus_pending=Some((binding,sequence,deadline));
+    peer.resources.focus_probe.scheduled();
+    let diagnostics=peer.resources.clone();
     let tx=tx.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(25)).await;
         if std::time::Instant::now()<deadline {
+            let started=std::time::Instant::now();
             let result=tokio::task::spawn_blocking(probe).await.unwrap_or(false);
-            let _=tx.try_send((addr,binding,sequence,deadline,result));
-        }
+            diagnostics.focus_probe.ax_timing(started.elapsed());
+            diagnostics.focus_probe.editable_result(result);
+            if std::time::Instant::now()>=deadline {diagnostics.focus_probe.expired_after_ax();}
+            if tx.try_send((addr,binding,sequence,deadline,result,diagnostics.clone())).is_err() {diagnostics.focus_probe.result_queue_dropped();}
+        } else {diagnostics.focus_probe.expired_before_ax();}
         drop(permit);
     });
 }
@@ -2204,21 +2215,24 @@ async fn run_host_service_inner(
     let mut input_watchdog = tokio::time::interval(Duration::from_millis(
         protocol::realtime_input::INPUT_WATCHDOG_INTERVAL_MS));
     input_watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let (focus_tx, mut focus_rx) = mpsc::channel::<(SocketAddr,InputBinding,u64,std::time::Instant,bool)>(1);
+    let (focus_tx, mut focus_rx) = mpsc::channel::<(SocketAddr,InputBinding,u64,std::time::Instant,bool,Arc<crate::lifecycle::Resources>)>(1);
     // At most one potentially slow AX read is alive; input dispatch never waits for it.
     let focus_limit = Arc::new(tokio::sync::Semaphore::new(1));
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            Some((addr,binding,sequence,deadline,editable)) = focus_rx.recv() => {
+            Some((addr,binding,sequence,deadline,editable,diagnostics)) = focus_rx.recv() => {
                 let valid = input_owner.take_focus_result(binding,sequence,deadline) && std::time::Instant::now() < deadline
                     && input_owner.owner == Some((addr,binding.subscription_id))
                     && input_owner.binding == Some(binding)
                     && input_owner.deadline.is_some_and(|until| std::time::Instant::now() < until)
                     && peers.get(&addr).is_some_and(|peer| peer.can_input(binding.subscription_id));
-                if valid { input_owner.during_control(&injector,send_session(&udp_sender,addr,
-                    SessionCommand::EditorFocus {binding,sequence,editable})).await; }
+                if valid {
+                    diagnostics.focus_probe.reply_attempted();
+                    input_owner.during_control(&injector,send_session(&udp_sender,addr,
+                        SessionCommand::EditorFocus {binding,sequence,editable})).await;
+                } else {diagnostics.focus_probe.reply_rejected();}
             }
             request = async {
                 if let Some(receiver) = &mut read_only_idle { receiver.recv().await }
@@ -3409,11 +3423,15 @@ mod failure_admission_tests {
         let injector=LazyInputInjector(std::sync::Mutex::new(Some((InputTarget::Desktop,Box::new(FocusProbe)))));
         let limit=Arc::new(tokio::sync::Semaphore::new(1));let (tx,mut rx)=mpsc::channel(1);
         let now=std::time::Instant::now(); let deadline=now+Duration::from_secs(2);
-        let mut owner=ActiveInput {owner:Some((addr,100)),binding:Some(binding),..Default::default()};
-        peer.remember_focus_query(binding,5,now);
+        let mut owner=ActiveInput::default();
+        let (udp,_udp_rx)=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap().split();
+        let packet=|sequence,payload| RealtimeInput {binding,sequence,created_host_ms:host_input_time_ms(),payload:InputPayload::Event(payload)};
+        dispatch_realtime_input(&mut peer,&mut owner,&injector,&udp,addr,packet(1,InputEvent::MouseDown(0))).await;
+        peer.remember_focus_query(binding,2,now);
         schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
         assert!(peer.focus_query.is_some(),"query must wait for actual release");
-        owner.focus_release=Some((binding,5,deadline));
+        dispatch_realtime_input(&mut peer,&mut owner,&injector,&udp,addr,packet(2,InputEvent::MouseUp(0))).await;
+        assert_eq!(owner.focus_release.map(|(_,sequence,_)|sequence),Some(2));
         schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
         assert!(peer.focus_query.is_none());
         assert!(tokio::time::timeout(Duration::from_secs(1),rx.recv()).await.unwrap().unwrap().4);
@@ -3433,6 +3451,15 @@ mod failure_admission_tests {
         schedule_waiting_focus(&mut peer,&mut owner,&injector,addr,&limit,&tx);
         assert!(peer.focus_query.is_none());
         assert!(owner.focus_release.is_some(),"expired query cannot consume a release");
+        let focus=peer.resources.focus_probe.snapshot();
+        assert_eq!(focus.valid_requests,4);
+        assert_eq!(focus.rejected_requests,1);
+        assert_eq!(focus.accepted_primary_releases,1);
+        assert_eq!(focus.exact_matches,2);
+        assert_eq!(focus.scheduled,2);
+        assert_eq!(focus.expired_before_ax,1);
+        assert_eq!(focus.editable_results,2);
+        assert_eq!(focus.ax_timing.calls,2);
     }
 
     struct NativeStopFixture(Arc<crate::lifecycle::Resources>);

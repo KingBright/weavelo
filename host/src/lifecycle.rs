@@ -36,6 +36,7 @@ pub(crate) struct Resources {
     pub capture_target_fps: AtomicU64,
     pub native_capture_geometry: Mutex<Option<NativeCaptureGeometry>>,
     pub scheduled_data: Mutex<Option<ScheduledDataObservation>>,
+    pub focus_probe: FocusProbeDiagnostics,
 }
 
 #[derive(Default)]
@@ -75,6 +76,91 @@ pub struct VideoTimingSnapshot {
     #[serde(default)] pub capture_target_fps:u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_capture_geometry: Option<NativeCaptureGeometry>,
+}
+
+/// Bounded counters for the authenticated editor-focus probe path. These values
+/// contain no input payload, address, window identity, or per-tap history.
+#[derive(Default)]
+pub(crate) struct FocusProbeDiagnostics {
+    valid_requests: AtomicU64,
+    rejected_requests: AtomicU64,
+    accepted_primary_releases: AtomicU64,
+    exact_matches: AtomicU64,
+    scheduled: AtomicU64,
+    expired_before_ax: AtomicU64,
+    expired_after_ax: AtomicU64,
+    invalidated_before_ax: AtomicU64,
+    probe_unavailable: AtomicU64,
+    probe_busy: AtomicU64,
+    editable_results: AtomicU64,
+    noneditable_results: AtomicU64,
+    result_queue_drops: AtomicU64,
+    reply_attempts: AtomicU64,
+    reply_rejections: AtomicU64,
+    ax_timing: StageTimer,
+}
+impl FocusProbeDiagnostics {
+    pub(crate) fn request(&self, valid: bool) {
+        if valid { self.valid_requests.fetch_add(1, SeqCst); }
+        else { self.rejected_requests.fetch_add(1, SeqCst); }
+    }
+    pub(crate) fn accepted_primary_release(&self) { self.accepted_primary_releases.fetch_add(1, SeqCst); }
+    pub(crate) fn exact_match(&self) { self.exact_matches.fetch_add(1, SeqCst); }
+    pub(crate) fn scheduled(&self) { self.scheduled.fetch_add(1, SeqCst); }
+    pub(crate) fn expired_before_ax(&self) { self.expired_before_ax.fetch_add(1, SeqCst); }
+    pub(crate) fn expired_after_ax(&self) { self.expired_after_ax.fetch_add(1, SeqCst); }
+    pub(crate) fn invalidated_before_ax(&self) { self.invalidated_before_ax.fetch_add(1, SeqCst); }
+    pub(crate) fn probe_unavailable(&self) { self.probe_unavailable.fetch_add(1, SeqCst); }
+    pub(crate) fn probe_busy(&self) { self.probe_busy.fetch_add(1, SeqCst); }
+    pub(crate) fn editable_result(&self, editable: bool) {
+        if editable { self.editable_results.fetch_add(1, SeqCst); }
+        else { self.noneditable_results.fetch_add(1, SeqCst); }
+    }
+    pub(crate) fn result_queue_dropped(&self) { self.result_queue_drops.fetch_add(1, SeqCst); }
+    pub(crate) fn reply_attempted(&self) { self.reply_attempts.fetch_add(1, SeqCst); }
+    pub(crate) fn reply_rejected(&self) { self.reply_rejections.fetch_add(1, SeqCst); }
+    pub(crate) fn ax_timing(&self, duration: std::time::Duration) { self.ax_timing.record(duration); }
+
+    pub(crate) fn snapshot(&self) -> FocusProbeSnapshot {
+        FocusProbeSnapshot {
+            valid_requests: self.valid_requests.load(SeqCst),
+            rejected_requests: self.rejected_requests.load(SeqCst),
+            accepted_primary_releases: self.accepted_primary_releases.load(SeqCst),
+            exact_matches: self.exact_matches.load(SeqCst),
+            scheduled: self.scheduled.load(SeqCst),
+            expired_before_ax: self.expired_before_ax.load(SeqCst),
+            expired_after_ax: self.expired_after_ax.load(SeqCst),
+            invalidated_before_ax: self.invalidated_before_ax.load(SeqCst),
+            probe_unavailable: self.probe_unavailable.load(SeqCst),
+            probe_busy: self.probe_busy.load(SeqCst),
+            editable_results: self.editable_results.load(SeqCst),
+            noneditable_results: self.noneditable_results.load(SeqCst),
+            result_queue_drops: self.result_queue_drops.load(SeqCst),
+            reply_attempts: self.reply_attempts.load(SeqCst),
+            reply_rejections: self.reply_rejections.load(SeqCst),
+            ax_timing: self.ax_timing.snapshot(),
+        }
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct FocusProbeSnapshot {
+    #[serde(default)] pub valid_requests: u64,
+    #[serde(default)] pub rejected_requests: u64,
+    #[serde(default)] pub accepted_primary_releases: u64,
+    #[serde(default)] pub exact_matches: u64,
+    #[serde(default)] pub scheduled: u64,
+    #[serde(default)] pub expired_before_ax: u64,
+    #[serde(default)] pub expired_after_ax: u64,
+    #[serde(default)] pub invalidated_before_ax: u64,
+    #[serde(default)] pub probe_unavailable: u64,
+    #[serde(default)] pub probe_busy: u64,
+    #[serde(default)] pub editable_results: u64,
+    #[serde(default)] pub noneditable_results: u64,
+    #[serde(default)] pub result_queue_drops: u64,
+    #[serde(default)] pub reply_attempts: u64,
+    #[serde(default)] pub reply_rejections: u64,
+    #[serde(default)] pub ax_timing: StageTimingSnapshot,
 }
 
 /// Correlated parts of the most recent >20ms frame, without any media bytes.
@@ -221,6 +307,8 @@ pub struct ConnectionLifecycleSnapshot {
     pub encoded_frames: u64,
     #[serde(default)]
     pub video_timing:VideoTimingSnapshot,
+    #[serde(default)]
+    pub focus_probe: FocusProbeSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_data: Option<ScheduledDataObservation>,
 }
@@ -302,6 +390,7 @@ pub fn inspect_connection(id: u32) -> Vec<ConnectionLifecycleSnapshot> {
                     native_camera_frames:x.native_camera_frames.load(SeqCst),raw_capture_samples:x.raw_capture_samples.load(SeqCst),
                     capture_pacing_skips:x.capture_pacing_skips.load(SeqCst),capture_target_fps:x.capture_target_fps.load(SeqCst),
                     native_capture_geometry:x.native_capture_geometry.lock().unwrap().clone()},
+                focus_probe: x.focus_probe.snapshot(),
                 scheduled_data: x.scheduled_data.lock().unwrap().clone(),
             }
         })
@@ -356,6 +445,37 @@ mod tests {
         assert_eq!(observed.observed_at_ms,1234);
         assert_eq!(observed.stats.scheduler_dropped_stale_realtime,7);
         assert_eq!(observed.stats.scheduler_dropped_realtime_capacity,2);
+    }
+    #[test]
+    fn focus_probe_counters_are_exported_and_older_snapshots_default_them() {
+        let resources=Arc::new(Resources::default());
+        let focus=&resources.focus_probe;
+        focus.request(true);focus.request(false);focus.accepted_primary_release();
+        focus.exact_match();focus.scheduled();focus.expired_before_ax();focus.expired_after_ax();
+        focus.invalidated_before_ax();focus.probe_unavailable();focus.probe_busy();
+        focus.editable_result(true);focus.editable_result(false);focus.result_queue_dropped();
+        focus.reply_attempted();focus.reply_rejected();focus.ax_timing(std::time::Duration::from_millis(35));
+        publish(90_992,&resources,"open");
+        let snapshot=inspect_connection(90_992).remove(0);
+        assert_eq!(snapshot.focus_probe.valid_requests,1);
+        assert_eq!(snapshot.focus_probe.rejected_requests,1);
+        assert_eq!(snapshot.focus_probe.accepted_primary_releases,1);
+        assert_eq!(snapshot.focus_probe.exact_matches,1);
+        assert_eq!(snapshot.focus_probe.scheduled,1);
+        assert_eq!(snapshot.focus_probe.expired_before_ax,1);
+        assert_eq!(snapshot.focus_probe.expired_after_ax,1);
+        assert_eq!(snapshot.focus_probe.editable_results,1);
+        assert_eq!(snapshot.focus_probe.noneditable_results,1);
+        assert_eq!(snapshot.focus_probe.reply_attempts,1);
+        assert_eq!(snapshot.focus_probe.reply_rejections,1);
+        assert_eq!(snapshot.focus_probe.ax_timing.calls,1);
+        assert_eq!(snapshot.focus_probe.ax_timing.max_us,35_000);
+
+        let mut old=serde_json::to_value(snapshot).unwrap();
+        old.as_object_mut().unwrap().remove("focus_probe");
+        let old:ConnectionLifecycleSnapshot=serde_json::from_value(old).unwrap();
+        assert_eq!(old.focus_probe.valid_requests,0);
+        assert_eq!(old.focus_probe.ax_timing.calls,0);
     }
     #[cfg(target_os = "macos")]
     struct CallbackOwner(Arc<std::sync::atomic::AtomicBool>);
