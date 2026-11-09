@@ -1,7 +1,7 @@
 //! Bounded native drawer smoke. Reuses production source and records actions only.
 //! No runtime, profile, mesh, capture, input forwarding, or Owner is constructed.
 #[cfg(target_os = "macos")]
-use weavelo_app::{AppDevice, product_components};
+use weavelo_app::{AppDevice, i18n, product_components};
 #[cfg(target_os = "macos")]
 #[path = "../src/design_system.rs"]
 mod design_system;
@@ -53,6 +53,11 @@ mod native {
         .map(|(id, name, scope, online)| AppDevice {
             device_id: id.into(),
             display_name: name.into(),
+            badge: match id {
+                "alpha" => protocol::appearance::DeviceBadgePreset::MacStudio,
+                "beta" => protocol::appearance::DeviceBadgePreset::MacBook,
+                _ => protocol::appearance::DeviceBadgePreset::Phone,
+            },
             scope,
             online,
             endpoint: "127.0.0.1:1".parse().unwrap(),

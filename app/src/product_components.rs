@@ -1,5 +1,6 @@
 use gpui::{prelude::*, *};
-use std::sync::Arc;
+use protocol::appearance::DeviceBadgePreset;
+use std::sync::{Arc, OnceLock};
 
 mod input_actions;
 mod text_edit_state;
@@ -8,6 +9,32 @@ pub mod theme;
 pub use ely_gpui_component::buttons::Button;
 pub(crate) use text_edit_state::TextEditState;
 pub use text_input::text_input;
+
+pub(crate) fn device_badge_svg(preset: DeviceBadgePreset) -> &'static [u8] {
+    match preset {
+        DeviceBadgePreset::Computer => include_bytes!("product_components/icons/device-badge-computer.svg"),
+        DeviceBadgePreset::MacBook => include_bytes!("product_components/icons/device-badge-macbook.svg"),
+        DeviceBadgePreset::MacStudio => include_bytes!("product_components/icons/device-badge-mac-studio.svg"),
+        DeviceBadgePreset::Windows => include_bytes!("product_components/icons/device-badge-windows.svg"),
+        DeviceBadgePreset::Linux => include_bytes!("product_components/icons/device-badge-linux.svg"),
+        DeviceBadgePreset::Phone => include_bytes!("product_components/icons/device-badge-phone.svg"),
+    }
+}
+
+pub fn device_badge_image(preset: DeviceBadgePreset, cx: &App) -> Option<Arc<RenderImage>> {
+    static IMAGES: [OnceLock<Option<Arc<RenderImage>>>; 6] = [const { OnceLock::new() }; 6];
+    IMAGES[usize::from(preset.discovery_code())]
+        .get_or_init(|| cx.svg_renderer().render_single_frame(device_badge_svg(preset), 1., true).ok())
+        .clone()
+}
+
+pub fn device_badge_element(image: Option<Arc<RenderImage>>) -> AnyElement {
+    match image {
+        Some(image) => img(image).size(px(24.)).object_fit(ObjectFit::Contain).into_any_element(),
+        None => icon(IconName::Display).size(px(18.)).into_any_element(),
+    }
+}
+
 const CURSOR_BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 type ChangeCallback<T> = Arc<dyn Fn(T, &mut Window, &mut App)>;
 

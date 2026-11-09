@@ -102,6 +102,7 @@ impl Default for UnifiedAppConfig {
 pub struct AppDevice {
     pub device_id: String,
     pub display_name: String,
+    pub badge: protocol::appearance::DeviceBadgePreset,
     pub endpoint: SocketAddr,
     pub scope: DiscoveryScope,
     pub can_stream: bool,
@@ -2916,6 +2917,7 @@ fn app_device_from_peer(peer: &DiscoveredPeer) -> AppDevice {
     AppDevice {
         device_id: peer.announcement.device_id.clone(),
         display_name: peer.announcement.display_name.clone(),
+        badge: peer.announcement.capabilities.device_badge,
         endpoint: peer.endpoint,
         scope: peer.scope,
         can_stream: peer.announcement.capabilities.can_stream,
@@ -3505,6 +3507,7 @@ mod tests {
                 capabilities: DiscoveryCapabilities {
                     can_stream: true,
                     can_view: true,
+                    device_badge: protocol::appearance::DeviceBadgePreset::MacStudio,
                     ..DiscoveryCapabilities::default()
                 },
                 scope: DiscoveryScope::Mesh,
@@ -3538,6 +3541,7 @@ mod tests {
         let streamable = runtime.streamable_devices();
         assert_eq!(streamable.len(), 1);
         assert_eq!(streamable[0].device_id, "streamer");
+        assert_eq!(streamable[0].badge, protocol::appearance::DeviceBadgePreset::MacStudio);
         assert_eq!(
             streamable[0].endpoint,
             SocketAddr::from(([10, 0, 0, 8], DEFAULT_CONTROL_PORT))
@@ -4730,7 +4734,7 @@ mod tests {
                             file_transfer: false,
                             clipboard_sync: false,
                             talkback: false,
-                            device_badge: protocol::appearance::DeviceBadgePreset::Computer,
+                            device_badge: device.badge,
                         },
                         scope: device.scope,
                         ttl: Duration::from_secs(8),

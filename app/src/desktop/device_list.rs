@@ -41,6 +41,7 @@ impl DeviceConnectionStatus {
 pub(crate) struct DeviceRowViewModel {
     pub device_id: String,
     pub display_name: String,
+    pub badge: protocol::appearance::DeviceBadgePreset,
     pub endpoint: SocketAddr,
     pub scope: DiscoveryScope,
     pub online: bool,
@@ -153,6 +154,7 @@ impl DeviceListViewModel {
                 DeviceRowViewModel {
                     device_id: device.device_id.clone(),
                     display_name: device.display_name.clone(),
+                    badge: device.badge,
                     endpoint: device.endpoint,
                     scope: device.scope,
                     online: device.online,
@@ -296,6 +298,7 @@ mod tests {
         AppDevice {
             device_id: id.into(),
             display_name: format!("Device {id}"),
+            badge: Default::default(),
             endpoint: "127.0.0.1:9000".parse().unwrap(),
             scope,
             can_stream: true,

@@ -3,13 +3,11 @@ use crate::preferences::{DeviceBadge, DeviceBadgePreset as Preset, UserPreferenc
 use std::{
     io::{Cursor, Read},
     path::Path,
-    sync::OnceLock,
 };
 
 trait PresetUi: Sized {
     const CHOICES: [Self; 5];
     fn label(self) -> &'static str;
-    fn svg(self) -> &'static [u8];
     fn image(self, cx: &App) -> Option<Arc<RenderImage>>;
     fn platform_default() -> Self;
 }
@@ -27,28 +25,8 @@ impl PresetUi for Preset {
         }
     }
 
-    fn svg(self) -> &'static [u8] {
-        match self {
-            Self::Computer => include_bytes!("product_components/icons/device-badge-computer.svg"),
-            Self::MacBook => include_bytes!("product_components/icons/device-badge-macbook.svg"),
-            Self::MacStudio => {
-                include_bytes!("product_components/icons/device-badge-mac-studio.svg")
-            }
-            Self::Windows => include_bytes!("product_components/icons/device-badge-windows.svg"),
-            Self::Linux => include_bytes!("product_components/icons/device-badge-linux.svg"),
-            Self::Phone => include_bytes!("product_components/icons/device-badge-phone.svg"),
-        }
-    }
-
     fn image(self, cx: &App) -> Option<Arc<RenderImage>> {
-        static IMAGES: [OnceLock<Option<Arc<RenderImage>>>; 6] = [const { OnceLock::new() }; 6];
-        IMAGES[self as usize]
-            .get_or_init(|| {
-                cx.svg_renderer()
-                    .render_single_frame(self.svg(), 1., true)
-                    .ok()
-            })
-            .clone()
+        crate::product_components::device_badge_image(self, cx)
     }
 
     fn platform_default() -> Self {
@@ -62,7 +40,7 @@ impl PresetUi for Preset {
     }
 }
 
-pub(super) fn preset_svg(preset: Preset) -> &'static [u8] {preset.svg()}
+pub(super) use crate::product_components::device_badge_svg as preset_svg;
 
 pub(super) struct Editor {
     selection: DeviceBadge,
@@ -73,6 +51,14 @@ pub(super) struct Editor {
 }
 
 impl Editor {
+    pub(super) fn image(&self, cx: &App) -> Option<Arc<RenderImage>> {
+        match &self.selection {
+            DeviceBadge::Automatic => self.automatic.image(cx),
+            DeviceBadge::Preset(preset) => preset.image(cx),
+            DeviceBadge::Custom(_) => self.custom_preview.clone(),
+        }
+    }
+
     pub(super) fn new(selection: DeviceBadge) -> Self {
         let custom_preview = match &selection {
             DeviceBadge::Custom(icon) => custom_image(icon).ok(),

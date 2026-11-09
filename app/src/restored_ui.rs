@@ -3753,6 +3753,7 @@ fn slide_over_management_drawer(
                         role,
                         mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()),
                         device_list_state,
+                        device_badge_editor,
                         local_permissions.clone(),
                         #[cfg(any(unix, windows))] activity,
                         owner.clone(),
@@ -3817,6 +3818,7 @@ fn drawer_tab_button(
 
 fn drawer_devices_tab(
     devices:&[AppDevice], role:&RoleState, local_name:Option<String>, state:&DeviceListState,
+    badge: &device_badges::Editor,
     permissions:Option<Result<crate::sharing_permissions::Status,String>>,
     #[cfg(any(unix, windows))] activity:StreamActivity,
     _owner:Arc<OriginalOwner>, cx:&mut Context<RestoredDashboard>,
@@ -3831,7 +3833,7 @@ fn drawer_devices_tab(
     };
     let local=div().flex().items_center().gap_2().px_2().py_1().rounded(px(10.))
         .bg(cx.theme().surface.sunken)
-        .child(icon(IconName::Display).size(px(18.)))
+        .child(crate::product_components::device_badge_element(badge.image(cx)))
         .child(div().min_w_0().flex_1().flex().flex_col()
             .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(name))
             .child(div().text_size(px(10.)).text_color(cx.theme().content.secondary).child(crate::i18n::message(&permission_hint)))

@@ -5,6 +5,7 @@ use super::device_list::{
 use crate::design_system::color_accent_emerald;
 use crate::product_components::{component::tooltip,icon,IconName};
 use crate::product_components::theme::ActiveTheme;
+use crate::product_components::{device_badge_element, device_badge_image};
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
     theme::ControlSize,
@@ -72,7 +73,7 @@ impl RenderOnce for DeviceDrawer {
                 .child(div().min_h(px(42.)).flex().items_center().gap_2()
                     .child(div().size(px(34.)).flex_none().flex().items_center().justify_center()
                         .rounded(px(8.)).bg(theme.surface.sunken)
-                        .child(icon(IconName::Display).size(px(18.)).color(theme.content.secondary)))
+                        .child(device_badge_element(device_badge_image(row.badge, cx))))
                     .child(div().min_w_0().flex_1().flex().flex_col()
                         .child(Button::new(format!("device-name-{id}"),row.display_name.clone())
                             .debug_selector({let id=id.clone();move||format!("device-name-{id}")})
@@ -170,6 +171,7 @@ mod tests {
         AppDevice {
             device_id: id.into(),
             display_name: id.into(),
+            badge: Default::default(),
             endpoint: "127.0.0.1:9000".parse().unwrap(),
             scope: DiscoveryScope::Lan,
             can_stream: true,

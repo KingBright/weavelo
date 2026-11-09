@@ -2409,7 +2409,7 @@ mod restoration_regression_tests {
         owner.pool.lock().unwrap().active_mut().unwrap().session.uploaded_at=None;
         let snapshot=owner.snapshot();assert!(matches!(snapshot.role,RoleState::Idle));
         assert_eq!(snapshot.connection_id,Some(id));assert_eq!(owner.active_connection().unwrap().id,id);
-        let devices=[crate::AppDevice{device_id:"file-peer".into(),display_name:"Files".into(),
+        let devices=[crate::AppDevice{device_id:"file-peer".into(),display_name:"Files".into(),badge:Default::default(),
             endpoint:address,scope:remote_core::discovery::DiscoveryScope::Lan,
             can_stream:true,can_view:true,online:true,last_seen_ms:0}];
         let rows=super::super::device_list::DeviceListViewModel::project(&devices,&snapshot.role,
