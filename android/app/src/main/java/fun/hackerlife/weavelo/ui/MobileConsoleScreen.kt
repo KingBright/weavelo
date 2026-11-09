@@ -107,6 +107,7 @@ fun MobileConsoleScreen(
         dismissButton = { TextButton(onClick = { pairingCode = ""; pairingCodeOpen = false }) { Text(tr("Cancel")) } },
         confirmButton = { TextButton(onClick = { onJoinCode(pairingCode.trim()); pairingCode = ""; pairingCodeOpen = false }, enabled = nativeAvailable && !joiningNetwork && pairingCode.isNotBlank()) { Text(tr("Join")) } })
     var activeTab by remember { mutableStateOf("Devices") }
+    val update = rememberAppUpdate()
     var manualEndpoint by remember { mutableStateOf("") }
     Box(
         modifier = Modifier
@@ -121,6 +122,9 @@ fun MobileConsoleScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("Weavelo", color = ColorTextPrimary, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                if (update.release != null && activeTab != "Settings") {
+                    TextButton(onClick = { activeTab = "Settings" }) { Text(tr("Update available")) }
+                }
                 MobileAction(MobileSymbol.Network, tr("Pair devices"), nativeAvailable,
                     modifier = Modifier.size(48.dp), onClick = { activeTab = "Mesh P2P" })
             }
@@ -220,6 +224,9 @@ fun MobileConsoleScreen(
                         onBrowseFiles = onBrowseFiles
                     )
                     "Settings" -> SettingsTabContent(
+                        update = update,
+                        updateAllowed = !outgoing.active && !publishing && !receivingFiles &&
+                            sessionState == SessionState.DISCONNECTED,
                         appNetwork = appNetwork,
                         nativeAvailable = nativeAvailable,
                         discoveryDiagnostics = discoveryDiagnostics,
@@ -793,6 +800,8 @@ private fun SharingPermissionRow(symbol: MobileSymbol, title: String, state: Str
 
 @Composable
 private fun SettingsTabContent(
+    update: AppUpdateUi,
+    updateAllowed: Boolean,
     appNetwork: AppNetworkStatus,
     nativeAvailable: Boolean,
     discoveryDiagnostics: DiscoveryDiagnostics,
@@ -812,6 +821,7 @@ private fun SettingsTabContent(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { LanguageSelector() }
+        item { AppUpdateCard(update, updateAllowed) }
         item { DeviceBadgeSettings() }
         item {
             Text(
