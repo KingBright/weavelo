@@ -861,8 +861,17 @@ impl RestoredDashboard {
             this.sync_media_pause();
             cx.notify();
         }).detach();
-        cx.observe_window_bounds(window, |this, window, _| {
+        let input_geometry = |window: &Window| {
+            (window.bounds(), window.viewport_size(), window.scale_factor(),
+                window.is_fullscreen(), window.is_maximized())
+        };
+        let mut last_input_geometry = input_geometry(window);
+        cx.observe_window_bounds(window, move |this, window, _| {
             if this.purpose == WindowPurpose::Stream { window_fit::observe(window, &mut this.window_fit); }
+            // GPUI also refreshes bounds on activation. Release held input only if geometry changed.
+            let geometry = input_geometry(window);
+            if geometry == last_input_geometry { return; }
+            last_input_geometry = geometry;
             this.reset_pointer_scroll();
             this.owner.release_input();
             this.pointer_input = PointerInputTracker::default();
