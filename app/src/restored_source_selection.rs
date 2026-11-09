@@ -305,11 +305,36 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         }
         choices
     };
+    let quick_screen = (!selection.loading && selection.catalog_ready() && !selection.is_delivery())
+        .then(|| selection.sources.iter().find(|source| source.source.category() == SourceCategory::Screen).cloned())
+        .flatten();
     let panel=div().id("source_selection_panel").occlude().w(px(460.)).max_w(relative(0.95))
         .max_h(relative(0.94))
         .p_4().flex().flex_col().gap_3().bg(color_glass_card()).border_1().border_color(color_border_fine()).rounded_xl().shadow_2xl()
         .on_any_mouse_down(cx.listener(|_,_,_,cx|cx.stop_propagation()))
-        .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(crate::i18n::message(&selection.title)))
+        .child(div().flex().items_center().justify_between().gap_2()
+            .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(crate::i18n::message(&selection.title)))
+            .when_some(quick_screen, |header, screen| {
+                let quick_view = cx.weak_entity();
+                let screen_id = screen.source;
+                header.child(
+                    command_button("source_selection_quick_screen", ActionVariantKind::Primary, cx)
+                        .h(px(28.))
+                        .px_2p5()
+                        .text_size(px(11.))
+                        .tooltip(tooltip(screen.title.clone()).build())
+                        .on_click(move |_, _, cx| {
+                            let _ = quick_view.update(cx, |this, cx| {
+                                if let Some(selection) = this.source_selection.as_mut() {
+                                    selection.selected = vec![screen_id];
+                                }
+                                this.confirm_source_selection(cx);
+                            });
+                        })
+                        .child(icon(IconName::Display).size(px(13.)))
+                        .child(crate::i18n::tr("Open main screen")),
+                )
+            }))
         .child(component::text_input("source-search").placeholder(crate::i18n::tr("Search apps and windows")).height(px(32.).into()).content(selection.query.clone())
             .on_change({let view=cx.weak_entity();move|text,_,cx|{let _=view.update(cx,|this,cx|{
                 if let Some(selection)=this.source_selection.as_mut(){selection.query=text.to_string();}cx.notify();

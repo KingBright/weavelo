@@ -93,6 +93,28 @@ impl RenderOnce for DeviceDrawer {
                             .disabled(!row.can_connect).on_click(move|_,_,cx|send(DeviceListAction::Connect(target.clone()),cx))
                     })
                     .child({
+                        let send=self.send.clone();let target=id.clone();
+                        Button::new(format!("device-quick-files-{id}"),"")
+                            .child(icon(IconName::Files).size(px(15.)))
+                            .tooltip(tooltip(crate::i18n::tr("Files")).build())
+                            .control_size(ControlSize::Sm)
+                            .variant(ButtonVariant::Ghost)
+                            .size(px(28.)).p_0()
+                            .disabled(!row.can_open_files)
+                            .on_click(move|_,_,cx|send(DeviceListAction::OpenFiles(target.clone()),cx))
+                    })
+                    .child({
+                        let send=self.send.clone();let target=id.clone();
+                        Button::new(format!("device-quick-send-{id}"),"")
+                            .child(icon(IconName::Sharing).size(px(15.)))
+                            .tooltip(tooltip(crate::i18n::tr("Send screen or app")).build())
+                            .control_size(ControlSize::Sm)
+                            .variant(ButtonVariant::Ghost)
+                            .size(px(28.)).p_0()
+                            .disabled(!row.online)
+                            .on_click(move|_,_,cx|send(DeviceListAction::SendScreen(target.clone()),cx))
+                    })
+                    .child({
                         let send=self.send.clone();let target=id.clone();let selector=format!("more-{id}");
                         Button::new(format!("device-more-{id}"),"")
                             .debug_selector(move||selector.clone()).child(icon(IconName::More).size(px(18.)))

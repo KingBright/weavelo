@@ -8,9 +8,9 @@ pub(super) const STREAM_HEADER_TOP_PX: f32 = 8.0;
 pub(super) const STREAM_VIDEO_GAP_PX: f32 = 4.0;
 pub(super) const ANDROID_COMPANION_WIDTH_PX: f32 = 48.0;
 pub(super) const ANDROID_COMPANION_GAP_PX: f32 = 8.0;
-pub(super) const FULLSCREEN_RAIL_WIDTH_PX: f32 = 48.0;
-pub(super) const FULLSCREEN_RAIL_HEIGHT_PX: f32 = 4.0;
-pub(super) const FULLSCREEN_RAIL_HIT_HEIGHT_PX: f32 = 24.0;
+pub(super) const FULLSCREEN_RAIL_WIDTH_PX: f32 = 84.0;
+pub(super) const FULLSCREEN_RAIL_HEIGHT_PX: f32 = 6.0;
+pub(super) const FULLSCREEN_RAIL_HIT_HEIGHT_PX: f32 = 28.0;
 
 type FitKey = ([u32; 2], [u32; 2], u32, u64, [u32; 2]);
 

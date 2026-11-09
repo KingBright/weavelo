@@ -220,7 +220,7 @@ impl RestoredDashboard {
         cx.notify();
     }
 
-    fn toggle_source_menu(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_source_menu(&mut self, cx: &mut Context<Self>) {
         let Some(binding) = self.owner.source_view_binding() else { return; };
         if !self.owner.source_binding_is_current(&binding) { return; }
         self.reset_pointer_scroll();
@@ -379,6 +379,16 @@ impl RestoredDashboard {
     }
 
     pub(super) fn fullscreen_micro_rail(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let cua_mode = self.owner.snapshot().computer_use_status.mode;
+        let rail_color = match cua_mode {
+            Some(crate::desktop::original_owner::ComputerUseMode::Controlling) => {
+                Hsla::from(color_accent_emerald())
+            }
+            Some(crate::desktop::original_owner::ComputerUseMode::Observing) => {
+                Hsla::from(color_accent_cyan())
+            }
+            _ => cx.theme().action.primary.bg,
+        };
         div()
             .id("fullscreen-toolbar-rail-position")
             .absolute()
@@ -391,11 +401,12 @@ impl RestoredDashboard {
                 div()
                     .id("fullscreen-toolbar-rail-hit-target")
                     .occlude()
-                    .w(px(window_fit::FULLSCREEN_RAIL_WIDTH_PX + 16.0))
+                    .w(px(window_fit::FULLSCREEN_RAIL_WIDTH_PX + 24.0))
                     .h(px(window_fit::FULLSCREEN_RAIL_HIT_HEIGHT_PX))
                     .flex()
                     .justify_center()
-                    .pt(px(8.))
+                    .pt(px(6.))
+                    .cursor_pointer()
                     .tooltip(tooltip(crate::i18n::tr("Show controls")).build())
                     .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -412,7 +423,10 @@ impl RestoredDashboard {
                             .w(px(window_fit::FULLSCREEN_RAIL_WIDTH_PX))
                             .h(px(window_fit::FULLSCREEN_RAIL_HEIGHT_PX))
                             .rounded_full()
-                            .bg(cx.theme().action.primary.bg),
+                            .bg(rail_color)
+                            .border_1()
+                            .border_color(color_border_fine())
+                            .shadow_sm(),
                     ),
             )
     }
@@ -437,16 +451,18 @@ impl RestoredDashboard {
         let source_label = source.map(capture_source_label).unwrap_or_else(|| crate::i18n::tr("Waiting for source").into());
         let context_title = crate::i18n::tr_format!("{} · {}", device, source_label);
         let button_size = if tiny { 20.0 } else { 28.0 };
+        let source_binding = snapshot.source_binding.clone();
+        let can_switch_source = source_binding.is_some();
         let mut row = div()
             .id(if fullscreen { "fullscreen_toolbar_pill" } else { "stream_header" })
             .occlude()
             .flex()
             .items_center()
-            .gap_0p5()
-            .when(fullscreen, |row| row.px_2().py_1().rounded_full().bg(color_glass_card()).border_1()
+            .gap_1()
+            .when(fullscreen, |row| row.px_2p5().py_1().rounded_full().bg(color_glass_card()).border_1()
                 .border_color(color_border_fine()).shadow_lg())
             .when(!fullscreen, |row| row.w_full().h(px(window_fit::STREAM_HEADER_HEIGHT_PX))
-                .px_1().rounded(px(14.)).bg(theme.surface.base).border_1().border_color(theme.border.muted))
+                .px_1p5().rounded(px(14.)).bg(theme.surface.base).border_1().border_color(theme.border.muted))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.toolbar_hovered = *hovered;
                 this.last_toolbar_activity = Instant::now();
@@ -463,8 +479,14 @@ impl RestoredDashboard {
                 .flex_1()
                 .min_w_0()
                 .items_center()
-                .gap_1()
-                .px_1()
+                .gap_1p5()
+                .px_1p5()
+                .py_0p5()
+                .rounded_full()
+                .when(can_switch_source, |ctx| {
+                    ctx.cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_source_menu(cx)))
+                })
                 .when_some(source, |row, source| row.child(capture_source_badge(source, &snapshot.source_icons, &theme)))
                 .child(div().size(px(6.)).flex_none().rounded_full().bg(if visibility.show_disconnect {
                     Hsla::from(color_accent_emerald())
@@ -476,18 +498,79 @@ impl RestoredDashboard {
                         .min_w_0()
                         .truncate()
                         .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.content.primary)
-                        .tooltip(tooltip(context_title.clone()).build())
+                        .tooltip(tooltip(if let Some(hint) = input_hint {
+                            format!("{context_title} · {hint}")
+                        } else {
+                            context_title.clone()
+                        }).build())
                         .child(context_title.clone()),
                 ),
         ));
-        let source_binding = snapshot.source_binding.clone();
-        let source_button = command_button("stream-primary-source", ActionVariantKind::Neutral, cx)
+        let control_caption = input_control_caption(
+            self.input_locked,
+            snapshot.active_capture_supports_input,
+            snapshot.input_eligible,
+            compact,
+        );
+        let control_button = command_button(
+            "stream-primary-control",
+            if !self.input_locked && snapshot.active_capture_supports_input {
+                ActionVariantKind::Primary
+            } else {
+                ActionVariantKind::Neutral
+            },
+            cx,
+        )
+        .size(px(button_size))
+        .p_0()
+        .tooltip(tooltip(crate::i18n::tr(control_caption)).build())
+        .child(icon(IconName::Control).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+        .disabled(!snapshot.active_capture_supports_input)
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.set_input_locked(!this.input_locked);
+            if !this.input_locked {
+                this.input_focus.focus(window);
+            }
+            this.last_toolbar_activity = Instant::now();
+            cx.notify();
+        }));
+        let source_button = command_button(
+            "stream-primary-source",
+            if self.show_apps_menu { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+            cx,
+        )
             .size(px(button_size)).p_0()
             .tooltip(tooltip(crate::i18n::tr("Switch source or open a new view")).build())
             .child(icon(IconName::NewView).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
             .disabled(source_binding.is_none())
             .on_click(cx.listener(|this, _, _, cx| this.toggle_source_menu(cx)));
+        let (volume, muted) = self.owner.audio();
+        let mute_button = command_button(
+            "stream-primary-mute",
+            if muted { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+            cx,
+        )
+        .size(px(button_size))
+        .p_0()
+        .tooltip(tooltip(crate::i18n::tr(if muted { "Unmute" } else { "Mute" })).build())
+        .child(icon(IconName::Sound).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.owner.set_audio(volume, !muted);
+            this.last_toolbar_activity = Instant::now();
+            cx.notify();
+        }));
+        let fit_button = command_button("stream-primary-fit", ActionVariantKind::Neutral, cx)
+            .size(px(button_size))
+            .p_0()
+            .tooltip(tooltip(crate::i18n::tr("Fit window")).build())
+            .child(icon(IconName::Window).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.window_fit.request_fit();
+                this.last_toolbar_activity = Instant::now();
+                cx.notify();
+            }));
         let files_button = command_button("stream-primary-files", ActionVariantKind::Neutral, cx)
             .size(px(button_size)).p_0()
             .tooltip(tooltip(crate::i18n::tr("Files")).build())
@@ -516,7 +599,13 @@ impl RestoredDashboard {
                 window.toggle_fullscreen();
                 cx.refresh_windows();
             }));
-        row = row.child(source_button).child(files_button).child(more_button).child(fullscreen_button);
+        row = row
+            .child(control_button)
+            .child(source_button)
+            .when(!tiny, |r| r.child(mute_button).child(fit_button))
+            .child(files_button)
+            .child(more_button)
+            .child(fullscreen_button);
         let cua_mode = snapshot.computer_use_status.mode;
         let cua_label = snapshot
             .computer_use_status
@@ -534,6 +623,8 @@ impl RestoredDashboard {
                 }
                 None => String::new(),
             });
+        let menu_top_offset = window_fit::STREAM_HEADER_HEIGHT_PX
+            + if cua_mode.is_some() { 34.0 } else { 4.0 };
         let mut container = div()
             .id(if fullscreen { "fullscreen-controls-container" } else { "stream-header-container" })
             .relative()
@@ -590,7 +681,7 @@ impl RestoredDashboard {
                 )
             })
             .when(self.show_apps_menu, |tree| {
-                tree.child(div().absolute().top(px(window_fit::STREAM_HEADER_HEIGHT_PX + 4.0))
+                tree.child(div().absolute().top(px(menu_top_offset))
                     .left_0().right_0().flex().justify_center()
                     .child(capture_source_menu(
                         &snapshot.capture_sources,

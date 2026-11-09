@@ -601,6 +601,7 @@ struct RestoredDashboard {
 
     drawer_open: bool,
     network_details_open: bool,
+    pipeline_diagnostics_open: bool,
     active_tab: DrawerTab,
     device_list_state: DeviceListState,
     #[cfg(target_os = "linux")]
@@ -799,6 +800,7 @@ impl RestoredDashboard {
             status: "Ready".into(),
             drawer_open: purpose == WindowPurpose::Management,
             network_details_open: false,
+            pipeline_diagnostics_open: false,
             active_tab: DrawerTab::Devices,
             device_list_state: DeviceListState::default(),
             #[cfg(target_os = "linux")]
@@ -2857,6 +2859,25 @@ impl Render for RestoredDashboard {
                         cx.notify();
                         return;
                     }
+                    if keystroke.key.eq_ignore_ascii_case("s")
+                        && keystroke.modifiers.control
+                        && keystroke.modifiers.alt
+                    {
+                        this.toggle_source_menu(cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if keystroke.key.eq_ignore_ascii_case("f")
+                        && keystroke.modifiers.control
+                        && keystroke.modifiers.alt
+                    {
+                        this.window_fit.request_fit();
+                        this.toolbar_revealed = true;
+                        this.last_toolbar_activity = Instant::now();
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                 }))
                 .child(ely_gpui_component::primitives::FocusScope::new(&self.root_focus).root().size_full().child(tree)))
             .into_any_element()
@@ -3338,14 +3359,14 @@ fn capture_source_menu(
     let mut menu = div()
         .id("floating_toolbar_apps_menu")
         .occlude()
-        .max_h(px(440.0))
+        .max_h(px(460.0))
         .overflow_y_scroll()
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_1p5()
         .p_3()
-        .min_w(px(320.0))
-        .max_w(px(440.0))
+        .min_w(px(340.0))
+        .max_w(px(460.0))
         .bg(color_glass_card())
         .border_1()
         .border_color(color_border_fine())
@@ -3364,10 +3385,23 @@ fn capture_source_menu(
         }))
         .child(
             div()
-                .text_size(px(11.0))
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.content.primary)
-                .child(crate::i18n::tr("Sources")),
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme.content.primary)
+                        .child(crate::i18n::tr("Sources")),
+                )
+                .child(
+                    div()
+                        .text_size(px(9.5))
+                        .text_color(theme.content.tertiary)
+                        .child(crate::i18n::tr("Click to switch here · + opens new window")),
+                ),
         )
         .child(div().w_full().h(px(1.0)).bg(theme.border.divider))
         .when(error.is_none() && !sources.is_empty()
@@ -3375,16 +3409,6 @@ fn capture_source_menu(
             menu.child(div().text_size(px(11.0)).text_color(theme.content.secondary)
                 .child(crate::i18n::tr("Screen not shared. Start sharing on the remote device."))));
 
-    let multiple_view=view.clone();let multiple_binding=source_binding.cloned();
-    menu=menu.child(command_button("island_menu_multiple",ActionVariantKind::Neutral,cx)
-        .disabled(multiple_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
-        .on_click(move|_,_,cx| {let _=multiple_view.update(cx,|this,cx|this.begin_remote_source_selection(multiple_binding.clone(),cx));})
-        .child(crate::i18n::tr("Open several windows…")));
-    let replace_view=view.clone();let replace_binding=source_binding.cloned();
-    menu=menu.child(command_button("island_menu_replace",ActionVariantKind::Neutral,cx)
-        .disabled(replace_binding.is_none()||pending_source.is_some()).w_full().h(px(28.)).text_size(px(10.))
-        .on_click(move|_,_,cx| {let _=replace_view.update(cx,|this,cx|this.begin_remote_source_replacement(replace_binding.clone(),cx));})
-        .child(crate::i18n::tr("Replace current source…")));
     if let Some(error) = error {
         menu = menu.child(
             div()
@@ -3395,8 +3419,12 @@ fn capture_source_menu(
     }
 
     for (index, source) in displays.into_iter().enumerate() {
-        let binding = source_binding.cloned();
-        let view = view.clone();
+        let switch_binding = source_binding.cloned();
+        let new_win_binding = source_binding.cloned();
+        let switch_view = view.clone();
+        let new_win_view = view.clone();
+        let switch_source = source.clone();
+        let new_win_source = source.clone();
         let label = if source.supports_input {
             crate::i18n::tr_format!("Display {}", index + 1)
         } else {
@@ -3404,29 +3432,67 @@ fn capture_source_menu(
         };
         let detail = source.title.clone();
         let badge = capture_source_badge(&source, source_icons, &theme);
-        let selected = capture_source_is_selected(selected, &source, index);
+        let is_selected = capture_source_is_selected(selected, &source, index);
         menu = menu.child(
-            command_button(
-                format!("island_menu_display_{}", index + 1),
-                if selected {
-                    ActionVariantKind::Primary
-                } else {
-                    ActionVariantKind::Neutral
-                },
-                cx,
-            )
-            .disabled(pending_source.is_some())
-            .h(px(28.0))
-            .px_2()
-            .text_size(px(10.0))
-            .on_click(move |_event, _window, cx| {
-                let _ = view.update(cx, |this, cx| {
-                    this.open_enumerated_source(binding.clone(), source.clone(), cx);
-                    cx.notify();
-                });
-            })
-            .child(badge)
-            .child(format!("{label} · {detail}")),
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .w_full()
+                .child(
+                    command_button(
+                        format!("island_menu_display_{}", index + 1),
+                        if is_selected {
+                            ActionVariantKind::Primary
+                        } else {
+                            ActionVariantKind::Neutral
+                        },
+                        cx,
+                    )
+                    .disabled(pending_source.is_some())
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(30.0))
+                    .px_2()
+                    .text_size(px(10.5))
+                    .justify_start()
+                    .on_click(move |_event, _window, cx| {
+                        let _ = switch_view.update(cx, |this, cx| {
+                            if is_selected {
+                                this.show_apps_menu = false;
+                            } else if !this.start_capture_source_switch(
+                                switch_binding.clone(),
+                                switch_source.clone(),
+                                switch_source.title.clone(),
+                                cx,
+                            ) {
+                                this.open_enumerated_source(switch_binding.clone(), switch_source.clone(), cx);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .child(badge)
+                    .child(format!("{label} · {detail}")),
+                )
+                .child(
+                    command_button(
+                        format!("island_menu_display_new_{}", index + 1),
+                        ActionVariantKind::Neutral,
+                        cx,
+                    )
+                    .disabled(pending_source.is_some())
+                    .size(px(30.0))
+                    .p_0()
+                    .flex_none()
+                    .tooltip(tooltip(crate::i18n::tr("Open in new window")).build())
+                    .on_click(move |_event, _window, cx| {
+                        let _ = new_win_view.update(cx, |this, cx| {
+                            this.open_enumerated_source(new_win_binding.clone(), new_win_source.clone(), cx);
+                            cx.notify();
+                        });
+                    })
+                    .child(icon(IconName::NewView).size(px(13.0))),
+                ),
         );
     }
 
@@ -3440,8 +3506,12 @@ fn capture_source_menu(
                 .child(crate::i18n::tr("APPLICATION WINDOWS")),
         );
         for (index, source) in windows.into_iter().enumerate() {
-            let binding = source_binding.cloned();
-            let view = view.clone();
+            let switch_binding = source_binding.cloned();
+            let new_win_binding = source_binding.cloned();
+            let switch_view = view.clone();
+            let new_win_view = view.clone();
+            let switch_source = source.clone();
+            let new_win_source = source.clone();
             let source_id = source.source;
             let title = source.title.clone();
             let app = source.application.clone();
@@ -3454,27 +3524,65 @@ fn capture_source_menu(
             let button_label = action_label.clone();
             let is_selected = selected == source_id;
             menu = menu.child(
-                command_button(
-                    format!("island_window_{index}"),
-                    if is_selected {
-                        ActionVariantKind::Primary
-                    } else {
-                        ActionVariantKind::Neutral
-                    },
-                    cx,
-                )
-                .disabled(pending_source.is_some())
-                .h(px(28.0))
-                .px_2()
-                .text_size(px(10.0))
-                .on_click(move |_event, _window, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                        this.open_enumerated_source(binding.clone(), source.clone(), cx);
-                        cx.notify();
-                    });
-                })
-                .child(badge)
-                .child(button_label),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .w_full()
+                    .child(
+                        command_button(
+                            format!("island_window_{index}"),
+                            if is_selected {
+                                ActionVariantKind::Primary
+                            } else {
+                                ActionVariantKind::Neutral
+                            },
+                            cx,
+                        )
+                        .disabled(pending_source.is_some())
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(30.0))
+                        .px_2()
+                        .text_size(px(10.5))
+                        .justify_start()
+                        .on_click(move |_event, _window, cx| {
+                            let _ = switch_view.update(cx, |this, cx| {
+                                if is_selected {
+                                    this.show_apps_menu = false;
+                                } else if !this.start_capture_source_switch(
+                                    switch_binding.clone(),
+                                    switch_source.clone(),
+                                    switch_source.title.clone(),
+                                    cx,
+                                ) {
+                                    this.open_enumerated_source(switch_binding.clone(), switch_source.clone(), cx);
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .child(badge)
+                        .child(button_label),
+                    )
+                    .child(
+                        command_button(
+                            format!("island_window_new_{index}"),
+                            ActionVariantKind::Neutral,
+                            cx,
+                        )
+                        .disabled(pending_source.is_some())
+                        .size(px(30.0))
+                        .p_0()
+                        .flex_none()
+                        .tooltip(tooltip(crate::i18n::tr("Open in new window")).build())
+                        .on_click(move |_event, _window, cx| {
+                            let _ = new_win_view.update(cx, |this, cx| {
+                                this.open_enumerated_source(new_win_binding.clone(), new_win_source.clone(), cx);
+                                cx.notify();
+                            });
+                        })
+                        .child(icon(IconName::NewView).size(px(13.0))),
+                    ),
             );
         }
     } else {
@@ -3486,26 +3594,53 @@ fn capture_source_menu(
         );
     }
 
+    menu = menu.child(div().w_full().h(px(1.0)).bg(theme.border.divider));
+    let multiple_view=view.clone();let multiple_binding=source_binding.cloned();
+    let replace_view=view.clone();let replace_binding=source_binding.cloned();
+    menu = menu.child(
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .w_full()
+            .child(
+                command_button("island_menu_multiple",ActionVariantKind::Neutral,cx)
+                    .disabled(multiple_binding.is_none()||pending_source.is_some())
+                    .flex_1()
+                    .h(px(28.))
+                    .text_size(px(10.))
+                    .on_click(move|_,_,cx| {let _=multiple_view.update(cx,|this,cx|this.begin_remote_source_selection(multiple_binding.clone(),cx));})
+                    .child(crate::i18n::tr("Open several windows…")),
+            )
+            .child(
+                command_button("island_menu_replace",ActionVariantKind::Neutral,cx)
+                    .disabled(replace_binding.is_none()||pending_source.is_some())
+                    .flex_1()
+                    .h(px(28.))
+                    .text_size(px(10.))
+                    .on_click(move|_,_,cx| {let _=replace_view.update(cx,|this,cx|this.begin_remote_source_replacement(replace_binding.clone(),cx));})
+                    .child(crate::i18n::tr("Replace current source…")),
+            ),
+    );
+
     if let Some((target, _name)) =
         session.map(|s| (s.peer.device_id.clone(), s.peer.display_name.clone()))
     {
         let view = view.clone();
-        menu = menu
-            .child(div().w_full().h(px(1.0)).bg(theme.border.divider))
-            .child(
-                command_button("island_open_workspace", ActionVariantKind::Neutral, cx)
-                    .h(px(28.0))
-                    .px_2()
-                    .text_size(px(10.0))
-                    .on_click(move |_event, _window, cx| {
-                        let _ = view.update(cx, |this, cx| this.open_device_window(&target, cx));
-                        let _ = view.update(cx, |this, cx| {
-                            this.show_apps_menu = false;
-                            cx.notify();
-                        });
-                    })
-                    .child(crate::i18n::tr("Open multi-window workspace")),
-            );
+        menu = menu.child(
+            command_button("island_open_workspace", ActionVariantKind::Neutral, cx)
+                .h(px(28.0))
+                .px_2()
+                .text_size(px(10.0))
+                .on_click(move |_event, _window, cx| {
+                    let _ = view.update(cx, |this, cx| this.open_device_window(&target, cx));
+                    let _ = view.update(cx, |this, cx| {
+                        this.show_apps_menu = false;
+                        cx.notify();
+                    });
+                })
+                .child(crate::i18n::tr("Open multi-window workspace")),
+        );
     }
 
     menu
@@ -4756,30 +4891,186 @@ fn drawer_network_telemetry_tab(
 ) -> Div {
     let theme = cx.theme().clone();
     let view = cx.weak_entity();
-    let mut content = div().flex().flex_col().gap_3()
+    let pipeline_open = cx.entity().read(cx).pipeline_diagnostics_open;
+    let cur_res = selected_resolution;
+    let cur_fps = selected_fps;
+    let cur_bitrate = selected_bitrate_kbps;
+
+    let mut content = div()
+        .flex()
+        .flex_col()
+        .gap_3()
         .when(defaults, |panel| panel.child(interface_language_controls(cx)))
         .child(
-        div()
-            .text_size(px(12.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme.content.primary)
-            .whitespace_nowrap()
-            .truncate()
-            .child(if defaults { crate::i18n::tr("Default stream settings") } else { crate::i18n::tr("Live Transport & Latency Telemetry") }),
-    );
+            div()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.content.primary)
+                .whitespace_nowrap()
+                .truncate()
+                .child(if defaults {
+                    crate::i18n::tr("Default stream settings")
+                } else {
+                    crate::i18n::tr("Stream Resolution, FPS & Bitrate Control")
+                }),
+        )
+        .child(
+            div()
+                .p_3()
+                .bg(theme.surface.sunken)
+                .border_1()
+                .border_color(color_border_fine())
+                .rounded(px(6.0))
+                .flex()
+                .flex_col()
+                .gap_2p5()
+                .child(
+                    div().flex().flex_col().gap_1().child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(theme.content.secondary)
+                            .child(crate::i18n::tr("Target Resolution:")),
+                    ).child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_1p5()
+                            .children(vec![
+                                (1280, 720, "720p HD"),
+                                (1920, 1080, "1080p FHD"),
+                                (2560, 1440, "2K QHD"),
+                                (3840, 2160, "4K UHD"),
+                            ].into_iter().map(|(w, h, label)| {
+                                let view = view.clone();
+                                let is_active = cur_res == (w, h);
+                                let variant = if is_active {
+                                    ActionVariantKind::Primary
+                                } else {
+                                    ActionVariantKind::Neutral
+                                };
+                                command_button(
+                                    format!("res_{w}x{h}"),
+                                    variant,
+                                    cx,
+                                )
+                                .h(px(24.0))
+                                .text_size(px(10.0))
+                                .on_click(move |_event, _window, cx| {
+                                    let view = view.clone();
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.dispatch_stream_settings_action(StreamSettingsAction::SelectResolution(w, h), cx);
+                                    });
+                                })
+                                .child(crate::i18n::tr(&label).to_owned())
+                            }))
+                    )
+                )
+                .child(
+                    div().flex().flex_col().gap_1().child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(theme.content.secondary)
+                            .child(crate::i18n::tr("Capture & Stream Frame Rate:")),
+                    ).child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_1p5()
+                            .children(vec![
+                                (30, "30 FPS (Power Save)"),
+                                (60, "60 FPS (Standard)"),
+                                (120, "120 FPS (High-Hz)"),
+                            ].into_iter().map(|(fps, label)| {
+                                let view = view.clone();
+                                let is_active = cur_fps == fps;
+                                let variant = if is_active {
+                                    ActionVariantKind::Primary
+                                } else {
+                                    ActionVariantKind::Neutral
+                                };
+                                command_button(
+                                    format!("fps_{fps}"),
+                                    variant,
+                                    cx,
+                                )
+                                .h(px(24.0))
+                                .text_size(px(10.0))
+                                .on_click(move |_event, _window, cx| {
+                                    let view = view.clone();
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.dispatch_stream_settings_action(StreamSettingsAction::SelectFps(fps), cx);
+                                    });
+                                })
+                                .child(crate::i18n::tr(&label).to_owned())
+                            }))
+                    )
+                )
+                .child(
+                    div().flex().flex_col().gap_1().child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(theme.content.secondary)
+                            .child(crate::i18n::tr("Video Bitrate (CBR Data Rate Limit):")),
+                    ).child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_1p5()
+                            .children(vec![
+                                (2_000, "2 Mbps"),
+                                (5_000, "5 Mbps"),
+                                (10_000, "10 Mbps"),
+                                (20_000, "20 Mbps"),
+                                (40_000, "40 Mbps"),
+                                (80_000, "80 Mbps"),
+                            ].into_iter().map(|(kbps, label)| {
+                                let view = view.clone();
+                                let is_active = cur_bitrate == kbps;
+                                let variant = if is_active {
+                                    ActionVariantKind::Primary
+                                } else {
+                                    ActionVariantKind::Neutral
+                                };
+                                command_button(
+                                    format!("bitrate_{kbps}"),
+                                    variant,
+                                    cx,
+                                )
+                                .h(px(24.0))
+                                .text_size(px(10.0))
+                                .on_click(move |_event, _window, cx| {
+                                    let view = view.clone();
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.dispatch_stream_settings_action(StreamSettingsAction::SelectBitrate(kbps), cx);
+                                    });
+                                })
+                                .child(crate::i18n::tr(&label).to_owned())
+                            }))
+                    )
+                ),
+        )
+        .child(media_controls);
 
     if let Some(stats) = host_stats {
-        content = content.child(
-            telemetry_metric_row(
-                "Capture → receive (est.)",
-                stats.capture_receive.value(),
-                color_accent_cyan(),
-                cx,
-            )
-            .id("capture_receive_metric")
-            .tooltip(tooltip(stats.capture_receive.detail()).build()),
-        );
         content = content
+            .child(
+                div()
+                    .pt_1()
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.content.primary)
+                    .child(crate::i18n::tr("Live Transport & Latency Telemetry")),
+            )
+            .child(
+                telemetry_metric_row(
+                    "Capture → receive (est.)",
+                    stats.capture_receive.value(),
+                    color_accent_cyan(),
+                    cx,
+                )
+                .id("capture_receive_metric")
+                .tooltip(tooltip(stats.capture_receive.detail()).build()),
+            )
             .child(telemetry_metric_row(
                 "Video frame rate",
                 crate::i18n::tr_format!("{:.0} FPS", stats.fps),
@@ -4832,19 +5123,49 @@ fn drawer_network_telemetry_tab(
             ));
 
         if let Some(report) = &stats.pipeline_report {
-            for stage in protocol::StageId::ALL {
-                let st = &report.stage_stats[stage as usize];
-                if st.sample_count > 0 {
-                    content = content.child(telemetry_metric_row(
-                        format!("{}. {}", stage.wire_id() + 1, stage.display_name()),
-                        crate::i18n::tr_format!(
-                            "{:.1}ms (p50: {:.1}ms, p99: {:.1}ms)",
-                            st.avg_us as f32 / 1000.0,
-                            st.p50_us as f32 / 1000.0,
-                            st.p99_us as f32 / 1000.0),
-                        color_accent_purple(),
+            let has_stages = protocol::StageId::ALL
+                .iter()
+                .any(|stage| report.stage_stats[*stage as usize].sample_count > 0);
+            if has_stages {
+                content = content.child(
+                    command_button(
+                        "toggle_pipeline_diagnostics",
+                        if pipeline_open {
+                            ActionVariantKind::Primary
+                        } else {
+                            ActionVariantKind::Neutral
+                        },
                         cx,
-                    ));
+                    )
+                    .h(px(26.0))
+                    .text_size(px(10.0))
+                    .child(crate::i18n::tr(if pipeline_open {
+                        "Hide pipeline stage diagnostics"
+                    } else {
+                        "Show pipeline stage diagnostics"
+                    }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.pipeline_diagnostics_open = !this.pipeline_diagnostics_open;
+                        cx.notify();
+                    })),
+                );
+                if pipeline_open {
+                    for stage in protocol::StageId::ALL {
+                        let st = &report.stage_stats[stage as usize];
+                        if st.sample_count > 0 {
+                            content = content.child(telemetry_metric_row(
+                                format!("{}. {}", stage.wire_id() + 1, stage.display_name()),
+                                crate::i18n::tr_format!(
+                                    "{:.1}ms (p50: {:.1}ms, p99: {:.1}ms)",
+                                    st.avg_us as f32 / 1000.0,
+                                    st.p50_us as f32 / 1000.0,
+                                    st.p99_us as f32 / 1000.0
+                                ),
+                                color_accent_purple(),
+                                cx,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -4855,159 +5176,6 @@ fn drawer_network_telemetry_tab(
             cx,
         ));
     }
-
-    content = content.child(media_controls);
-    // Full Stream Tuning Controls (Resolution, FPS, Bitrate)
-    let cur_res = selected_resolution;
-    let cur_fps = selected_fps;
-    let cur_bitrate = selected_bitrate_kbps;
-
-    content = content.child(
-        div()
-            .mt(px(2.0))
-            .p_3()
-            .bg(theme.surface.sunken)
-            .border_1()
-            .border_color(color_border_fine())
-            .rounded(px(6.0))
-            .flex()
-            .flex_col()
-            .gap_2p5()
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.content.primary)
-                    .child(crate::i18n::tr("Stream Resolution, FPS & Bitrate Control")),
-            )
-            // 1. Resolution
-            .child(
-                div().flex().flex_col().gap_1().child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(theme.content.secondary)
-                        .child(crate::i18n::tr("Target Resolution:")),
-                ).child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1p5()
-                        .children(vec![
-                            (1280, 720, "720p HD"),
-                            (1920, 1080, "1080p FHD"),
-                            (2560, 1440, "2K QHD"),
-                            (3840, 2160, "4K UHD"),
-                        ].into_iter().map(|(w, h, label)| {
-                            let view = view.clone();
-                            let is_active = cur_res == (w, h);
-                            let variant = if is_active {
-                                ActionVariantKind::Primary
-                            } else {
-                                ActionVariantKind::Neutral
-                            };
-                            command_button(
-                                format!("res_{w}x{h}"),
-                                variant,
-                                cx,
-                            )
-                            .h(px(24.0))
-                            .text_size(px(10.0))
-                            .on_click(move |_event, _window, cx| {
-                                let view = view.clone();
-                                let _ = view.update(cx, |this, cx| {
-                                    this.dispatch_stream_settings_action(StreamSettingsAction::SelectResolution(w, h), cx);
-                                });
-                            })
-                            .child(crate::i18n::tr(&label).to_owned())
-                        }))
-                )
-            )
-            // 2. Frame Rate (FPS)
-            .child(
-                div().flex().flex_col().gap_1().child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(theme.content.secondary)
-                        .child(crate::i18n::tr("Capture & Stream Frame Rate:")),
-                ).child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1p5()
-                        .children(vec![
-                            (30, "30 FPS (Power Save)"),
-                            (60, "60 FPS (Standard)"),
-                            (120, "120 FPS (High-Hz)"),
-                        ].into_iter().map(|(fps, label)| {
-                            let view = view.clone();
-                            let is_active = cur_fps == fps;
-                            let variant = if is_active {
-                                ActionVariantKind::Primary
-                            } else {
-                                ActionVariantKind::Neutral
-                            };
-                            command_button(
-                                format!("fps_{fps}"),
-                                variant,
-                                cx,
-                            )
-                            .h(px(24.0))
-                            .text_size(px(10.0))
-                            .on_click(move |_event, _window, cx| {
-                                let view = view.clone();
-                                let _ = view.update(cx, |this, cx| {
-                                    this.dispatch_stream_settings_action(StreamSettingsAction::SelectFps(fps), cx);
-                                });
-                            })
-                            .child(crate::i18n::tr(&label).to_owned())
-                        }))
-                )
-            )
-            // 3. Bitrate
-            .child(
-                div().flex().flex_col().gap_1().child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(theme.content.secondary)
-                        .child(crate::i18n::tr("Video Bitrate (CBR Data Rate Limit):")),
-                ).child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1p5()
-                        .children(vec![
-                            (2_000, "2 Mbps"),
-                            (5_000, "5 Mbps"),
-                            (10_000, "10 Mbps"),
-                            (20_000, "20 Mbps"),
-                            (40_000, "40 Mbps"),
-                            (80_000, "80 Mbps"),
-                        ].into_iter().map(|(kbps, label)| {
-                            let view = view.clone();
-                            let is_active = cur_bitrate == kbps;
-                            let variant = if is_active {
-                                ActionVariantKind::Primary
-                            } else {
-                                ActionVariantKind::Neutral
-                            };
-                            command_button(
-                                format!("bitrate_{kbps}"),
-                                variant,
-                                cx,
-                            )
-                            .h(px(24.0))
-                            .text_size(px(10.0))
-                            .on_click(move |_event, _window, cx| {
-                                let view = view.clone();
-                                let _ = view.update(cx, |this, cx| {
-                                    this.dispatch_stream_settings_action(StreamSettingsAction::SelectBitrate(kbps), cx);
-                                });
-                            })
-                            .child(crate::i18n::tr(&label).to_owned())
-                        }))
-                )
-            ),
-    );
 
     content
 }

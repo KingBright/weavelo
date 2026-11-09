@@ -682,5 +682,10 @@
   "Connection": "连接",
   "Close": "关闭",
   "Reconnecting": "正在重连",
-  "Streaming": "传输中"
+  "Streaming": "传输中",
+  "Open main screen": "打开主屏幕",
+  "Click to switch here · + opens new window": "点击直接切换 · + 在新窗口打开",
+  "Open in new window": "在新窗口打开",
+  "Show pipeline stage diagnostics": "显示流水线阶段诊断",
+  "Hide pipeline stage diagnostics": "隐藏流水线阶段诊断"
 }
