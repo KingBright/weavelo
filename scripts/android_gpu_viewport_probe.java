@@ -113,9 +113,25 @@ class AndroidGpuViewportProbe {
             decoder.stop();decoder.release();
         }
     }
+    static SurfaceHevcEncoder.Plan verifyOutgoingPlan(int width,int height,int fps,int bitrate) {
+        SurfaceHevcEncoder.Plan plan=SurfaceHevcEncoder.Companion.fitAtMost(1080,1920,width,height,fps,bitrate);
+        require(plan!=null,"No hardware encoder plan for outgoing quality");
+        require(plan.getWidth()<=width && plan.getHeight()<=height && plan.getFps()<=fps &&
+            plan.getBitrateKbps()<=bitrate,"Hardware plan exceeds the outgoing quality bounds");
+        try (SurfaceHevcEncoder encoder=new SurfaceHevcEncoder(plan)) {
+            require(encoder.getSurface().isValid(),"Outgoing hardware encoder has no valid surface");
+        }
+        return plan;
+    }
     public static void main(String[] args) throws Exception {
+        SurfaceHevcEncoder.Plan low=verifyOutgoingPlan(320,568,30,2500);
+        SurfaceHevcEncoder.Plan high=verifyOutgoingPlan(720,1280,60,10000);
+        require(high.getWidth()>low.getWidth() && high.getHeight()>low.getHeight(),
+            "Outgoing quality levels did not produce distinct hardware sizes");
+        String quality="[["+low.getWidth()+","+low.getHeight()+","+low.getFps()+","+low.getBitrateKbps()+"],["+
+            high.getWidth()+","+high.getHeight()+","+high.getFps()+","+high.getBitrateKbps()+"]]";
         System.err.println("WEAVELO_GPU_STEP create-context");
-        GpuVideoSurface gpu=new GpuVideoSurface(null,641,371,()->System.nanoTime()/1000,g->Unit.INSTANCE);
+        GpuVideoSurface gpu=new GpuVideoSurface(null,641,371,()->System.nanoTime()/1000,0,g->Unit.INSTANCE);
         try {
             System.err.println("WEAVELO_GPU_STEP draw-synthetic-source");
             Canvas canvas=gpu.getInput().lockHardwareCanvas();
@@ -140,7 +156,8 @@ class AndroidGpuViewportProbe {
                 b.codec.requestKeyframe(2);b.draw(0,0,32,5000);
                 b.finish();String second=decode(b);
                 System.out.println("WEAVELO_GPU_VIEWPORT_PASS {\"first\":"+first+",\"second\":"+second+
-                    ",\"same_capture_time\":true,\"independent_stop\":true,\"source_size\":[641,371],\"data_space\":"+gpu.getSourceDataSpace()+"}");
+                    ",\"same_capture_time\":true,\"independent_stop\":true,\"source_size\":[641,371],\"data_space\":"+gpu.getSourceDataSpace()+
+                    ",\"outgoing_hardware_plans\":"+quality+"}");
             } finally { a.close();b.close(); }
         } finally { gpu.close(); }
         // app_process starts framework Binder threads outside an Activity

@@ -11,6 +11,7 @@ data class OutgoingScreenState(val id: Long = 0, val active: Boolean = false, va
 data class PublisherNotice(val message: String = "", val text: AppText? = null)
 
 object PublisherClient {
+    @Volatile private var publisherContext: Context? = null
     external fun nativeAction(operation: Int, payload: String): String
     const val SCREEN_SOURCE = "\"MainDisplay\""
     external fun nativeFrame(source: String, epoch: Long, bytes: ByteArray, ptsUs: Long): Boolean
@@ -27,6 +28,9 @@ object PublisherClient {
     val outgoing = mutableOutgoing.asStateFlow()
     @Volatile var active = false
         private set
+    /** True only while this sharing session has a playback-capture grant. */
+    @Volatile var audioEnabled = false
+        internal set
     fun status(message: String, active: Boolean = this.active, text: AppText? = null) { this.active = active; mutable.value = message; mutableNotice.value = PublisherNotice(message, text) }
     fun action(operation: Int, payload: String = ""): String {
         val body = if (operation in listOf(0, 5, 20, 30)) {
@@ -52,16 +56,24 @@ object PublisherClient {
     fun sendScreen(deviceId: String) {
         WeaveloClient.refreshDevices()
         val endpoint = resolveScreenDeliveryEndpoint(deviceId, WeaveloClient.devices.value)
-        action(22, JSONObject().put("target", deviceId).put("endpoint", endpoint).toString())
+        val context = checkNotNull(publisherContext) { "Screen sharing context is unavailable" }
+        val quality = OutgoingVideoQualityStore.load(context)
+        action(22, JSONObject().put("target", deviceId).put("endpoint", endpoint)
+            .put("quality", quality.initialJson()).toString())
         refreshOutgoing()
     }
     fun stopSending(id: Long) { action(24, id.toString()); refreshOutgoing() }
-    fun start(context: Context, resultCode: Int, data: Intent, audio: Boolean, control: Boolean = false, sendTarget: String? = null) {
-        context.startForegroundService(Intent(context, ProjectionService::class.java)
+    fun start(context: Context, resultCode: Int, data: Intent, audio: Boolean, control: Boolean = false, sendTarget: String? = null, audioTarget: PlaybackAudioTarget? = null) {
+        publisherContext = context.applicationContext
+        val intent = Intent(context, ProjectionService::class.java)
             .putExtra("result", resultCode).putExtra("consent", data).putExtra("audio", audio).putExtra("control", control)
-            .putExtra("send-target", sendTarget))
+            .putExtra("send-target", sendTarget)
+        if (audioTarget != null) intent.putExtra("audio-package", audioTarget.packageName)
+            .putExtra("audio-uid", audioTarget.uid).putExtra("audio-updated", audioTarget.updated)
+        context.startForegroundService(intent)
     }
     internal fun startManaged(context: Context, control: Boolean = true, sendTarget: String? = null) {
+        publisherContext = context.applicationContext
         context.startForegroundService(Intent(context, ProjectionService::class.java)
             .setAction("managed").putExtra("control", control).putExtra("send-target", sendTarget))
     }

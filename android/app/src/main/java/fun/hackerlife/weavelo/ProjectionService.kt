@@ -28,11 +28,11 @@ class ProjectionService : Service() {
     private var displayListener: DisplayManager.DisplayListener? = null
     @Volatile private var captureGeometry = ProjectionCaptureGeometry(1080, 1920, 0, 0)
     @Volatile private var audioAllowed = false
+    private var audioTarget: PlaybackAudioTarget? = null
     @Volatile private var controlAllowed = false
     private var sendTarget: String? = null
     @Volatile private var captureGrant = 0L
-    private val audioRunning = AtomicBoolean(false)
-    private var audioWorker: Thread? = null
+    private var audioWorker: PlaybackAudioWorker? = null
 
     override fun onBind(intent: Intent?) = null
     private fun notification(): Notification {
@@ -64,6 +64,12 @@ class ProjectionService : Service() {
             controlAllowed = intent?.getBooleanExtra("control", false) == true
             sendTarget = intent?.getStringExtra("send-target")
             audioAllowed = managed == null && intent?.getBooleanExtra("audio", false) == true && Build.VERSION.SDK_INT >= 29
+            audioTarget = intent?.getStringExtra("audio-package")?.let { name ->
+                check(audioAllowed && intent.hasExtra("audio-uid") && intent.hasExtra("audio-updated")) { "Invalid audio source" }
+                PlaybackAudioTarget(name, intent.getIntExtra("audio-uid", -1), intent.getLongExtra("audio-updated", -1))
+                    .also { check(PlaybackAudioSources.matches(this, it)) { "Selected audio app changed or is unavailable" } }
+            }
+            PublisherClient.audioEnabled = audioAllowed
             val capture = if (managed != null) null else checkNotNull(getSystemService(MediaProjectionManager::class.java).getMediaProjection(intent?.getIntExtra("result", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED, checkNotNull(consent)))
             projection = capture
             capture?.registerCallback(object : MediaProjection.Callback() {
@@ -107,7 +113,7 @@ class ProjectionService : Service() {
             }.also { displays.registerDisplayListener(it, Handler(Looper.getMainLooper())) }
             running.set(true)
             worker = Thread({ publish(capture, managed) }, "remote-projection").apply { start() }
-        } catch (e: Exception) { PublisherClient.status(e.message ?: "Screen sharing failed", false, if (e.message == null) AppText("Screen sharing failed") else null); stopSelf() }
+        } catch (e: Exception) { PublisherClient.audioEnabled = false; PublisherClient.status(e.message ?: "Screen sharing failed", false, if (e.message == null) AppText("Screen sharing failed") else null); stopSelf() }
         return START_NOT_STICKY
     }
 
@@ -130,7 +136,11 @@ class ProjectionService : Service() {
             if (managed != null) apps = ManagedApplications(managed, applicationContext)
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
-            PublisherClient.status("Sharing enabled · $addresses", true, AppText("Sharing enabled · %s", listOf(addresses)))
+            if (audioAllowed && audioTarget == null) PublisherClient.status("Sharing enabled · $addresses · Phone audio stays on; captured media audio may include other apps.", true,
+                AppText("Sharing enabled · %s · Phone audio stays on; captured media audio may include other apps.", listOf(addresses)))
+            else if (audioAllowed) PublisherClient.status("Sharing enabled · $addresses · Phone audio stays on.", true,
+                AppText("Sharing enabled · %s · Phone audio stays on.", listOf(addresses)))
+            else PublisherClient.status("Sharing enabled · $addresses", true, AppText("Sharing enabled · %s", listOf(addresses)))
             sendTarget?.let { target ->
                 runCatching { PublisherClient.sendScreen(target) }
                     .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true, appTextOf(it) ?: if (it.message == null) AppText("Could not send screen") else null) }
@@ -165,8 +175,8 @@ class ProjectionService : Service() {
                     display.surface=null;publisher.close();publisher=null
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")
-                if (wantsAudio && !audioRunning.get() && capture != null) startAudio(capture,captureGrant)
-                if (!wantsAudio && audioRunning.get()) stopAudio()
+                if (wantsAudio && capture != null) startAudio(capture,captureGrant)
+                if (!wantsAudio) stopAudio()
                 val waitMs=(nextDemand-SystemClock.elapsedRealtime()).coerceIn(1,50)
                 val gpu=publisher
                 if (gpu != null) gpu.awaitFrame(if (gpu.pendingFrames) 1 else waitMs) else Thread.sleep(waitMs)
@@ -176,6 +186,7 @@ class ProjectionService : Service() {
         } finally {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
+            PublisherClient.audioEnabled = false
             runCatching { apps?.close() }
             runCatching { display?.surface = null }; runCatching { display?.release() }
             publisher?.close()
@@ -188,31 +199,60 @@ class ProjectionService : Service() {
     @Suppress("MissingPermission")
     private fun startAudio(capture: MediaProjection, grant: Long) {
         if (Build.VERSION.SDK_INT < 29) return
-        audioRunning.set(true)
-        audioWorker = Thread({
+        // A timed-out read from the previous subscription must finish before a
+        // new recorder starts. Each worker owns its own cancellation flag.
+        if (audioWorker?.thread?.isAlive == true) return
+        val worker = PlaybackAudioWorker()
+        audioWorker = worker
+        worker.thread = Thread({
             var record: AudioRecord? = null
             try {
-                val config = AudioPlaybackCaptureConfiguration.Builder(capture)
+                val builder = AudioPlaybackCaptureConfiguration.Builder(capture)
                     .addMatchingUsage(AudioAttributes.USAGE_MEDIA).addMatchingUsage(AudioAttributes.USAGE_GAME)
-                    .excludeUid(android.os.Process.myUid()).build()
+                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                val target = audioTarget
+                if (target == null) builder.excludeUid(android.os.Process.myUid())
+                else {
+                    check(PlaybackAudioSources.matches(this, target)) { "Selected audio app changed or is unavailable" }
+                    builder.addMatchingUid(target.uid)
+                }
+                val config = builder.build()
                 val format = AudioFormat.Builder().setSampleRate(48000).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_IN_STEREO).build()
                 record = AudioRecord.Builder().setAudioPlaybackCaptureConfig(config).setAudioFormat(format)
                     .setBufferSizeInBytes(maxOf(7680, AudioRecord.getMinBufferSize(48000, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT))).build()
+                worker.record = record
                 check(record.state == AudioRecord.STATE_INITIALIZED) { "Playback audio capture is unavailable" }
+                if (!worker.active.get()) return@Thread
                 record.startRecording()
                 val samples = ShortArray(1920)
                 var filled = 0
-                while (audioRunning.get() && running.get()) {
+                while (worker.active.get() && running.get()) {
                     val count = record.read(samples, filled, samples.size - filled, AudioRecord.READ_BLOCKING)
                     check(count >= 0) { "Audio capture failed: $count" }; filled += count
-                    if (filled == samples.size) { check(PublisherClient.nativePcm(grant,samples)) { "Audio source ended or Opus encoder failed" }; filled = 0 }
+                    if (filled == samples.size) {
+                        check(target == null || PlaybackAudioSources.matches(this, target)) { "Selected audio app changed or is unavailable" }
+                        check(PublisherClient.nativePcm(grant,samples)) { "Audio source ended or Opus encoder failed" }; filled = 0
+                    }
                 }
             } catch (e: Exception) {
-                if (audioRunning.get()) { audioAllowed = false; PublisherClient.status("Sharing video · ${e.message}", text = AppText("Sharing video · %s", listOf(e.message ?: ""))) }
-            } finally { runCatching { record?.stop() }; record?.release(); audioRunning.set(false) }
-        }, "projection-audio").apply { start() }
+                if (worker.active.get() && running.get()) { audioAllowed = false; PublisherClient.audioEnabled = false; PublisherClient.status("Sharing video · ${e.message}", text = AppText("Sharing video · %s", listOf(e.message ?: ""))) }
+            } finally { worker.active.set(false); runCatching { record?.stop() }; record?.release(); worker.record = null }
+        }, "projection-audio")
+        worker.thread.start()
     }
-    private fun stopAudio() { audioRunning.set(false); audioWorker?.join(500); audioWorker = null }
+    private class PlaybackAudioWorker {
+        val active = AtomicBoolean(true)
+        @Volatile var record: AudioRecord? = null
+        lateinit var thread: Thread
+    }
+    private fun stopAudio() {
+        val worker = audioWorker ?: return
+        worker.active.set(false)
+        // stop() unblocks READ_BLOCKING; release remains owned by the reader.
+        runCatching { worker.record?.stop() }
+        try { worker.thread.join(500) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        if (!worker.thread.isAlive) audioWorker = null
+    }
     override fun onDestroy() {
         languageObserver?.close()
         displayListener?.let { getSystemService(DisplayManager::class.java).unregisterDisplayListener(it) }

@@ -212,9 +212,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             41 => {publisher.set_device_badge(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())}
             22 => {
                 #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Send {target:String,endpoint:std::net::SocketAddr}
+                struct Send {target:String,endpoint:std::net::SocketAddr,quality:crate::outgoing_quality::InitialQuality}
                 let send:Send=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                client().runtime().block_on(publisher.send_screen(send.target,send.endpoint))?;Ok(String::new())
+                let id=client().runtime().block_on(publisher.send_screen_quality(send.target,send.endpoint,send.quality))?;
+                Ok(serde_json::json!({"id":id}).to_string())
             }
             24 => {publisher.stop_sending_id(serde_json::from_str(&value).map_err(|error|error.to_string())?)?;Ok(String::new())}
             17 => {
@@ -268,6 +269,34 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 let failure:Failure=serde_json::from_str(&value).map_err(|error|error.to_string())?;
                 client().runtime().block_on(publisher.fail_screen_view(failure.stream,failure.grant,failure.reason))?;
                 Ok(String::new())
+            }
+            37 => {
+                let settings:crate::outgoing_quality::QualityRequest=serde_json::from_str(&value).map_err(|error|format!("Invalid outgoing quality: {error}"))?;
+                if let Some((revision,result))=publisher.set_outgoing_quality(settings)? {
+                    match result.recv_timeout(std::time::Duration::from_secs(8)) {
+                        Ok(result)=>result?,
+                        Err(_)=>{
+                            // The encoder may have completed immediately after
+                            // recv_timeout. Cancellation shares the media lock
+                            // with completion, so its channel result is settled
+                            // once this returns.
+                            if publisher.cancel_outgoing_quality(settings.id,revision) {
+                                return Err("Screen quality update timed out".into());
+                            }
+                            match result.try_recv() {
+                                Ok(settled)=>settled?,
+                                Err(_)=>return Err("Screen quality update timed out".into()),
+                            }
+                        }
+                    }
+                }
+                Ok(String::new())
+            }
+            38 => {
+                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
+                struct Applied {id:u64,stream:u64,grant:u64,revision:u64,accepted:bool}
+                let applied:Applied=serde_json::from_str(&value).map_err(|error|error.to_string())?;
+                Ok(publisher.complete_outgoing_quality(applied.id,applied.stream,applied.grant,applied.revision,applied.accepted).to_string())
             }
             11 => {
                 let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;

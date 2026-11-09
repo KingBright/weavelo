@@ -3,6 +3,7 @@ use protocol::session::{CaptureSource, CaptureSourceInfo, SubscriptionRequest, S
 use remote_core::cameras::{CameraRegistry, NativeCamera};
 use std::collections::HashMap;
 use crate::publisher_viewport::{ScreenView,ScreenViewDemand};
+use crate::outgoing_quality::DeliveryQuality;
 
 pub(crate) fn screen_source(source: CaptureSource) -> bool {
     matches!(source, CaptureSource::MainDisplay | CaptureSource::Window(_))
@@ -49,12 +50,22 @@ pub(crate) struct MediaSources {
     pub peer_streams:Vec<(Option<String>,usize)>,
     pub sources:HashMap<CaptureSource,Source>,
     views:HashMap<u64,ScreenView>,
+    view_tickets:HashMap<u64,[u8;32]>,
+    quality:Option<DeliveryQuality>,
+    quality_sequence:u64,
+    quality_pending:Option<PendingQuality>,
     cameras:CameraRegistry,
     sequence:u64,
 }
+struct PendingQuality {
+    revision:u64,
+    previous:DeliveryQuality,
+    result:std::sync::mpsc::Sender<Result<(),String>>,
+    waiting:std::collections::HashSet<u64>,
+}
 impl MediaSources {
     pub fn new(screen:bool,audio:bool)->Self {
-        let mut this=Self{peer_streams:Vec::new(),sources:HashMap::new(),views:HashMap::new(),cameras:CameraRegistry::default(),sequence:1};
+        let mut this=Self{peer_streams:Vec::new(),sources:HashMap::new(),views:HashMap::new(),view_tickets:HashMap::new(),quality:None,quality_sequence:0,quality_pending:None,cameras:CameraRegistry::default(),sequence:1};
         this.sources.insert(CaptureSource::MainDisplay,Source {
             info:CaptureSourceInfo {source:CaptureSource::MainDisplay,title:"Android selected screen or app".into(),
                 application:"MediaProjection".into(),process_id:None,width:1080,height:1920,supports_input:false,camera:None},
@@ -156,10 +167,91 @@ impl MediaSources {
         if !source.enabled{return demand;}
         let info=&source.info;
         let size=[info.width,info.height];
+        let quality=&self.quality;let tickets=&self.view_tickets;let pending=&self.quality_pending;
         demand.views=self.views.iter_mut().filter(|(_,view)|view.request.source==id)
-            .filter_map(|(stream,view)|view.demand(*stream,size)).collect();
+            .filter_map(|(stream,view)| {
+                let selected=quality.as_ref().filter(|quality|quality.source==id && quality.grant==view.grant
+                    && tickets.get(stream)==Some(&quality.ticket));
+                let original=view.request.clone();
+                if let Some(quality)=selected {
+                    let cap=quality.settings.receiver_cap(size,[original.width,original.height]);
+                    view.request.width=cap[0];view.request.height=cap[1];
+                    view.request.fps=view.request.fps.min(quality.settings.fps);
+                    view.request.bitrate_kbps=view.request.bitrate_kbps.min(quality.settings.bitrate_kbps);
+                }
+                let mut result=view.demand_with_mode(*stream,size,selected.is_some());view.request=original;
+                if let (Some(demand),Some(quality))=(&mut result,selected) {
+                    demand.delivery_id=quality.settings.id;demand.quality_revision=quality.revision;
+                    demand.quality_pending=pending.as_ref().is_some_and(|pending|pending.revision==quality.revision && pending.waiting.contains(stream));
+                }
+                result
+            }).collect();
         demand.views.sort_by_key(|view|view.stream);demand
     }
+    pub fn set_quality(&mut self,mut quality:DeliveryQuality) {
+        self.quality_sequence=self.quality_sequence.checked_add(1).expect("quality revision exhausted");
+        quality.revision=self.quality_sequence;self.quality=Some(quality);
+    }
+    #[cfg(test)]
+    pub fn quality_id_for_test(&self)->Option<u64> {self.quality.as_ref().map(|quality|quality.settings.id)}
+    pub fn begin_quality(&mut self,quality:DeliveryQuality)->Result<Option<(u64,std::sync::mpsc::Receiver<Result<(),String>>)>,String> {
+        if self.quality_pending.is_some() {return Err("Another screen quality update is still applying".into());}
+        let previous=self.quality.clone().filter(|old|old.ticket==quality.ticket).ok_or("Sending intention changed")?;
+        let waiting=self.views.iter().filter(|(stream,view)|view.active && view.grant==quality.grant && view.request.source==quality.source
+            && self.view_tickets.get(stream)==Some(&quality.ticket)).map(|(stream,_)|*stream).collect::<std::collections::HashSet<_>>();
+        // Replacing multiple independent hardware encoders cannot be made
+        // atomic; leave all streams untouched instead of a partial update.
+        if waiting.len()>1 {return Err("Close extra receiving windows before changing screen quality".into());}
+        self.set_quality(quality);
+        if waiting.is_empty(){return Ok(None);}
+        let revision=self.quality.as_ref().unwrap().revision;
+        let (tx,rx)=std::sync::mpsc::channel();
+        self.quality_pending=Some(PendingQuality{revision,previous,result:tx,waiting});
+        Ok(Some((revision,rx)))
+    }
+    pub fn complete_quality(&mut self,id:u64,stream:u64,grant:u64,revision:u64,accepted:bool)->bool {
+        let Some(quality)=self.quality.as_ref() else{return false;};
+        if quality.settings.id!=id || quality.grant!=grant || quality.revision!=revision
+            || self.view_tickets.get(&stream)!=Some(&quality.ticket)
+            || !self.views.get(&stream).is_some_and(|view|view.active&&view.grant==grant&&view.request.source==quality.source)
+            || self.quality_pending.as_ref().is_none_or(|pending|pending.revision!=revision || !pending.waiting.contains(&stream)) {return false;}
+        if !accepted {self.finish_quality(false);}
+        else {
+            let pending=self.quality_pending.as_mut().unwrap();pending.waiting.remove(&stream);
+            if pending.waiting.is_empty() {self.finish_quality(true);}
+        }
+        true
+    }
+    fn finish_quality(&mut self,accepted:bool) {
+        if let Some(pending)=self.quality_pending.take() {
+            if !accepted {
+                if let Some(quality)=self.quality.clone() {self.invalidate_quality_views(&quality);}
+                self.quality=Some(pending.previous);
+            }
+            let _=pending.result.send(if accepted {Ok(())} else {Err("The requested quality is not supported by the screen encoder".into())});
+        }
+    }
+    fn invalidate_quality_views(&mut self,quality:&DeliveryQuality) {
+        let tickets=&self.view_tickets;
+        for (stream,view) in &mut self.views {
+            if view.grant==quality.grant && view.request.source==quality.source && tickets.get(stream)==Some(&quality.ticket) {
+                view.invalidate_geometry();
+                view.keyframe=view.keyframe.saturating_add(1);
+            }
+        }
+    }
+    pub fn cancel_quality(&mut self,id:u64,revision:u64)->bool {
+        if self.quality.as_ref().is_some_and(|q|q.settings.id==id&&q.revision==revision)
+            && self.quality_pending.as_ref().is_some_and(|p|p.revision==revision) {self.finish_quality(false);true} else {false}
+    }
+    pub fn clear_quality(&mut self,ticket:[u8;32]) {
+        if self.quality.as_ref().is_some_and(|q|q.ticket==ticket) {
+            if self.quality_pending.is_some() {self.finish_quality(false);}
+            else if let Some(quality)=self.quality.clone() {self.invalidate_quality_views(&quality);}
+            self.quality=None;
+        }
+    }
+    pub fn set_view_tickets(&mut self,tickets:HashMap<u64,[u8;32]>) {self.view_tickets=tickets;}
     pub fn viewport(&mut self,stream:u64,demand:protocol::viewport::ViewportDemand)->Result<u64,String> {
         let view=self.views.get_mut(&stream).ok_or("Screen viewport is unavailable")?;
         view.viewport(demand)
@@ -248,6 +340,81 @@ impl MediaSources {
 mod tests {
     use super::*;
     use protocol::session::CameraFacing;
+    #[test]
+    fn outgoing_quality_is_bound_to_ticket_source_and_grant() {
+        use crate::outgoing_quality::{DeliveryQuality,QualityRequest};
+        let mut media=MediaSources::new(true,false);
+        let source=CaptureSource::MainDisplay;
+        let grant=media.sources[&source].grant;
+        let request=SubscriptionRequest{id:1,source,width:1920,height:1080,fps:60,bitrate_kbps:20_000,audio:false};
+        media.recompute([ActiveRequest{stream:1,grant,request:&request,video:true,audio:false},
+            ActiveRequest{stream:2,grant,request:&request,video:true,audio:false}]);
+        media.set_view_tickets([(1,[1;32]),(2,[2;32])].into_iter().collect());
+        let viewport=protocol::viewport::ViewportDemand{id:1,source_revision:0,revision:1,
+            visible:protocol::viewport::NormalizedRect::FULL,width:360,height:800};
+        media.viewport(1,viewport).unwrap();media.viewport(2,viewport).unwrap();
+        let settings=QualityRequest{id:7,short_edge:540,fps:30,bitrate_kbps:10_000};
+        media.set_quality(DeliveryQuality{ticket:[1;32],source,grant,settings,revision:0});
+        let views=media.screen_demand().views;
+        assert_eq!((views[0].geometry.width,views[0].fps,views[0].bitrate_kbps),(540,30,10_000));
+        assert!(views[1].geometry.width<=360);
+        assert_eq!(views[1].fps,60);
+        media.clear_quality([2;32]);
+        assert_eq!(media.screen_demand().views[0].fps,30);
+        let directed_revision=media.screen_demand().views[0].geometry.revision;
+        media.clear_quality([1;32]);
+        assert!(!media.accepts_screen_geometry(1,grant,directed_revision));
+        assert_eq!(media.screen_demand().views[0].fps,60);
+        media.set_quality(DeliveryQuality{ticket:[1;32],source,grant:grant+1,settings,revision:0});
+        assert_eq!(media.screen_demand().views[0].fps,60);
+    }
+    #[test]
+    fn quality_update_waits_for_exact_encoder_and_rolls_back_on_rejection() {
+        use crate::outgoing_quality::{DeliveryQuality,QualityRequest};
+        let mut media=MediaSources::new(true,false);
+        let source=CaptureSource::MainDisplay;let grant=media.sources[&source].grant;
+        let request=SubscriptionRequest{id:1,source,width:1920,height:1080,fps:60,bitrate_kbps:20_000,audio:false};
+        media.recompute([ActiveRequest{stream:1,grant,request:&request,video:true,audio:false},
+            ActiveRequest{stream:2,grant,request:&request,video:true,audio:false}]);
+        media.set_view_tickets([(1,[1;32]),(2,[2;32])].into_iter().collect());
+        let quality=|fps|DeliveryQuality{ticket:[1;32],source,grant,
+            settings:QualityRequest{id:7,short_edge:720,fps,bitrate_kbps:5000},revision:0};
+        media.set_quality(quality(30));
+        let before=media.screen_demand().views;
+        let baseline=before[0].geometry.revision;
+        let mut changed=quality(60);changed.settings.short_edge=540;
+        let (revision,result)=media.begin_quality(changed).unwrap().unwrap();
+        let pending=media.screen_demand().views;
+        assert!(pending[0].quality_pending);assert!(!pending[1].quality_pending);
+        assert_eq!(pending[0].quality_revision,revision);
+        let tentative=pending[0].geometry.revision;
+        assert_ne!(baseline,tentative);
+        assert!(media.accepts_screen_geometry(1,grant,tentative));
+        assert!(media.begin_quality(quality(45)).is_err());
+        assert!(!media.complete_quality(7,2,grant,revision,true));
+        assert!(!media.complete_quality(7,1,grant,revision+1,true));
+        assert!(media.complete_quality(7,1,grant,revision,false));
+        assert!(result.recv().unwrap().is_err());
+        assert!(!media.accepts_screen_geometry(1,grant,tentative));
+        let restored=media.screen_demand().views.remove(0);
+        assert_eq!(restored.fps,30);assert!(!restored.quality_pending);
+        assert!(restored.geometry.revision>tentative);
+        assert!(restored.keyframe>before[0].keyframe);
+        assert_eq!(media.screen_demand().views[1].keyframe,before[1].keyframe);
+        let (revision,result)=media.begin_quality(quality(45)).unwrap().unwrap();
+        assert!(media.complete_quality(7,1,grant,revision,true));
+        assert!(!media.cancel_quality(7,revision));
+        assert!(result.try_recv().unwrap().is_ok(),"ACK that beats timeout must be returned to the caller");
+        assert_eq!(media.screen_demand().views[0].fps,45);
+        let (revision,result)=media.begin_quality(quality(50)).unwrap().unwrap();
+        assert!(media.cancel_quality(7,revision));
+        assert!(!media.complete_quality(7,1,grant,revision,true));
+        assert!(result.recv().unwrap().is_err());
+        assert_eq!(media.screen_demand().views[0].fps,45);
+        media.set_view_tickets([(1,[1;32]),(2,[1;32])].into_iter().collect());
+        assert!(media.begin_quality(quality(55)).is_err());
+        assert_eq!(media.screen_demand().views[0].fps,45);
+    }
     #[test]
     fn app_rotation_invalidates_epoch_and_catalog_refresh_preserves_geometry() {
         let mut media=MediaSources::new(true,false);

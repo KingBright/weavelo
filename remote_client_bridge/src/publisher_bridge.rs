@@ -70,6 +70,9 @@ pub struct MobilePublisher {
 struct Outgoing {
     id: u64,
     target: String,
+    ticket: [u8;32],
+    screen_grant: Option<u64>,
+    quality_alive: Arc<AtomicBool>,
     stop: watch::Sender<bool>,
     status: Arc<Mutex<String>>,
     confirmation_timeout: Arc<Mutex<Option<remote_core::directed_delivery::ConfirmationTimeout>>>,
@@ -164,6 +167,8 @@ fn recompute(peers:&HashMap<SocketAddr,Peer>,media:&Mutex<MediaSources>) {
     let mut media=media.lock().unwrap();
     media.recompute(peers.values().flat_map(|peer|peer.subscriptions.values())
         .map(|sub|ActiveRequest{stream:sub.screen_stream,grant:sub.grant,request:&sub.request,video:sub.video,audio:sub.audio}));
+    media.set_view_tickets(peers.values().filter_map(|peer|peer.delivery_owner.map(|(_,ticket)|(peer,ticket)))
+        .flat_map(|(peer,ticket)|peer.subscriptions.values().map(move |sub|(sub.screen_stream,ticket))).collect());
     let mut streams=std::collections::BTreeMap::new();
     for peer in peers.values() {
         let count=peer.subscriptions.values().filter(|sub|media.sources.get(&sub.request.source)
@@ -171,6 +176,9 @@ fn recompute(peers:&HashMap<SocketAddr,Peer>,media:&Mutex<MediaSources>) {
         if count>0 {*streams.entry(remote_core::routed_relay::incoming_device(peer.addr)).or_insert(0)+=count;}
     }
     media.peer_streams=streams.into_iter().collect();
+}
+fn retire_quality(media:&Mutex<MediaSources>,alive:&AtomicBool,ticket:[u8;32]) {
+    let mut media=media.lock().unwrap();alive.store(false,Ordering::Release);media.clear_quality(ticket);
 }
 async fn refresh_sources(peers:&mut HashMap<SocketAddr,Peer>,media:&Mutex<MediaSources>,
     input:&Mutex<crate::publisher_input::PublisherInput>,sender:&UdpSender,
@@ -231,22 +239,47 @@ impl MobilePublisher {
             else {serde_json::json!(self.media.lock().unwrap().peer_streams)};
         status
     }
-    pub fn stop_sending(&self) { self.outgoing.lock().unwrap().take(); }
+    pub fn stop_sending(&self) { if let Some(send)=self.outgoing.lock().unwrap().take() {self.media.lock().unwrap().clear_quality(send.ticket);} }
     pub fn stop_sending_id(&self, id:u64)->Result<(),String> {
         let mut outgoing=self.outgoing.lock().unwrap();
         if !outgoing.as_ref().is_some_and(|send|send.id==id) {return Err("Sending intention changed".into());}
-        outgoing.take();Ok(())
+        if let Some(send)=outgoing.take() {self.media.lock().unwrap().clear_quality(send.ticket);} Ok(())
     }
+    pub(crate) fn set_outgoing_quality(&self, settings:crate::outgoing_quality::QualityRequest)->Result<Option<(u64,std::sync::mpsc::Receiver<Result<(),String>>)>,String> {
+        settings.validate()?;
+        let outgoing=self.outgoing.lock().unwrap();
+        let send=outgoing.as_ref().filter(|send|send.id==settings.id && !send.task.is_finished())
+            .ok_or("Sending intention changed")?;
+        let grant=send.screen_grant.ok_or("Current delivery is not a screen")?;
+        let mut media=self.media.lock().unwrap();
+        if !send.quality_alive.load(Ordering::Acquire) {return Err("Sending intention changed".into());}
+        if !media.sources.get(&CaptureSource::MainDisplay).is_some_and(|source|source.enabled&&source.grant==grant) {
+            return Err("Screen sharing authorization changed".into());
+        }
+        media.begin_quality(crate::outgoing_quality::DeliveryQuality{ticket:send.ticket,source:CaptureSource::MainDisplay,grant,settings,revision:0})
+    }
+    pub(crate) fn complete_outgoing_quality(&self,id:u64,stream:u64,grant:u64,revision:u64,accepted:bool)->bool {
+        self.media.lock().unwrap().complete_quality(id,stream,grant,revision,accepted)
+    }
+    pub(crate) fn cancel_outgoing_quality(&self,id:u64,revision:u64)->bool {self.media.lock().unwrap().cancel_quality(id,revision)}
     pub async fn send_screen(&self,target:String,endpoint:SocketAddr)->Result<(),String> {
         self.send_sources(target,endpoint,vec![CaptureSource::MainDisplay]).await
     }
+    pub(crate) async fn send_screen_quality(&self,target:String,endpoint:SocketAddr,quality:crate::outgoing_quality::InitialQuality)->Result<u64,String> {
+        quality.for_id(0).validate()?;
+        self.send_sources_with_quality(target,endpoint,vec![CaptureSource::MainDisplay],Some(quality)).await
+    }
     pub async fn send_sources(&self,target:String,endpoint:SocketAddr,sources:Vec<CaptureSource>)->Result<(),String> {
+        self.send_sources_with_quality(target,endpoint,sources,None).await.map(|_|())
+    }
+    async fn send_sources_with_quality(&self,target:String,endpoint:SocketAddr,sources:Vec<CaptureSource>,initial:Option<crate::outgoing_quality::InitialQuality>)->Result<u64,String> {
         validate_delivery_sources(&sources).map_err(str::to_owned)?;
         if self.is_finished(){return Err("Camera and screen service is unavailable".into());}
         let grants={let media=self.media.lock().unwrap();sources.iter().map(|id|
             media.sources.get(id).filter(|source|source.enabled).map(|source|(*id,source.grant))
                 .ok_or("Enable the selected camera or screen on this phone first"))
             .collect::<Result<Vec<_>,_>>()?};
+        let screen_grant=grants.iter().find_map(|(source,grant)|(*source==CaptureSource::MainDisplay).then_some(*grant));
         let source=self.identity.lock().unwrap().clone().ok_or("Missing device identity")?;
         if target.is_empty() || target.len()>128 || target==source {return Err("Choose a paired receiving device".into());}
         let mut outgoing=self.outgoing.lock().unwrap();
@@ -263,12 +296,21 @@ impl MobilePublisher {
         let confirmation_timeout=Arc::new(Mutex::new(None));
         let timeout_evidence=confirmation_timeout.clone();
         let progress=status.clone();let target_id=target.clone();
+        let mut ticket=[0;32];ticket[..16].copy_from_slice(&random_bytes_16());ticket[16..].copy_from_slice(&random_bytes_16());
+        let quality_alive=Arc::new(AtomicBool::new(true));let task_quality_alive=quality_alive.clone();
+        if let Some(initial)=initial {
+            let grant=screen_grant.ok_or("Current delivery is not a screen")?;
+            let mut media=self.media.lock().unwrap();
+            if !media.sources.get(&CaptureSource::MainDisplay).is_some_and(|source|source.enabled&&source.grant==grant) {
+                return Err("Screen sharing authorization changed".into());
+            }
+            media.set_quality(crate::outgoing_quality::DeliveryQuality{ticket,source:CaptureSource::MainDisplay,grant,settings:initial.for_id(sequence),revision:0});
+        }
         let task=tokio::spawn(async move {
             type Error=Box<dyn std::error::Error+Send+Sync>;
             let run=async {
                 let (conn,mut events)=tokio::select! {biased;_=cancelled.changed()=>return Ok::<(),Error>(()),
                     result=tokio::time::timeout(Duration::from_secs(5),remote_core::workspace_session::WorkspaceConnection::connect_media(endpoint))=>result??};
-                let mut ticket=[0;32];ticket[..16].copy_from_slice(&random_bytes_16());ticket[16..].copy_from_slice(&random_bytes_16());
                 let request=u64::from_le_bytes(ticket[..8].try_into().unwrap()).max(1);
                 let live=||{let media=media.lock().unwrap();grants.iter().any(|(id,grant)|
                     media.sources.get(id).is_some_and(|source|source.enabled&&source.grant==*grant))};
@@ -285,15 +327,17 @@ impl MobilePublisher {
                         async move {broker.local(LocalIntent::Renew {ticket,generation,revision}).map_err(Error::from)}},
                     |state| *progress.lock().unwrap()=remote_core::directed_delivery::sending_status(state).into(),
                 ).await;
+                retire_quality(&media,&task_quality_alive,ticket);
                 let revoked=broker.local(LocalIntent::Revoke {ticket,generation});
                 let _=conn.control(SessionCommand::DeliveryCancel {request_id:request}).await;
                 conn.close().await;revoked?;result
             }.await;
+            retire_quality(&media,&task_quality_alive,ticket);
             *timeout_evidence.lock().unwrap()=run.as_ref().err().and_then(|error|
                 error.downcast_ref::<remote_core::directed_delivery::ConfirmationTimeout>()).cloned();
             *progress.lock().unwrap()=match run {Ok(())=>"Sending stopped".into(),Err(error)=>format!("Delivery stopped: {error}")};
         });
-        *outgoing=Some(Outgoing {id:sequence,target,stop,status,confirmation_timeout,task});Ok(())
+        *outgoing=Some(Outgoing {id:sequence,target,ticket,screen_grant,quality_alive,stop,status,confirmation_timeout,task});Ok(sequence)
     }
     pub fn next_delivery(&self) -> Option<serde_json::Value> {
         let scope=remote_core::shared_files::current_share_scope();
@@ -877,8 +921,17 @@ impl MobilePublisher {
         Ok(result)
     }
     pub async fn frame_from(&self,source:CaptureSource,epoch:u64,bytes:Vec<u8>,_timestamp_us:i64,audio:bool)->bool {
-        if (screen_source(source)&&!audio)||bytes.len()>8*1024*1024
-            ||!self.media.lock().unwrap().accepts_frame(source,epoch,audio){return false;}
+        if (screen_source(source)&&!audio)||bytes.len()>8*1024*1024{return false;}
+        {
+            let media=self.media.lock().unwrap();
+            if !media.accepts_frame(source,epoch,audio) {
+                // The last listener can unsubscribe between the capture poll
+                // and this PCM frame. Drop it without treating a live grant as
+                // a failed encoder; a later subscriber can resume capture.
+                return audio && !self.is_finished() && media.sources.get(&source).is_some_and(|s|
+                    s.enabled && s.audio && s.grant==epoch && !s.demand.audio);
+            }
+        }
         // Backpressure the codec drain worker; never discard an encoded reference frame locally.
         self.frames.send(Frame{source,epoch,bytes,timestamp:now_unix_ms() as u32,audio,screen_stream:None,timing:None,geometry_revision:0}).await.is_ok()
     }
@@ -1126,13 +1179,48 @@ mod tests {
         let (stop, mut cancelled) = watch::channel(false);
         let (finished, done) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move { let _=cancelled.changed().await; let _=finished.send(()); });
-        *publisher.outgoing.lock().unwrap()=Some(Outgoing {id:2,target:"desktop".into(),stop,
+        *publisher.outgoing.lock().unwrap()=Some(Outgoing {id:2,target:"desktop".into(),ticket:[42;32],screen_grant:None,quality_alive:Arc::new(AtomicBool::new(true)),stop,
             status:Arc::new(Mutex::new("Sending".into())),confirmation_timeout:Arc::new(Mutex::new(None)),task});
         assert!(publisher.stop_sending_id(1).is_err());
         assert_eq!(publisher.outgoing_status()["id"], 2);
         assert!(publisher.outgoing_status()["active"].as_bool().unwrap());
         publisher.stop_sending_id(2).unwrap();
         tokio::time::timeout(Duration::from_secs(1), done).await.unwrap().unwrap();
+    }
+    #[tokio::test]
+    async fn outgoing_quality_checks_intent_and_capture_grant() {
+        let publisher=MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),
+            std::env::temp_dir(),b"quality-binding".to_vec(),true,false,false).await.unwrap();
+        let grant=publisher.media.lock().unwrap().sources[&CaptureSource::MainDisplay].grant;
+        let (stop,mut cancelled)=watch::channel(false);
+        let task=tokio::spawn(async move {let _=cancelled.changed().await;});
+        let alive=Arc::new(AtomicBool::new(true));
+        *publisher.outgoing.lock().unwrap()=Some(Outgoing{id:7,target:"desktop".into(),ticket:[5;32],screen_grant:Some(grant),
+            quality_alive:alive.clone(),stop,status:Arc::new(Mutex::new(String::new())),confirmation_timeout:Arc::new(Mutex::new(None)),task});
+        let mut quality=crate::outgoing_quality::QualityRequest{id:6,short_edge:1080,fps:30,bitrate_kbps:3000};
+        assert!(publisher.set_outgoing_quality(quality).is_err());
+        publisher.media.lock().unwrap().set_quality(crate::outgoing_quality::DeliveryQuality{ticket:[5;32],source:CaptureSource::MainDisplay,grant,settings:quality,revision:0});
+        quality.id=7;assert!(publisher.set_outgoing_quality(quality).is_ok());
+        alive.store(false,Ordering::Release);
+        assert!(publisher.set_outgoing_quality(quality).is_err());
+        publisher.stop_sending_id(7).unwrap();
+    }
+    #[tokio::test(flavor="current_thread")]
+    async fn initial_quality_binds_before_offer_and_old_cleanup_cannot_clear_successor() {
+        let publisher=MobilePublisher::start_with_access("127.0.0.1:0".parse().unwrap(),
+            std::env::temp_dir(),b"quality-start".to_vec(),true,false,false).await.unwrap();
+        publisher.set_device_identity("phone".into());
+        let initial=crate::outgoing_quality::InitialQuality{short_edge:720,fps:30,bitrate_kbps:3000};
+        let endpoint="127.0.0.1:9".parse().unwrap();
+        let first=publisher.send_screen_quality("desktop".into(),endpoint,initial).await.unwrap();
+        assert_eq!(publisher.media.lock().unwrap().quality_id_for_test(),Some(first));
+        publisher.stop_sending_id(first).unwrap();
+        let second=publisher.send_screen_quality("desktop".into(),endpoint,initial).await.unwrap();
+        assert_ne!(first,second);
+        assert!(publisher.stop_sending_id(first).is_err());
+        tokio::task::yield_now().await;
+        assert_eq!(publisher.media.lock().unwrap().quality_id_for_test(),Some(second));
+        publisher.stop_sending_id(second).unwrap();
     }
     #[tokio::test]
     async fn foreground_delivery_listener_does_not_enable_files_or_capture() {
@@ -1375,6 +1463,29 @@ mod tests {
             SessionCommand::Error { .. }
         ));
         assert!(!publisher.demand().active);
+    }
+
+    #[tokio::test]
+    async fn audio_demand_pause_is_benign_but_revoked_grants_fail() {
+        let directory = ReceiverTestDir::new();
+        let publisher = MobilePublisher::start_with_permissions("127.0.0.1:0".parse().unwrap(),
+            directory.0.clone(), b"audio-pause-fixture".to_vec(), false, false).await.unwrap();
+        publisher.set_capture_available(true,true);
+        let source=CaptureSource::MainDisplay;
+        let grant=publisher.source_grant(source).unwrap();
+        let request=SubscriptionRequest{id:256,source,width:720,height:1280,fps:30,bitrate_kbps:4000,audio:true};
+        let demand=|on| { publisher.media.lock().unwrap().recompute(if on {
+            vec![crate::publisher_media::ActiveRequest{stream:1,grant,request:&request,video:true,audio:true}]
+        } else {vec![]}); };
+        demand(true);
+        assert!(publisher.frame_from(source,grant,vec![1],0,true).await);
+        demand(false);
+        assert!(publisher.frame_from(source,grant,vec![2],0,true).await);
+        assert!(!publisher.frame_from(source,grant+1,vec![3],0,true).await);
+        demand(true);
+        assert!(publisher.frame_from(source,grant,vec![4],0,true).await);
+        publisher.set_capture_available(false,false);
+        assert!(!publisher.frame_from(source,grant,vec![5],0,true).await);
     }
 
     #[tokio::test]

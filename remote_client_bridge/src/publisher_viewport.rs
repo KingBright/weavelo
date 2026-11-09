@@ -21,6 +21,9 @@ pub struct ScreenViewDemand {
     pub fps: u32,
     pub bitrate_kbps: u32,
     pub geometry: FrameGeometry,
+    pub delivery_id: u64,
+    pub quality_revision: u64,
+    pub quality_pending: bool,
 }
 
 impl ScreenView {
@@ -41,11 +44,12 @@ impl ScreenView {
         self.planner.update(demand,Instant::now()).map_err(str::to_owned)?;
         Ok(self.planner.demand().map_or(0,|demand|demand.revision))
     }
-    pub fn demand(&mut self,stream:u64,source:[u32;2])->Option<ScreenViewDemand> {
+    pub fn demand_with_mode(&mut self,stream:u64,source:[u32;2],direct_quality:bool)->Option<ScreenViewDemand> {
         if !self.active{return None;}
-        let geometry=self.planner.plan(source,[self.request.width,self.request.height],0,Instant::now()).ok()?;
+        let geometry=self.planner.plan_with_receiver_density(source,[self.request.width,self.request.height],0,Instant::now(),!direct_quality).ok()?;
         self.latest_geometry=geometry.revision;
         Some(ScreenViewDemand{stream,grant:self.grant,keyframe:self.keyframe,fps:self.request.fps,
-            bitrate_kbps:bitrate_for_pixels(geometry.width,geometry.height,self.request.fps,self.request.bitrate_kbps),geometry})
+            bitrate_kbps:if direct_quality {self.request.bitrate_kbps} else {bitrate_for_pixels(geometry.width,geometry.height,self.request.fps,self.request.bitrate_kbps)},geometry,
+            delivery_id:0,quality_revision:0,quality_pending:false})
     }
 }

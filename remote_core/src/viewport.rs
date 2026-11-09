@@ -46,7 +46,7 @@ pub struct ViewportPlanner {
     last_resize: Option<Instant>,
     last_applied: Option<Instant>,
     last_visible: Option<PixelRect>,
-    last_limits:Option<([u32;2],Option<[u32;2]>)>,
+    last_limits:Option<([u32;2],Option<[u32;2]>,bool)>,
     resize_pending: bool,
     current: Option<FrameGeometry>,
     next_revision: u64,
@@ -81,11 +81,17 @@ impl ViewportPlanner {
         self.next_revision.checked_add(1)
     }
     pub fn plan(&mut self,source:[u32;2],cap:[u32;2],source_revision:u32,now:Instant)->Result<FrameGeometry,&'static str> {
+        self.plan_with_receiver_density(source,cap,source_revision,now,true)
+    }
+    /// Directed send can choose coded density independently from the receiver's
+    /// physical window, while retaining the same visible crop and revisions.
+    pub fn plan_with_receiver_density(&mut self,source:[u32;2],cap:[u32;2],source_revision:u32,now:Instant,
+        receiver_density:bool)->Result<FrameGeometry,&'static str> {
         if source.iter().any(|v|!(2..=32768).contains(v)) || cap.iter().any(|v|!(2..=8192).contains(v)) {
             return Err("Source or viewport pixel size is unavailable");
         }
         let demand=self.demand.filter(|v|v.source_revision==source_revision);
-        let limits=(cap,demand.map(|v|[v.width,v.height]));
+        let limits=(cap,demand.map(|v|[v.width,v.height]),receiver_density);
         let visible=visible_pixels(demand.map_or(NormalizedRect::FULL,|v|v.visible),source);
         let old=self.current.filter(|g|g.source_revision==source_revision
             &&[g.source_width,g.source_height]==source);
@@ -97,7 +103,7 @@ impl ViewportPlanner {
             let coalescing=self.last_applied.is_some_and(|t|now.saturating_duration_since(t)<DEMAND_INTERVAL);
             if covered && same_zoom && coalescing {crop=old.crop;}
         }
-        let target=if let Some(demand)=demand.filter(|_|!self.native_window) {
+        let target=if let Some(demand)=demand.filter(|_|receiver_density&&!self.native_window) {
             // Pixel density follows the visible receiver, retaining prefetch
             // margins at that density. Never enlarge beyond captured pixels.
             let w=(u64::from(demand.width)*u64::from(crop.width)).div_ceil(u64::from(visible.width.max(1)));
@@ -113,6 +119,9 @@ impl ViewportPlanner {
             let interval=self.last_resize.is_none_or(|t|now.saturating_duration_since(t)>=RESIZE_INTERVAL);
             let old_fits=old.width<=source[0] && old.height<=source[1]
                 &&old.width<=cap[0]&&old.height<=cap[1];
+            // A sender's explicit quality change is a transaction, not a
+            // gesture: expose its new size immediately for encoder validation.
+            let explicit_cap_change=!receiver_density && self.last_limits.is_some_and(|(old_cap,_,_)|old_cap!=cap);
             let stable_pan=self.last_limits==Some(limits)&&self.last_visible.is_some_and(|v|(v.width,v.height)==(visible.width,visible.height));
             // Keep the old codec during active navigation. Per-frame geometry
             // restores the crop's true display aspect after GPU scaling, even
@@ -121,7 +130,7 @@ impl ViewportPlanner {
                 && old.width <= crop.width && old.height <= crop.height
             {
                 output=[old.width,old.height];
-            }else if proposed && old_fits && (!settled||!interval) {
+            }else if proposed && old_fits && !explicit_cap_change && (!settled||!interval) {
                 // Keep retrying this resize after the gesture settles. The
                 // new crop by itself must not turn it into a stable pan.
                 resize_pending = true;
@@ -164,6 +173,21 @@ mod tests {
     use super::*;
     fn demand(revision:u64,x:u32,zoom:u32)->ViewportDemand {ViewportDemand{id:7,source_revision:3,revision,
         visible:NormalizedRect{x,y:0,width:NORMALIZED_ONE/zoom,height:NORMALIZED_ONE/zoom},width:1280,height:720}}
+    #[test]
+    fn directed_quality_uses_cap_not_receiver_window_and_keeps_crop() {
+        let now=Instant::now();let mut planner=ViewportPlanner::default();
+        let viewport=ViewportDemand{id:7,source_revision:3,revision:1,visible:NormalizedRect::FULL,width:360,height:800};
+        planner.update(viewport,now).unwrap();
+        let source=[1080,1920];
+        for (index,short) in [540,720,1080].into_iter().enumerate() {
+            let cap=[short,short*16/9];
+            let geometry=planner.plan_with_receiver_density(source,cap,3,now+Duration::from_millis(index as u64*20),false).unwrap();
+            assert_eq!(geometry.width,short);
+            assert!(geometry.crop.contains(visible_pixels(viewport.visible,source)));
+        }
+        let normal=planner.plan(source,[1080,1920],3,now+Duration::from_secs(2)).unwrap();
+        assert!(normal.width<=360 && normal.height<=800);
+    }
     #[test]
     fn pan_is_latest_only_and_never_changes_coded_size_at_edges() {
         let now=Instant::now();let mut planner=ViewportPlanner::default();planner.update(demand(1,0,4),now).unwrap();

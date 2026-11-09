@@ -130,17 +130,28 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            var publishAudio by remember { mutableStateOf(false) }
-            var publishControl by remember { mutableStateOf(false) }
+            var publishAudio by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+            var publishControl by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
             var pendingSendTarget by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+            var audioChooserOpen by rememberSaveable { mutableStateOf(false) }
+            var selectedAudioPackage by rememberSaveable { mutableStateOf<String?>(null) }
+            var selectedAudioUid by rememberSaveable { mutableStateOf(-1) }
+            var selectedAudioUpdated by rememberSaveable { mutableStateOf(-1L) }
             val projection = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
                 val target = pendingSendTarget
                 pendingSendTarget = null
-                if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl, target)
+                val audioTarget = selectedAudioPackage?.let { PlaybackAudioTarget(it, selectedAudioUid, selectedAudioUpdated) }
+                if (result.resultCode == RESULT_OK && result.data != null) PublisherClient.start(this, result.resultCode, result.data!!, publishAudio, publishControl, target, audioTarget)
                 else PublisherClient.status("Screen sharing was not started. Confirm Android screen capture to make this phone viewable.", false, AppText("Screen sharing was not started. Confirm Android screen capture to make this phone viewable."))
             }
             fun requestProjection(audio: Boolean, control: Boolean = false) {
                 publishAudio = audio; publishControl = control
+                if (!audio) selectedAudioPackage = null
+                if (audio && android.os.Build.VERSION.SDK_INT < 29) {
+                    pendingSendTarget = null
+                    PublisherClient.status("Playback audio sharing requires Android 10 or later.", text = AppText("Playback audio sharing requires Android 10 or later."))
+                    return
+                }
                 // Playback audio retains its real MediaProjection grant. A local
                 // shell display only supplies video and the existing input path.
                 if (!audio && `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.attached() != null) {
@@ -156,7 +167,27 @@ class MainActivity : ComponentActivity() {
                     else manager.createScreenCaptureIntent()
                 projection.launch(intent)
             }
-            val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> requestProjection(granted,publishControl) }
+            val audioPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (granted) requestProjection(true,publishControl)
+                else {
+                    pendingSendTarget = null
+                    PublisherClient.status("Audio permission was not granted; screen sharing was not started.", text = AppText("Audio permission was not granted; screen sharing was not started."))
+                }
+            }
+            if (audioChooserOpen) PlaybackAudioDialog(showVideoOnly = pendingSendTarget != null,
+                onDismiss = { audioChooserOpen = false; pendingSendTarget = null },
+                onVideoOnly = { audioChooserOpen = false; requestProjection(false, publishControl) },
+                onSelect = { target ->
+                    audioChooserOpen = false
+                    selectedAudioPackage = target?.packageName; selectedAudioUid = target?.uid ?: -1
+                    selectedAudioUpdated = target?.updated ?: -1L
+                    if (target != null && !PlaybackAudioSources.matches(this, target)) {
+                        pendingSendTarget = null
+                        PublisherClient.status("Selected audio app changed or is unavailable", text = AppText("Selected audio app changed or is unavailable"))
+                    } else if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                        audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    else requestProjection(true, publishControl)
+                })
             val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
                 if (granted) CameraPublisher.start(this)
                 else { cameraTarget = null; CameraPublisher.update(CameraSharingState(status = "Camera permission was not granted", statusText = AppText("Camera permission was not granted"))) }
@@ -273,10 +304,11 @@ class MainActivity : ComponentActivity() {
                         onSendCamera = { target -> cameraTarget = target; if (!camera.enabled) requestCamera() },
                         onSendScreen = { deviceId ->
                             if (PublisherClient.active) scope.launch(Dispatchers.IO) {
-                                runCatching { PublisherClient.sendScreen(deviceId) }.onFailure { PublisherClient.status(it.message ?: "Could not send screen", text = appTextOf(it) ?: if (it.message == null) AppText("Could not send screen") else null) }
+                                runCatching { PublisherClient.sendScreen(deviceId) }.onSuccess {
+                                    if (!PublisherClient.audioEnabled) PublisherClient.status("This sharing session has no audio. Stop it and start sharing with audio to send sound.", text = AppText("This sharing session has no audio. Stop it and start sharing with audio to send sound."))
+                                }.onFailure { PublisherClient.status(it.message ?: "Could not send screen", text = appTextOf(it) ?: if (it.message == null) AppText("Could not send screen") else null) }
                             } else {
-                                pendingSendTarget = deviceId
-                                requestProjection(false)
+                                pendingSendTarget = deviceId; publishControl = false; audioChooserOpen = true
                             }
                         },
                         onStopSending = { id -> scope.launch(Dispatchers.IO) {
@@ -292,14 +324,12 @@ class MainActivity : ComponentActivity() {
                         onShareControlledScreen = {
                             pendingSendTarget = null
                             publishControl = true
-                            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
-                            else requestProjection(true,true)
+                            audioChooserOpen = true
                         },
                         onShareScreen = { audio ->
                             pendingSendTarget = null
                             publishControl = RemoteControlService.connected.value
-                            if (audio && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) audioPermission.launch(android.Manifest.permission.RECORD_AUDIO)
-                            else requestProjection(audio,publishControl)
+                            if (audio) audioChooserOpen = true else requestProjection(false,publishControl)
                         },
                         onStopSharing = { PublisherClient.stop(this) },
                         onShareCamera = { requestCamera() },

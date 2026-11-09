@@ -37,6 +37,29 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
                     Plan(it.name, size.width, size.height, fps, bitrateKbps) else null
             }
         }
+        /** Select only plans at or below every requested bound. */
+        fun fitAtMost(sourceWidth: Int, sourceHeight: Int, width: Int, height: Int, fps: Int, bitrateKbps: Int): Plan? {
+            if (fps <= 0 || bitrateKbps <= 0) return null
+            val bits=bitrateKbps.toLong()*1000
+            for (percent in intArrayOf(100,90,80,70,60,50,40,30,25,20,10)) {
+                for (codec in hardware) {
+                    val caps=codec.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC).videoCapabilities
+                    val targetW=(width.toLong()*percent/100).toInt().coerceAtLeast(1)
+                    val targetH=(height.toLong()*percent/100).toInt().coerceAtLeast(1)
+                    val size=VideoDimensions.fitEncoder(sourceWidth,sourceHeight,targetW,targetH,caps.widthAlignment,caps.heightAlignment) ?: continue
+                    val plan=runCatching {
+                        val range=caps.getSupportedFrameRatesFor(size.width,size.height)
+                        val selectedFps=minOf(fps,kotlin.math.floor(range.upper).toInt())
+                        val selectedKbps=minOf(bits,caps.bitrateRange.upper.toLong())/1000
+                        if (selectedFps.toDouble()<range.lower || selectedKbps*1000<caps.bitrateRange.lower ||
+                            !caps.areSizeAndRateSupported(size.width,size.height,selectedFps.toDouble())) null
+                        else Plan(codec.name,size.width,size.height,selectedFps,selectedKbps.toInt())
+                    }.getOrNull()
+                    if (plan!=null) return plan
+                }
+            }
+            return null
+        }
     }
     private val codec = MediaCodec.createByCodecName(plan.codec)
     val surface: Surface

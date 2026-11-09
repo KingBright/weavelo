@@ -92,6 +92,9 @@ fun MobileConsoleScreen(
     onScanQr: () -> Unit
 ) {
     var pairingCode by remember { mutableStateOf("") }
+    var qualityDelivery by remember { mutableStateOf<Long?>(null) }
+    qualityDelivery?.let { id -> OutgoingVideoQualityDialog(id) { qualityDelivery = null } }
+    val openQuality = { qualityDelivery = if (outgoing.active) outgoing.id else 0L }
     var pairingCodeOpen by remember { mutableStateOf(false) }
     var invitationOpen by remember { mutableStateOf(false) }
     if (invitationOpen) InvitationDialog { invitationOpen = false }
@@ -199,7 +202,8 @@ fun MobileConsoleScreen(
                         },
                         onLocalSettings = { activeTab = "Security" },
                         onLocalDetails = { activeTab = "Mesh P2P" },
-                        outgoing = outgoing, onSendScreen = onSendScreen, onSendCamera = onSendCamera, onStopSending = onStopSending
+                        outgoing = outgoing, onSendScreen = onSendScreen, onSendCamera = onSendCamera, onStopSending = onStopSending,
+                        onOutgoingQuality = openQuality
                     )
                     "Mesh P2P" -> MeshP2pTabContent(
                         devices = devices,
@@ -221,7 +225,8 @@ fun MobileConsoleScreen(
                         onShareScreen = onShareScreen,
                         onShareCamera = onShareCamera,
                         onStopSharing = onStopSharing,
-                        onBrowseFiles = onBrowseFiles
+                        onBrowseFiles = onBrowseFiles,
+                        onOutgoingQuality = openQuality
                     )
                     "Settings" -> SettingsTabContent(
                         update = update,
@@ -385,7 +390,8 @@ private fun DevicesTabContent(
     outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState,
     onSendScreen: (String) -> Unit,
     onSendCamera: (String) -> Unit,
-    onStopSending: (Long) -> Unit
+    onStopSending: (Long) -> Unit,
+    onOutgoingQuality: () -> Unit
 ) {
     val workspace by `fun`.hackerlife.weavelo.WorkspaceClient.state.collectAsState()
     LazyColumn(
@@ -403,6 +409,8 @@ private fun DevicesTabContent(
                 MobileAction(MobileSymbol.More, tr("This device & pairing"), true, modifier = Modifier.size(48.dp), onClick = onLocalDetails)
             }
         }
+
+        item { TextButton(onClick = onOutgoingQuality) { Text(tr("Outgoing screen quality")) } }
 
         if (devices.isEmpty()) {
             item {
@@ -710,7 +718,8 @@ private fun SecurityTabContent(
     onShareScreen: (Boolean) -> Unit,
     onShareCamera: () -> Unit,
     onStopSharing: () -> Unit,
-    onBrowseFiles: () -> Unit
+    onBrowseFiles: () -> Unit,
+    onOutgoingQuality: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val camera by `fun`.hackerlife.weavelo.CameraPublisher.state.collectAsState()
@@ -751,6 +760,7 @@ private fun SecurityTabContent(
                     if (publishing) "Stop" else "Share", nativeAvailable) {
                     if (publishing) onStopSharing() else onShareScreen(false)
                 }
+                TextButton(onClick = onOutgoingQuality, modifier = Modifier.fillMaxWidth()) { Text(tr("Outgoing screen quality")) }
                 SharingPermissionRow(MobileSymbol.Camera, "Camera", camera.statusText?.let { appText(it) } ?: trFormat("Details: %s", camera.status),
                     if (camera.enabled) "Stop" else "Share", nativeAvailable) {
                     if (camera.enabled) `fun`.hackerlife.weavelo.CameraPublisher.stop(context) else onShareCamera()
