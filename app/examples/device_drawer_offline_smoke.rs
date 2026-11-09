@@ -1,7 +1,12 @@
 //! Bounded native drawer smoke. Reuses production source and records actions only.
 //! No runtime, profile, mesh, capture, input forwarding, or Owner is constructed.
 #[cfg(target_os = "macos")]
-use weavelo_app::{AppDevice, i18n, product_components};
+use weavelo_app::{AppDevice, product_components};
+#[cfg(target_os = "macos")]
+mod i18n {
+    pub use weavelo_app::i18n::{is_chinese, message, tr};
+    include!(concat!(env!("OUT_DIR"), "/i18n_formats.rs"));
+}
 #[cfg(target_os = "macos")]
 #[path = "../src/design_system.rs"]
 mod design_system;
@@ -297,7 +302,7 @@ mod native {
                             .overflow_y_scroll()
                             .child(div().w(px(360.)).child(DeviceDrawer::new(
                                 model,
-                                self.state.filter,
+                                self.state.clone(),
                                 move |action, cx| {
                                     let _ = weak.update(cx, |this, cx| this.select(action, cx));
                                 },
