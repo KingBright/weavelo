@@ -69,9 +69,16 @@ fn ax_window_bounds(window: &CFType) -> Option<CGRect> {
 /// capture additionally require the exact selected WindowServer identity.
 pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bool {
     if !permission_available() { return false; }
-    let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-    unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), 0.05); }
-    let Some(app) = attr(&system, "AXFocusedApplication") else { return false; };
+    let Some((expected_id, expected_pid)) = target.or_else(|| {
+        let list = windows(1 | 16, 0).ok()?;
+        let id = top_at(&list, point)?;
+        list.iter().find(|w| w.id == id && w.pid > 0).map(|w| (id, w.pid))
+    }) else { return false; };
+    // The system-wide focused-app AX query can fail in a background service.
+    // Query only the clicked window's owner and check its actual frontmost flag.
+    let raw = unsafe { AXUIElementCreateApplication(expected_pid) };
+    if raw.is_null() { return false; }
+    let app = unsafe { CFType::wrap_under_create_rule(raw) };
     unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), 0.05); }
     let Some(window) = attr(&app, "AXFocusedWindow") else { return false; };
     let Some(editor) = attr(&app, "AXFocusedUIElement") else { return false; };
@@ -85,11 +92,12 @@ pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bo
     if unsafe { AXUIElementIsAttributeSettable(editor.as_CFTypeRef(), value.as_CFTypeRef(), &mut settable) } != 0 || !settable { return false; }
     if !ax_window_bounds(&editor).is_some_and(|bounds| contains(bounds, point)) { return false; }
     let mut pid = 0;
-    if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 { return false; }
+    if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 || pid != expected_pid { return false; }
     let Ok(list) = windows(1 | 16, 0) else { return false; };
     let Some(id) = ax_window_bounds(&window).and_then(|bounds| focused_window_id(&list, pid, bounds)) else { return false; };
-    if target.is_some_and(|target| target != (id,pid)) { return false; }
-    top_at(&list, point) == Some(id) && keyboard_focus(&list, id, pid, |_| Some(id))
+    id == expected_id && top_at(&list, point) == Some(id)
+        && keyboard_focus(&list, id, pid, |_| Some(id))
+        && attr(&app, "AXFrontmost").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| v.into())
 }
 fn value(dictionary: &CFType, key: &str) -> Option<CFType> {
     let dictionary = dictionary.downcast::<CFDictionary>()?;
