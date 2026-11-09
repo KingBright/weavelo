@@ -70,9 +70,9 @@ fn ax_window_bounds(window: &CFType) -> Option<CGRect> {
 pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bool {
     if !permission_available() { return false; }
     let Some((expected_id, expected_pid)) = target.or_else(|| {
+        let pid = pointer_hit_pid(point).ok()?;
         let list = windows(1 | 16, 0).ok()?;
-        let id = top_at(&list, point)?;
-        list.iter().find(|w| w.id == id && w.pid > 0).map(|w| (id, w.pid))
+        Some((top_at(list.iter().filter(|w| w.pid == pid), point)?, pid))
     }) else { return false; };
     // The system-wide focused-app AX query can fail in a background service.
     // Query only the clicked window's owner and check its actual frontmost flag.
@@ -95,9 +95,31 @@ pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bo
     if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 || pid != expected_pid { return false; }
     let Ok(list) = windows(1 | 16, 0) else { return false; };
     let Some(id) = ax_window_bounds(&window).and_then(|bounds| focused_window_id(&list, pid, bounds)) else { return false; };
-    id == expected_id && top_at(&list, point) == Some(id)
+    id == expected_id && top_at(list.iter().filter(|w| w.pid == pid), point) == Some(id)
         && keyboard_focus(&list, id, pid, |_| Some(id))
+        && pointer_hit_pid(point).is_ok_and(|hit| hit == pid)
         && attr(&app, "AXFrontmost").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| v.into())
+}
+
+/// Use the real cross-process hit rather than the bounds of transparent system surfaces.
+fn pointer_hit_pid(point: CGPoint) -> Result<i32, String> {
+    let raw = unsafe { AXUIElementCreateSystemWide() };
+    if raw.is_null() { return Err("Cannot verify the foreground input target".into()); }
+    let system = unsafe { CFType::wrap_under_create_rule(raw) };
+    unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), 0.05); }
+    let mut raw_hit = std::ptr::null();
+    let status = unsafe {
+        AXUIElementCopyElementAtPosition(system.as_CFTypeRef(), point.x as f32, point.y as f32, &mut raw_hit)
+    };
+    if status != 0 || raw_hit.is_null() {
+        return Err(format!("Foreground hit test unavailable ({status}); no input sent"));
+    }
+    let hit = unsafe { CFType::wrap_under_create_rule(raw_hit) };
+    let mut pid = 0;
+    if unsafe { AXUIElementGetPid(hit.as_CFTypeRef(), &mut pid) } != 0 || pid <= 0 {
+        return Err("Cannot verify the foreground input target".into());
+    }
+    Ok(pid)
 }
 fn value(dictionary: &CFType, key: &str) -> Option<CFType> {
     let dictionary = dictionary.downcast::<CFDictionary>()?;
@@ -194,9 +216,9 @@ fn contains(r: CGRect, p: CGPoint) -> bool {
         && p.x < r.origin.x + r.size.width
         && p.y < r.origin.y + r.size.height
 }
-fn top_at(windows: &[WindowDescription], point: CGPoint) -> Option<u32> {
+fn top_at<'a>(windows: impl IntoIterator<Item = &'a WindowDescription>, point: CGPoint) -> Option<u32> {
     windows
-        .iter()
+        .into_iter()
         .find(|w| w.visible && w.alpha > 0. && w.layer >= 0 && contains(w.bounds, point))
         .map(|w| w.id)
 }
@@ -513,39 +535,11 @@ impl WindowTarget {
         // Same-process window ordering excludes the wrong document or sheet.
         // Cross-process hit testing below uses Accessibility, not the bounding box
         // of Dock's transparent full-screen Stage Manager surface.
-        let owned: Vec<_> = list
-            .into_iter()
-            .filter(|w| w.pid == self.pid)
-            .collect();
-        if top_at(&owned, p) == Some(self.id) {
+        if top_at(list.iter().filter(|w| w.pid == self.pid), p) == Some(self.id) {
             // The global HID path is allowed only after the public hit-test agrees
             // the point belongs to the selected process. An AXApplication result
             // is sufficient here; a window title or synthetic AX child is not used.
-            let raw = unsafe { AXUIElementCreateSystemWide() };
-            if raw.is_null() {
-                return Err("Cannot verify the foreground input target".into());
-            }
-            let system = unsafe { CFType::wrap_under_create_rule(raw) };
-            unsafe {
-                AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), 0.05);
-            }
-            let mut raw_hit = std::ptr::null();
-            let status = unsafe {
-                AXUIElementCopyElementAtPosition(
-                    system.as_CFTypeRef(),
-                    p.x as f32,
-                    p.y as f32,
-                    &mut raw_hit,
-                )
-            };
-            if status != 0 || raw_hit.is_null() {
-                return Err(format!(
-                    "Foreground hit test unavailable ({status}); no input sent"
-                ));
-            }
-            let hit = unsafe { CFType::wrap_under_create_rule(raw_hit) };
-            let mut pid = 0;
-            if unsafe { AXUIElementGetPid(hit.as_CFTypeRef(), &mut pid) } != 0 || pid != self.pid {
+            if pointer_hit_pid(p)? != self.pid {
                 return Err("Another application covers the selected point; foreground window input is blocked".into());
             }
             Ok(p)
