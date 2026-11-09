@@ -5,7 +5,7 @@ use remote_core::InputInjector;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 type InputResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 fn check_deadline(deadline: Option<Instant>) -> InputResult {
     if deadline.is_some_and(|d| Instant::now() >= d) {
@@ -45,7 +45,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEINPUT, SendInput, VIRTUAL_KEY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SPI_GETWHEELSCROLLCHARS, SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
+    GA_ROOT, GetAncestor, GetForegroundWindow, SPI_GETKEYBOARDDELAY, SPI_GETWHEELSCROLLCHARS,
+    SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
 };
 
 const WHEEL_DELTA: f64 = 120.0;
@@ -130,11 +131,34 @@ struct WheelDeltaRemainders {
     vertical: WheelDeltaRemainder,
 }
 
+struct HeldKeyRepeat {
+    key: VIRTUAL_KEY,
+    foreground: usize,
+    due: Instant,
+}
+
+#[derive(Default)]
+struct KeyboardState {
+    pressed: BTreeSet<VIRTUAL_KEY>,
+    repeat: Option<HeldKeyRepeat>,
+}
+
+fn foreground_root() -> usize {
+    unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) as usize }
+}
+
+fn repeat_delay() -> Duration {
+    let mut setting = 0_u32;
+    let read = unsafe { SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, (&mut setting as *mut u32).cast(), 0) };
+    let quarters = if read != 0 { setting.min(3) + 1 } else { 2 };
+    Duration::from_millis(250 * u64::from(quarters))
+}
+
 pub struct WindowsInputInjector {
     pressed: AtomicU8,
     cleanup_unconfirmed: AtomicBool,
     modifiers: AtomicU8,
-    pressed_keys: Mutex<BTreeSet<VIRTUAL_KEY>>,
+    keyboard: Mutex<KeyboardState>,
     unicode_up: Mutex<Option<u16>>,
     scroll_remainders: Mutex<WheelDeltaRemainders>,
     source: Option<(native_sources::Selection,(u32,u32))>,
@@ -154,7 +178,7 @@ impl WindowsInputInjector {
             pressed: AtomicU8::new(0),
             cleanup_unconfirmed: AtomicBool::new(false),
             modifiers: AtomicU8::new(0),
-            pressed_keys: Mutex::new(BTreeSet::new()),
+            keyboard: Mutex::new(KeyboardState::default()),
             unicode_up: Mutex::new(None),
             scroll_remainders: Mutex::new(WheelDeltaRemainders::default()),
             source:Some((selection,canvas)),
@@ -246,9 +270,9 @@ impl WindowsInputInjector {
     }
 
     fn post_key(&self, vk: VIRTUAL_KEY, pressed: bool, deadline: Option<Instant>) -> InputResult {
-        let mut keys = self.pressed_keys.lock().unwrap();
+        let mut keyboard = self.keyboard.lock().unwrap();
         check_deadline(deadline)?;
-        if keys.contains(&vk) == pressed {
+        if keyboard.pressed.contains(&vk) == pressed {
             return Ok(());
         }
         // This lock excludes cleanup until the final call has a known result.
@@ -256,9 +280,24 @@ impl WindowsInputInjector {
             return Err("Windows did not accept this input; no retry was issued".into());
         }
         if pressed {
-            keys.insert(vk);
+            keyboard.pressed.insert(vk);
+            // Repeat editing/navigation keys, excluding Ctrl, Alt and Meta chords.
+            let repeatable = matches!(vk, 0x08 | 0x21..=0x28 | 0x2e)
+                && self.modifiers.load(Ordering::Relaxed)
+                    & (input_modifiers::CONTROL | input_modifiers::ALT | input_modifiers::META) == 0;
+            let foreground = if repeatable { foreground_root() } else { 0 };
+            keyboard.repeat = (foreground != 0).then(|| HeldKeyRepeat {
+                key: vk,
+                foreground,
+                due: Instant::now() + repeat_delay(),
+            });
         } else {
-            keys.remove(&vk);
+            keyboard.pressed.remove(&vk);
+            if keyboard.repeat.as_ref().is_some_and(|repeat| repeat.key == vk)
+                || matches!(vk, 0xA0..=0xA5 | 0x5B | 0x5C)
+            {
+                keyboard.repeat = None;
+            }
         }
         Ok(())
     }
@@ -358,6 +397,7 @@ impl WindowsInputInjector {
                 if self.modifiers.load(Ordering::Relaxed) & 0x0f != 0 {
                     return Err("release remote modifiers before committing text".into());
                 }
+                self.keyboard.lock().unwrap().repeat = None;
                 // SendInput inserts this UTF-16 array in order; the zero VK
                 // selects VK_PACKET rather than the machine's keyboard layout.
                 let mut inputs: Vec<INPUT> = text.as_str().encode_utf16().flat_map(|unit| {
@@ -487,14 +527,40 @@ impl InputInjector for WindowsInputInjector {
     fn inject_input_before(&self, event: InputEvent, deadline: Instant) -> InputResult {
         self.inject_before(event, Some(deadline))
     }
+    fn repeat_held_key_before(&self, deadline: Instant) -> InputResult {
+        let now = Instant::now();
+        if now >= deadline || self.cleanup_unconfirmed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut keyboard = self.keyboard.lock().unwrap();
+        let Some(repeat) = keyboard.repeat.as_mut() else { return Ok(()); };
+        if foreground_root() != repeat.foreground
+            || self.source.as_ref().is_some_and(|(source, _)| source.same_size().is_err())
+        {
+            keyboard.repeat = None;
+            return Ok(());
+        }
+        if now < repeat.due {
+            return Ok(());
+        }
+        // A repeat is a down on the already-owned key. It never refocuses a window.
+        match send_key(repeat.key, true, Some(deadline)) {
+            Ok(true) => {},
+            Ok(false) => return Err("Windows did not accept the held-key repeat".into()),
+            Err(_) if Instant::now() >= deadline => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        repeat.due = Instant::now() + Duration::from_millis(protocol::realtime_input::INPUT_REFRESH_INTERVAL_MS);
+        Ok(())
+    }
     fn release_all_input(&self) {
         self.modifiers.store(0, Ordering::Relaxed);
-        let keys = std::mem::take(&mut *self.pressed_keys.lock().unwrap());
+        let keys = std::mem::take(&mut *self.keyboard.lock().unwrap()).pressed;
         let mut unconfirmed = !self.release_unicode();
         for vk in keys {
             if !send_key(vk, false, None).unwrap_or(false) {
                 // SendInput reports zero accepted events, unlike an unknown RPC.
-                self.pressed_keys.lock().unwrap().insert(vk);
+                self.keyboard.lock().unwrap().pressed.insert(vk);
                 unconfirmed = true;
             }
         }

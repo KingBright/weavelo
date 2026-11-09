@@ -12,8 +12,11 @@ mod actual {
     include!("windows_input.rs");
     pub(super) fn held_lock(
         input: &WindowsInputInjector,
-    ) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<u16>> {
-        input.pressed_keys.lock().unwrap()
+    ) -> impl Sized + '_ {
+        input.keyboard.lock().unwrap()
+    }
+    pub(super) fn make_repeat_due(input: &WindowsInputInjector) {
+        input.keyboard.lock().unwrap().repeat.as_mut().unwrap().due = std::time::Instant::now();
     }
 }
 // The native handle/geometry APIs are recorded here; no desktop API is invoked.
@@ -73,6 +76,42 @@ static CALLS: Mutex<Calls> = Mutex::new(Calls {
     raise_attempts: Vec::new(),
 });
 static SERIAL: Mutex<()> = Mutex::new(());
+
+#[test]
+fn repeat_posts_only_for_the_same_live_press_and_foreground_window() {
+    use std::time::{Duration, Instant};
+
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls::default();
+    let input = actual::WindowsInputInjector::new().unwrap();
+    let backspace = |pressed| InputEvent::Key { key_code: 0x33, pressed, modifiers: 0 };
+    let repeat = || input.repeat_held_key_before(Instant::now() + Duration::from_secs(1));
+
+    input.inject_input(backspace(true)).unwrap();
+    repeat().unwrap(); // Still within the initial repeat delay.
+    actual::make_repeat_due(&input);
+    input.repeat_held_key_before(Instant::now()).unwrap(); // Expired held update.
+    repeat().unwrap();
+    repeat().unwrap(); // Rapid snapshots cannot accelerate repeat.
+    input.inject_input(backspace(false)).unwrap();
+    repeat().unwrap();
+
+    input.inject_input(backspace(true)).unwrap();
+    actual::make_repeat_due(&input);
+    CALLS.lock().unwrap().foreground_window = 2;
+    repeat().unwrap();
+    CALLS.lock().unwrap().foreground_window = 1;
+    repeat().unwrap(); // Returning to the old window cannot resume this hold.
+    input.release_all_input();
+    repeat().unwrap();
+
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(calls.posted, [
+        Posted::Key(0x08, true), Posted::Key(0x08, true), Posted::Key(0x08, false),
+        Posted::Key(0x08, true), Posted::Key(0x08, false),
+    ]);
+    assert!(calls.activation_attempts.is_empty());
+}
 
 #[allow(non_snake_case, non_camel_case_types, dead_code)]
 mod recording_api {
@@ -173,12 +212,14 @@ mod recording_api {
                 pub unsafe fn GetCursorPos(point:*mut POINT)->i32 {unsafe{(*point).x=0;(*point).y=0;}1}
                 pub const SPI_GETWHEELSCROLLLINES:u32=104;
                 pub const SPI_GETWHEELSCROLLCHARS:u32=108;
+                pub const SPI_GETKEYBOARDDELAY:u32=22;
                 pub unsafe fn SystemParametersInfoW(action:u32,_param:u32,value:*mut core::ffi::c_void,_flags:u32)->i32 {
                     let calls=super::super::super::super::CALLS.lock().unwrap();
                     if calls.fail_wheel_settings || value.is_null() {return 0;}
                     let setting=match action {
                         SPI_GETWHEELSCROLLLINES=>calls.wheel_lines.unwrap_or(3),
                         SPI_GETWHEELSCROLLCHARS=>calls.wheel_chars.unwrap_or(3),
+                        SPI_GETKEYBOARDDELAY=>1,
                         _=>return 0,
                     };
                     unsafe{*value.cast::<u32>()=setting;}1

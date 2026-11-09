@@ -282,6 +282,10 @@ pub trait InputInjector {
     }
     /// Snapshot the native target; a potentially blocking accessibility read runs separately.
     fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> { None }
+    /// Repeat only an existing native press after a fresh, accepted held-state update.
+    fn repeat_held_key_before(&self, _deadline: std::time::Instant) -> Result<(), Box<dyn Error + Send + Sync>> {
+        Ok(())
+    }
     fn release_all_input(&self) {}
 }
 

@@ -1858,6 +1858,19 @@ async fn dispatch_realtime_input(
             owner.lease_revocation = peer.input_leases.get(&id).map(|slot| slot.lease.revocation());
         }
     }
+    #[cfg(target_os = "windows")]
+    if owns_input
+        && matches!(&packet.payload, InputPayload::Held(keys) if !keys.is_empty())
+        && peer.can_input(id)
+        && let Some(target) = peer.subscriptions.get(&id).and_then(|source| source.input_target)
+        && let Err(error) = injector.repeat_held_key_before(target, deadline)
+    {
+        let cleanup = owner.release(injector).await;
+        peer.input_leases.remove(&id);
+        let reason = cleanup.err().unwrap_or(error).to_string();
+        input_error(peer, udp, addr, id, &reason).await;
+        return;
+    }
     if owner.owner==Some((addr,id))&&owner.binding==Some(packet.binding){
         owner.deadline=peer.input_leases.get(&id).map(|slot|slot.lease.deadline());
     }
@@ -2053,6 +2066,20 @@ type BoundInjector = (InputTarget, Box<dyn InputInjector + Send + Sync>);
 #[derive(Default)]
 struct LazyInputInjector(std::sync::Mutex<Option<BoundInjector>>);
 impl LazyInputInjector {
+    #[cfg(target_os = "windows")]
+    fn repeat_held_key_before(
+        &self,
+        target: InputTarget,
+        deadline: std::time::Instant,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let current = self.0.lock().map_err(|_| "Input scope lock poisoned")?;
+        if let Some((bound, injector)) = current.as_ref()
+            && *bound == target
+        {
+            injector.repeat_held_key_before(deadline)?;
+        }
+        Ok(())
+    }
     fn inject_target(
         &self,
         target: InputTarget,
