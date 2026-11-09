@@ -59,7 +59,7 @@ impl Selection {
         remote_core::source_picker::sort(&mut sources);
         self.selected.retain(|id| sources.iter().any(|source| source.source == *id));
         self.sources=sources;self.artwork=artwork;self.loading=false;
-        self.error=self.sources.is_empty().then(||if self.is_delivery() {"Choose a local source in Sharing & permissions."}else{"Screen not shared. Start sharing on the remote device."}.into());
+        self.error=(self.sources.is_empty() && self.is_delivery()).then(||"Choose a local source in Sharing & permissions.".into());
         if self.error.is_none() && had_selection && self.selected.is_empty() {
             self.error=Some("Selected sources ended. Choose another source.".into());
         }
@@ -341,7 +341,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
             });}}))
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child(crate::i18n::tr("Loading sources…"))))
-        .when(!selection.loading && selection.catalog_ready() && !selection.sources.is_empty()
+        .when(!selection.loading && selection.catalog_ready() && (!selection.is_delivery() || !selection.sources.is_empty())
             && selection.sources.iter().all(|source|source.source.category()==SourceCategory::Camera),|panel|
             panel.child(div().text_size(px(11.)).text_color(theme.content.secondary)
                 .child(crate::i18n::tr(if selection.is_delivery() {"Screen not shared. Open Sharing & permissions."}

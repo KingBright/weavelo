@@ -159,9 +159,11 @@ impl DeviceListViewModel {
                     scope: device.scope,
                     online: device.online,
                     connection,
-                    // View opens the authenticated source directory first. An
-                    // online phone can answer it before sharing any screen.
-                    can_connect: device.online && device.endpoint.port() != 0
+                    // An online phone may have no listener until sharing starts.
+                    // Its view still opens so the user can see what to do next.
+                    can_connect: device.online
+                        && (device.endpoint.port() != 0
+                            || device.badge == protocol::appearance::DeviceBadgePreset::Phone)
                         && connection != DeviceConnectionStatus::Connecting,
                     can_open_files: device.online,
                     can_open_workspace: device.online,
@@ -357,12 +359,14 @@ mod tests {
         phone.can_stream = false;
         let mut no_listener = phone.clone();
         no_listener.endpoint.set_port(0);
+        let mut desktop_without_listener = no_listener.clone();
+        desktop_without_listener.badge = Default::default();
         let mut offline = phone.clone();
         offline.online = false;
         let model = DeviceListViewModel::project(
-            &[phone, no_listener, offline], &RoleState::Idle, DeviceFilterKind::All,
+            &[phone, no_listener, desktop_without_listener, offline], &RoleState::Idle, DeviceFilterKind::All,
         );
-        assert_eq!(model.rows.iter().map(|row| row.can_connect).collect::<Vec<_>>(), [true, false, false]);
+        assert_eq!(model.rows.iter().map(|row| row.can_connect).collect::<Vec<_>>(), [true, true, false, false]);
     }
 
     #[test]

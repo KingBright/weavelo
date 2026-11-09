@@ -3,6 +3,8 @@
 use super::*;
 use protocol::session::{CaptureSource, CaptureSourceInfo};
 
+const PHONE_NOT_SHARING: &str = "Screen not shared. Start sharing on the remote device.";
+
 impl RestoredDashboard {
     pub(super) fn prepare_stream_close(&mut self, cx: &mut Context<Self>) {
         if self.purpose != WindowPurpose::Stream { return; }
@@ -32,6 +34,7 @@ impl RestoredDashboard {
         let detail=if self.status=="Ready" {crate::i18n::tr("This stream is not connected").to_owned()} else {crate::i18n::message(&self.status)};
         let target=self.stream_device.clone();
         let can_reconnect=target.is_some();
+        let action=if source_selected {"Reconnect this stream"} else if self.status==PHONE_NOT_SHARING {"Refresh sources"} else {"Choose a source"};
         div().size_full().flex().items_center().justify_center().p_4()
             .child(div().w(px(420.)).max_w(relative(0.95)).flex().flex_col().gap_3().p_4()
                 .rounded_xl().bg(color_glass_card()).border_1().border_color(color_border_fine())
@@ -40,7 +43,7 @@ impl RestoredDashboard {
                 .child(div().text_size(px(12.)).child(self.native_window_title.clone()))
                 .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary).child(detail))
                 .child(command_button("reconnect-fixed-stream",ActionVariantKind::Primary,cx)
-                    .disabled(!can_reconnect).child(crate::i18n::tr(if source_selected {"Reconnect this stream"} else {"Choose a source"}))
+                    .disabled(!can_reconnect).child(crate::i18n::tr(action))
                     .on_click(cx.listener(move|this,_,_,cx| {
                         if let Some(device)=target.clone() {
                             if let Some(source)=this.stream_source {
@@ -63,8 +66,18 @@ impl RestoredDashboard {
             return;
         }
         self.stream_device = Some(device.clone());
-        self.status = "Connecting to source directory".into();
         let ticket = self.session_commands.begin();
+        let phone_without_listener=self.runtime.owner.runtime().lock().unwrap().devices().iter().any(|d| {
+            d.device_id==device && d.online && d.endpoint.port()==0
+                && d.badge==protocol::appearance::DeviceBadgePreset::Phone
+        });
+        if phone_without_listener && self.runtime.owner.discovery_snapshot_rx().is_none_or(|rx|
+            crate::desktop::model::candidate_routes(&rx.borrow(),&device).is_empty()) {
+            self.status=PHONE_NOT_SHARING.into();
+            cx.notify();
+            return;
+        }
+        self.status = "Connecting to source directory".into();
         let owner = self.owner.clone();
         cx.spawn(async move |view, cx| {
             if !view
