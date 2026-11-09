@@ -3795,6 +3795,7 @@ fn slide_over_management_drawer(
     #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
     local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
     checking_permissions:bool,
+    update_card: Option<Div>,
     input_locked: bool,
     side_services: SideServiceUiState,
     selected_resolution: (u32, u32),
@@ -3918,7 +3919,7 @@ fn slide_over_management_drawer(
                             .into_any_element()
                     }
                     DrawerTab::Network => div().flex().flex_col().gap_3()
-                    .child(desktop_update_card(cx))
+                    .children(update_card)
                     .child(drawer_network_telemetry_tab(
                         selected_resolution,
                         selected_fps,
@@ -4929,10 +4930,8 @@ fn interface_language_controls(cx: &mut Context<RestoredDashboard>) -> Div {
         ))
 }
 
-fn desktop_update_card(cx: &mut Context<RestoredDashboard>) -> Div {
+fn desktop_update_card(state: &RestoredDashboard, cx: &mut Context<RestoredDashboard>) -> Div {
     let theme = cx.theme().clone();
-    let dashboard = cx.entity();
-    let state = dashboard.read(cx);
     let checking = state.checking_update;
     #[cfg(target_os="macos")]
     let installing = state.installing_update;
@@ -6516,6 +6515,12 @@ mod input_tests {
             open_restored_window(runtime.clone(), Some(instance), Default::default(), None, None, group.clone(), cx).unwrap()
         });
         let manager_view = manager.root(cx).unwrap();
+        manager.update(cx, |this, window, cx| {
+            this.active_tab = super::DrawerTab::Network;
+            // Settings is rendered while the dashboard entity is already leased.
+            drop(this.render(window, cx));
+            this.active_tab = super::DrawerTab::Devices;
+        }).unwrap();
         manager_view.update(cx, |this, _| this.status = "Retained local work".into());
         let stream = cx.update(|cx| open_restored_window(runtime, None, Default::default(), None, None, group.clone(), cx).unwrap());
         let stream_view = stream.root(cx).unwrap();

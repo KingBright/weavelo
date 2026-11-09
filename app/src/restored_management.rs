@@ -109,6 +109,7 @@ impl RestoredDashboard {
             self.media_controls(cx).child(scale_mode_control(self.scale_mode, cx))
         } else { div() };
         let transfers = if self.active_tab == DrawerTab::Files { self.transfers_panel(cx) } else { div() };
+        let update_card = (self.active_tab == DrawerTab::Network).then(|| desktop_update_card(self, cx));
         div()
             .relative()
             .size_full()
@@ -133,6 +134,7 @@ impl RestoredDashboard {
                 &self.local_share_state,
                 self.local_permissions.clone(),
                 self.checking_permissions,
+                update_card,
                 self.input_locked,
                 side_services,
                 self.stream_settings.values().resolution(),
