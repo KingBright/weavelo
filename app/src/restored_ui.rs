@@ -3796,6 +3796,7 @@ fn slide_over_management_drawer(
     local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
     checking_permissions:bool,
     update_card: Option<Div>,
+    pipeline_open: bool,
     input_locked: bool,
     side_services: SideServiceUiState,
     selected_resolution: (u32, u32),
@@ -3928,6 +3929,7 @@ fn slide_over_management_drawer(
                         host_stats,
                         owner,
                         management,
+                        pipeline_open,
                         cx,
                     ))
                     .into_any_element(),
@@ -4986,11 +4988,11 @@ fn drawer_network_telemetry_tab(
     host_stats: Option<&UiHostStats>,
     _owner: Arc<OriginalOwner>,
     defaults: bool,
+    pipeline_open: bool,
     cx: &mut Context<RestoredDashboard>,
 ) -> Div {
     let theme = cx.theme().clone();
     let view = cx.weak_entity();
-    let pipeline_open = cx.entity().read(cx).pipeline_diagnostics_open;
     let cur_res = selected_resolution;
     let cur_fps = selected_fps;
     let cur_bitrate = selected_bitrate_kbps;

@@ -756,6 +756,7 @@ impl RestoredDashboard {
                     host_stats,
                     self.owner.clone(),
                     false,
+                    self.pipeline_diagnostics_open,
                     cx,
                 )),
             StreamPanel::More => self.stream_more_panel(snapshot, cx),

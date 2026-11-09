@@ -135,6 +135,7 @@ impl RestoredDashboard {
                 self.local_permissions.clone(),
                 self.checking_permissions,
                 update_card,
+                self.pipeline_diagnostics_open,
                 self.input_locked,
                 side_services,
                 self.stream_settings.values().resolution(),
