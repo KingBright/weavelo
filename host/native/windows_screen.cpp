@@ -16,6 +16,10 @@ namespace {
 namespace Capture=winrt::Windows::Graphics::Capture;
 namespace DirectX=winrt::Windows::Graphics::DirectX;
 namespace Direct3D=winrt::Windows::Graphics::DirectX::Direct3D11;
+struct CaptureApartment {
+    CaptureApartment() { winrt::init_apartment(winrt::apartment_type::multi_threaded); }
+    ~CaptureApartment() { winrt::uninit_apartment(); }
+};
 struct Plan {
     UINT32 x,y,crop_width,crop_height,width,height,fps,kbps;
     std::array<unsigned char,60> geometry;
@@ -38,7 +42,10 @@ struct Root:std::enable_shared_from_this<Root> {
     explicit Root(ScreenTimestamp clock):timestamp(clock){}
     void fail(HRESULT hr){std::lock_guard<std::mutex> lock(state);failure=hr;changed.notify_all();}
     void initialize(UINT64 handle,bool window) {
-        if(!Capture::GraphicsCaptureSession::IsSupported())throw Failure{E_NOTIMPL,"Windows Graphics Capture is unavailable"};
+        // Capture workers may tear down the last WinRT apartment before a
+        // later source starts. Keep activation factories local to this call.
+        auto support=winrt::get_activation_factory<Capture::GraphicsCaptureSession,Capture::IGraphicsCaptureSessionStatics>();
+        if(!support.IsSupported())throw Failure{E_NOTIMPL,"Windows Graphics Capture is unavailable"};
         HMONITOR monitor=window?MonitorFromWindow(reinterpret_cast<HWND>(handle),MONITOR_DEFAULTTONEAREST):reinterpret_cast<HMONITOR>(handle);
         ComPtr<IDXGIDevice> dxgi;check(gpu.device.As(&dxgi),"Capture DXGI device");
         ComPtr<IDXGIAdapter> adapter;check(dxgi->GetAdapter(&adapter),"Capture adapter");
@@ -59,7 +66,8 @@ struct Root:std::enable_shared_from_this<Root> {
         else check(interop->CreateForMonitor(monitor,winrt::guid_of<Capture::GraphicsCaptureItem>(),winrt::put_abi(item)),"WGC monitor");
         auto size=item.Size();if(size.Width<2||size.Height<2)throw Failure{E_BOUNDS,"Empty WGC source"};
         pool_width=size.Width;pool_height=size.Height;
-        pool=Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(device,DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,3,size);
+        auto pool_factory=winrt::get_activation_factory<Capture::Direct3D11CaptureFramePool,Capture::IDirect3D11CaptureFramePoolStatics2>();
+        pool=pool_factory.CreateFreeThreaded(device,DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,3,size);
         session=pool.CreateCaptureSession(item);
         std::weak_ptr<Root> weak=shared_from_this();
         closed=item.Closed([weak](auto const&,auto const&){if(auto root=weak.lock())root->fail(RO_E_CLOSED);});
@@ -174,7 +182,7 @@ struct Worker {
 static void run(Worker* owner,UINT64 handle,UINT32 source,bool window,bool scoped,std::array<unsigned char,32> scope,
     void* context,ScreenTimestamp timestamp,Admit admit,MakePlan make_plan,DetailedPacket packet,NativeError error) noexcept {
     try {
-        Apartment apartment;MediaFoundation foundation;
+        CaptureApartment apartment;MediaFoundation foundation;
         // Coordinates are physical pixels on this native worker too.
         auto previous=SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         struct Dpi {DPI_AWARENESS_CONTEXT old;~Dpi(){if(old)SetThreadDpiAwarenessContext(old);}} dpi{previous};
