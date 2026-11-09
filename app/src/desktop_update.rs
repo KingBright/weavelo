@@ -144,7 +144,7 @@ fn verified_local_app() -> Result<(std::path::PathBuf, std::path::PathBuf, Strin
 
 #[cfg(target_os = "macos")]
 pub fn install_latest_macos() -> Result<String, String> {
-    use std::process::Command;
+    use std::{os::unix::process::CommandExt, process::Command};
     let (home, app, _) = verified_local_app()?;
     let helper = app.join("Contents/Resources/desktop-updater/scripts/desktop_in_app_update.py");
     if !helper.is_file() { return Err("This installation does not include the trusted updater".into()); }
@@ -152,6 +152,9 @@ pub fn install_latest_macos() -> Result<String, String> {
     // load only the helper modules inside the just-verified signed bundle.
     let bootstrap = "import runpy,sys; p=sys.argv[1]; sys.path.insert(0,p.rsplit('/',1)[0]); runpy.run_path(p,run_name='__main__')";
     let mut command = Command::new("/usr/bin/python3");
+    // The tray-launched GUI inherits the LaunchAgent's process group. The
+    // installer must survive launchd cleaning up that group after the idle stop.
+    command.process_group(0);
     command.env_clear().env("HOME", &home).env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .args(["-I", "-B", "-c", bootstrap]).arg(helper);
     for key in ["USER", "LOGNAME"] {
