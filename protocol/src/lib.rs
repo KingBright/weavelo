@@ -1,4 +1,5 @@
 pub mod appearance;
+pub mod audio_output;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;

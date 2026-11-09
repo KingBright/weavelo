@@ -2,6 +2,7 @@ pub mod device_artwork;
 pub mod directed_delivery;
 pub mod cameras;
 pub mod camera_switch;
+pub mod audio_output;
 pub mod audio;
 pub mod application_icons;
 pub mod source_picker;
