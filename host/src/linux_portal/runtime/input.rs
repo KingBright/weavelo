@@ -1,5 +1,5 @@
 //! Input belongs to the exact consented RemoteDesktop session and stream.
-//! No system permissions, global injector, EIS connection or restore token.
+//! Text handed to the local input method uses the same consent and frame checks.
 
 use super::{Connection, OwnedObjectPath, REMOTE_DESKTOP, SelectedPortalSource, SourceKind, proxy};
 use crate::linux_frame::{OwnedFrame, Transform};
@@ -24,6 +24,8 @@ pub enum PortalInputError {
     SessionClosed,
     InvalidEvent,
     Expired,
+    TextUnavailable,
+    TextFocusChanged,
     Transport,
 }
 impl std::fmt::Display for PortalInputError {
@@ -37,6 +39,8 @@ impl std::fmt::Display for PortalInputError {
             Self::SessionClosed => "The local Linux sharing session was cancelled or revoked",
             Self::InvalidEvent => "Input event is unsupported for this Linux source; no desktop fallback was used",
             Self::Expired => "Input event expired before native dispatch",
+            Self::TextUnavailable => "Fcitx text input is unavailable; use the remote keyboard or activate the Weavelo Fcitx addon",
+            Self::TextFocusChanged => "Linux text focus changed before input was committed",
             Self::Transport => "Linux portal input failed; release and select the source again",
         })
     }
@@ -265,6 +269,26 @@ impl PortalInput {
                 InputEvent::Text(text) => {
                     if [42,54,29,97,56,100,125,126].iter().any(|key|held.keys.contains(key)) {
                         return Err(PortalInputError::InvalidEvent);
+                    }
+                    #[cfg(target_os = "linux")]
+                    if !text.as_str().is_ascii() {
+                        use std::time::Instant;
+
+                        let deadline = deadline.unwrap_or_else(|| Instant::now()
+                            + Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS));
+                        if let Some(commit) = super::fcitx_text::prepare(&self.connection, deadline).await? {
+                            // The addon has captured the focused input context, but has not
+                            // received any text. Recheck the exact sharing grant before sending.
+                            self.status()?;
+                            let mut revoked = self.revoked.clone();
+                            let mut cancelled = self.cancelled.clone();
+                            return tokio::select! {
+                                biased;
+                                _ = revoked.wait_for(|closed| *closed) => Err(PortalInputError::SessionClosed),
+                                _ = cancelled.wait_for(|closed| *closed) => Err(PortalInputError::SessionClosed),
+                                result = commit.send(text.as_str(), deadline) => result,
+                            };
+                        }
                     }
                     for ch in text.as_str().chars() {
                         let sym = match ch { '\n'|'\r'=>0xff0d, '\t'=>0xff09,

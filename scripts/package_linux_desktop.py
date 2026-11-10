@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Archive a pinned, already observed native Linux ELF. Never build or install.
+"""Archive an observed Linux ELF and its source-matched Fcitx addon.
 
 Uses the existing producer lock and sole public current-output authority.
 The original observed-build/source identity remains unchanged by packaging.
 """
 import argparse
 import json
+import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import zipfile
@@ -36,7 +38,24 @@ def observed(args):
     return receipt
 
 
-def assemble(stage,binary,receipt,commit,identity_sha):
+def addon_source(commit):
+    path = 'host/native/fcitx_text.cpp'
+    command = ['git', '-C', str(desktop.ROOT)]
+    if not subprocess.check_output(command + ['ls-tree', '--name-only', commit, '--', path]):
+        return None  # An archived build from before Fcitx support has the original payload.
+    return subprocess.check_output(command + ['show', f'{commit}:{path}'])
+
+
+def addon_compiler():
+    flags = subprocess.run(['pkg-config', '--cflags', '--libs', 'Fcitx5Core', 'Fcitx5Utils'],
+                           capture_output=True, text=True, timeout=10)
+    lifecycle.require(flags.returncode == 0, 'The Fcitx 5 development SDK is required to package Linux text input')
+    compiler = shlex.split(os.environ.get('CXX', 'c++'))
+    lifecycle.require(compiler and shutil.which(compiler[0]), 'A native C++ compiler is required for the Fcitx addon')
+    return compiler, shlex.split(flags.stdout)
+
+
+def assemble(stage,binary,receipt,commit,identity_sha,*,addon=None):
     app=stage/'Weavelo';app.mkdir(mode=0o700)
     for name in sorted(install.PAYLOAD):
         source = binary if name=='weavelo' else (
@@ -45,6 +64,14 @@ def assemble(stage,binary,receipt,commit,identity_sha):
         target=app/name;target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(source,target)
         target.chmod(0o755 if name=='weavelo' else 0o644)
+    if addon is not None:
+        source, (compiler, flags) = addon
+        output = app / install.FCITX_ADDON
+        subprocess.run([*compiler, '-std=c++20', '-O2', '-fPIC', '-shared', '-fvisibility=hidden',
+                        '-Wall', '-Wextra', '-Werror', '-Wl,-z,defs,-z,relro,-z,now',
+                        '-x', 'c++', '-', '-x', 'none', '-o', str(output), *flags],
+                       input=source, check=True, timeout=60)
+        output.chmod(0o644)
     return gate.seal_tree(stage,receipt,commit,identity_sha)
 
 
@@ -71,6 +98,8 @@ def main():
         parser.add_argument('--'+name,required=True)
     args=parser.parse_args()
     receipt=observed(args)  # Reject bad pins before creating output/transaction state.
+    source = addon_source(args.expected_commit)
+    addon = (source, addon_compiler()) if source is not None else None
     with lifecycle.producer('linux-desktop') as (_,state):
         root=lifecycle.linux_output_root();final=root/NAME;report=final.with_suffix('.verification.json')
         current=None
@@ -80,7 +109,7 @@ def main():
         admission=lifecycle.admit(state,COMPONENT,[final,report],current=current,
             aux_stage=root/'.weavelo-desktop-linux.pending')
         stage=Path(admission['owned_aux_stages'][0]);staged_zip,staged_report=map(Path,admission['staged_files'])
-        sealed=assemble(stage,args.binary,receipt,args.expected_commit,args.expected_identity_sha256)
+        sealed=assemble(stage,args.binary,receipt,args.expected_commit,args.expected_identity_sha256,addon=addon)
         archive(stage,staged_zip)
         record={'schema':1,'kind':'weavelo-independent-linux-package','archive':str(final),
             'archive_sha256':gate.hash_file(staged_zip),'archive_bytes':staged_zip.stat().st_size,

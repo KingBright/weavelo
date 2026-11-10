@@ -12,7 +12,10 @@ from pathlib import Path
 import platform
 import shlex
 import stat
+import subprocess
 import sys
+import tempfile
+import time
 import zipfile
 
 import build_identity_gate as gate
@@ -25,6 +28,11 @@ PAYLOAD = {
     'deploy/linux/weavelo-desktop.service',
     'deploy/linux/fun.hackerlife.weavelo.desktop.desktop', 'assets/icon.svg',
 }
+FCITX_ADDON = 'deploy/linux/libweavelo_fcitx_text.so'
+
+
+def supported_payload(files):
+    return files == PAYLOAD or files == PAYLOAD | {FCITX_ADDON}
 
 
 def require(ok, reason):
@@ -74,7 +82,7 @@ def verify(archive, archive_sha, manifest_sha, commit, identity_sha):
         require(manifest['build_identity']['configuration']['platform'] == 'linux'
                 and manifest['build_identity']['configuration']['architecture'] == 'x86_64',
                 'Native Linux x64 package required')
-        require({row['path'] for row in manifest['files']} == PAYLOAD, 'Unexpected independent package files')
+        require(supported_payload({row['path'] for row in manifest['files']}), 'Unexpected independent package files')
         info = manifest['product_info']
         require(info.get('desktop_identity') == desktop.identity(), 'Retained application namespace rejected')
         require(info.get('desktop_runtime') == {'control_port':39273,'discovery_port':38119,
@@ -173,6 +181,82 @@ def write_new(path, data, mode):
         output.write(data); output.flush(); os.fsync(output.fileno())
 
 
+def activate_fcitx_text(home, files):
+    """Register only the addon from a verified installed image. Keep the IME running."""
+    member = next((row for row in files if row['path'] == FCITX_ADDON), None)
+    fcitx = Path('/usr/bin/fcitx5')
+    if member is None or not fcitx.is_file():
+        return None
+    try:
+        addon = paths(home)['app'] / FCITX_ADDON
+        require(gate.hash_file(addon) == member['sha256'], 'Installed Fcitx addon differs from the package')
+        system_ime = fcitx.stat()
+        require(system_ime.st_uid == 0 and not system_ime.st_mode & 0o022, 'Untrusted system Fcitx executable')
+        data_home = Path(os.environ.get('XDG_DATA_HOME') or (home / '.local/share'))
+        require(data_home.is_absolute() and data_home.is_relative_to(home) and '..' not in data_home.parts,
+                'Fcitx addon directory is outside the user home')
+        config = data_home / 'fcitx5/addon/weavelo_fcitx_text.conf'
+        for parent in config.parents:
+            if parent == home.parent:
+                break
+            if parent.exists() or parent.is_symlink():
+                info = parent.lstat()
+                require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022,
+                        'Unowned or linked Fcitx addon directory')
+        library = str(addon.with_suffix(''))
+        require(not any(c in library for c in '\0\r\n;'), 'Invalid Fcitx addon path')
+        content = ('[Addon]\nName=Weavelo committed text\nCategory=Module\nType=SharedLibrary\n'
+                   f'Version=1.0\nOnDemand=False\nLibrary={library}\n').encode()
+        if config.exists() or config.is_symlink():
+            info = config.lstat()
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022
+                    and info.st_size == len(content) and config.read_bytes() == content,
+                    'Existing Fcitx addon registration has different contents')
+        else:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=config.parent, prefix='.weavelo-fcitx-') as pending:
+                pending.write(content); pending.flush(); os.fsync(pending.fileno())
+                os.link(pending.name, config)
+
+        bus = ['busctl', '--user', '--timeout=2s']
+        result = subprocess.run(bus + ['call', 'org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'GetConnectionUnixProcessID', 's', 'org.fcitx.Fcitx5'],
+            capture_output=True, text=True, timeout=3)
+        reply = result.stdout.split()
+        if result.returncode or len(reply) != 2 or reply[0] != 'u' or not reply[1].isdecimal():
+            return {'state': 'registered', 'reason': 'No running Fcitx session'}
+        pid = int(reply[1])
+        actual_ime = Path(f'/proc/{pid}/exe').stat()
+        require(os.path.samestat(system_ime, actual_ime), 'Active Fcitx differs from the system executable')
+        runtime = Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}')
+        socket = runtime / f'weavelo-fcitx-text-v1-{pid}.sock'
+        if not socket.is_socket():
+            refresh = subprocess.run(bus + ['call', 'org.fcitx.Fcitx5', '/controller',
+                'org.fcitx.Fcitx.Controller1', 'Refresh'], capture_output=True, timeout=3)
+            if refresh.returncode:
+                return {'state': 'registered', 'reason': 'The running Fcitx session did not refresh'}
+            # The controller schedules addon loading on its event loop.
+            for _ in range(20):
+                if socket.is_socket():
+                    break
+                time.sleep(0.05)
+        if not socket.is_socket():
+            return {'state': 'registered', 'reason': 'The running Fcitx session has not loaded the addon'}
+        endpoint = socket.lstat()
+        require(stat.S_ISSOCK(endpoint.st_mode) and endpoint.st_uid == os.getuid()
+                and stat.S_IMODE(endpoint.st_mode) == 0o600, 'Unexpected Fcitx text socket identity')
+        mapped = addon.stat()
+        device = (os.major(mapped.st_dev), os.minor(mapped.st_dev))
+        with Path(f'/proc/{pid}/maps').open() as mappings:
+            for line in mappings:
+                fields = line.split(maxsplit=5)
+                if int(fields[4]) == mapped.st_ino and tuple(int(x, 16) for x in fields[3].split(':')) == device:
+                    return {'state': 'active', 'pid': pid, 'addon_sha256': member['sha256']}
+        return {'state': 'registered', 'reason': 'Fcitx still has a previous addon image mapped'}
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return {'state': 'unavailable', 'reason': str(error)}
+
+
 def save(journal, report):
     # Only the newly owned private journal is replaced; public files are exclusive creates.
     pending = journal.with_suffix('.pending')
@@ -218,6 +302,9 @@ def apply(reviewed, expected_plan_sha):
             write_new(selected[key],data,mode)
             state['created'].append(str(selected[key])); save(journal,state)
         state['phase']='installed-not-started';save(journal,state)
+        addon = activate_fcitx_text(home, manifest['files'])
+        if addon is not None:
+            state['fcitx_text'] = addon
         return state
     except BaseException:
         state['phase']='partial-inspect-original';save(journal,state)

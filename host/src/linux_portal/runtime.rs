@@ -24,6 +24,8 @@ const DESKTOP_PATH: &str = "/org/freedesktop/portal/desktop";
 const SCREENCAST: &str = "org.freedesktop.portal.ScreenCast";
 const REMOTE_DESKTOP: &str = "org.freedesktop.portal.RemoteDesktop";
 mod input;
+#[cfg(target_os = "linux")]
+mod fcitx_text;
 pub use input::PortalInputError;
 const SESSION: &str = "org.freedesktop.portal.Session";
 const REQUEST: &str = "org.freedesktop.portal.Request";

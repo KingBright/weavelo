@@ -53,16 +53,21 @@ def image(path):
     safe(path,True)
     for p in path.rglob('*'):
         safe(p,p.is_dir())
-    require({str(p.relative_to(path)) for p in path.rglob('*') if p.is_file()}==fresh.PAYLOAD,
+    require(fresh.supported_payload({str(p.relative_to(path)) for p in path.rglob('*') if p.is_file()}),
             'Unknown application files retained without reading them')
     rows=gate.files_in(path)
-    require({r['path'] for r in rows}==fresh.PAYLOAD,'Unexpected app payload retained; inspect before upgrade')
+    require(fresh.supported_payload({r['path'] for r in rows}),'Unexpected app payload retained; inspect before upgrade')
     dirs={str(p.relative_to(path)):{'device':p.stat().st_dev,'inode':p.stat().st_ino,'uid':p.stat().st_uid,'mode':stat.S_IMODE(p.stat().st_mode),'xattrs':{n:gate.digest(os.getxattr(p,n)) for n in sorted(os.listxattr(p))}} for p in [path,*path.rglob('*')] if p.is_dir()}
     return {'files':rows,'directories':dirs,'protection':{str(p.relative_to(path)):file_pin(p) for p in path.rglob('*') if p.is_file()}}
 
 def security_labels(value):
-    return {kind:{name:{k:v for k,v in row.get('xattrs',{}).items() if k.startswith(('security.','system.posix_acl'))}
-                  for name,row in value[kind].items()} for kind in ('directories','protection')}
+    labels = {kind:{name:{k:v for k,v in row.get('xattrs',{}).items() if k.startswith(('security.','system.posix_acl'))}
+                    for name,row in value[kind].items()} for kind in ('directories','protection')}
+    files = labels['protection']
+    if fresh.FCITX_ADDON in files:
+        require(files.pop(fresh.FCITX_ADDON) == files['deploy/linux/weavelo-desktop.service'],
+                'Fcitx addon security labels differ from its packaged siblings')
+    return labels
 
 def profile_pin(profile):
     root=private(profile,True)
@@ -486,7 +491,7 @@ class Upgrade:
         candidate=record.get('candidate_image')
         if candidate is not None:
             require(set(candidate)=={'files','directories','protection'} and candidate['files']==plan['new_files']
-                    and set(candidate['protection'])==fresh.PAYLOAD,'Unbound candidate image retained')
+                    and set(candidate['protection'])=={r['path'] for r in candidate['files']},'Unbound candidate image retained')
         require(record['phase'] not in FORWARD[1:] or candidate is not None,'Missing staged candidate proof')
         require('running' not in record or record['phase'] in ('completed',*ROLLBACK),'Unexpected activation proof retained')
         if 'running' in record:self.historical_runtime(record['running'],plan)
@@ -659,6 +664,9 @@ class CurrentUpgrade(Upgrade):
                     'Canonical KWin desktop entry replacement is unconfirmed')
             result['desktop_entry_updated']=True
         result.update(rollback_retained=False,historical_rollback_preserved=True)
+        addon = fresh.activate_fcitx_text(self.home, record['plan']['new_files'])
+        if addon is not None:
+            result['fcitx_text'] = addon
         return result
 
     def recover(self,transaction_id):
