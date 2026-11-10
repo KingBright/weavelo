@@ -181,6 +181,17 @@ def write_new(path, data, mode):
         output.write(data); output.flush(); os.fsync(output.fileno())
 
 
+def mapped_addon(mappings, path, inode):
+    # Linux maps reports the Btrfs backing device rather than the stat(2)
+    # subvolume device. Match the full live path and inode, including the
+    # absence of the kernel's deleted-file suffix.
+    for line in mappings:
+        fields = line.rstrip('\n').split(maxsplit=5)
+        if len(fields) == 6 and fields[4] == str(inode) and fields[5] == str(path):
+            return True
+    return False
+
+
 def activate_fcitx_text(home, files):
     """Register only the addon from a verified installed image. Keep the IME running."""
     member = next((row for row in files if row['path'] == FCITX_ADDON), None)
@@ -246,12 +257,12 @@ def activate_fcitx_text(home, files):
         require(stat.S_ISSOCK(endpoint.st_mode) and endpoint.st_uid == os.getuid()
                 and stat.S_IMODE(endpoint.st_mode) == 0o600, 'Unexpected Fcitx text socket identity')
         mapped = addon.stat()
-        device = (os.major(mapped.st_dev), os.minor(mapped.st_dev))
         with Path(f'/proc/{pid}/maps').open() as mappings:
-            for line in mappings:
-                fields = line.split(maxsplit=5)
-                if int(fields[4]) == mapped.st_ino and tuple(int(x, 16) for x in fields[3].split(':')) == device:
-                    return {'state': 'active', 'pid': pid, 'addon_sha256': member['sha256']}
+            loaded = mapped_addon(mappings, addon.resolve(strict=True), mapped.st_ino)
+        if loaded:
+            require(os.path.samestat(mapped, addon.stat()) and gate.hash_file(addon) == member['sha256'],
+                    'Fcitx addon changed during activation verification')
+            return {'state': 'active', 'pid': pid, 'addon_sha256': member['sha256']}
         return {'state': 'registered', 'reason': 'Fcitx still has a previous addon image mapped'}
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         return {'state': 'unavailable', 'reason': str(error)}

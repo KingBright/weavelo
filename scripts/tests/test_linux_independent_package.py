@@ -62,6 +62,13 @@ class IndependentLinuxTests(unittest.TestCase):
         with zipfile.ZipFile(self.zip) as source:
             self.assertEqual(len(source.namelist()),len(install.PAYLOAD)+1)
 
+    def test_fcitx_mapping_binds_live_path_and_inode(self):
+        path = self.home / '.local/opt/weavelo/desktop/deploy/linux/libweavelo_fcitx_text.so'
+        mapping = f'7fba1c0ad000-7fba1c0b2000 r-xp 00000000 00:23 1951662   {path}'
+        self.assertTrue(install.mapped_addon([mapping + '\n'], path, 1951662))
+        self.assertFalse(install.mapped_addon([mapping + ' (deleted)\n'], path, 1951662))
+        self.assertFalse(install.mapped_addon([mapping + '\n'], path, 1951663))
+
     def test_missing_parameters_fail_before_installer_or_packager_work(self):
         for script,args in [('install_linux_independent.py',[]),('install_linux_independent.py',['--apply']),
                             ('package_linux_desktop.py',[])]:
