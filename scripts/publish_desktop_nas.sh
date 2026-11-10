@@ -4,15 +4,18 @@
 # one pinned macOS ZIP entry. Its build and signer_sha1 must equal the native
 # guard's signed-archive report. The receiver atomically advances only
 # desktop-releases-macos-<signer_sha1>.json; generic metadata and index stay put.
+# --linux-only verifies the retained Mac signature and updates only the generic
+# Linux release against the supplied previous manifest and index.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-STAGE="${1:?Usage: publish_desktop_nas.sh ARTIFACT_DIRECTORY [--macos-only|--macos-signer-current] [--dry-run|--verify-only]}"
+STAGE="${1:?Usage: publish_desktop_nas.sh ARTIFACT_DIRECTORY [--linux-only|--macos-only|--macos-signer-current] [--dry-run|--verify-only]}"
 shift
 MODE=apply
 SCOPE=all
 VERIFY_OPTIONS=(--desktop)
 for option in "$@"; do
   case "$option" in
+    --linux-only) [[ "$SCOPE" == all ]] || exit 2; SCOPE=linux; VERIFY_OPTIONS=(--desktop --macos-only) ;;
     --macos-only) [[ "$SCOPE" == all ]] || exit 2; SCOPE=macos; VERIFY_OPTIONS=(--desktop --macos-only) ;;
     --macos-signer-current) [[ "$SCOPE" == all ]] || exit 2; SCOPE=signer; VERIFY_OPTIONS=(--desktop --macos-only) ;;
     apply|--dry-run|--verify-only) [[ "$MODE" == apply ]] || exit 2; MODE="$option" ;;
@@ -38,12 +41,13 @@ copy('desktop-releases.json')
 doc = json.loads((snapshot / 'desktop-releases.json').read_text())
 entries = doc['releases']
 for entry in entries:
- if scope == 'all' or 'macos' in entry['file'].lower():
+ name = entry['file'].lower()
+ if scope == 'all' or 'macos' in name or (scope == 'linux' and 'linux' in name):
   copy(entry['file'])
 if scope != 'signer':
  copy(doc.get('acceptance_file', 'acceptance-2.0.0-alpha.2.html'))
  copy('index.html')
-if scope == 'macos':
+if scope in ('macos', 'linux'):
  copy('desktop-releases.before.json')
  copy('index.before.html')
 SNAPSHOT_STAGE
@@ -51,16 +55,17 @@ STAGE="$SNAPSHOT"
 # The exact macOS signature and source identity are checked before networking.
 GUARD_REPORT="$(python3 "$ROOT/scripts/macos_release_guard.py" verify-stage "$STAGE" "${VERIFY_OPTIONS[@]}")"
 printf '%s\n' "$GUARD_REPORT"
-python3 - "$STAGE" "$SCOPE" "$GUARD_REPORT" <<'PREFLIGHT'
+python3 - "$STAGE" "$SCOPE" "$GUARD_REPORT" "$ROOT" <<'PREFLIGHT'
 from pathlib import Path
-import json,sys
+import json,re,sys
 stage=Path(sys.argv[1]);scope=sys.argv[2]
+platform='macos' if scope=='signer' else scope
 guard=json.loads(sys.argv[3].removeprefix('MACOS_RELEASE_VERIFIED '))
 doc=json.loads((stage/'desktop-releases.json').read_text())
 entries=doc['releases']
 assert len({e['file'] for e in entries})==len(entries),'duplicate runtime filenames'
-selected=[e for e in entries if 'macos' in e['file'].lower()] if scope in ('macos','signer') else entries
-assert len(selected)==(1 if scope in ('macos','signer') else 3),'unexpected runtime package selection'
+selected=[e for e in entries if scope=='all' or platform in e['file'].lower()]
+assert len(selected)==(3 if scope=='all' else 1),'unexpected runtime package selection'
 for entry in entries:
  name=entry['file'];assert Path(name).name==name and name.endswith(('.zip','.tar.gz','.tgz')),'runtime archives only; no source checkout'
 metadata=['desktop-releases.json'] if scope=='signer' else ['desktop-releases.json',doc.get('acceptance_file','acceptance-2.0.0-alpha.2.html'),'index.html']
@@ -70,17 +75,28 @@ if scope=='signer':
  assert entry.get('signer_sha1')==signed['certificate_sha1'] and entry.get('build')==signed['build'],'signer and build must match verified signed archive'
  assert entry.get('build_identity_expectations'),'macOS update requires verified source identity pins'
  assert entry.get('source_commit')==entry['build_identity_expectations'].get('commit'),'source commit must match verified identity'
- import re
  assert re.fullmatch(r'Weavelo-desktop-macos-arm64-[A-Za-z0-9._-]+\.zip', entry['file']),'invalid macOS runtime package name'
-if scope=='macos':
+if scope in ('macos','linux'):
  metadata+=['desktop-releases.before.json','index.before.html']
  before=json.loads((stage/'desktop-releases.before.json').read_text())
- assert [e for e in entries if 'macos' not in e['file'].lower()]==[e for e in before['releases'] if 'macos' not in e['file'].lower()],'other platform entries changed'
- assert len([e for e in before['releases'] if 'macos' in e['file'].lower()])==1,'missing original macOS release'
- assert selected[0].get('build_identity_expectations'),'macOS update requires verified source identity pins'
+ previous=[e for e in before['releases'] if platform in e['file'].lower()]
+ assert len(previous)==1,'missing original platform release'
+ assert [e for e in entries if e not in selected]==[e for e in before['releases'] if e not in previous],'other platform entries changed'
+ entry=selected[0];pins=entry.get('build_identity_expectations')
+ assert pins,'platform update requires verified source identity pins'
  assert doc['acceptance_file']!=before['acceptance_file'],'preserve the previous acceptance page'
  assert {k:v for k,v in doc.items() if k not in ('releases','published_at','acceptance_file')}=={k:v for k,v in before.items() if k not in ('releases','published_at','acceptance_file')},'unrelated publication metadata changed'
- assert (stage/'index.html').read_bytes()==(stage/'index.before.html').read_bytes().replace(before['acceptance_file'].encode(),doc['acceptance_file'].encode()),'index must preserve unrelated content'
+ index=(stage/'index.before.html').read_bytes().replace(before['acceptance_file'].encode(),doc['acceptance_file'].encode())
+ if scope=='linux':
+  assert re.fullmatch(r'acceptance-[A-Za-z0-9._-]+\.html', doc['acceptance_file']),'invalid acceptance page name'
+  assert re.fullmatch(r'Weavelo-desktop-linux-[A-Za-z0-9._-]+\.zip',entry['file']),'invalid Linux runtime package name'
+  assert entry.get('source_commit')==pins.get('commit'),'source commit must match verified identity'
+  sys.path.insert(0,str(Path(sys.argv[4])/'scripts'))
+  from build_identity_gate import verify_package
+  report=verify_package(stage/entry['file'],pins['manifest_sha256'],pins['commit'],pins['identity_sha256'])
+  assert report['archive_sha256']==entry['sha256'],'Linux artifact differs from verified identity'
+  index=index.replace(previous[0]['file'].encode(),entry['file'].encode())
+ assert (stage/'index.html').read_bytes()==index,'index must preserve unrelated content'
 for name in metadata:
  assert Path(name).name==name and (stage/name).is_file() and not (stage/name).is_symlink(),'missing/linked publication metadata'
 PREFLIGHT
@@ -94,8 +110,9 @@ if [[ "$MODE" == --dry-run ]]; then
 import hashlib,json,sys
 from pathlib import Path
 stage=Path(sys.argv[1]);scope=sys.argv[2];doc=json.loads((stage/'desktop-releases.json').read_text())
-selected=[e for e in doc['releases'] if scope=='all' or 'macos' in e['file'].lower()]
-print(json.dumps({'step':'publish','mode':'dry-run','scope':scope,'NAS_role':'runtime-artifact-receiver-only','NAS_compilation':False,'releases':[{k:e[k] for k in ['file','version','sha256','size_bytes']} for e in selected],'preserved_releases':[e['file'] for e in doc['releases'] if e not in selected],'base_manifest_sha256':hashlib.sha256((stage/'desktop-releases.before.json').read_bytes()).hexdigest() if scope=='macos' else None}))
+platform='macos' if scope=='signer' else scope
+selected=[e for e in doc['releases'] if scope=='all' or platform in e['file'].lower()]
+print(json.dumps({'step':'publish','mode':'dry-run','scope':scope,'NAS_role':'runtime-artifact-receiver-only','NAS_compilation':False,'releases':[{k:e[k] for k in ['file','version','sha256','size_bytes']} for e in selected],'preserved_releases':[e['file'] for e in doc['releases'] if e not in selected],'base_manifest_sha256':hashlib.sha256((stage/'desktop-releases.before.json').read_bytes()).hexdigest() if scope in ('macos','linux') else None}))
 PLAN
   exit 0
 fi
@@ -106,7 +123,8 @@ python3 - "$STAGE" "$ARCHIVE" "$SCOPE" "$GUARD_REPORT" <<'PACK_VERIFIED_STAGE'
 from pathlib import Path
 import hashlib,io,json,sys,tarfile
 stage=Path(sys.argv[1]);doc=json.loads((stage/'desktop-releases.json').read_text());scope=sys.argv[3]
-entries=[e for e in doc['releases'] if scope=='all' or 'macos' in e['file'].lower()]
+platform='macos' if scope=='signer' else scope
+entries=[e for e in doc['releases'] if scope=='all' or platform in e['file'].lower()]
 guard=json.loads(sys.argv[4].removeprefix('MACOS_RELEASE_VERIFIED '))[0]
 with tarfile.open(sys.argv[2],'w') as archive:
  for entry in entries:
@@ -122,8 +140,8 @@ with tarfile.open(sys.argv[2],'w') as archive:
   member.size=len(data);member.mode=0o644
   archive.addfile(member,io.BytesIO(data))
  names=['desktop-releases.json'] if scope=='signer' else ['desktop-releases.json',doc.get('acceptance_file','acceptance-2.0.0-alpha.2.html'),'index.html']
- if scope=='macos':names+=['desktop-releases.before.json','index.before.html']
- if scope!='signer':
+ if scope in ('macos','linux'):names+=['desktop-releases.before.json','index.before.html']
+ if scope in ('all','macos'):
   mac=next(e for e in entries if 'macos' in e['file'].lower())
   if mac.get('build_identity_expectations'):
    pinned=dict(mac,signer_sha1=guard['certificate_sha1'],build=guard['build'])
@@ -140,9 +158,10 @@ ssh -p "$NAS_PORT" -o BatchMode=yes -o ConnectTimeout=10 "$NAS_HOST" "python3 - 
 from pathlib import Path
 import fcntl,hashlib,json,os,re,shutil,sys,tarfile,tempfile
 archive=Path(sys.argv[1]);root=Path(sys.argv[2]);scope=sys.argv[3] if len(sys.argv)>3 else 'all'
-assert scope in ('all','macos','signer')
+assert scope in ('all','macos','linux','signer')
+platform='macos' if scope=='signer' else scope
 assert not root.is_symlink(),'linked publication root'
-if scope in ('macos','signer'):assert root.is_dir(),'existing publication required'
+if scope!='all':assert root.is_dir(),'existing publication required'
 else:root.mkdir(parents=True,exist_ok=True)
 def digest(path):
  h=hashlib.sha256()
@@ -175,7 +194,7 @@ try:
     names.add(item.name)
     with tar.extractfile(item) as incoming,(temp/item.name).open('xb') as out:shutil.copyfileobj(incoming,out)
   doc=json.loads((temp/'desktop-releases.json').read_text())
-  entries=doc['releases'];selected=[e for e in entries if scope=='all' or 'macos' in e['file'].lower()]
+  entries=doc['releases'];selected=[e for e in entries if scope=='all' or platform in e['file'].lower()]
   assert len({e['file'] for e in entries})==len(entries),'duplicate runtime filenames'
   for entry in entries:assert Path(entry['file']).name==entry['file'] and entry['file'].endswith(('.zip','.tar.gz','.tgz'))
   acceptance=doc.get('acceptance_file','acceptance-2.0.0-alpha.2.html')
@@ -183,6 +202,7 @@ try:
   metadata={} if scope=='signer' else {name:name for name in (acceptance,'index.html','desktop-releases.json')}
   signer_source='desktop-releases.json' if scope=='signer' else 'macos-signer-current.json'
   if signer_source in names:
+   assert scope!='linux','signer manifest is outside Linux publication scope'
    signer_doc=json.loads((temp/signer_source).read_text())
    assert signer_doc.get('schema')==1 and len(signer_doc['releases'])==1,'invalid signer manifest'
    signer_entry=signer_doc['releases'][0];signer=signer_entry.get('signer_sha1','');build=signer_entry.get('build','')
@@ -196,26 +216,34 @@ try:
    metadata[destination]=signer_source
   else:assert scope!='signer','missing signer manifest'
   allowed={e['file'] for e in selected}|set(metadata.values())
-  if scope=='macos':allowed|={'desktop-releases.before.json','index.before.html'}
+  if scope in ('macos','linux'):allowed|={'desktop-releases.before.json','index.before.html'}
   assert names==allowed,'unexpected or missing publication files'
   lock=root/'.desktop-publish.lock'
   assert not lock.is_symlink(),'linked publication lock'
   with lock.open('a') as held:
    fcntl.flock(held,fcntl.LOCK_EX)
-   if scope=='macos':
+   if scope in ('macos','linux'):
     before_raw=(temp/'desktop-releases.before.json').read_bytes();before=json.loads(before_raw)
-    assert len(selected)==1 and len([e for e in before['releases'] if 'macos' in e['file'].lower()])==1
-    assert selected[0].get('build_identity_expectations'),'missing verified macOS identity pins'
-    preserved=[e for e in before['releases'] if 'macos' not in e['file'].lower()]
-    assert [e for e in entries if 'macos' not in e['file'].lower()]==preserved,'other platform entries changed'
+    previous=[e for e in before['releases'] if platform in e['file'].lower()]
+    assert len(selected)==1 and len(previous)==1
+    entry=selected[0];pins=entry.get('build_identity_expectations')
+    assert pins,'missing verified platform identity pins'
+    preserved=[e for e in before['releases'] if e not in previous]
+    assert [e for e in entries if e not in selected]==preserved,'other platform entries changed'
     assert {k:v for k,v in doc.items() if k not in ('releases','published_at','acceptance_file')}=={k:v for k,v in before.items() if k not in ('releases','published_at','acceptance_file')},'unrelated publication metadata changed'
     assert acceptance!=before['acceptance_file'],'preserve previous acceptance page'
     regular(root/'desktop-releases.json');regular(root/'index.html')
     assert (root/'desktop-releases.json').read_bytes()==before_raw,'publication changed since read; stop and inspect'
     index_before=(temp/'index.before.html').read_bytes()
     assert (root/'index.html').read_bytes()==index_before,'index changed since read; stop and inspect'
-    assert (temp/'index.html').read_bytes()==index_before.replace(before['acceptance_file'].encode(),acceptance.encode()),'unrelated index content changed'
-    # Preserve and verify all previous runtime packages, including the rollback Mac.
+    expected_index=index_before.replace(before['acceptance_file'].encode(),acceptance.encode())
+    if scope=='linux':
+     assert re.fullmatch(r'acceptance-[A-Za-z0-9._-]+\.html',acceptance),'invalid acceptance page name'
+     assert re.fullmatch(r'Weavelo-desktop-linux-[A-Za-z0-9._-]+\.zip',entry['file']),'invalid Linux runtime package name'
+     assert entry.get('source_commit')==pins.get('commit'),'source commit must match verified identity'
+     expected_index=expected_index.replace(previous[0]['file'].encode(),entry['file'].encode())
+    assert (temp/'index.html').read_bytes()==expected_index,'unrelated index content changed'
+    # Verify all previous runtime packages, including the rollback for this platform.
     for entry in before['releases']:
      assert Path(entry['file']).name==entry['file']
      exact(root/entry['file'],entry)
@@ -264,7 +292,7 @@ finally:
  archive.unlink(missing_ok=True)
 PY
 fi
-# Verify both the updated Mac and all preserved platform bytes over the original URL.
+# Verify the published and retained platform bytes over the original URL.
 python3 - "$STAGE" <<'PY' > "$STAGE/desktop-sha256.txt"
 import json,sys
 from pathlib import Path

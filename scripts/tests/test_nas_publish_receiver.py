@@ -56,10 +56,18 @@ class ReceiverTests(unittest.TestCase):
             self.assertNotIn(command, self.code)
 
     def prepare_macos_update(self):
+        return self.prepare_platform_update('macos')
+
+    def prepare_platform_update(self, platform):
         doc = json.loads((self.stage / 'desktop-releases.json').read_text())
         doc['acceptance_file'] = 'acceptance-2.0.0-alpha.2.html'
         (self.stage / 'desktop-releases.json').write_text(json.dumps(doc))
-        (self.stage / 'index.html').write_text('Android unchanged; <a href="' + doc['acceptance_file'] + '">notes</a>')
+        index = 'Android unchanged; <a href="' + doc['acceptance_file'] + '">notes</a>'
+        position = next(i for i, entry in enumerate(doc['releases']) if platform in entry['file'])
+        old_package = doc['releases'][position]['file']
+        if platform == 'linux':
+            index += f'<a href="{old_package}">Linux</a>'
+        (self.stage / 'index.html').write_text(index)
         self.assertEqual(self.receive().returncode, 0)
         before = (self.target / 'desktop-releases.json').read_bytes()
         (self.stage / 'desktop-releases.before.json').write_bytes(before)
@@ -67,16 +75,19 @@ class ReceiverTests(unittest.TestCase):
         for entry in doc['releases']:
             (self.stage / entry['file']).unlink()
         (self.stage / doc['acceptance_file']).unlink()
-        package = self.stage / 'macos-new.zip'; package.write_bytes(b'new own fixture')
-        doc['releases'][0] = {'file': package.name, 'version': 'fixture.2', 'size_bytes': package.stat().st_size,
-                              'sha256': hashlib.sha256(package.read_bytes()).hexdigest(),
-                              'build_identity_expectations': {'commit': 'a' * 40, 'identity_sha256': 'b' * 64,
-                                                              'manifest_sha256': 'c' * 64}}
-        doc['acceptance_file'] = 'acceptance-macos-new.html'
-        (self.stage / doc['acceptance_file']).write_text('Only fixture Mac changed; other platforms retained.')
+        name = 'macos-new.zip' if platform == 'macos' else 'Weavelo-desktop-linux-x64-fixture.zip'
+        package = self.stage / name; package.write_bytes(b'new own fixture')
+        doc['releases'][position] = {'file': package.name, 'version': 'fixture.2', 'size_bytes': package.stat().st_size,
+                                     'sha256': hashlib.sha256(package.read_bytes()).hexdigest(), 'source_commit': 'a' * 40,
+                                     'build_identity_expectations': {'commit': 'a' * 40, 'identity_sha256': 'b' * 64,
+                                                                     'manifest_sha256': 'c' * 64}}
+        doc['acceptance_file'] = f'acceptance-{platform}-new.html'
+        (self.stage / doc['acceptance_file']).write_text(f'Acceptance fixture for {platform}.')
         (self.stage / 'desktop-releases.json').write_text(json.dumps(doc))
-        (self.stage / 'index.html').write_bytes((self.stage / 'index.before.html').read_bytes().replace(
-            b'acceptance-2.0.0-alpha.2.html', b'acceptance-macos-new.html'))
+        index = index.replace('acceptance-2.0.0-alpha.2.html', doc['acceptance_file'])
+        if platform == 'linux':
+            index = index.replace(old_package, package.name)
+        (self.stage / 'index.html').write_text(index)
         return json.loads(before)
 
     def test_macos_update_preserves_other_entries_bytes_and_rollback(self):
@@ -136,6 +147,43 @@ class ReceiverTests(unittest.TestCase):
         self.assertIn('immutable acceptance conflict', result.stderr)
         self.assertEqual((self.target / 'acceptance-macos-new.html').read_bytes(), b'existing different page')
         self.assertFalse((self.target / 'macos-new.zip').exists())
+
+    def test_linux_update_preserves_newer_macos_signer_and_rollback(self):
+        before = self.prepare_platform_update('linux')
+        signer = 'a' * 40
+        signed_archive = self.target / 'Weavelo-desktop-macos-arm64-newer.zip'
+        signed_archive.write_bytes(b'newer signer package')
+        signer_entry = dict(before['releases'][0], file=signed_archive.name, signer_sha1=signer,
+                            build='20261109.32', sha256=hashlib.sha256(signed_archive.read_bytes()).hexdigest())
+        signer_manifest = self.target / f'desktop-releases-macos-{signer}.json'
+        signer_manifest.write_text(json.dumps({'schema': 1, 'releases': [signer_entry]}))
+        preserved = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.target.iterdir()
+                     if p.name not in ('desktop-releases.json', 'index.html', '.desktop-publish.lock')}
+        result = self.receive('linux'); self.assertEqual(result.returncode, 0, result.stderr)
+        after = json.loads((self.target / 'desktop-releases.json').read_text())
+        self.assertEqual([after['releases'][0], after['releases'][2]], [before['releases'][0], before['releases'][2]])
+        self.assertEqual(preserved, {name: ((self.target/name).read_bytes(), (self.target/name).stat().st_mtime_ns)
+                                     for name in preserved})
+        self.assertIn(after['releases'][1]['file'], (self.target / 'index.html').read_text())
+        self.assertEqual((self.target / after['releases'][1]['file']).read_bytes(), b'new own fixture')
+
+    def test_linux_update_rejects_signer_upload_and_changes_to_other_platforms(self):
+        self.prepare_platform_update('linux')
+        current = self.target / 'desktop-releases.json'
+        original = current.read_bytes()
+        signer = self.stage / 'macos-signer-current.json'
+        signer.write_text('{}')
+        result = self.receive('linux'); self.assertNotEqual(result.returncode, 0)
+        self.assertIn('outside Linux publication scope', result.stderr)
+        signer.unlink()
+        manifest = self.stage / current.name
+        doc = json.loads(manifest.read_text())
+        doc['releases'][0]['version'] = 'unexpected Mac update'
+        manifest.write_text(json.dumps(doc))
+        result = self.receive('linux'); self.assertNotEqual(result.returncode, 0)
+        self.assertIn('other platform entries changed', result.stderr)
+        self.assertEqual(current.read_bytes(), original)
+        self.assertFalse((self.target / doc['releases'][1]['file']).exists())
 
 
     def prepare_signer(self, signer, build, name, content):
