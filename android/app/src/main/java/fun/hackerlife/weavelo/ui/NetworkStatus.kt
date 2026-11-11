@@ -3,15 +3,11 @@ package `fun`.hackerlife.weavelo.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +47,7 @@ internal fun networkIndicator(session: SessionState, telemetry: TelemetrySnapsho
     }
 }
 
-/** Uses existing observations. Opening or hovering never starts a probe or changes a session. */
+/** Uses existing observations. Opening never starts a probe or changes a session. */
 @Composable
 internal fun NetworkStatusChip(
     session: SessionState, telemetry: TelemetrySnapshot,
@@ -88,33 +84,23 @@ internal fun NetworkStatusChip(
         NetworkTone.NEUTRAL -> ColorTextSecondary
     }
     var pinned by remember { mutableStateOf(false) }
-    var hoverOpen by remember { mutableStateOf(false) }
-    val chipInteraction = remember { MutableInteractionSource() }
-    val panelInteraction = remember { MutableInteractionSource() }
-    val chipHovered by chipInteraction.collectIsHoveredAsState()
-    val panelHovered by panelInteraction.collectIsHoveredAsState()
-    LaunchedEffect(chipHovered, panelHovered) {
-        delay(if (chipHovered || panelHovered) 250 else 180)
-        hoverOpen = chipHovered || panelHovered
-    }
     Box(modifier) {
-        Row(Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(50))
+        Row(Modifier.heightIn(min = 34.dp).clip(RoundedCornerShape(50))
             .background(ColorSurfaceCard).border(1.dp, ColorBorderFine, RoundedCornerShape(50))
-            .hoverable(chipInteraction)
-            .clickable(role = Role.Button, onClickLabel = tr("Network details")) { pinned = !pinned; hoverOpen = false }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .clickable(role = Role.Button, onClickLabel = tr("Network details")) { pinned = !pinned }
+            .padding(horizontal = 10.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(Modifier.size(6.dp).background(color, CircleShape))
             Text(chipText, color = color, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        DropdownMenu(expanded = pinned || hoverOpen, onDismissRequest = { pinned = false; hoverOpen = false },
+        DropdownMenu(expanded = pinned, onDismissRequest = { pinned = false },
             properties = PopupProperties(focusable = pinned),
-            modifier = Modifier.widthIn(max = 300.dp).heightIn(max = 420.dp).hoverable(panelInteraction)) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            modifier = Modifier.widthIn(min = 156.dp, max = 216.dp)) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(tr("Network details"), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    TextButton(onClick = { pinned = false; hoverOpen = false }) { Text(tr("Close")) }
+                    Text(tr("Network details"), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    MobileAction(MobileSymbol.Close, tr("Close"), modifier = Modifier.size(24.dp)) { pinned = false }
                 }
                 NetworkDetail("Connection", tr(status.label))
                 if (routeLabel != null) NetworkDetail("Route", routeLabel)
@@ -129,8 +115,10 @@ internal fun NetworkStatusChip(
 
 @Composable
 private fun NetworkDetail(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(tr(label), color = ColorTextSecondary, fontSize = 10.sp)
-        Text(value, color = ColorTextPrimary, fontSize = 12.sp)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(tr(label), color = ColorTextSecondary, fontSize = 11.sp, maxLines = 1)
+        Spacer(Modifier.weight(1f))
+        Text(value, color = ColorTextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }

@@ -56,12 +56,7 @@ impl RestoredDashboard {
         stats: Option<&UiHostStats>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let (label, quality, rows) = Self::network_status_details(role, route, stats);
-        let detail = rows
-            .iter()
-            .map(|(name, value)| format!("{name}: {value}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let (label, quality, _) = Self::network_status_details(role, route, stats);
         div()
             .id("network-status-hit-area")
             .occlude()
@@ -75,7 +70,6 @@ impl RestoredDashboard {
                     .bg(color_glass_card())
                     .border_1()
                     .border_color(color_border_fine())
-                    .tooltip(tooltip(detail).build())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.network_details_open = !this.network_details_open;
                         this.reset_pointer_scroll();
@@ -109,11 +103,14 @@ impl RestoredDashboard {
             .id("network-status-details")
             .absolute()
             .right(px(12.))
-            .bottom(px(48.))
-            .w(px(250.))
+            .bottom(px(44.))
             .max_w(relative(0.95))
-            .p_3()
-            .rounded(px(12.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2p5()
+            .py_2()
+            .rounded(px(10.))
             .occlude()
             .bg(color_glass_card())
             .border_1()
@@ -125,17 +122,20 @@ impl RestoredDashboard {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .gap_3()
+                    .mb_0p5()
                     .child(
                         div()
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
+                            .whitespace_nowrap()
                             .child(crate::i18n::tr("Network details")),
                     )
                     .child(
                         command_button("close-network-status", ActionVariantKind::Neutral, cx)
-                            .size(px(26.))
+                            .size(px(20.))
+                            .p_0()
                             .child("×")
-                            .tooltip(tooltip(crate::i18n::tr("Close")).build())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.network_details_open = false;
                                 cx.notify();
@@ -145,16 +145,23 @@ impl RestoredDashboard {
             .children(rows.into_iter().map(|(name, value)| {
                 div()
                     .flex()
+                    .items_center()
                     .justify_between()
-                    .gap_2()
-                    .mt_2()
+                    .gap_3()
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(cx.theme().content.secondary)
+                            .whitespace_nowrap()
                             .child(name),
                     )
-                    .child(div().text_size(px(11.)).child(value))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .whitespace_nowrap()
+                            .child(value),
+                    )
             }))
     }
 }
