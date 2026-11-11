@@ -16,6 +16,22 @@ fn mac_window_is_shareable(layer: i32, on_screen: bool) -> bool {
 }
 
 #[cfg(any(target_os = "macos", test))]
+fn mac_display_catalog_title(index: usize, width: u32, height: u32, is_builtin: bool, is_main: bool) -> String {
+    let base = if is_builtin {
+        "Built-in Display".to_owned()
+    } else if is_main {
+        "Main Display".to_owned()
+    } else {
+        format!("Display {}", index + 1)
+    };
+    if width > 0 && height > 0 {
+        format!("{base} ({width}×{height})")
+    } else {
+        base
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
 fn mac_window_catalog_title(title: Option<String>, application: &str, layer: i32, on_screen: bool, active: bool) -> Option<String> {
     if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
         return Some(title);
@@ -25,6 +41,74 @@ fn mac_window_catalog_title(title: Option<String>, application: &str, layer: i32
     // unnamed hidden menu surfaces or floating helpers into application sources.
     (layer == 0 && (on_screen || active) && !application.trim().is_empty())
         .then(|| application.to_owned())
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn windows_display_catalog_title(
+    index: usize,
+    total: usize,
+    adapter: &str,
+    width: u32,
+    height: u32,
+) -> String {
+    let adapter = adapter.trim();
+    let base = if total <= 1 {
+        "Main Display".to_owned()
+    } else {
+        format!("Display {}", index + 1)
+    };
+    match (!adapter.is_empty(), width > 0 && height > 0) {
+        (true, true) => format!("{base} · {adapter} ({width}×{height})"),
+        (false, true) => format!("{base} ({width}×{height})"),
+        (true, false) => format!("{base} · {adapter}"),
+        (false, false) => base,
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn windows_shell_helper_process(application: &str) -> bool {
+    matches!(
+        application.trim().to_ascii_lowercase().as_str(),
+        "textinputhost.exe"
+            | "shellexperiencehost.exe"
+            | "startmenuexperiencehost.exe"
+            | "searchhost.exe"
+            | "lockapp.exe"
+            | "systemsettingsbroker.exe"
+            | "widgetservice.exe"
+            | "widgets.exe"
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn filter_windows_catalog_entries<T>(
+    windows: Vec<T>,
+    meta: impl Fn(&T) -> (&str, &str),
+) -> Vec<T> {
+    let filtered: Vec<T> = windows
+        .into_iter()
+        .filter(|entry| {
+            let (_, app) = meta(entry);
+            !windows_shell_helper_process(app)
+        })
+        .collect();
+    let real_titles: std::collections::HashSet<String> = filtered
+        .iter()
+        .filter_map(|entry| {
+            let (title, app) = meta(entry);
+            let trimmed = title.trim();
+            (!trimmed.is_empty() && !app.trim().eq_ignore_ascii_case("applicationframehost.exe"))
+                .then(|| trimmed.to_owned())
+        })
+        .collect();
+    filtered
+        .into_iter()
+        .filter(|entry| {
+            let (title, app) = meta(entry);
+            !app.trim().eq_ignore_ascii_case("applicationframehost.exe")
+                || !real_titles.contains(title.trim())
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -153,18 +237,24 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
         use screencapturekit::prelude::*;
         let content = SCShareableContent::get()?;
         let native_captions = crate::window_input::native_frame_caption_ids()?;
+        let main_display_id = core_graphics::display::CGDisplay::main().id;
         let mut sources = Vec::new();
-        for display in content.displays() {
+        for (index, display) in content.displays().into_iter().enumerate() {
+            let display_id = display.display_id();
+            let is_builtin = core_graphics::display::CGDisplay::new(display_id).is_builtin();
+            let is_main = display_id == main_display_id;
+            let width = display.width();
+            let height = display.height();
             sources.push(CaptureSourceInfo {
-                source: CaptureSource::Display(display.display_id()),
-                title: format!("Display {}", display.display_id()),
+                source: CaptureSource::Display(display_id),
+                title: mac_display_catalog_title(index, width, height, is_builtin, is_main),
                 application: String::new(),
                 process_id: None,
-                width: display.width(),
-                height: display.height(),
+                width,
+                height,
                 // Capability only: subscription/injection separately check the
                 // actual running host's input-posting permission.
-                supports_input: crate::input_injector::display_input_capable(display.display_id()),
+                supports_input: crate::input_injector::display_input_capable(display_id),
                 camera: None,
             });
         }
@@ -292,7 +382,43 @@ pub(crate) fn filter(
 
 #[cfg(test)]
 mod transformed_window_tests {
-    use super::{mac_window_catalog_title, mac_window_is_shareable, window_is_transformed};
+    use super::{
+        filter_windows_catalog_entries, mac_display_catalog_title, mac_window_catalog_title,
+        mac_window_is_shareable, window_is_transformed, windows_display_catalog_title,
+    };
+    #[test]
+    fn windows_catalog_helpers_format_displays_and_remove_ghost_shell_windows() {
+        assert_eq!(
+            windows_display_catalog_title(0, 1, "NVIDIA GeForce RTX 4090", 3840, 2160),
+            "Main Display · NVIDIA GeForce RTX 4090 (3840×2160)"
+        );
+        assert_eq!(
+            windows_display_catalog_title(1, 2, "NVIDIA GeForce RTX 4090", 1920, 1080),
+            "Display 2 · NVIDIA GeForce RTX 4090 (1920×1080)"
+        );
+        let entries = vec![
+            ("Windows 输入体验", "TextInputHost.exe"),
+            ("设置", "SystemSettings.exe"),
+            ("设置", "ApplicationFrameHost.exe"),
+            ("Calculator", "ApplicationFrameHost.exe"),
+            ("Visual Studio Code", "Code.exe"),
+        ];
+        let kept = filter_windows_catalog_entries(entries, |(title, app)| (*title, *app));
+        assert_eq!(
+            kept,
+            vec![
+                ("设置", "SystemSettings.exe"),
+                ("Calculator", "ApplicationFrameHost.exe"),
+                ("Visual Studio Code", "Code.exe"),
+            ]
+        );
+    }
+    #[test]
+    fn mac_display_titles_are_human_friendly_instead_of_raw_cg_ids() {
+        assert_eq!(mac_display_catalog_title(0, 1728, 1117, true, true), "Built-in Display (1728×1117)");
+        assert_eq!(mac_display_catalog_title(0, 2560, 1440, false, true), "Main Display (2560×1440)");
+        assert_eq!(mac_display_catalog_title(1, 1920, 1080, false, false), "Display 2 (1920×1080)");
+    }
     #[test]
     fn untitled_visible_application_windows_keep_their_application_name() {
         assert_eq!(mac_window_catalog_title(None, "Gemini", 0, true, true).as_deref(), Some("Gemini"));

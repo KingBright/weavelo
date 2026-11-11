@@ -9,15 +9,25 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 
 /** The stream owns its orientation; returning to devices restores the host choice. */
 @Composable
-internal fun StreamOrientation(active: Boolean) {
+internal fun StreamOrientation(active: Boolean, landscapeOverride: Boolean? = null) {
     val context = LocalContext.current
-    DisposableEffect(context, active) {
-        val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
-            .filterIsInstance<Activity>().firstOrNull()
+    val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+        .filterIsInstance<Activity>().firstOrNull()
+    LaunchedEffect(activity, active, landscapeOverride) {
+        if (active) {
+            activity?.requestedOrientation = when (landscapeOverride) {
+                true -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                false -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                null -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+            }
+        }
+    }
+    DisposableEffect(activity, active) {
         val previous = activity?.requestedOrientation
         val controller = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
         val insets = activity?.window?.decorView?.let(ViewCompat::getRootWindowInsets)
@@ -28,8 +38,6 @@ internal fun StreamOrientation(active: Boolean) {
         val previousLightStatusBars = controller?.isAppearanceLightStatusBars
         val previousLightNavigationBars = controller?.isAppearanceLightNavigationBars
         if (active) {
-            // Let phone and desktop streams follow the device in either orientation.
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
             controller?.isAppearanceLightStatusBars = false
             controller?.isAppearanceLightNavigationBars = false
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

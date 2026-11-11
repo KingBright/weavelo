@@ -55,6 +55,7 @@ internal fun networkIndicator(session: SessionState, telemetry: TelemetrySnapsho
 @Composable
 internal fun NetworkStatusChip(
     session: SessionState, telemetry: TelemetrySnapshot,
+    route: String? = null,
     modifier: Modifier = Modifier
 ) {
     var now by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
@@ -65,6 +66,20 @@ internal fun NetworkStatusChip(
     val rtt = telemetry.networkRttMs?.takeIf { fresh && it.isFinite() && it >= 0 }
     val latency = rtt?.let { String.format(Locale.ROOT, "%.0f ms", it) }
     val loss = telemetry.packetLossPercent.takeIf { fresh && it.isFinite() && it in 0f..100f }
+    val routeLabel = when (route?.trim()?.uppercase(Locale.ROOT)) {
+        null, "" -> null
+        "LAN" -> tr("LAN")
+        "P2P", "DIRECT" -> tr("P2P")
+        "RELAY" -> tr("Relay")
+        else -> route.trim()
+    }
+    val chipText = when {
+        session != SessionState.STREAMING -> tr(status.label)
+        routeLabel != null && latency != null -> "$routeLabel · $latency"
+        latency != null -> latency
+        routeLabel != null -> "$routeLabel · ${tr(status.label)}"
+        else -> tr(status.label)
+    }
 
     val color = when (status.tone) {
         NetworkTone.ONLINE -> ColorAccentEmerald
@@ -90,11 +105,11 @@ internal fun NetworkStatusChip(
             .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(Modifier.size(6.dp).background(color, CircleShape))
-            Text(latency ?: tr(status.label), color = color, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(chipText, color = color, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         DropdownMenu(expanded = pinned || hoverOpen, onDismissRequest = { pinned = false; hoverOpen = false },
             properties = PopupProperties(focusable = pinned),
-            modifier = Modifier.widthIn(max = 300.dp).heightIn(max = 380.dp).hoverable(panelInteraction)) {
+            modifier = Modifier.widthIn(max = 300.dp).heightIn(max = 420.dp).hoverable(panelInteraction)) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween) {
@@ -102,6 +117,7 @@ internal fun NetworkStatusChip(
                     TextButton(onClick = { pinned = false; hoverOpen = false }) { Text(tr("Close")) }
                 }
                 NetworkDetail("Connection", tr(status.label))
+                if (routeLabel != null) NetworkDetail("Route", routeLabel)
                 NetworkDetail("Network RTT", latency ?: "—")
                 NetworkDetail("Packet loss rate", loss?.let { String.format(Locale.ROOT, "%.1f%%", it) } ?: "—")
                 NetworkDetail("Video bitrate", if (fresh && telemetry.videoBitrateKbps >= 0)

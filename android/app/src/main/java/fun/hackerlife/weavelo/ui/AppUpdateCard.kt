@@ -79,16 +79,40 @@ internal fun rememberAppUpdate(): AppUpdateUi {
 }
 
 @Composable
-internal fun AppUpdateCard(update: AppUpdateUi, installAllowed: Boolean) {
+internal fun AppUpdateCard(
+    update: AppUpdateUi,
+    installAllowed: Boolean,
+    onPrepareInstall: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val stillAllowed by rememberUpdatedState(installAllowed)
-    Column(Modifier.fillMaxWidth().background(ColorSurfaceCard, RoundedCornerShape(12.dp)).padding(14.dp)) {
+    Column(
+        Modifier.fillMaxWidth().background(ColorSurfaceCard, RoundedCornerShape(12.dp)).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
         Text(tr("App update"), color = ColorTextPrimary)
-        Text(trFormat("Current version: %s (%d)", BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
+        Text(trFormat("Current version: v%s (Build %d)", BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
             color = ColorTextSecondary)
-        update.release?.let {
-            Text(trFormat("Latest version: %s (%d)", it.version, it.code), color = ColorTextSecondary)
+        update.release?.let { release ->
+            Text(trFormat("Latest version: v%s (Build %d)", release.version, release.code), color = ColorAccentEmerald)
+            val sizeMb = String.format(java.util.Locale.ROOT, "%.1f", release.size / (1024.0 * 1024.0))
+            Text(
+                if (release.commit.isNotEmpty()) trFormat("Package size: %s MB · %s", sizeMb, release.commit)
+                else trFormat("Package size: %s MB", sizeMb),
+                color = ColorTextSecondary
+            )
+            if (release.notes.isNotEmpty()) {
+                Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    release.notes.forEach { note ->
+                        Text("• $note", color = ColorTextSecondary)
+                    }
+                }
+            }
+            Text(
+                tr("Signature and SHA-256 are verified before launch. If your phone prompts a security check, choose Continue installation."),
+                color = ColorTextSecondary
+            )
         }
         val status = when {
             update.downloading -> "Downloading update…"
@@ -122,8 +146,12 @@ internal fun AppUpdateCard(update: AppUpdateUi, installAllowed: Boolean) {
                                 return@launch
                             }
                             val installer = AppUpdate.download(context, latest)
-                            if (stillAllowed) context.startActivity(installer)
-                            else update.status = "Finish active sharing or file transfers before installing."
+                            if (stillAllowed) {
+                                onPrepareInstall()
+                                context.startActivity(installer)
+                            } else {
+                                update.status = "Finish active sharing or file transfers before installing."
+                            }
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (_: Exception) {

@@ -62,10 +62,14 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val serviceState by WorkspaceClient.state.collectAsState()
     val state = serviceState.takeIf { it.sessionKey == sessionKey }
         ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
-    StreamOrientation(active = state.panes.isNotEmpty())
+    var landscapeOverride by rememberSaveable(sessionKey) { mutableStateOf<Boolean?>(null) }
+    var portraitHintDismissed by rememberSaveable(sessionKey) { mutableStateOf(false) }
+    StreamOrientation(active = state.panes.isNotEmpty(), landscapeOverride = landscapeOverride)
     val typing = state.panes.isNotEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) > 0
     var hudVisible by remember(sessionKey) { mutableStateOf(false) }
     var hudInteraction by remember(sessionKey) { mutableLongStateOf(0L) }
+    var lastBackPressMs by remember(sessionKey) { mutableLongStateOf(0L) }
+    val exitStreamHint = tr("Press Back again to exit stream")
     val devices by WeaveloClient.devices.collectAsState()
     val remoteDevice = devices.firstOrNull { it.id == deviceId }
     val activePane = state.panes.firstOrNull { it.id == state.selected } ?: state.panes.firstOrNull()
@@ -106,7 +110,17 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     BackHandler(enabled = foreground) {
         val hasOverlay = sourcePicker || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || backgroundSettings
         when {
-            ZeroOcclusionHudPolicy.evaluateBackPress(hasOverlay) == BackPressAction.ToggleControls -> { hudVisible = !hudVisible; hudInteraction++ }
+            ZeroOcclusionHudPolicy.evaluateBackPress(hasOverlay) == BackPressAction.ToggleControls -> {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (state.panes.isEmpty() || now - lastBackPressMs in 1..2000L) {
+                    disconnect()
+                } else {
+                    lastBackPressMs = now
+                    hudVisible = !hudVisible
+                    hudInteraction++
+                    android.widget.Toast.makeText(context, exitStreamHint, android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
             sourcePicker -> sourcePicker = false
             actionsOpen -> actionsOpen = false
             selectedSettings != null -> selectedSettings = null
@@ -118,7 +132,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     LaunchedEffect(hudVisible, hudInteraction, actionsOpen, sourcePicker, selectedSettings, typing, state.panes.isEmpty(), state.connected) {
         if (!state.connected) hudVisible = true
         if (state.connected && hudVisible && state.panes.isNotEmpty() && !actionsOpen && !sourcePicker && selectedSettings == null && !typing) {
-            delay(3500)
+            delay(5500)
             hudVisible = false
         }
     }
@@ -208,6 +222,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             Column(Modifier.fillMaxSize().imePadding()) {
             val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
             if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                val portraitViewport = maxHeight > maxWidth
                 val columns = workspaceGridColumns(maxWidth.value, maxHeight.value,
                     visible.map { it.source.width.toFloat() / it.source.height.coerceAtLeast(1) })
                 val rows = visible.chunked(columns)
@@ -229,21 +244,37 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                             onMore = { hudVisible = true; hudInteraction++; actionsOpen = true }, onError = { message, text -> localError = message; localErrorText = text; hudVisible = true; hudInteraction++ })
                                         NetworkStatusChip(
                                             if (!state.connected) SessionState.DISCONNECTED else if (pane.accepted) SessionState.STREAMING else SessionState.CONNECTING,
-                                            pane.telemetry, modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp))
+                                            pane.telemetry, route = remoteDevice?.scope,
+                                            modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp))
+                                        if (portraitViewport && landscapeOverride == null && !portraitHintDismissed && !typing &&
+                                            !state.androidHost && pane.source.width > pane.source.height) {
+                                            Row(Modifier.align(Alignment.BottomStart).safeDrawingPadding().padding(8.dp)
+                                                .background(ColorSurfaceCard.copy(alpha = .9f), RoundedCornerShape(50))
+                                                .padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically) {
+                                                TextButton(onClick = { landscapeOverride = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                                                    Icon(MobileSymbol.Rotate.image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text(tr("Landscape view"), style = MaterialTheme.typography.labelMedium)
+                                                }
+                                                MobileAction(MobileSymbol.Close, tr("Close"), modifier = Modifier.size(28.dp)) { portraitHintDismissed = true }
+                                            }
+                                        }
                                         if (hudVisible && !typing) Row(Modifier.align(Alignment.TopStart).fillMaxWidth()
-                                            .safeDrawingPadding().padding(top = 56.dp)
-                                            .background(ColorSurfaceCard.copy(alpha = .82f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp))) {
-                                            TextButton(onClick = { selectedSettings = pane; settingsGeneration = state.connectionGeneration }, modifier = Modifier.weight(1f)) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
-                                            MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded) {
-                                                WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
-                                                pickerGeneration = state.connectionGeneration; sourcePicker = true
+                                            .safeDrawingPadding().padding(top = 64.dp)
+                                            .background(ColorSurfaceCard.copy(alpha = .84f), androidx.compose.foundation.shape.RoundedCornerShape(14.dp)),
+                                            verticalAlignment = Alignment.CenterVertically) {
+                                            val paneTitle = localizedSourceTitle(pane.source)
+                                            TextButton(onClick = { selectedSettings = pane; settingsGeneration = state.connectionGeneration }, modifier = Modifier.weight(1f)) {
+                                                SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon))
+                                                Text(paneTitle, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                             }
                                             if (WorkspaceClient.cameraSwitchTarget(pane) != null) {
                                                 MobileAction(MobileSymbol.CameraSwitch, tr("Switch camera"), state.connected) {
                                                     WorkspaceClient.switchCamera(pane.id, state.sessionKey, state.connectionGeneration)
                                                 }
                                             }
-                                            MobileAction(MobileSymbol.Close, trFormat("Close %s", pane.source.title)) { WorkspaceClient.remove(pane.id) }
+                                            MobileAction(MobileSymbol.Close, trFormat("Close %s", paneTitle)) { WorkspaceClient.remove(pane.id) }
                                         }
                                     }
                                 }
@@ -253,7 +284,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }
             }
             if (state.panes.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                val quickScreen = state.sources.firstOrNull { !it.isWindow && !it.isCamera }
+                val quickScreen = remember(state.sources) { primaryScreenSource(state.sources) }
+                val loadingCatalog = !state.incomingEnded && (!state.connected || !state.sourcesLoaded)
                 val quickSources = remember(state.sources) {
                     val hasDisplay = state.sources.any { (it.source as? JSONObject)?.has("Display") == true }
                     state.sources.filter { !(hasDisplay && it.source == "MainDisplay") }
@@ -262,14 +294,24 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
-                    Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
-                    Text(if (state.incomingEnded) tr("Sharing ended") else tr("Choose a screen"), color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
-                    Text(if (state.incomingEnded) tr("You can still exchange files.")
-                        else if (state.sources.isEmpty()) tr("This device has not shared a screen yet. You can still exchange files.")
-                        else tr("Open a display or application window. File transfers stay independent."),
-                        color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
+                    if (loadingCatalog) {
+                        CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp, color = ColorAccentCyan)
+                    } else {
+                        Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
+                    }
+                    Text(when {
+                        state.incomingEnded -> tr("Sharing ended")
+                        loadingCatalog -> tr("Connecting…")
+                        else -> tr("Choose a screen")
+                    }, color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
+                    Text(when {
+                        state.incomingEnded -> tr("You can still exchange files.")
+                        loadingCatalog -> tr("Connecting and loading shared screens…")
+                        state.sources.isEmpty() -> tr("This device has not shared a screen yet. You can still exchange files.")
+                        else -> tr("Open a display or application window. File transfers stay independent.")
+                    }, color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    if (!state.incomingEnded) {
+                    if (!state.incomingEnded && !loadingCatalog) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (quickScreen != null) {
                                 Button(onClick = {
@@ -295,7 +337,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                     }, enabled = state.connected, modifier = Modifier.fillMaxWidth()) {
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             SourceIcon(source)
-                                            Text(source.title, modifier = Modifier.weight(1f), maxLines = 1,
+                                            Text(localizedSourceTitle(source), modifier = Modifier.weight(1f), maxLines = 1,
                                                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                         }
                                     }
@@ -316,13 +358,33 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         awaitPointerEventScope { while (true) if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) hudInteraction++ }
                     }) {
             if (!typing) Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-                MobileAction(MobileSymbol.Back, tr("Hide controls"), onClick = { hudVisible = false })
+                MobileAction(MobileSymbol.Back, tr("Exit stream"), onClick = disconnect)
                 Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(remoteDevice?.name ?: tr("Remote device"),
                         color = ColorTextPrimary, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                         maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                    Text(if (state.incomingEnded) tr("Sharing ended") else if (state.connected) tr("Connected") else tr("Connecting…"), color = ColorTextSecondary,
-                        style = MaterialTheme.typography.labelSmall)
+                    val routeBadge = remoteDevice?.scope?.trim()?.takeIf { it.isNotEmpty() }?.let { scopeName ->
+                        when (scopeName.uppercase(java.util.Locale.ROOT)) {
+                            "LAN" -> tr("LAN")
+                            "P2P", "DIRECT" -> tr("P2P")
+                            "RELAY" -> tr("Relay")
+                            else -> scopeName
+                        }
+                    }
+                    val subStatus = when {
+                        state.incomingEnded -> tr("Sharing ended")
+                        state.connected && routeBadge != null -> "${tr("Connected")} · $routeBadge"
+                        state.connected -> tr("Connected")
+                        else -> tr("Connecting…")
+                    }
+                    Text(subStatus, color = ColorTextSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+                if (state.panes.isNotEmpty()) {
+                    MobileAction(MobileSymbol.Rotate,
+                        if (landscapeOverride == true) tr("Unlock rotation") else tr("Rotate to landscape"),
+                        selected = landscapeOverride == true) {
+                        landscapeOverride = if (landscapeOverride == true) null else true
+                    }
                 }
                 MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
@@ -330,6 +392,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }
                 MobileAction(MobileSymbol.Refresh, tr("Refresh screens and windows"), state.connected && !state.incomingEnded) {
                     WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                }
+                if (state.panes.isNotEmpty()) {
+                    MobileAction(MobileSymbol.Collapse, tr("Hide controls")) { hudVisible = false }
                 }
                 Box {
                     MobileAction(MobileSymbol.More, tr("Connection actions")) { actionsOpen = true }
@@ -388,12 +453,10 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 Text(if (localError != null && localErrorText != null) appText(localErrorText!!) else if (localError == null && state.statusText != null) appText(state.statusText!!) else trFormat("Details: %s", it), color = ColorTextSecondary, maxLines = 2)
             }
             if (!typing && !state.grid && state.panes.size > 1) Row(Modifier.horizontalScroll(rememberScrollState())) {
-                state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(pane.source.title) } }
+                state.panes.forEach { pane -> TextButton(onClick = { WorkspaceClient.layout(false, pane.id) }) { SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon)); Text(localizedSourceTitle(pane.source)) } }
             }
             }
-            if (!hudVisible && state.panes.isNotEmpty() && !typing && state.panes.any {
-                !ZeroOcclusionHudPolicy.isMobileTarget(state.androidHost, it.source.isCamera)
-            }) MobileAction(MobileSymbol.More, tr("Show stream controls"),
+            if (!hudVisible && state.panes.isNotEmpty() && !typing) MobileAction(MobileSymbol.More, tr("Show stream controls"),
                 modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp).size(36.dp)
                     .background(ColorSurfaceCard.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(18.dp))) {
                 hudVisible = true; hudInteraction++
@@ -973,9 +1036,33 @@ private fun SourceIcon(source: WorkspaceSource) {
 }
 
 @Composable
+private fun localizedSourceTitle(source: WorkspaceSource): String {
+    if (source.isWindow && !(source.application.trim().isEmpty() && source.title == "Shared window")) {
+        return source.title
+    }
+    val raw = source.title.trim()
+    return when (raw) {
+        "Desktop" -> tr("Desktop")
+        "Shared display" -> tr("Shared display")
+        "Shared window" -> tr("Shared window")
+        "Android selected screen or app" -> tr("Android selected screen or app")
+        "Built-in Display" -> tr("Built-in Display")
+        "Main Display" -> tr("Main Display")
+        else -> {
+            Regex("^Built-in Display \\((\\d+×\\d+)\\)$").matchEntire(raw)?.let { return trFormat("Built-in Display (%s)", it.groupValues[1]) }
+            Regex("^Main Display \\((\\d+×\\d+)\\)$").matchEntire(raw)?.let { return trFormat("Main Display (%s)", it.groupValues[1]) }
+            Regex("^Main Display · (.+) \\((\\d+×\\d+)\\)$").matchEntire(raw)?.let { return trFormat("Main Display · %s (%s)", it.groupValues[1], it.groupValues[2]) }
+            Regex("^Display (\\d+) \\((\\d+×\\d+)\\)$").matchEntire(raw)?.let { return trFormat("Display %s (%s)", it.groupValues[1], it.groupValues[2]) }
+            Regex("^Display (\\d+) · (.+) \\((\\d+×\\d+)\\)$").matchEntire(raw)?.let { return trFormat("Display %s · %s (%s)", it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
+            raw.ifEmpty { source.title }
+        }
+    }
+}
+
+@Composable
 private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
     var query by remember { mutableStateOf("") }
-    val quickScreen = remember(sources) { sources.firstOrNull { !it.isWindow && !it.isCamera } }
+    val quickScreen = remember(sources) { primaryScreenSource(sources) }
     val matches = remember(sources, query) {
         val hasDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
         sources.filter { !(hasDisplay && it.source == "MainDisplay") }
@@ -1014,7 +1101,7 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
                         contentPadding=PaddingValues(start=if (source.isWindow) 16.dp else 8.dp,end=8.dp,top=6.dp,bottom=6.dp)) {
                         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                             SourceIcon(source)
-                            Text(source.title,modifier=Modifier.weight(1f),maxLines=2,
+                            Text(localizedSourceTitle(source),modifier=Modifier.weight(1f),maxLines=2,
                                 textAlign=androidx.compose.ui.text.style.TextAlign.Start,
                                 overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         }

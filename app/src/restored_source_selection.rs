@@ -265,12 +265,25 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
             }
         }
         let selected=selection.selected.contains(&source.source);let id=source.source;let view=view.clone();
-        let full_title=if windows&&!source.application.trim().is_empty() {format!("{} · {}",source.application.trim(),source.title)}else{source.title.clone()};
+        let display_title = if !windows || (source.application.trim().is_empty() && source.title == "Shared window") {
+            crate::i18n::message(&source.title)
+        } else {
+            source.title.clone()
+        };
+        let full_title=if windows&&!source.application.trim().is_empty() {format!("{} · {}",source.application.trim(),display_title)}else{display_title.clone()};
         rows=rows.child(command_button(format!("source_selection_{id:?}"),if selected {ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx)
             .w_full().min_w(px(0.)).min_h(px(34.)).px_2().justify_start().stretch_content()
             .when(windows,|row|row.pl_4()).disabled(!selection.catalog_ready())
             .tooltip(tooltip(full_title).build())
-            .on_click(move|_,_,cx| {let _=view.update(cx,|this,cx| {
+            .on_click(move|event,_,cx| {let _=view.update(cx,|this,cx| {
+                if event.click_count() >= 2 && this.source_selection.as_ref().is_some_and(|s| !s.is_delivery()) {
+                    if let Some(selection)=this.source_selection.as_mut() {
+                        selection.selected = vec![id];
+                        selection.error = None;
+                    }
+                    this.confirm_source_selection(cx);
+                    return;
+                }
                 if let Some(selection)=this.source_selection.as_mut() {
                     selection.toggle(id);
                 }cx.notify();
@@ -278,7 +291,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
             .child(div().debug_selector(||"source-picker-row".into()).w_full().min_w(px(0.)).flex().items_center().gap_2()
                 .child(div().w(px(14.)).flex_none().child(if selected {"✓"}else{"○"}))
                 .child(capture_source_badge(source,&selection.artwork,&theme))
-                .child(div().debug_selector(||"source-picker-title".into()).flex_1().min_w(px(0.)).truncate().text_size(px(11.)).child(source.title.clone()))));
+                .child(div().debug_selector(||"source-picker-title".into()).flex_1().min_w(px(0.)).truncate().text_size(px(11.)).child(display_title))));
       }
     }
     if visible.is_empty()&&!selection.query.trim().is_empty()&&!selection.loading {
@@ -339,6 +352,10 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
             .on_change({let view=cx.weak_entity();move|text,_,cx|{let _=view.update(cx,|this,cx|{
                 if let Some(selection)=this.source_selection.as_mut(){selection.query=text.to_string();}cx.notify();
             });}}))
+        .when(!selection.loading && selection.catalog_ready() && !selection.is_delivery() && !selection.sources.is_empty(), |panel| {
+            panel.child(div().text_size(px(10.)).text_color(theme.content.tertiary)
+                .child(crate::i18n::tr("Double-click any item to open directly, or select multiple sources.")))
+        })
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
         .when(selection.loading,|panel|panel.child(div().text_size(px(11.)).child(crate::i18n::tr("Loading sources…"))))
         .when(!selection.loading && selection.catalog_ready() && (!selection.is_delivery() || !selection.sources.is_empty())

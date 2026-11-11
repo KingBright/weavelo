@@ -915,6 +915,7 @@ impl RestoredDashboard {
         let snapshot = self.owner.snapshot();
         DashboardSnapshot {
             role: snapshot.role,
+            route: snapshot.route,
             devices: snapshot.devices,
             source_icons: self.artwork_cache.borrow_mut().update(snapshot.source_icons),
             source_appearances: snapshot.source_appearances,
@@ -2833,8 +2834,8 @@ impl Render for RestoredDashboard {
                 tree.child(div().absolute().right(px(8.)).top(px(60.))
                     .child(self.android_companion_controls(&snapshot, is_fullscreen, cx)))
             })
-            .child(div().absolute().right(px(12.)).bottom(px(12.)).child(self.network_status_chip(&role, host_stats.as_ref(), cx)))
-            .when(self.network_details_open, |tree| tree.child(self.network_status_panel(&role, host_stats.as_ref(), cx)))
+            .child(div().absolute().right(px(12.)).bottom(px(12.)).child(self.network_status_chip(&role, snapshot.route.as_deref(), host_stats.as_ref(), cx)))
+            .when(self.network_details_open, |tree| tree.child(self.network_status_panel(&role, snapshot.route.as_deref(), host_stats.as_ref(), cx)))
             .child(self.paint_acknowledgement())
             .when(show_drawer, |tree| tree.child(self.stream_controls_panel(
                 &snapshot, host_stats.as_ref(), viewport_width, viewport_height, cx)))
@@ -3323,10 +3324,19 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
         else if matches!(source.source, protocol::session::CaptureSource::Window(_)) { crate::i18n::tr("Application window").into() }
         else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) { crate::i18n::tr("Camera").into() }
         else { crate::i18n::tr("Display").into() }
-    } else if app.is_empty() || app == title {
-        title.into()
     } else {
-        format!("{app} · {title}")
+        let is_system_title = !matches!(source.source, protocol::session::CaptureSource::Window(_))
+            || (app.is_empty() && title == "Shared window");
+        let localized_title = if is_system_title {
+            crate::i18n::message(title)
+        } else {
+            title.to_owned()
+        };
+        if app.is_empty() || app == title {
+            localized_title
+        } else {
+            format!("{app} · {localized_title}")
+        }
     }
 }
 
@@ -4597,6 +4607,7 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
     let send_owner = owner.clone();
     let share_owner = owner.clone();
     let folder_owner = owner.clone();
+    let open_folder_owner = owner.clone();
     panel = panel.child(
         div()
             .flex()
@@ -4623,6 +4634,13 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
                                 owner.set_file_receive_dir(dir.path().to_path_buf());
                             }
                         });
+                    }),
+            )
+            .child(
+                command_button("files_open_receive_dir", ActionVariantKind::Neutral, cx)
+                    .child(crate::i18n::tr("Open folder"))
+                    .on_click(move |_, _, _| {
+                        open_directory_in_file_manager(open_folder_owner.receive_dir());
                     }),
             ),
     );
@@ -4753,6 +4771,33 @@ fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashbo
     }
     panel
 }
+fn normalize_picked_file_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return path;
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return path;
+    }
+    if let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            return canonical_parent.join(file_name);
+        }
+    }
+    path
+}
+
+fn open_directory_in_file_manager(dir: std::path::PathBuf) {
+    tokio::task::spawn_blocking(move || {
+        let _ = std::fs::create_dir_all(&dir);
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("/usr/bin/open").arg(&dir).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+    });
+}
+
 fn pick_session_files(owner: Arc<OriginalOwner>, share: bool) {
     owner.release_input();
     let target = owner.active_connection().map(|c| Arc::downgrade(&c));
@@ -4772,7 +4817,10 @@ fn pick_session_files(owner: Arc<OriginalOwner>, share: bool) {
         if scope != remote_core::shared_files::current_share_scope() {
             return;
         }
-        let paths: Vec<_> = files.into_iter().map(|f| f.path().to_path_buf()).collect();
+        let paths: Vec<_> = files
+            .into_iter()
+            .map(|f| normalize_picked_file_path(f.path().to_path_buf()))
+            .collect();
         if share {
             for path in paths {
                 if scope != remote_core::shared_files::current_share_scope() {
@@ -4959,6 +5007,13 @@ fn desktop_update_card(state: &RestoredDashboard, cx: &mut Context<RestoredDashb
     let installing = state.installing_update;
     #[cfg(target_os="macos")]
     let install_result = state.update_install_result.clone();
+    let current_version = env!("CARGO_PKG_VERSION");
+    let current_line = match crate::build_identity::compiled()
+        .and_then(|v| v["source"]["commit"].as_str().map(|s| s.chars().take(7).collect::<String>()))
+    {
+        Some(commit) => crate::i18n::tr_format!("Current version: v{version} · {commit}", version=current_version, commit=commit),
+        None => crate::i18n::tr_format!("Current version: v{version}", version=current_version),
+    };
     let result = state.update_check.clone();
     let text = match result {
         Some(Ok(release)) => {
@@ -4976,6 +5031,7 @@ fn desktop_update_card(state: &RestoredDashboard, cx: &mut Context<RestoredDashb
     div().p_3().bg(theme.surface.sunken).border_1().border_color(color_border_fine())
         .rounded(px(6.)).flex().flex_col().gap_2()
         .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(crate::i18n::tr("Application updates")))
+        .child(div().text_size(px(10.)).text_color(theme.content.primary).child(current_line))
         .child(div().text_size(px(10.)).text_color(theme.content.secondary).child(text))
         .when(cfg!(not(target_os="macos")), |card| card.child(div().text_size(px(10.)).text_color(theme.content.secondary)
             .child(crate::i18n::tr("Installation and signing compatibility are not yet available in the app."))))
@@ -6305,6 +6361,7 @@ fn is_shifted_macos_symbol(key: &str) -> bool {
 
 struct DashboardSnapshot {
     role: RoleState,
+    route: Option<String>,
     devices: Vec<AppDevice>,
     capture_sources: Arc<Vec<protocol::session::CaptureSourceInfo>>,
     source_icons: SourceArtwork,

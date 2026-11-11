@@ -251,6 +251,16 @@ fn monitors() -> Result<Vec<Selection>, String> {
                 .position(|m| m.device_name == s.monitor.device_name)
                 .unwrap_or(usize::MAX)
         });
+        let total = result.len();
+        for (index, selection) in result.iter_mut().enumerate() {
+            selection.title = crate::capture_sources::windows_display_catalog_title(
+                index,
+                total,
+                &selection.monitor.adapter,
+                selection.bounds.width,
+                selection.bounds.height,
+            );
+        }
         if result.is_empty() {
             return Err(
                 "No physical SDR display with a supported hardware HEVC encoder is available"
@@ -295,6 +305,9 @@ unsafe extern "system" fn enum_window(hwnd: HWND, data: LPARAM) -> i32 {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        if crate::capture_sources::windows_shell_helper_process(&app) {
+            return 1;
+        }
         list.push((
             hwnd as usize as u64,
             pid,
@@ -315,6 +328,10 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, String> {
     unsafe {
         EnumWindows(Some(enum_window), &mut windows as *mut _ as isize);
     }
+    let windows = crate::capture_sources::filter_windows_catalog_entries(
+        windows,
+        |(_, _, _, title, app, _)| (title.as_str(), app.as_str()),
+    );
     for (handle, pid, created, title, application, bounds) in windows {
         // A mixed/unknown monitor color space cannot be described by guessed RGB metadata.
         let Some(display) = displays.iter().find(|s| s.bounds.contains(bounds)) else {

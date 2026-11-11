@@ -36,9 +36,18 @@ internal enum class WorkspaceNavigation(val wireValue: String) { BACK("back"), H
 internal fun isAndroidProjectionSource(source: String, application: String): Boolean =
     source == "MainDisplay" && application == "MediaProjection"
 
+internal fun primaryScreenSource(sources: List<WorkspaceSource>): WorkspaceSource? {
+    val hasConcreteDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
+    val screens = sources.filter {
+        !it.isWindow && !it.isCamera && !(hasConcreteDisplay && it.source.toString() == "MainDisplay")
+    }
+    return screens.firstOrNull { it.width > 0 && it.height > 0 } ?: screens.firstOrNull()
+}
+
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
 data class WorkspaceState(val deviceId: String = "", val transferring: Boolean = false, val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
+    val sourcesLoaded: Boolean = false,
     val androidHost: Boolean = false,
     val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
     val incomingEnded: Boolean = false, val connectionId: Long = 0,
@@ -153,7 +162,7 @@ object WorkspaceClient {
                     closeNative()
                     this.context = context.applicationContext
                     endpoint = request.endpoint; deviceId = request.deviceId
-                    mutable.value = if (sameSession) mutable.value.copy(connected = false, androidHost = false, status = "Connecting…", statusText = AppText("Connecting…"))
+                    mutable.value = if (sameSession) mutable.value.copy(connected = false, sourcesLoaded = false, androidHost = false, status = "Connecting…", statusText = AppText("Connecting…"))
                         else WorkspaceState(sessionKey = request.sessionKey, deviceId = request.deviceId).also { applicationIcons.clear() }
                     if (!sameSession) nextId = 256
                     revision = 0; asleep = false
@@ -222,7 +231,7 @@ object WorkspaceClient {
         incomingInitialized = false; incomingEnded = false
         retainingConnection = true
         pendingShareList = 0L
-        mutable.value = mutable.value.copy(connected = true, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
+        mutable.value = mutable.value.copy(connected = true, sourcesLoaded = false, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
             connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, audioOutput = WorkspaceAudioOutput(), telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
@@ -735,11 +744,11 @@ object WorkspaceClient {
                     directory.firstOrNull { it.source.toString()==pane.source.source.toString() }
                         ?.takeIf { pane.accepted && it.isCamera && it.rotation!=pane.source.rotation }?.let { pane to it }
                 }
-                mutable.value = mutable.value.copy(sources = visible, androidHost = androidHost, panes = mutable.value.panes.map { pane ->
+                mutable.value = mutable.value.copy(sources = visible, sourcesLoaded = true, androidHost = androidHost, panes = mutable.value.panes.map { pane ->
                     directory.firstOrNull { it.source.toString() == pane.source.source.toString() }?.let { pane.copy(source = it) } ?: pane
                 })
                 rotated.forEach { (pane,source)->replaceCameraView(pane,source) }
-                val mainDisplay = visible.firstOrNull { it.source.toString() == "MainDisplay" }
+                val mainDisplay = primaryScreenSource(visible)
                 if (initialSource.takeMainDisplay(mutable.value.sessionKey, mainDisplay != null)) {
                     addNative(checkNotNull(mainDisplay))
                 }

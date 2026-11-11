@@ -145,4 +145,17 @@ class WorkspaceSessionOwnershipTest {
         assertFalse(intent.takeMainDisplay("manual", available = true))
     }
 
+    @Test fun primaryScreenSourcePrefersConcreteDisplayOverWaylandPlaceholder() {
+        val waylandPlaceholder = WorkspaceSource("MainDisplay", "Desktop", 0, 0)
+        val waylandDisplay = WorkspaceSource(org.json.JSONObject().put("Display", 0x8000_0001L), "Shared display", 3840, 2160)
+        val appWindow = WorkspaceSource(org.json.JSONObject().put("Window", 42), "Terminal", 1280, 720, "Konsole")
+        assertEquals(waylandDisplay, primaryScreenSource(listOf(waylandPlaceholder, waylandDisplay, appWindow)))
+
+        val androidProjection = WorkspaceSource("MainDisplay", "Android selected screen or app", 1080, 2400, "MediaProjection")
+        assertEquals(androidProjection, primaryScreenSource(listOf(androidProjection)))
+
+        val macDisplay = WorkspaceSource(org.json.JSONObject().put("Display", 1), "Built-in Display (1728×1117)", 1728, 1117)
+        assertEquals(macDisplay, primaryScreenSource(listOf(macDisplay, appWindow)))
+    }
+
 }

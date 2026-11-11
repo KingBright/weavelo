@@ -27,6 +27,9 @@ internal fun PlaybackAudioDialog(showVideoOnly: Boolean, onSelect: (PlaybackAudi
     val context = LocalContext.current
     var choices by remember { mutableStateOf<List<PlaybackAudioChoice>>(emptyList()) }
     LaunchedEffect(Unit) { choices = withContext(Dispatchers.IO) { PlaybackAudioSources.choices(context) } }
+    val duplicateLabels = remember(choices) {
+        choices.groupingBy { it.label.trim().lowercase() }.eachCount().filterValues { it > 1 }.keys
+    }
     AlertDialog(onDismissRequest = onDismiss,
         title = { Text(tr("Choose audio to share")) },
         text = { Column {
@@ -34,7 +37,10 @@ internal fun PlaybackAudioDialog(showVideoOnly: Boolean, onSelect: (PlaybackAudi
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
                 item { TextButton(onClick = { onSelect(null) }) { Text(tr("All eligible device audio")) } }
                 items(choices, key = { it.target.packageName }) { choice ->
-                    TextButton(onClick = { onSelect(choice.target) }) { Text("${choice.label} (${choice.target.packageName})") }
+                    val showPackage = choice.label.trim().lowercase() in duplicateLabels
+                    TextButton(onClick = { onSelect(choice.target) }) {
+                        Text(if (showPackage) "${choice.label} (${choice.target.packageName})" else choice.label)
+                    }
                 }
             }
         } },

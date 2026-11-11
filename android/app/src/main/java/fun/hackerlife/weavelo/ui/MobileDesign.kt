@@ -41,6 +41,8 @@ enum class MobileSymbol(path: String) {
     Trackpad("M3 5h18v14H3z M3 14h18 M12 14v5 M8 9h8"),
     Audio("M11 5L6 9H3v6h3l5 4z M15 8a6 6 0 0 1 0 8 M18 5a10 10 0 0 1 0 14"),
     Notifications("M6 9a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4"),
+    Rotate("M4 7a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M17 10h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2"),
+    Collapse("M6 15l6-6 6 6"),
     Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10");
 
     val image: ImageVector = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)

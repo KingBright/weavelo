@@ -103,9 +103,16 @@ class MainActivity : ComponentActivity() {
             val incomingNotice by DirectedDelivery.notice.collectAsState()
             val receiverState by FileReceiverClient.state.collectAsState()
             val controlReady by RemoteControlService.connected.collectAsState()
+            val streamPrefs = remember { getSharedPreferences("stream", MODE_PRIVATE) }
+            var autoReceiveFiles by remember { mutableStateOf(streamPrefs.getBoolean("auto_receive_files", true)) }
+            LaunchedEffect(WeaveloClient.nativeAvailable, devices.isNotEmpty(), autoReceiveFiles, joiningNetwork) {
+                if (WeaveloClient.nativeAvailable && devices.isNotEmpty() && autoReceiveFiles && !joiningNetwork && !FileReceiverClient.ownsNetwork) {
+                    FileReceiverClient.start(this@MainActivity)
+                }
+            }
             fun joinNetwork(raw: String) {
                 if (joiningNetwork) return
-                if (WorkspaceClient.active || PublisherClient.active || camera.enabled || FileReceiverClient.ownsNetwork ||
+                if (WorkspaceClient.active || PublisherClient.active || camera.enabled ||
                     sessionState in listOf(SessionState.CONNECTING, SessionState.STREAMING, SessionState.RECONNECTING)) {
                     pairingMessage = "error:Disconnect active sessions and stop file reception and screen sharing before changing networks."
                     pairingText = AppText("Disconnect active sessions and stop file reception and screen sharing before changing networks.")
@@ -116,6 +123,14 @@ class MainActivity : ComponentActivity() {
                 pairingText = AppText("Joining device network...")
                 scope.launch {
                     try {
+                        if (FileReceiverClient.ownsNetwork) {
+                            FileReceiverClient.stop(this@MainActivity)
+                            var waited = 0
+                            while (FileReceiverClient.ownsNetwork && waited < 30) {
+                                delay(50)
+                                waited++
+                            }
+                        }
                         pairingMessage = withContext(Dispatchers.IO) {
                             DirectedDelivery.changeNetwork { WeaveloClient.joinPairingPayload(raw) }
                         }
@@ -298,7 +313,11 @@ class MainActivity : ComponentActivity() {
                             incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null
                             workspaceDeviceId = ""; openMainDisplay = true; workspaceEndpoint = endpoint
                         },
-                        onConnectWorkspace = { deviceId, endpoint -> openMainDisplay = false; incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
+                        onConnectWorkspace = { deviceId, endpoint ->
+                            openMainDisplay = deviceId.isNotBlank() && devices.firstOrNull { it.id == deviceId }?.canViewScreen == true
+                            incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null
+                            workspaceDeviceId = deviceId; workspaceEndpoint = endpoint
+                        },
                         onSendFiles = { deviceId, endpoint -> openMainDisplay = false; incomingSession = null; sendFileOnConnect = true; workspaceFilePath = null; workspaceDeviceId = deviceId; workspaceEndpoint = endpoint },
                         outgoing = outgoing,
                         onSendCamera = { target -> cameraTarget = target; if (!camera.enabled) requestCamera() },
@@ -317,8 +336,16 @@ class MainActivity : ComponentActivity() {
                         publishing = PublisherClient.active,
                         receivingFiles = receiverState.active || receiverState.starting,
                         receiverStarting = receiverState.starting,
-                        onStartReceiving = { FileReceiverClient.start(this) },
-                        onStopReceiving = { FileReceiverClient.stop(this) },
+                        onStartReceiving = {
+                            autoReceiveFiles = true
+                            streamPrefs.edit().putBoolean("auto_receive_files", true).apply()
+                            FileReceiverClient.start(this)
+                        },
+                        onStopReceiving = {
+                            autoReceiveFiles = false
+                            streamPrefs.edit().putBoolean("auto_receive_files", false).apply()
+                            FileReceiverClient.stop(this)
+                        },
                         controlReady = controlReady,
                         onControlSettings = { RemoteControlService.openSettings(this) },
                         onShareControlledScreen = {

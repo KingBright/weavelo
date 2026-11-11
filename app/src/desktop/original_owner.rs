@@ -389,6 +389,7 @@ pub(crate) struct OriginalOwner {
 #[derive(Clone)]
 pub(crate) struct ViewSnapshot {
     pub role: RoleState,
+    pub route: Option<String>,
     pub devices: Vec<AppDevice>,
     pub sources: Arc<Vec<CaptureSourceInfo>>,
     pub source_catalog_revision: u64,
@@ -564,6 +565,7 @@ impl OriginalOwner {
                     RolePeer::new(&connecting.peer.device_id, &connecting.peer.name, connecting.peer.endpoint),
                     connecting.attempt as u32, 0,
                 )),
+                route: None,
                 devices,
                 sources: Arc::new(Vec::new()),
                 source_catalog_revision: 0,
@@ -601,6 +603,7 @@ impl OriginalOwner {
             };
             ViewSnapshot {
                 role,
+                route: s.connected.then(|| s.route.clone()).filter(|r| !r.trim().is_empty()),
                 devices,
                 sources: e.sources.clone(),
                 source_catalog_revision: s.source_catalog_revision,
@@ -629,6 +632,7 @@ impl OriginalOwner {
             let role = self.backend.runtime().lock().unwrap().role_state().clone();
             ViewSnapshot {
                 role,
+                route: None,
                 devices,
                 sources: Arc::new(Vec::new()),
                 source_catalog_revision: 0,
@@ -742,6 +746,9 @@ impl OriginalOwner {
             // OriginalGuiSession::drop releases input and its media/file resources.
             p.sessions.remove(index);
             if was_active && let Some((_, control)) = p.talkback.take() { control.stop(); }
+            if p.sessions.is_empty() && p.tabs.connecting().is_none() && p.tabs.failed().is_none() {
+                p.message = "Ready".into();
+            }
         }
     }
     pub fn active_connection(&self) -> Option<Arc<WorkspaceConnection>> {
@@ -970,6 +977,10 @@ impl OriginalOwner {
                     if !video {
                         p.sessions[index].session.list_files_on_connect(auto_list);
                     }
+                    if p.tabs.connecting().is_none() {
+                        let route = p.sessions[index].session.route.clone();
+                        p.message = format!("Connected · {route}");
+                    }
                     return Ok(());
                 }
                 OpenDecision::AlreadyPending => {
@@ -1122,10 +1133,15 @@ impl OriginalOwner {
         if selected {
             let visible = self.presentation_visible.load(std::sync::atomic::Ordering::Acquire);
             let focused = self.input_focused.load(std::sync::atomic::Ordering::Acquire);
+            let mut connected_route = None;
             if let Some(entry) = p.active_mut() {
                 entry.session.set_presentation_hidden(!visible);
                 entry.session.set_input_focused(focused);
                 entry.session.set_view_selected(true);
+                connected_route = Some(entry.session.route.clone());
+            }
+            if let Some(route) = connected_route {
+                p.message = format!("Connected · {route}");
             }
         }
         Ok(())
@@ -1508,7 +1524,7 @@ impl OriginalOwner {
             return Err(Rejection::InputBusy);
         }
         Ok(Observation::new(&s.conn, fence, s.texture.as_ref().unwrap().clone(),
-            access, s.texture.as_ref().unwrap().decoded_at))
+            access, Instant::now()))
     }
 
     /// Revalidate the original observation before returning any pixels. This

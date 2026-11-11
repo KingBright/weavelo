@@ -28,7 +28,16 @@ internal object AppUpdate {
     private val sha256 = Regex("[a-f0-9]{64}")
     private val downloadLock = Mutex()
 
-    data class Release(val version: String, val code: Long, val file: String, val size: Long, val digest: String)
+    data class Release(
+        val version: String,
+        val code: Long,
+        val file: String,
+        val size: Long,
+        val digest: String,
+        val commit: String = "",
+        val publishedAt: String = "",
+        val notes: List<String> = emptyList()
+    )
 
     suspend fun latest(): Release? = withContext(Dispatchers.IO) {
         val metadata = get("release.json") { connection ->
@@ -52,9 +61,15 @@ internal object AppUpdate {
         val file = metadata.getString("file")
         val size = metadata.getLong("size_bytes")
         val digest = metadata.getString("sha256")
+        val commit = metadata.optString("commit", "").trim().take(12)
+        val publishedAt = metadata.optString("published_at", "").trim().take(32)
+        val notes = metadata.optJSONArray("notes")?.let { items ->
+            (0 until minOf(items.length(), 8))
+                .mapNotNull { index -> items.optString(index).trim().takeIf(String::isNotEmpty) }
+        } ?: emptyList()
         check(version.matches(Regex("[0-9][A-Za-z0-9.+-]{0,63}")) &&
             file.matches(packageFile) && size in 1..maxPackage && digest.matches(sha256))
-        Release(version, code, file, size, digest)
+        Release(version, code, file, size, digest, commit, publishedAt, notes)
     }
 
     suspend fun download(context: Context, release: Release): Intent = downloadLock.withLock {

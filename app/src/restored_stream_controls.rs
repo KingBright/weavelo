@@ -500,13 +500,38 @@ impl RestoredDashboard {
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.content.primary)
-                        .tooltip(tooltip(if let Some(hint) = input_hint {
-                            format!("{context_title} · {hint}")
-                        } else {
-                            context_title.clone()
+                        .tooltip(tooltip({
+                            let mut full = context_title.clone();
+                            if let Some(route) = snapshot.route.as_deref() {
+                                full = format!("{full} · {}", crate::i18n::message(route));
+                            }
+                            if let Some(hint) = input_hint {
+                                full = format!("{full} · {hint}");
+                            }
+                            full
                         }).build())
                         .child(context_title.clone()),
-                ),
+                )
+                .when_some((!compact).then_some(snapshot.route.as_deref()).flatten(), |ctx, route| {
+                    let badge_label = match route {
+                        "Lan" | "LAN" => crate::i18n::tr("LAN").to_owned(),
+                        "Relay" | "RELAY" => crate::i18n::tr("Relay").to_owned(),
+                        "P2P" | "Direct" => crate::i18n::tr("P2P Direct").to_owned(),
+                        other => crate::i18n::message(other),
+                    };
+                    ctx.child(
+                        div()
+                            .flex_none()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_full()
+                            .bg(theme.surface.sunken)
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color_accent_cyan())
+                            .child(badge_label),
+                    )
+                }),
         ));
         let control_caption = input_control_caption(
             self.input_locked,
@@ -549,13 +574,13 @@ impl RestoredDashboard {
         let (volume, muted) = self.owner.audio();
         let mute_button = command_button(
             "stream-primary-mute",
-            if muted { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+            if muted { ActionVariantKind::Danger } else { ActionVariantKind::Neutral },
             cx,
         )
         .size(px(button_size))
         .p_0()
         .tooltip(tooltip(crate::i18n::tr(if muted { "Unmute" } else { "Mute" })).build())
-        .child(icon(IconName::Sound).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
+        .child(icon(if muted { IconName::SoundMuted } else { IconName::Sound }).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.owner.set_audio(volume, !muted);
             this.last_toolbar_activity = Instant::now();
@@ -869,11 +894,38 @@ impl RestoredDashboard {
         use protocol::audio_output::{AudioOutputMode, LocalPlayback};
         let (volume, muted) = self.owner.audio();
         let host_audio = self.owner.host_audio();
+        let header = if muted {
+            crate::i18n::tr_format!("Playback · {volume}% (Muted)", volume=volume)
+        } else {
+            crate::i18n::tr_format!("Playback · {volume}%", volume=volume)
+        };
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(div().child(crate::i18n::tr_format!("Playback · {volume}%", volume=volume)))
+            .child(div().font_weight(FontWeight::MEDIUM).child(header))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_1p5()
+                    .children([0u8, 25, 50, 75, 100].into_iter().map(|preset| {
+                        let active = (!muted && volume == preset) || (muted && preset == 0);
+                        command_button(
+                            format!("volume_preset_{preset}"),
+                            if active { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+                            cx,
+                        )
+                        .h(px(24.))
+                        .px_2()
+                        .text_size(px(10.))
+                        .child(format!("{preset}%"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.owner.set_audio(preset, preset == 0);
+                            cx.notify();
+                        }))
+                    })),
+            )
             .child(
                 div()
                     .flex()
@@ -891,17 +943,21 @@ impl RestoredDashboard {
                             .child("+")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.owner
-                                    .set_audio(volume.saturating_add(5).min(100), muted);
+                                    .set_audio(volume.saturating_add(5).min(100), false);
                                 cx.notify();
                             })),
                     )
                     .child(
-                        command_button("remote_audio_mute", ActionVariantKind::Neutral, cx)
-                            .child(crate::i18n::tr(if muted { "Unmute" } else { "Mute" }))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.owner.set_audio(volume, !muted);
-                                cx.notify();
-                            })),
+                        command_button(
+                            "remote_audio_mute",
+                            if muted { ActionVariantKind::Danger } else { ActionVariantKind::Neutral },
+                            cx,
+                        )
+                        .child(crate::i18n::tr(if muted { "Unmute" } else { "Mute" }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.owner.set_audio(volume, !muted);
+                            cx.notify();
+                        })),
                     ),
             )
             .when_some(host_audio, |panel, (pending, status)| {
