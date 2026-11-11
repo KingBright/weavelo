@@ -508,6 +508,8 @@ internal object LanguageCatalog {
         "Show advanced runtime & network diagnostics" to "展开高级运行与网络诊断",
         "Hide advanced runtime & network diagnostics" to "收起高级运行与网络诊断",
         "Pan canvas" to "移动画布",
+        "Fill height" to "纵向铺满",
+        "Switch screen" to "切换画面",
         "Zoom & Canvas" to "缩放与画布",
         "• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)\n• Two-Finger Tap: Mouse Right Click" to "• 单击：鼠标左键\n• 触摸并拖动：鼠标拖选 / 拖动窗口\n• 长按（380 毫秒）：鼠标右键\n• 双指平行滑动：应用内自然滚动（原大与放大后均可用）\n• 双指轻点：鼠标右键",
         "• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Double-Tap & Hold Glide: Mouse Drag\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)" to "• 单指滑动：相对移动光标\n• 单击：鼠标左键\n• 双击不松手滑动：按住左键拖拽\n• 双指轻点：鼠标右键\n• 双指平行滑动：应用内自然滚动（原大与放大后均可用）",

@@ -1,43 +1,50 @@
 package `fun`.hackerlife.weavelo.ui
 
-import android.view.SurfaceView
 import android.util.Log
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.MaterialTheme
+import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import `fun`.hackerlife.weavelo.AudioOpusPlayer
 import `fun`.hackerlife.weavelo.MediaCodecPlayer
-import `fun`.hackerlife.weavelo.WeaveloClient
 import `fun`.hackerlife.weavelo.SessionState
 import `fun`.hackerlife.weavelo.TouchMode
 import `fun`.hackerlife.weavelo.VideoDimensions
+import `fun`.hackerlife.weavelo.WeaveloClient
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.draw.alpha
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -47,11 +54,13 @@ fun MobileViewportScreen(
     StreamOrientation(active = true)
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
     var lastControlMode by remember { mutableStateOf(TouchMode.DIRECT) }
-    val isModifierBarVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
+    val isModifierBarVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     var controlsExpanded by remember { mutableStateOf(false) }
+    var handleFraction by rememberSaveable { mutableFloatStateOf(0.5f) }
+    var touching by remember { mutableStateOf(false) }
     LaunchedEffect(controlsExpanded) {
         if (controlsExpanded) {
-            kotlinx.coroutines.delay(4000)
+            kotlinx.coroutines.delay(5000)
             controlsExpanded = false
         }
     }
@@ -61,10 +70,16 @@ fun MobileViewportScreen(
     var textInputToken by remember { mutableStateOf<WeaveloClient.TextInputToken?>(null) }
     var imeWasVisible by remember { mutableStateOf(false) }
     LaunchedEffect(isModifierBarVisible) {
-        if (imeWasVisible && !isModifierBarVisible) { showKeyboard = false; textInputToken = null }
+        if (isModifierBarVisible) {
+            controlsExpanded = false
+        } else if (imeWasVisible) {
+            showKeyboard = false
+            textInputToken = null
+            controlsExpanded = false
+        }
         imeWasVisible = isModifierBarVisible
     }
-    val viewportTransform = remember { mutableStateOf(ViewportTransform()) }
+    val viewportTransform = remember { mutableStateOf(ViewportTransform(maxScale = 6.0f)) }
     var transform by viewportTransform
     val sessionState by WeaveloClient.sessionState.collectAsState()
     val telemetry by WeaveloClient.telemetry.collectAsState()
@@ -94,13 +109,9 @@ fun MobileViewportScreen(
         if (!inputEnabled) { showKeyboard = false; textInputToken = null }
     }
 
-    // Observe native identity even if a quick reconnect remains STREAMING
-    // between telemetry polls. Changing identity resets the gesture owner.
     LaunchedEffect(inputEnabled) {
         while (true) {
             val current = if (inputEnabled) WeaveloClient.inputIntentToken() else null
-            // A busy native query is unknown, not a replacement owner. Keep
-            // the token-bound health effect so failure revokes that exact grant.
             if ((!inputEnabled || current != null) && current != inputSessionToken) {
                 virtualKeys.forgetAll()
                 heldModifiers = emptySet()
@@ -109,14 +120,12 @@ fun MobileViewportScreen(
             val composingOwner = textInputToken
             val observedOwner = if (showKeyboard && composingOwner != null) WeaveloClient.textInputToken() else null
             if (observedOwner != null && observedOwner != composingOwner) {
-                showKeyboard=false; textInputToken=null
+                showKeyboard = false; textInputToken = null
             }
             if (!inputEnabled) break
             delay(100)
         }
     }
-    // This main-dispatcher effect belongs to one observed viewport identity.
-    // A failed renewal never adopts another session or replays old held keys.
     LaunchedEffect(inputEnabled, inputSessionToken) {
         val token = inputSessionToken
         if (inputEnabled && token != null) {
@@ -164,24 +173,27 @@ fun MobileViewportScreen(
             dismissButton = { TextButton(onClick = { showStreamSettings = false }) { Text(tr("Cancel")) } })
     }
 
-    Column(Modifier.fillMaxSize().imePadding().background(Color.Black).safeDrawingPadding()) {
-    Box(Modifier.weight(1f).fillMaxWidth()) {
-        val gestureOwner = inputSessionToken
-        RemoteViewport(
-            description = tr("Remote screen"),
-            dimensions = videoDimensions,
-            transformState = viewportTransform,
-            enabled = inputEnabled,
-            contentKey = videoDimensions to inputSessionToken,
-            modifier = Modifier.fillMaxSize(),
-            touchMode = touchMode,
-            sendTouch = { action, id, x, y, pressure, eventTime ->
-                if (gestureOwner != null) {
-                    WeaveloClient.sendTouchEvent(gestureOwner, action, id, x, y, pressure, eventTime)
-                }
-            },
-            overlay = {
-            },
+    Column(Modifier.fillMaxSize().imePadding().background(Color.Black)) {
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val viewportHeightPx = with(LocalDensity.current) { maxHeight.toPx().coerceAtLeast(1f) }
+            val gestureOwner = inputSessionToken
+            RemoteViewport(
+                description = tr("Remote screen"),
+                dimensions = videoDimensions,
+                transformState = viewportTransform,
+                expandToContainer = true,
+                enabled = inputEnabled,
+                contentKey = videoDimensions to inputSessionToken,
+                modifier = Modifier.fillMaxSize(),
+                touchMode = touchMode,
+                sendTouch = { action, id, x, y, pressure, eventTime ->
+                    touching = action == 0 || action == 1
+                    if (action == 0 && controlsExpanded) controlsExpanded = false
+                    if (gestureOwner != null) {
+                        WeaveloClient.sendTouchEvent(gestureOwner, action, id, x, y, pressure, eventTime)
+                    }
+                },
+                overlay = {},
                 factory = { context ->
                     SurfaceView(context).apply {
                         holder.addCallback(object : android.view.SurfaceHolder.Callback {
@@ -300,157 +312,206 @@ fun MobileViewportScreen(
                         })
                     }
                 }
-        )
+            )
 
-        val keyboardToken = textInputToken
-        RemoteKeyboard(identity = keyboardToken ?: "no-input", visible = showKeyboard,
-            enabled = inputEnabled && keyboardToken != null,
-            onText = { text -> keyboardToken?.let { if (!WeaveloClient.commitText(it,text)) { playbackError="Text input source changed; reopen the keyboard"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Text input source changed; reopen the keyboard") } } },
-            onKey = { key, pressed -> keyboardToken?.let { if (!WeaveloClient.textKey(it,key,pressed)) { playbackError="Keyboard input is unavailable"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Keyboard input is unavailable") } } })
+            val keyboardToken = textInputToken
+            RemoteKeyboard(identity = keyboardToken ?: "no-input", visible = showKeyboard,
+                enabled = inputEnabled && keyboardToken != null,
+                onText = { text -> keyboardToken?.let { if (!WeaveloClient.commitText(it,text)) { playbackError="Text input source changed; reopen the keyboard"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Text input source changed; reopen the keyboard") } } },
+                onKey = { key, pressed -> keyboardToken?.let { if (!WeaveloClient.textKey(it,key,pressed)) { playbackError="Keyboard input is unavailable"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Keyboard input is unavailable") } } })
 
-        playbackError?.let { message ->
-            Text(playbackErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = Color.White,
-                modifier = Modifier.align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.85f)).padding(16.dp))
-        }
-
-        NetworkStatusChip(sessionState, telemetry,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp))
-        if (!controlsExpanded) TextButton(
-            onClick = { controlsExpanded = true },
-            modifier = Modifier.align(Alignment.TopCenter)
-        ) { Text("⋯") }
-        if (controlsExpanded) FlowRow(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 12.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(ColorSurfaceCard)
-                .border(1.dp, ColorBorderFine, RoundedCornerShape(16.dp))
-                .padding(horizontal = 14.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            TextButton(onClick = { controlsExpanded = !controlsExpanded }) {
-                Text(if (controlsExpanded) tr("Hide tools") else tr("Tools"))
+            playbackError?.let { message ->
+                Text(playbackErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = Color.White,
+                    modifier = Modifier.align(Alignment.Center)
+                        .background(Color.Black.copy(alpha = 0.85f)).padding(16.dp))
             }
-            if (controlsExpanded) {
-            LanguageSelector()
-            TextButton(onClick = {
-                WeaveloClient.setManualMediaPaused(!WeaveloClient.manualMediaPaused)
-            }) { Text(if (WeaveloClient.manualMediaPaused) tr("Resume") else tr("Pause")) }
-            TextButton(onClick = {
-                fpsText = WeaveloClient.streamFps.toString()
-                bitrateText = WeaveloClient.streamBitrateKbps.toString()
-                settingsError = null
-                showStreamSettings = true
-            }) { Text(tr("Stream settings")) }
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Box(modifier = Modifier.size(6.dp).background(ColorStatusGreen, CircleShape))
-                Text(
-                    text = tr("Remote session"),
-                    color = ColorTextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+
+            NetworkStatusChip(sessionState, telemetry,
+                modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp))
+
+            if (!isModifierBarVisible && transform.scale > 1.05f) {
+                ZoomedCanvasChip(
+                    scale = transform.scale,
+                    panActive = touchMode == TouchMode.VIEW,
+                    canTogglePan = inputEnabled,
+                    modifier = Modifier.align(Alignment.TopStart).safeDrawingPadding().padding(8.dp),
+                    onTogglePan = {
+                        if (touchMode == TouchMode.VIEW) {
+                            touchMode = lastControlMode
+                            WeaveloClient.setTouchMode(touchMode)
+                        } else {
+                            lastControlMode = touchMode
+                            touchMode = TouchMode.VIEW
+                        }
+                    },
+                    onResetZoom = {
+                        transform = transform.reset()
+                        if (inputEnabled && touchMode == TouchMode.VIEW) {
+                            touchMode = lastControlMode
+                            WeaveloClient.setTouchMode(touchMode)
+                        }
+                    }
                 )
+            }
+
+            // Right-edge magnetic handle + compact right-side drawer (no top bars!)
+            if (!isModifierBarVisible) {
+                val pillAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = false)
                 Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(9999.dp))
-                        .background(Color(0xFFEFF6FF))
-                        .border(1.dp, ColorAccentCyan, RoundedCornerShape(9999.dp))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .offset { IntOffset(0, ((handleFraction - .5f) * viewportHeightPx).toInt()) }
+                        .size(width = 44.dp, height = 64.dp)
+                        .systemGestureExclusion { coordinates ->
+                            Rect(0f, 0f, coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
+                        }
+                        .pointerInput(viewportHeightPx) {
+                            var horizontal = 0f
+                            detectDragGestures(onDragStart = { horizontal = 0f }, onDragEnd = {
+                                if (ZeroOcclusionHudPolicy.revealsControls(horizontal, 24.dp.toPx())) {
+                                    controlsExpanded = true
+                                }
+                            }) { change, drag ->
+                                change.consume(); horizontal += drag.x
+                                handleFraction = ZeroOcclusionHudPolicy.dragEdgePillFraction(handleFraction, drag.y, viewportHeightPx)
+                            }
+                        }
+                        .clickable(onClickLabel = tr("Show remote controls")) {
+                            controlsExpanded = !controlsExpanded
+                        }
+                        .padding(start = 36.dp, end = 2.dp, top = 10.dp, bottom = 10.dp)
+                        .background(ColorAccentCyan.copy(alpha = pillAlpha), RoundedCornerShape(6.dp))
+                )
+
+                if (controlsExpanded) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .safeDrawingPadding()
+                            .padding(end = 42.dp, top = 8.dp, bottom = 8.dp)
+                            .widthIn(min = 220.dp, max = 276.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        color = ColorSurfaceCard.copy(alpha = .95f),
+                        shadowElevation = 8.dp
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(modifier = Modifier.size(6.dp).background(ColorStatusGreen, CircleShape))
+                                    Text(
+                                        text = if (sessionState == SessionState.RECONNECTING) tr("Reconnecting…")
+                                            else if (pausePending) tr("Waiting for host…")
+                                            else if (mediaPaused) tr("Paused · connected")
+                                            else decodedFps?.let { trFormat("Decoded %s FPS", it) } ?: tr("Remote session"),
+                                        color = ColorTextPrimary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                TouchIslandIconButton(text = tr("DISCONNECT"), active = false, isDestructive = true) {
+                                    virtualKeys.releaseAll()
+                                    onDisconnect()
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = {
+                                    WeaveloClient.setManualMediaPaused(!WeaveloClient.manualMediaPaused)
+                                }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                                    Text(if (WeaveloClient.manualMediaPaused) tr("Resume") else tr("Pause"))
+                                }
+                                TextButton(onClick = {
+                                    fpsText = WeaveloClient.streamFps.toString()
+                                    bitrateText = WeaveloClient.streamBitrateKbps.toString()
+                                    settingsError = null
+                                    controlsExpanded = false
+                                    showStreamSettings = true
+                                }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                                    Text(tr("Stream settings"))
+                                }
+                                LanguageSelector()
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(40.dp),
+                                    selected = touchMode == TouchMode.TRACKPAD) {
+                                    lastControlMode = TouchMode.TRACKPAD; touchMode = TouchMode.TRACKPAD
+                                    WeaveloClient.setTouchMode(touchMode)
+                                }
+                                MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(40.dp),
+                                    selected = touchMode == TouchMode.DIRECT) {
+                                    lastControlMode = TouchMode.DIRECT; touchMode = TouchMode.DIRECT
+                                    WeaveloClient.setTouchMode(touchMode)
+                                }
+                                MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(40.dp),
+                                    selected = touchMode == TouchMode.VIEW) {
+                                    if (touchMode == TouchMode.VIEW && inputEnabled) {
+                                        touchMode = lastControlMode
+                                        WeaveloClient.setTouchMode(touchMode)
+                                    } else {
+                                        if (touchMode != TouchMode.VIEW) lastControlMode = touchMode
+                                        touchMode = TouchMode.VIEW
+                                    }
+                                }
+                                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(40.dp)) {
+                                    controlsExpanded = false
+                                    if (showKeyboard) {
+                                        showKeyboard = false; textInputToken = null
+                                    } else {
+                                        textInputToken = WeaveloClient.textInputToken()
+                                        showKeyboard = textInputToken != null
+                                    }
+                                }
+                                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(40.dp)) {
+                                    transform = transform.reset()
+                                    if (inputEnabled && touchMode == TouchMode.VIEW) {
+                                        touchMode = lastControlMode
+                                        WeaveloClient.setTouchMode(touchMode)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (isModifierBarVisible) {
+            Row(
+                Modifier.fillMaxWidth().background(ColorSurfaceCard).padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (sessionState == SessionState.RECONNECTING) tr("Reconnecting…")
-                            else if (pausePending) tr("Waiting for host…")
-                            else if (mediaPaused) tr("Paused · connected")
-                            else decodedFps?.let { trFormat("Decoded %s FPS", it) } ?: tr("Waiting for video"),
-                        color = ColorAccentCyan,
-                        fontSize = 9.sp,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold
-                    )
+                    listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
+                        VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = inputEnabled) {
+                            virtualKeys.tap(key, inputEnabled); heldModifiers = virtualKeys.selected()
+                        }
+                    }
                 }
-            }
-
-            if (controlsExpanded) {
-            // 细分隔线
-            Box(modifier = Modifier.width(1.dp).height(12.dp).background(ColorBorderFine))
-
-            TouchIslandIconButton(text = tr("DISCONNECT"), active = false, isDestructive = true) {
-                virtualKeys.releaseAll()
-                onDisconnect()
-            }
-            }
-        }
-
-    if (!isModifierBarVisible && transform.scale > 1.05f) {
-        ZoomedCanvasChip(
-            scale = transform.scale,
-            panActive = touchMode == TouchMode.VIEW,
-            canTogglePan = inputEnabled,
-            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
-            onTogglePan = {
-                if (touchMode == TouchMode.VIEW) {
-                    touchMode = lastControlMode
-                    WeaveloClient.setTouchMode(touchMode)
-                } else {
-                    lastControlMode = touchMode
-                    touchMode = TouchMode.VIEW
-                }
-            },
-            onResetZoom = {
-                transform = transform.reset()
-                if (inputEnabled && touchMode == TouchMode.VIEW) {
-                    touchMode = lastControlMode
-                    WeaveloClient.setTouchMode(touchMode)
-                }
-            }
-        )
-    }
-    if (!isModifierBarVisible && controlsExpanded) {
-        Box(Modifier.align(Alignment.BottomCenter)) {
-        MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD, direct = touchMode == TouchMode.DIRECT,
-            panView = touchMode == TouchMode.VIEW,
-            inputEnabled = inputEnabled,
-            onTrackpad = { lastControlMode = TouchMode.TRACKPAD; touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) },
-            onDirect = { lastControlMode = TouchMode.DIRECT; touchMode = TouchMode.DIRECT; WeaveloClient.setTouchMode(touchMode) },
-            onPanView = {
-                if (touchMode == TouchMode.VIEW && inputEnabled) {
-                    touchMode = lastControlMode
-                    WeaveloClient.setTouchMode(touchMode)
-                } else {
-                    if (touchMode != TouchMode.VIEW) lastControlMode = touchMode
-                    touchMode = TouchMode.VIEW
-                }
-            },
-            onKeyboard = {
-                if (showKeyboard) { showKeyboard = false; textInputToken = null }
-                else { textInputToken = WeaveloClient.textInputToken(); showKeyboard = textInputToken != null }
-            }, onReset = {
-                transform = transform.reset()
-                if (inputEnabled && touchMode == TouchMode.VIEW) {
-                    touchMode = lastControlMode
-                    WeaveloClient.setTouchMode(touchMode)
-                }
-            })
-        }
-    }
-    }
-    if (isModifierBarVisible) {
-        Row(Modifier.fillMaxWidth().background(ColorSurfaceCard).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
-                VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = inputEnabled) {
-                    virtualKeys.tap(key, inputEnabled); heldModifiers = virtualKeys.selected()
+                MobileAction(MobileSymbol.Collapse, tr("Hide keyboard"), modifier = Modifier.size(40.dp)) {
+                    showKeyboard = false; textInputToken = null; controlsExpanded = false
                 }
             }
         }
-    }
     }
 }
 
@@ -483,7 +544,8 @@ fun TouchIslandIconButton(
             )
             .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,

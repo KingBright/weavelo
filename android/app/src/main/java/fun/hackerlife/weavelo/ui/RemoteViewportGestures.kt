@@ -23,12 +23,14 @@ internal fun Modifier.remoteViewportGestures(
     viewportSize: IntSize,
     enabled: Boolean,
     contentKey: Any? = null,
+    baseViewportSize: IntSize = viewportSize,
+    restrictSingleTouchToVideo: Boolean = false,
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
     sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {}
 ): Modifier = composed {
     val currentSink by rememberUpdatedState(sendTouch)
     val currentFrameSink by rememberUpdatedState(sendTouchFrame)
-    pointerInput(touchMode, viewportSize, enabled, contentKey) {
+    pointerInput(touchMode, viewportSize, baseViewportSize, restrictSingleTouchToVideo, enabled, contentKey) {
         var transform by transformState
         val singleFingerSlopPx = minOf(viewConfiguration.touchSlop * 0.8f, 14f)
         // Two-finger parallel drag/tap stays remote scroll/right-click across zoom levels.
@@ -45,6 +47,7 @@ internal fun Modifier.remoteViewportGestures(
             var remoteTwoFingerSynced = false
             var threeFingerStarted = false
             var localTransformGesture = false
+            var outsideVideoSingleTouch = false
             var initialDistance = 0f
             var initialCentroid = Offset.Zero
             var prevDistance = 0f
@@ -57,19 +60,49 @@ internal fun Modifier.remoteViewportGestures(
             var singleFingerOrigin = Offset.Zero
             var singleFingerMovedPastSlop = false
 
-            fun mapNormalized(position: Offset, viewWidth: Float, viewHeight: Float): Pair<Float, Float> =
+            fun isInsideVisibleVideo(
+                pos: Offset,
+                baseW: Float,
+                baseH: Float,
+                containerW: Float,
+                containerH: Float
+            ): Boolean {
+                if (!restrictSingleTouchToVideo) return true
+                val (visW, visH) = transform.expandedViewportSize(baseW, baseH, containerW, containerH)
+                val left = (containerW - visW) / 2f
+                val top = (containerH - visH) / 2f
+                return pos.x in left..(left + visW) && pos.y in top..(top + visH)
+            }
+
+            fun mapNormalized(
+                position: Offset,
+                baseW: Float,
+                baseH: Float,
+                containerW: Float,
+                containerH: Float
+            ): Pair<Float, Float> =
                 if (touchMode == TouchMode.DIRECT) {
-                    transform.screenToNormalized(position.x, position.y, viewWidth, viewHeight)
+                    transform.screenToNormalized(
+                        position.x,
+                        position.y,
+                        baseW,
+                        baseH,
+                        containerW,
+                        containerH
+                    )
                 } else {
-                    // Trackpad deltas must not shrink as the viewport zooms.
-                    (position.x / viewWidth).coerceIn(0f, 1f) to
-                        (position.y / viewHeight).coerceIn(0f, 1f)
+                    // Trackpad deltas must not shrink as the viewport zooms, and
+                    // allow thumb gliding across the full container (including black bars).
+                    (position.x / containerW).coerceIn(0f, 1f) to
+                        (position.y / containerH).coerceIn(0f, 1f)
                 }
 
             fun forwardRemoteChanges(
                 changes: List<androidx.compose.ui.input.pointer.PointerInputChange>,
-                viewWidth: Float,
-                viewHeight: Float,
+                baseW: Float,
+                baseH: Float,
+                containerW: Float,
+                containerH: Float,
                 forceMove: Boolean = false,
                 guardSingleFingerSlop: Boolean = false
             ) {
@@ -84,12 +117,20 @@ internal fun Modifier.remoteViewportGestures(
                     val pressure = if (change.pressed) 1f else 0f
                     when {
                         !change.previousPressed && change.pressed -> {
+                            if (touchMode == TouchMode.DIRECT &&
+                                activePointers.isEmpty() &&
+                                !isInsideVisibleVideo(change.position, baseW, baseH, containerW, containerH)
+                            ) {
+                                outsideVideoSingleTouch = true
+                                change.consume()
+                                continue
+                            }
                             if (guardSingleFingerSlop && activePointers.isEmpty()) {
                                 singleFingerId = pointerId
                                 singleFingerOrigin = change.position
                                 singleFingerMovedPastSlop = false
                             }
-                            val (normX, normY) = mapNormalized(change.position, viewWidth, viewHeight)
+                            val (normX, normY) = mapNormalized(change.position, baseW, baseH, containerW, containerH)
                             activePointers.add(pointerId)
                             gestureSink(
                                 0, pointerId, normX, normY, pressure, change.uptimeMillis
@@ -105,7 +146,7 @@ internal fun Modifier.remoteViewportGestures(
                             } else {
                                 change.position
                             }
-                            val (normX, normY) = mapNormalized(effectivePos, viewWidth, viewHeight)
+                            val (normX, normY) = mapNormalized(effectivePos, baseW, baseH, containerW, containerH)
                             activePointers.remove(pointerId)
                             if (pointerId == singleFingerId) singleFingerId = null
                             gestureSink(
@@ -120,7 +161,7 @@ internal fun Modifier.remoteViewportGestures(
                                 }
                                 singleFingerMovedPastSlop = true
                             }
-                            val (normX, normY) = mapNormalized(change.position, viewWidth, viewHeight)
+                            val (normX, normY) = mapNormalized(change.position, baseW, baseH, containerW, containerH)
                             activePointers.add(pointerId)
                             gestureSink(
                                 1, pointerId, normX, normY, pressure, change.uptimeMillis
@@ -151,8 +192,10 @@ internal fun Modifier.remoteViewportGestures(
                         cancelRemotePointers()
                         break
                     }
-                    val viewWidth = size.width.coerceAtLeast(1).toFloat()
-                    val viewHeight = size.height.coerceAtLeast(1).toFloat()
+                    val containerWidth = size.width.coerceAtLeast(1).toFloat()
+                    val containerHeight = size.height.coerceAtLeast(1).toFloat()
+                    val baseWidth = if (baseViewportSize.width > 0) baseViewportSize.width.toFloat() else containerWidth
+                    val baseHeight = if (baseViewportSize.height > 0) baseViewportSize.height.toFloat() else containerHeight
                     val pressedChanges = event.changes.filter { it.pressed }
                     maxPressedCount = maxOf(maxPressedCount, pressedChanges.size)
 
@@ -161,7 +204,19 @@ internal fun Modifier.remoteViewportGestures(
                         val sample=ArrayList<RemoteTouchChange>()
                         if (enabled && !suppressGesture) for(change in event.changes) {
                             val id=change.id.value.toInt()
-                            val point=transform.screenToNormalized(change.position.x,change.position.y,viewWidth,viewHeight)
+                            if (!change.previousPressed && change.pressed &&
+                                !isInsideVisibleVideo(change.position, baseWidth, baseHeight, containerWidth, containerHeight)
+                            ) {
+                                continue
+                            }
+                            val point=transform.screenToNormalized(
+                                change.position.x,
+                                change.position.y,
+                                baseWidth,
+                                baseHeight,
+                                containerWidth,
+                                containerHeight
+                            )
                             val action=when {
                                 !change.previousPressed && change.pressed -> {activePointers.add(id);0}
                                 change.previousPressed && !change.pressed && activePointers.remove(id) -> 2
@@ -178,8 +233,15 @@ internal fun Modifier.remoteViewportGestures(
                     }
                     if (touchMode == TouchMode.VIEW && pressedChanges.size == 1 && !localTransformGesture && maxPressedCount == 1) {
                         val change=pressedChanges.single()
-                        if(change.previousPressed) transform=transform.update(1f,
-                            change.position-change.previousPosition,viewWidth,viewHeight,change.previousPosition)
+                        if(change.previousPressed) transform=transform.update(
+                            1f,
+                            change.position - change.previousPosition,
+                            baseWidth,
+                            baseHeight,
+                            change.previousPosition,
+                            containerWidth,
+                            containerHeight
+                        )
                         event.changes.forEach { it.consume() }
                         continue
                     }
@@ -204,7 +266,15 @@ internal fun Modifier.remoteViewportGestures(
                         } else {
                             val pan = c3 - prevThreeCentroid
                             prevThreeCentroid = c3
-                            transform = transform.update(1f, pan, viewWidth, viewHeight, c3)
+                            transform = transform.update(
+                                1f,
+                                pan,
+                                baseWidth,
+                                baseHeight,
+                                c3,
+                                containerWidth,
+                                containerHeight
+                            )
                         }
                         for (change in event.changes) change.consume()
                     } else if (maxPressedCount >= 3) {
@@ -254,36 +324,56 @@ internal fun Modifier.remoteViewportGestures(
                             transform = transform.update(
                                 zoom,
                                 pan,
-                                viewWidth,
-                                viewHeight,
-                                baselineCentroid
+                                baseWidth,
+                                baseHeight,
+                                baselineCentroid,
+                                containerWidth,
+                                containerHeight
                             )
                             for (change in event.changes) change.consume()
+                        } else if (outsideVideoSingleTouch && touchMode == TouchMode.DIRECT) {
+                            // Two-finger parallel scroll started outside the visible video in Direct mode:
+                            // ignore remote scroll unless fingers are inside the visible video.
+                            if (isInsideVisibleVideo(currentCentroid, baseWidth, baseHeight, containerWidth, containerHeight)) {
+                                outsideVideoSingleTouch = false
+                            } else {
+                                for (change in event.changes) change.consume()
+                            }
                         } else {
                             // Buffer movement while classifying. Forward only
                             // pointer edges so a pinch cannot scroll remotely
                             // before it crosses the local pinch threshold.
                             if (twoFingerMode == TwoFingerGestureMode.UNDECIDED) {
                                 val edgeChanges = event.changes.filter { it.pressed != it.previousPressed }
-                                forwardRemoteChanges(edgeChanges, viewWidth, viewHeight)
+                                forwardRemoteChanges(edgeChanges, baseWidth, baseHeight, containerWidth, containerHeight)
                             } else {
+                                // Ensure both pointers are registered if first finger started near border
+                                for (pressed in pressedChanges) {
+                                    val pid = pressed.id.value.toInt()
+                                    if (enabled && pid !in activePointers) {
+                                        val (nx, ny) = mapNormalized(pressed.position, baseWidth, baseHeight, containerWidth, containerHeight)
+                                        activePointers.add(pid)
+                                        gestureSink(0, pid, nx, ny, 1f, pressed.uptimeMillis)
+                                    }
+                                }
                                 val syncAll = !remoteTwoFingerSynced
                                 remoteTwoFingerSynced = true
-                                forwardRemoteChanges(event.changes, viewWidth, viewHeight, forceMove = syncAll)
+                                forwardRemoteChanges(event.changes, baseWidth, baseHeight, containerWidth, containerHeight, forceMove = syncAll)
                             }
                             for (change in event.changes) change.consume()
                         }
                         prevDistance = currentDistance
                         prevCentroid = currentCentroid
-                    } else if (localTransformGesture) {
-                        // Once a pinch owns the gesture, swallow the staggered
-                        // finger-up tail so it cannot become a remote click.
+                    } else if (localTransformGesture || (outsideVideoSingleTouch && maxPressedCount <= 1)) {
+                        // Swallow staggered pinch finger-up tail or black-bar taps.
                         for (change in event.changes) change.consume()
                     } else {
                         forwardRemoteChanges(
                             event.changes,
-                            viewWidth,
-                            viewHeight,
+                            baseWidth,
+                            baseHeight,
+                            containerWidth,
+                            containerHeight,
                             guardSingleFingerSlop = touchMode == TouchMode.DIRECT && !twoFingerStarted
                         )
                     }

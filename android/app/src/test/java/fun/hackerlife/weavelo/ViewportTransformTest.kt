@@ -247,4 +247,49 @@ class ViewportTransformTest {
         assertEquals(focalPoint.x, screenX, 0.0001f)
         assertEquals(focalPoint.y, screenY, 0.0001f)
     }
+
+    @Test
+    fun portraitContainerExpandsVerticalVisibleAreaAndPreservesZeroDriftMapping() {
+        // 1080x2400 竖屏容器查看 16:9 桌面（1.0x 基准尺寸 1080x607.5）
+        val baseW = 1080f
+        val baseH = 607.5f
+        val containerW = 1080f
+        val containerH = 2400f
+
+        val oneX = ViewportTransform(scale = 1f, maxScale = 6f)
+        val (w1, h1) = oneX.expandedViewportSize(baseW, baseH, containerW, containerH)
+        assertEquals(1080f, w1, 0.01f)
+        assertEquals(607.5f, h1, 0.01f)
+        assertArrayEquals(
+            intArrayOf(0, 0, 1_000_000, 1_000_000),
+            oneX.visibleRect(baseW, baseH, containerW, containerH)
+        )
+
+        // 2.0x 放大时，纵向可视高度从 607.5px 扩展至 1215px（物理可视高度翻倍），且完整显示 100% 桌面高度
+        val twoX = oneX.update(2f, Offset.Zero, baseW, baseH, Offset(540f, 1200f), containerW, containerH)
+        val (w2, h2) = twoX.expandedViewportSize(baseW, baseH, containerW, containerH)
+        assertEquals(1080f, w2, 0.01f)
+        assertEquals(1215f, h2, 0.01f)
+        assertArrayEquals(
+            intArrayOf(250_000, 0, 500_000, 1_000_000),
+            twoX.visibleRect(baseW, baseH, containerW, containerH)
+        )
+
+        // 一键纵向铺满：可视高度铺满整块 2400px 竖屏
+        val filled = oneX.fillHeight(baseW, baseH, containerW, containerH)
+        val (wf, hf) = filled.expandedViewportSize(baseW, baseH, containerW, containerH)
+        assertEquals(1080f, wf, 0.01f)
+        assertEquals(2400f, hf, 0.5f)
+
+        // 5.0x 深度放大 + 纵向/横向平移下正逆映射零漂移
+        val fiveX = ViewportTransform(scale = 5f, maxScale = 6f).let {
+            it.copy(offset = it.clampOffset(Offset(-400f, 260f), baseW, baseH, 5f, containerW, containerH))
+        }
+        for ((nx, ny) in listOf(0.15f to 0.1f, 0.5f to 0.5f, 0.85f to 0.9f)) {
+            val (sx, sy) = fiveX.normalizedToScreen(nx, ny, baseW, baseH, containerW, containerH)
+            val (mx, my) = fiveX.screenToNormalized(sx, sy, baseW, baseH, containerW, containerH)
+            assertEquals(nx, mx, 0.0005f)
+            assertEquals(ny, my, 0.0005f)
+        }
+    }
 }

@@ -48,7 +48,7 @@ fun classifyTwoFingerGesture(
 
 /**
  * 视口缩放与平移状态机及坐标逆映射计算。
- * 支持 1.0x ~ 4.0x 无级缩放、双指捏合平移、边界限制与精准坐标逆映射。
+ * 支持无级缩放、竖屏/超宽屏放大时动态扩展可视高度与宽度、边界限制及零漂移坐标逆映射。
  */
 data class ViewportTransform(
     val scale: Float = 1.0f,
@@ -57,15 +57,47 @@ data class ViewportTransform(
     val maxScale: Float = 4.0f
 ) {
     /**
-     * 计算平移边界限制：确保局部放大状态下视口始终覆盖在内容有效区域内。
-     * 最大偏移量由 (viewSize * (scale - 1)) / 2 决定。
+     * 计算当前缩放倍率下的实际可视窗口尺寸：
+     * 在竖屏查看横屏桌面时，随着 scale 增大，纵向可视高度从 1.0x 基准高度平滑扩展至整个屏幕容器高度。
      */
-    fun clampOffset(proposedOffset: Offset, viewWidth: Float, viewHeight: Float, currentScale: Float = scale): Offset {
+    fun expandedViewportSize(
+        viewWidth: Float,
+        viewHeight: Float,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight,
+        currentScale: Float = scale
+    ): Pair<Float, Float> {
+        val bw = viewWidth.coerceAtLeast(1f)
+        val bh = viewHeight.coerceAtLeast(1f)
+        val cw = containerWidth.coerceAtLeast(bw)
+        val ch = containerHeight.coerceAtLeast(bh)
+        val s = currentScale.coerceAtLeast(0.01f)
+        return minOf(cw, bw * s) to minOf(ch, bh * s)
+    }
+
+    /**
+     * 计算平移边界限制：确保放大状态下可视窗口始终覆盖在内容有效区域内，无黑边越界。
+     */
+    fun clampOffset(
+        proposedOffset: Offset,
+        viewWidth: Float,
+        viewHeight: Float,
+        currentScale: Float = scale,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
+    ): Offset {
         if (currentScale <= 1.0f) {
             return Offset.Zero
         }
-        val maxOffsetX = ((viewWidth * (currentScale - 1.0f)) / 2f).coerceAtLeast(0f)
-        val maxOffsetY = ((viewHeight * (currentScale - 1.0f)) / 2f).coerceAtLeast(0f)
+        val (visW, visH) = expandedViewportSize(
+            viewWidth,
+            viewHeight,
+            containerWidth,
+            containerHeight,
+            currentScale
+        )
+        val maxOffsetX = ((viewWidth * currentScale - visW) / 2f).coerceAtLeast(0f)
+        val maxOffsetY = ((viewHeight * currentScale - visH) / 2f).coerceAtLeast(0f)
         val clampedX = proposedOffset.x.coerceIn(-maxOffsetX, maxOffsetX)
         val clampedY = proposedOffset.y.coerceIn(-maxOffsetY, maxOffsetY)
         return Offset(clampedX, clampedY)
@@ -79,11 +111,13 @@ data class ViewportTransform(
         panDelta: Offset,
         viewWidth: Float,
         viewHeight: Float,
-        focalPoint: Offset = Offset(viewWidth / 2f, viewHeight / 2f)
+        focalPoint: Offset = Offset(viewWidth / 2f, viewHeight / 2f),
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
     ): ViewportTransform {
         val newScale = (scale * zoomFactor).coerceIn(minScale, maxScale)
-        val cx = viewWidth / 2f
-        val cy = viewHeight / 2f
+        val cx = containerWidth.coerceAtLeast(1f) / 2f
+        val cy = containerHeight.coerceAtLeast(1f) / 2f
         val scaleRatio = if (scale > 0.001f) newScale / scale else 1.0f
 
         // 以 focalPoint 为缩放中心：
@@ -91,7 +125,14 @@ data class ViewportTransform(
         val proposedX = (focalPoint.x + panDelta.x) - cx - (focalPoint.x - cx - offset.x) * scaleRatio
         val proposedY = (focalPoint.y + panDelta.y) - cy - (focalPoint.y - cy - offset.y) * scaleRatio
 
-        val newOffset = clampOffset(Offset(proposedX, proposedY), viewWidth, viewHeight, newScale)
+        val newOffset = clampOffset(
+            Offset(proposedX, proposedY),
+            viewWidth,
+            viewHeight,
+            newScale,
+            containerWidth,
+            containerHeight
+        )
         return copy(scale = newScale, offset = newOffset)
     }
 
@@ -100,88 +141,155 @@ data class ViewportTransform(
      */
     fun reset(): ViewportTransform = copy(scale = 1.0f, offset = Offset.Zero)
 
-    /** Full-source edge coordinates of the real visible video viewport. */
-    fun visibleRect(viewWidth: Float, viewHeight: Float): IntArray {
-        val (left,top)=screenToNormalized(0f,0f,viewWidth,viewHeight)
-        val (right,bottom)=screenToNormalized(viewWidth,viewHeight,viewWidth,viewHeight)
-        val x=kotlin.math.floor(left.toDouble()*1_000_000).toInt().coerceIn(0,999_999)
-        val y=kotlin.math.floor(top.toDouble()*1_000_000).toInt().coerceIn(0,999_999)
-        val endX=kotlin.math.ceil(right.toDouble()*1_000_000).toInt().coerceIn(x+1,1_000_000)
-        val endY=kotlin.math.ceil(bottom.toDouble()*1_000_000).toInt().coerceIn(y+1,1_000_000)
-        return intArrayOf(x,y,endX-x,endY-y)
+    /**
+     * 一键纵向铺满（竖屏查看桌面时将纵向可视区域扩展至容器高度）。
+     */
+    fun fillHeight(
+        viewWidth: Float,
+        viewHeight: Float,
+        containerWidth: Float,
+        containerHeight: Float
+    ): ViewportTransform {
+        val bh = viewHeight.coerceAtLeast(1f)
+        val targetScale = (containerHeight.coerceAtLeast(bh) / bh).coerceIn(minScale, maxScale)
+        return copy(
+            scale = targetScale,
+            offset = clampOffset(offset, viewWidth, viewHeight, targetScale, containerWidth, containerHeight)
+        )
+    }
+
+    /** Full-source edge coordinates of the real visible video viewport (including expanded container area). */
+    fun visibleRect(
+        viewWidth: Float,
+        viewHeight: Float,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
+    ): IntArray {
+        val cw = containerWidth.coerceAtLeast(1f)
+        val ch = containerHeight.coerceAtLeast(1f)
+        val (visW, visH) = expandedViewportSize(viewWidth, viewHeight, cw, ch)
+        val leftX = (cw - visW) / 2f
+        val topY = (ch - visH) / 2f
+        val (left, top) = screenToNormalized(leftX, topY, viewWidth, viewHeight, cw, ch)
+        val (right, bottom) = screenToNormalized(leftX + visW, topY + visH, viewWidth, viewHeight, cw, ch)
+        val x = kotlin.math.floor(left.toDouble() * 1_000_000).toInt().coerceIn(0, 999_999)
+        val y = kotlin.math.floor(top.toDouble() * 1_000_000).toInt().coerceIn(0, 999_999)
+        val endX = kotlin.math.ceil(right.toDouble() * 1_000_000).toInt().coerceIn(x + 1, 1_000_000)
+        val endY = kotlin.math.ceil(bottom.toDouble() * 1_000_000).toInt().coerceIn(y + 1, 1_000_000)
+        return intArrayOf(x, y, endX - x, endY - y)
     }
 
     /** Trackpad navigation follows its cursor while it stays in known pixels. */
-    fun reveal(nx: Float,ny: Float,width: Float,height: Float): ViewportTransform {
-        val (x,y)=normalizedToScreen(nx,ny,width,height)
-        val margin=minOf(56f,width/6f,height/6f)
-        val dx=when {x<margin->margin-x; x>width-margin->width-margin-x; else->0f}
-        val dy=when {y<margin->margin-y; y>height-margin->height-margin-y; else->0f}
-        return copy(offset=clampOffset(offset+Offset(dx,dy),width,height))
+    fun reveal(
+        nx: Float,
+        ny: Float,
+        width: Float,
+        height: Float,
+        containerWidth: Float = width,
+        containerHeight: Float = height
+    ): ViewportTransform {
+        val (visW, visH) = expandedViewportSize(width, height, containerWidth, containerHeight)
+        val (x, y) = normalizedToScreen(nx, ny, width, height, visW, visH)
+        val margin = minOf(56f, visW / 6f, visH / 6f)
+        val dx = when {
+            x < margin -> margin - x
+            x > visW - margin -> visW - margin - x
+            else -> 0f
+        }
+        val dy = when {
+            y < margin -> margin - y
+            y > visH - margin -> visH - margin - y
+            else -> 0f
+        }
+        return copy(
+            offset = clampOffset(
+                offset + Offset(dx, dy),
+                width,
+                height,
+                scale,
+                containerWidth,
+                containerHeight
+            )
+        )
     }
 
-    fun reclamp(viewWidth: Float, viewHeight: Float): ViewportTransform =
-        copy(offset = clampOffset(offset, viewWidth, viewHeight))
+    fun reclamp(
+        viewWidth: Float,
+        viewHeight: Float,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
+    ): ViewportTransform = copy(
+        offset = clampOffset(offset, viewWidth, viewHeight, scale, containerWidth, containerHeight)
+    )
 
-    /** Preserve the normalized content at the viewport center across layout changes. */
+    /** Preserve the normalized content at the viewport center across layout/orientation changes. */
     fun resized(
         previousWidth: Float,
         previousHeight: Float,
         viewWidth: Float,
-        viewHeight: Float
+        viewHeight: Float,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
     ): ViewportTransform {
-        if (previousWidth <= 0f || previousHeight <= 0f) return reclamp(viewWidth, viewHeight)
+        if (previousWidth <= 0f || previousHeight <= 0f) {
+            return reclamp(viewWidth, viewHeight, containerWidth, containerHeight)
+        }
         val scaledOffset = Offset(
             offset.x * viewWidth / previousWidth,
             offset.y * viewHeight / previousHeight
         )
-        return copy(offset = clampOffset(scaledOffset, viewWidth, viewHeight))
+        return copy(
+            offset = clampOffset(
+                scaledOffset,
+                viewWidth,
+                viewHeight,
+                scale,
+                containerWidth,
+                containerHeight
+            )
+        )
     }
 
     /**
-     * 精准逆映射：将屏幕触控绝对坐标映射回内容空间，再换算为发送给 JNI 的归一化坐标 [0f, 1f]。
-     * 逆变换公式：
-     * contentX = cx + (screenX - cx - offset.x) / scale
-     * contentY = cy + (screenY - cy - offset.y) / scale
+     * 精准逆映射：将容器（或视口）触控坐标映射回内容空间归一化坐标 [0f, 1f]。
      */
     fun screenToNormalized(
         screenX: Float,
         screenY: Float,
         viewWidth: Float,
-        viewHeight: Float
+        viewHeight: Float,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
     ): Pair<Float, Float> {
-        val w = viewWidth.coerceAtLeast(1f)
-        val h = viewHeight.coerceAtLeast(1f)
-        val cx = w / 2f
-        val cy = h / 2f
+        val bw = viewWidth.coerceAtLeast(1f)
+        val bh = viewHeight.coerceAtLeast(1f)
+        val cx = containerWidth.coerceAtLeast(1f) / 2f
+        val cy = containerHeight.coerceAtLeast(1f) / 2f
         val s = scale.coerceAtLeast(0.01f)
 
-        val contentX = cx + (screenX - cx - offset.x) / s
-        val contentY = cy + (screenY - cy - offset.y) / s
-
-        val normX = (contentX / w).coerceIn(0f, 1f)
-        val normY = (contentY / h).coerceIn(0f, 1f)
+        val normX = (0.5f + (screenX - cx - offset.x) / (bw * s)).coerceIn(0f, 1f)
+        val normY = (0.5f + (screenY - cy - offset.y) / (bh * s)).coerceIn(0f, 1f)
         return Pair(normX, normY)
     }
 
     /**
-     * 正向映射（主要用于单测验证零漂移可逆性）：将内容空间归一化坐标映射至屏幕绝对像素坐标。
+     * 正向映射：将内容空间归一化坐标映射至目标容器（或视口）像素坐标。
      */
     fun normalizedToScreen(
         normX: Float,
         normY: Float,
         viewWidth: Float,
-        viewHeight: Float
+        viewHeight: Float,
+        containerWidth: Float = viewWidth,
+        containerHeight: Float = viewHeight
     ): Pair<Float, Float> {
-        val w = viewWidth.coerceAtLeast(1f)
-        val h = viewHeight.coerceAtLeast(1f)
-        val cx = w / 2f
-        val cy = h / 2f
-        val contentX = normX * w
-        val contentY = normY * h
+        val bw = viewWidth.coerceAtLeast(1f)
+        val bh = viewHeight.coerceAtLeast(1f)
+        val cx = containerWidth.coerceAtLeast(1f) / 2f
+        val cy = containerHeight.coerceAtLeast(1f) / 2f
 
-        val screenX = cx + (contentX - cx) * scale + offset.x
-        val screenY = cy + (contentY - cy) * scale + offset.y
+        val screenX = cx + (normX - 0.5f) * bw * scale + offset.x
+        val screenY = cy + (normY - 0.5f) * bh * scale + offset.y
         return Pair(screenX, screenY)
     }
 }
