@@ -1,6 +1,12 @@
 use protocol::{InputEvent, TouchAction, input_modifiers};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+const DIRECT_SCROLL_EXTENT_PX: f32 = 960.0;
+const TRACKPAD_SCROLL_EXTENT_PX: f32 = 1120.0;
+const TRACKPAD_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(320);
+const TRACKPAD_DOUBLE_TAP_RADIUS: f32 = 0.08;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TouchMode {
@@ -25,8 +31,6 @@ impl Default for RemoteScreenBounds {
     }
 }
 
-use std::collections::HashMap;
-
 pub struct TouchStateTracker {
     pub mode: TouchMode,
     pub bounds: RemoteScreenBounds,
@@ -41,9 +45,13 @@ pub struct TouchStateTracker {
     is_left_down: bool,
     session_max_pointers: usize,
     two_finger_right_clicked: bool,
+    two_finger_scroll_positioned: bool,
     long_press_triggered: bool,
     last_two_finger_centroid: Option<(f32, f32)>,
     relative_remainder: (f32, f32),
+    scroll_remainder: (f32, f32),
+    last_trackpad_tap: Option<(Instant, (f32, f32))>,
+    trackpad_drag_armed: bool,
 }
 
 impl Default for TouchStateTracker {
@@ -68,9 +76,13 @@ impl TouchStateTracker {
             is_left_down: false,
             session_max_pointers: 0,
             two_finger_right_clicked: false,
+            two_finger_scroll_positioned: false,
             long_press_triggered: false,
             last_two_finger_centroid: None,
             relative_remainder: (0., 0.),
+            scroll_remainder: (0., 0.),
+            last_trackpad_tap: None,
+            trackpad_drag_armed: false,
         }
     }
 
@@ -101,6 +113,8 @@ impl TouchStateTracker {
         };
         self.active_pointers.clear();
         self.relative_remainder = (0., 0.);
+        self.scroll_remainder = (0., 0.);
+        self.last_trackpad_tap = None;
         self.pointer_positions.clear();
         self.reset_session();
         releases
@@ -108,6 +122,11 @@ impl TouchStateTracker {
 
     pub fn set_bounds(&mut self, width: u16, height: u16) {
         self.bounds = RemoteScreenBounds { width, height };
+    }
+
+    fn direct_drag_slop_px(&self) -> f32 {
+        let max_dim = self.bounds.width.max(self.bounds.height) as f32;
+        self.drag_threshold_px.max(max_dim * 0.010)
     }
 
     fn reset_session(&mut self) {
@@ -118,8 +137,11 @@ impl TouchStateTracker {
         self.is_left_down = false;
         self.session_max_pointers = 0;
         self.two_finger_right_clicked = false;
+        self.two_finger_scroll_positioned = false;
         self.long_press_triggered = false;
         self.last_two_finger_centroid = None;
+        self.scroll_remainder = (0., 0.);
+        self.trackpad_drag_armed = false;
     }
 
     /// 将移动端/Web端多点触控转换为标准 Weavelo InputEvents
@@ -187,14 +209,15 @@ impl TouchStateTracker {
                         if self.active_pointers.len() == 1 {
                             // 单指按下：记录初始位置与时间，绝对移动光标定位，不发送任何按键（避免污染后续滑动/长按）
                             self.touch_down_pos = Some((clamped_x, clamped_y));
-                            self.touch_down_pos = Some((clamped_x, clamped_y));
                             self.last_touch_pos = Some((clamped_x, clamped_y));
                             self.touch_down_time = Some(now);
                             self.has_dragged = false;
                             self.is_left_down = false;
                             self.long_press_triggered = false;
                             self.two_finger_right_clicked = false;
+                            self.two_finger_scroll_positioned = false;
                             self.last_two_finger_centroid = None;
+                            self.scroll_remainder = (0., 0.);
 
                             events.push(InputEvent::MouseMoveAbsolute { x: abs_x, y: abs_y });
                         } else if self.active_pointers.len() == 2 {
@@ -203,6 +226,8 @@ impl TouchStateTracker {
                                 events.push(InputEvent::MouseUp(0));
                                 self.is_left_down = false;
                             }
+                            self.two_finger_scroll_positioned = false;
+                            self.scroll_remainder = (0., 0.);
                             if let (Some(&p0), Some(&p1)) = (
                                 self.pointer_positions.get(&self.active_pointers[0]),
                                 self.pointer_positions.get(&self.active_pointers[1]),
@@ -222,15 +247,14 @@ impl TouchStateTracker {
 
                         if self.active_pointers.len() == 1 && self.session_max_pointers == 1 {
                             if !self.long_press_triggered {
+                                let drag_slop = self.direct_drag_slop_px();
                                 if let Some((start_x, start_y)) = self.touch_down_pos {
                                     let dx_total_px =
                                         (clamped_x - start_x) * (self.bounds.width as f32);
                                     let dy_total_px =
                                         (clamped_y - start_y) * (self.bounds.height as f32);
 
-                                    if dx_total_px.abs() > self.drag_threshold_px
-                                        || dy_total_px.abs() > self.drag_threshold_px
-                                    {
+                                    if dx_total_px.hypot(dy_total_px) > drag_slop {
                                         self.has_dragged = true;
                                     }
                                 }
@@ -243,35 +267,32 @@ impl TouchStateTracker {
                                     }
                                     events
                                         .push(InputEvent::MouseMoveAbsolute { x: abs_x, y: abs_y });
-                                } else {
-                                    // 阀值内轻微位移：若按压时长已达长按阈值，触发右键菜单
-                                    if let Some(down_t) = self.touch_down_time {
-                                        if now.duration_since(down_t) >= self.long_press_threshold {
-                                            self.long_press_triggered = true;
-                                            events.push(InputEvent::MouseMoveAbsolute {
-                                                x: abs_x,
-                                                y: abs_y,
-                                            });
-                                            events.push(InputEvent::MouseDown(1));
-                                            events.push(InputEvent::MouseUp(1));
-                                        } else {
-                                            events.push(InputEvent::MouseMoveAbsolute {
-                                                x: abs_x,
-                                                y: abs_y,
-                                            });
-                                        }
+                                } else if let Some(down_t) = self.touch_down_time {
+                                    if now.duration_since(down_t) >= self.long_press_threshold {
+                                        self.long_press_triggered = true;
+                                        events.push(InputEvent::MouseMoveAbsolute {
+                                            x: abs_x,
+                                            y: abs_y,
+                                        });
+                                        events.push(InputEvent::MouseDown(1));
+                                        events.push(InputEvent::MouseUp(1));
                                     } else {
                                         events.push(InputEvent::MouseMoveAbsolute {
                                             x: abs_x,
                                             y: abs_y,
                                         });
                                     }
+                                } else {
+                                    events.push(InputEvent::MouseMoveAbsolute {
+                                        x: abs_x,
+                                        y: abs_y,
+                                    });
                                 }
                             } else {
                                 events.push(InputEvent::MouseMoveAbsolute { x: abs_x, y: abs_y });
                             }
                         } else if self.active_pointers.len() == 2 {
-                            // 双指滑动：基于双指质心位移映射为平滑页面滚动（杜绝单触点覆盖与双倍累加抖动）
+                            // 双指平行滑动：基于双指质心位移映射为自然触屏方向滚动（上推内容向上，下拉内容向下）
                             if self.is_left_down {
                                 events.push(InputEvent::MouseUp(0));
                                 self.is_left_down = false;
@@ -282,21 +303,33 @@ impl TouchStateTracker {
                             ) {
                                 let cur_centroid = ((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0);
                                 if let Some(prev_centroid) = self.last_two_finger_centroid {
-                                    let dx_px = (cur_centroid.0 - prev_centroid.0)
-                                        * (self.bounds.width as f32);
-                                    let dy_px = (cur_centroid.1 - prev_centroid.1)
-                                        * (self.bounds.height as f32);
+                                    let raw_dx =
+                                        (cur_centroid.0 - prev_centroid.0) * DIRECT_SCROLL_EXTENT_PX;
+                                    let raw_dy =
+                                        (cur_centroid.1 - prev_centroid.1) * DIRECT_SCROLL_EXTENT_PX;
 
-                                    if dx_px.abs() > self.drag_threshold_px
-                                        || dy_px.abs() > self.drag_threshold_px
-                                    {
-                                        self.has_dragged = true;
-                                    }
+                                    let acc_x = raw_dx + self.scroll_remainder.0;
+                                    let acc_y = raw_dy + self.scroll_remainder.1;
+                                    let delta_x = acc_x.round() as i32;
+                                    let delta_y = acc_y.round() as i32;
+                                    self.scroll_remainder =
+                                        (acc_x - delta_x as f32, acc_y - delta_y as f32);
 
-                                    let delta_x = -(dx_px.round() as i32);
-                                    let delta_y = -(dy_px.round() as i32);
                                     if delta_x != 0 || delta_y != 0 {
                                         self.has_dragged = true;
+                                        if !self.two_finger_scroll_positioned {
+                                            self.two_finger_scroll_positioned = true;
+                                            let cx = (cur_centroid.0.clamp(0.0, 1.0)
+                                                * f32::from(u16::MAX))
+                                                .round() as u16;
+                                            let cy = (cur_centroid.1.clamp(0.0, 1.0)
+                                                * f32::from(u16::MAX))
+                                                .round() as u16;
+                                            events.push(InputEvent::MouseMoveAbsolute {
+                                                x: cx,
+                                                y: cy,
+                                            });
+                                        }
                                         events.push(InputEvent::scroll(delta_x, delta_y));
                                     }
                                 }
@@ -350,6 +383,7 @@ impl TouchStateTracker {
                         self.pointer_positions.remove(&pointer_id);
                         if self.active_pointers.len() < 2 {
                             self.last_two_finger_centroid = None;
+                            self.two_finger_scroll_positioned = false;
                         }
 
                         if self.active_pointers.is_empty() {
@@ -366,6 +400,7 @@ impl TouchStateTracker {
                         self.pointer_positions.remove(&pointer_id);
                         if self.active_pointers.len() < 2 {
                             self.last_two_finger_centroid = None;
+                            self.two_finger_scroll_positioned = false;
                         }
 
                         if self.active_pointers.is_empty() {
@@ -387,13 +422,31 @@ impl TouchStateTracker {
 
                         if self.active_pointers.len() == 1 {
                             self.relative_remainder = (0., 0.);
+                            self.scroll_remainder = (0., 0.);
                             self.touch_down_pos = Some((clamped_x, clamped_y));
                             self.last_touch_pos = Some((clamped_x, clamped_y));
                             self.touch_down_time = Some(now);
                             self.has_dragged = false;
                             self.two_finger_right_clicked = false;
                             self.last_two_finger_centroid = None;
+                            // 双击不松手拖拽（Double-Tap-and-Hold Drag）：轻点后 320ms 内再次按下并滑动即可拖拽窗口/滚动条/选区
+                            if let Some((tap_time, (tx, ty))) = self.last_trackpad_tap.take() {
+                                if now.saturating_duration_since(tap_time)
+                                    <= TRACKPAD_DOUBLE_TAP_WINDOW
+                                    && (clamped_x - tx).hypot(clamped_y - ty)
+                                        <= TRACKPAD_DOUBLE_TAP_RADIUS
+                                {
+                                    self.trackpad_drag_armed = true;
+                                }
+                            }
                         } else if self.active_pointers.len() == 2 {
+                            if self.is_left_down {
+                                events.push(InputEvent::MouseUp(0));
+                                self.is_left_down = false;
+                            }
+                            self.trackpad_drag_armed = false;
+                            self.last_trackpad_tap = None;
+                            self.scroll_remainder = (0., 0.);
                             let p0 = self
                                 .pointer_positions
                                 .get(&self.active_pointers[0])
@@ -406,6 +459,10 @@ impl TouchStateTracker {
                                 self.last_two_finger_centroid =
                                     Some(((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0));
                             }
+                        } else if self.active_pointers.len() > 2 && self.is_left_down {
+                            events.push(InputEvent::MouseUp(0));
+                            self.is_left_down = false;
+                            self.trackpad_drag_armed = false;
                         }
                     }
                     TouchAction::Move => {
@@ -427,6 +484,11 @@ impl TouchStateTracker {
                                     self.has_dragged = true;
                                 }
 
+                                if self.has_dragged && self.trackpad_drag_armed && !self.is_left_down {
+                                    events.push(InputEvent::MouseDown(0));
+                                    self.is_left_down = true;
+                                }
+
                                 // Keep fine motion instead of rounding every
                                 // subpixel sample away on a high-DPI phone.
                                 let dx = raw_dx + self.relative_remainder.0;
@@ -438,7 +500,11 @@ impl TouchStateTracker {
                                 });
                             }
                         } else if self.active_pointers.len() == 2 {
-                            // 触控板双指滚动
+                            // 触控板双指自然滚动（保持光标位置，累加亚像素位移）
+                            if self.is_left_down {
+                                events.push(InputEvent::MouseUp(0));
+                                self.is_left_down = false;
+                            }
                             if let (Some(&p0), Some(&p1)) = (
                                 self.pointer_positions.get(&self.active_pointers[0]),
                                 self.pointer_positions.get(&self.active_pointers[1]),
@@ -446,20 +512,17 @@ impl TouchStateTracker {
                                 let cur_centroid = ((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0);
                                 if let Some(prev_centroid) = self.last_two_finger_centroid {
                                     let raw_dx = (cur_centroid.0 - prev_centroid.0)
-                                        * (self.bounds.width as f32)
-                                        * 1.5;
+                                        * TRACKPAD_SCROLL_EXTENT_PX;
                                     let raw_dy = (cur_centroid.1 - prev_centroid.1)
-                                        * (self.bounds.height as f32)
-                                        * 1.5;
+                                        * TRACKPAD_SCROLL_EXTENT_PX;
 
-                                    if raw_dx.abs() > self.drag_threshold_px
-                                        || raw_dy.abs() > self.drag_threshold_px
-                                    {
-                                        self.has_dragged = true;
-                                    }
+                                    let acc_x = raw_dx + self.scroll_remainder.0;
+                                    let acc_y = raw_dy + self.scroll_remainder.1;
+                                    let delta_x = acc_x.round() as i32;
+                                    let delta_y = acc_y.round() as i32;
+                                    self.scroll_remainder =
+                                        (acc_x - delta_x as f32, acc_y - delta_y as f32);
 
-                                    let delta_x = -(raw_dx.round() as i32);
-                                    let delta_y = -(raw_dy.round() as i32);
                                     if delta_x != 0 || delta_y != 0 {
                                         self.has_dragged = true;
                                         events.push(InputEvent::scroll(delta_x, delta_y));
@@ -479,11 +542,20 @@ impl TouchStateTracker {
                             events.extend(self.process_touch(TouchAction::Move,pointer_id,
                                 clamped_x,clamped_y,pressure,now));
                         }
-                        if !self.has_dragged {
+                        if self.is_left_down {
+                            events.push(InputEvent::MouseUp(0));
+                            self.is_left_down = false;
+                            self.last_trackpad_tap = None;
+                        } else if !self.has_dragged {
                             if self.session_max_pointers == 1 {
                                 // 单指轻触点击：鼠标左键单击
                                 events.push(InputEvent::MouseDown(0));
                                 events.push(InputEvent::MouseUp(0));
+                                self.last_trackpad_tap = if self.trackpad_drag_armed {
+                                    None
+                                } else {
+                                    Some((now, (clamped_x, clamped_y)))
+                                };
                             } else if self.session_max_pointers == 2
                                 && !self.two_finger_right_clicked
                             {
@@ -491,7 +563,10 @@ impl TouchStateTracker {
                                 events.push(InputEvent::MouseDown(1));
                                 events.push(InputEvent::MouseUp(1));
                                 self.two_finger_right_clicked = true;
+                                self.last_trackpad_tap = None;
                             }
+                        } else {
+                            self.last_trackpad_tap = None;
                         }
 
                         self.active_pointers.retain(|&id| id != pointer_id);
@@ -505,6 +580,11 @@ impl TouchStateTracker {
                         }
                     }
                     TouchAction::Cancel => {
+                        if self.is_left_down {
+                            events.push(InputEvent::MouseUp(0));
+                            self.is_left_down = false;
+                        }
+                        self.last_trackpad_tap = None;
                         self.active_pointers.retain(|&id| id != pointer_id);
                         self.pointer_positions.remove(&pointer_id);
                         if self.active_pointers.len() < 2 {
@@ -871,6 +951,55 @@ mod tests {
     }
 
     #[test]
+    fn virtual_trackpad_double_tap_hold_drags_and_quick_double_tap_still_double_clicks() {
+        let mut tracker = TouchStateTracker::new(
+            TouchMode::VirtualTrackpad,
+            RemoteScreenBounds {
+                width: 1920,
+                height: 1080,
+            },
+        );
+        let now = Instant::now();
+
+        // First tap
+        tracker.process_touch(TouchAction::Down, 0, 0.5, 0.5, 1.0, now);
+        assert_eq!(
+            tracker.process_touch(TouchAction::Up, 0, 0.5, 0.5, 0.0, now + Duration::from_millis(40)),
+            vec![InputEvent::MouseDown(0), InputEvent::MouseUp(0)]
+        );
+
+        // Second Down within 320ms + glide -> holds MouseDown(0) while moving, releases on Up
+        tracker.process_touch(TouchAction::Down, 0, 0.51, 0.5, 1.0, now + Duration::from_millis(140));
+        let drag_events = tracker.process_touch(
+            TouchAction::Move,
+            0,
+            0.55,
+            0.52,
+            1.0,
+            now + Duration::from_millis(160),
+        );
+        assert_eq!(drag_events.first(), Some(&InputEvent::MouseDown(0)));
+        assert!(matches!(drag_events.get(1), Some(InputEvent::MouseMove { dx, dy }) if *dx > 0 && *dy > 0));
+        assert_eq!(
+            tracker.process_touch(TouchAction::Up, 0, 0.55, 0.52, 0.0, now + Duration::from_millis(220)),
+            vec![InputEvent::MouseUp(0)]
+        );
+
+        // Quick double-tap without movement emits two normal clicks
+        let later = now + Duration::from_millis(1000);
+        tracker.process_touch(TouchAction::Down, 1, 0.4, 0.4, 1.0, later);
+        assert_eq!(
+            tracker.process_touch(TouchAction::Up, 1, 0.4, 0.4, 0.0, later + Duration::from_millis(30)),
+            vec![InputEvent::MouseDown(0), InputEvent::MouseUp(0)]
+        );
+        tracker.process_touch(TouchAction::Down, 1, 0.4, 0.4, 1.0, later + Duration::from_millis(110));
+        assert_eq!(
+            tracker.process_touch(TouchAction::Up, 1, 0.4, 0.4, 0.0, later + Duration::from_millis(140)),
+            vec![InputEvent::MouseDown(0), InputEvent::MouseUp(0)]
+        );
+    }
+
+    #[test]
     fn absolute_coordinates_follow_wire_contract_at_every_resolution() {
         for (width, height) in [(640, 480), (1920, 1080), (3840, 2160)] {
             for (n, encoded) in [(0.0, 0), (0.5, 32768), (1.0, 65535)] {
@@ -1015,7 +1144,7 @@ mod tests {
         let events_down = tracker.process_touch(TouchAction::Down, 0, 0.1, 0.1, 1.0, now);
         assert_eq!(events_down.len(), 1);
 
-        // Move slightly (within 6px threshold: 0.001 * 1920 = 1.92px)
+        // Move slightly (within normalized drag slop: 0.001 * 1920 = 1.92px)
         let events_move_small = tracker.process_touch(
             TouchAction::Move,
             0,
@@ -1058,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_touch_two_finger_scroll_does_not_pollute_mouse_button() {
+    fn direct_touch_two_finger_scroll_targets_midpoint_and_follows_natural_direction() {
         let mut tracker = TouchStateTracker::new(
             TouchMode::DirectTouch,
             RemoteScreenBounds {
@@ -1069,7 +1198,7 @@ mod tests {
         let now = Instant::now();
 
         // Finger 0 down
-        let ev0 = tracker.process_touch(TouchAction::Down, 0, 0.5, 0.5, 1.0, now);
+        let ev0 = tracker.process_touch(TouchAction::Down, 0, 0.4, 0.6, 1.0, now);
         assert_eq!(ev0.len(), 1); // MouseMoveAbsolute only
 
         // Finger 1 down
@@ -1077,35 +1206,47 @@ mod tests {
             TouchAction::Down,
             1,
             0.6,
-            0.5,
+            0.6,
             1.0,
             now + Duration::from_millis(10),
         );
         assert!(ev1.is_empty());
 
-        // Finger 0 moves down (scroll)
-        let scroll_ev = tracker.process_touch(
+        // Swipe fingers UP (y: 0.6 -> 0.5) to push content UP (scroll down the page: delta_y < 0)
+        let first_scroll = tracker.process_touch(
             TouchAction::Move,
             0,
+            0.4,
             0.5,
-            0.55,
             1.0,
             now + Duration::from_millis(20),
         );
-        assert_eq!(scroll_ev.len(), 1);
-        match scroll_ev[0] {
-            InputEvent::MouseScroll { delta_y, .. } => {
-                assert!(delta_y < 0);
-            }
-            _ => panic!("Expected MouseScroll"),
-        }
+        assert!(matches!(
+            first_scroll.as_slice(),
+            [
+                InputEvent::MouseMoveAbsolute { x: 32768, y: 36045 },
+                InputEvent::MouseScroll { delta_y, .. }
+            ] if *delta_y < 0
+        ));
+        let scroll_ev = tracker.process_touch(
+            TouchAction::Move,
+            1,
+            0.6,
+            0.5,
+            1.0,
+            now + Duration::from_millis(20),
+        );
+        assert!(matches!(
+            scroll_ev.as_slice(),
+            [InputEvent::MouseScroll { delta_y, .. }] if *delta_y < 0
+        ));
 
         // Lift both fingers - no spurious mouse clicks!
         let up0 = tracker.process_touch(
             TouchAction::Up,
             0,
+            0.4,
             0.5,
-            0.55,
             0.0,
             now + Duration::from_millis(30),
         );

@@ -951,10 +951,13 @@ private fun SettingsTabContent(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(tr("Direct Touch (Screen-First)"), color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text(tr("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Drag: Vertical / Horizontal Scroll\n• Two-Finger Tap: Mouse Right Click"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+                Text(tr("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)\n• Two-Finger Tap: Mouse Right Click"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(tr("Virtual Trackpad"), color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text(tr("• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Wheel Scroll"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+                Text(tr("• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Double-Tap & Hold Glide: Mouse Drag\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(tr("Zoom & Canvas"), color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(tr("• Two-Finger Pinch: Zoom & Pan Viewport\n• Three-Finger Drag / Pan Canvas Button: Move Zoomed Canvas"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
             }
         }
 

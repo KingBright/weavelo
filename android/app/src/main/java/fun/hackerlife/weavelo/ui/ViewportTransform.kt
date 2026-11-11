@@ -10,9 +10,10 @@ enum class TwoFingerGestureMode {
 }
 
 /**
- * Keep the established two-finger remote gestures at 1x. A gesture becomes a
- * local viewport transform only after a real pinch is observed, or whenever
- * the viewport is already zoomed. Translation at 1x remains remote scrolling.
+ * Arbitrate two-finger gestures across all zoom levels so pinch-to-zoom and
+ * in-app two-finger scrolling never fight each other:
+ * - Diverging/converging finger span -> LOCAL_TRANSFORM (pinch zoom + simultaneous pan).
+ * - Parallel two-finger translation -> REMOTE_GESTURE (remote scroll, even while zoomed).
  */
 fun classifyTwoFingerGesture(
     currentScale: Float,
@@ -20,14 +21,26 @@ fun classifyTwoFingerGesture(
     currentDistance: Float,
     initialCentroid: Offset,
     currentCentroid: Offset,
-    pinchRatioThreshold: Float = 0.035f,
-    panThresholdPx: Float = 8f
+    pinchRatioThreshold: Float = 0.085f,
+    minPinchPx: Float = 16f,
+    panThresholdPx: Float = 12f
 ): TwoFingerGestureMode {
-    if (currentScale > 1.01f) return TwoFingerGestureMode.LOCAL_TRANSFORM
+    @Suppress("UNUSED_PARAMETER")
+    val scale = currentScale
     val baseline = initialDistance.coerceAtLeast(1f)
-    val distanceRatio = abs(currentDistance - initialDistance) / baseline
-    if (distanceRatio >= pinchRatioThreshold) return TwoFingerGestureMode.LOCAL_TRANSFORM
-    if ((currentCentroid - initialCentroid).getDistance() >= panThresholdPx) {
+    val distanceDelta = abs(currentDistance - initialDistance)
+    val distanceRatio = distanceDelta / baseline
+    val centroidDelta = (currentCentroid - initialCentroid).getDistance()
+
+    if (distanceDelta >= minPinchPx &&
+        distanceRatio >= pinchRatioThreshold &&
+        distanceDelta >= centroidDelta * 0.65f
+    ) {
+        return TwoFingerGestureMode.LOCAL_TRANSFORM
+    }
+    if (centroidDelta >= panThresholdPx &&
+        (distanceDelta < minPinchPx || centroidDelta > distanceDelta * 1.4f)
+    ) {
         return TwoFingerGestureMode.REMOTE_GESTURE
     }
     return TwoFingerGestureMode.UNDECIDED
@@ -35,7 +48,7 @@ fun classifyTwoFingerGesture(
 
 /**
  * 视口缩放与平移状态机及坐标逆映射计算。
- * 支持 1.0x ~ 3.5x 无级缩放、双指捏合平移、边界限制与精准坐标逆映射。
+ * 支持 1.0x ~ 4.0x 无级缩放、双指捏合平移、边界限制与精准坐标逆映射。
  */
 data class ViewportTransform(
     val scale: Float = 1.0f,
@@ -97,10 +110,11 @@ data class ViewportTransform(
         val endY=kotlin.math.ceil(bottom.toDouble()*1_000_000).toInt().coerceIn(y+1,1_000_000)
         return intArrayOf(x,y,endX-x,endY-y)
     }
+
     /** Trackpad navigation follows its cursor while it stays in known pixels. */
     fun reveal(nx: Float,ny: Float,width: Float,height: Float): ViewportTransform {
         val (x,y)=normalizedToScreen(nx,ny,width,height)
-        val margin=minOf(24f,width/8f,height/8f)
+        val margin=minOf(56f,width/6f,height/6f)
         val dx=when {x<margin->margin-x; x>width-margin->width-margin-x; else->0f}
         val dy=when {y<margin->margin-y; y>height-margin->height-margin-y; else->0f}
         return copy(offset=clampOffset(offset+Offset(dx,dy),width,height))

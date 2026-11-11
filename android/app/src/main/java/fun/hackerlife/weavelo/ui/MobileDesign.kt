@@ -39,6 +39,7 @@ enum class MobileSymbol(path: String) {
     Control("M5.5 3.5l13 7.5-5.8 1.7-2.7 5.8-4.5-15z M13.5 13.5l4.5 4.5"),
     Touch("M9 13V5a2 2 0 0 1 4 0v6 M13 9l6 3v6l-3 3h-5l-6-7 2-2 2 1"),
     Trackpad("M3 5h18v14H3z M3 14h18 M12 14v5 M8 9h8"),
+    Pan("M12 3v18 M3 12h18 M9 6l3-3 3 3 M9 18l3 3 3-3 M6 9l-3 3 3 3 M18 9l3 3-3 3"),
     Audio("M11 5L6 9H3v6h3l5 4z M15 8a6 6 0 0 1 0 8 M18 5a10 10 0 0 1 0 14"),
     Notifications("M6 9a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4"),
     Rotate("M4 7a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M17 10h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2"),
@@ -79,18 +80,98 @@ fun WeaveloTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = mobileColorScheme, shapes = mobileShapes, content = content)
 }
 
-/** The four persistent input actions live outside the measured video rectangle. */
+/** Persistent input & canvas actions live outside the measured video rectangle. */
 @Composable
-internal fun MobileInputControls(trackpad: Boolean, direct: Boolean, inputEnabled: Boolean,
-    onTrackpad: () -> Unit, onDirect: () -> Unit, onKeyboard: () -> Unit, onReset: () -> Unit) {
+internal fun MobileInputControls(
+    trackpad: Boolean,
+    direct: Boolean,
+    panView: Boolean = false,
+    inputEnabled: Boolean,
+    onTrackpad: () -> Unit,
+    onDirect: () -> Unit,
+    onPanView: (() -> Unit)? = null,
+    onKeyboard: () -> Unit,
+    onReset: () -> Unit
+) {
     Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
         .padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
         Surface(shape = RoundedCornerShape(28.dp), color = ColorSurfaceCard.copy(alpha = .94f), shadowElevation = 6.dp) {
             Row(Modifier.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(48.dp), selected = trackpad, onClick = onTrackpad)
                 MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(48.dp), selected = direct, onClick = onDirect)
+                if (onPanView != null) {
+                    MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(48.dp), selected = panView, onClick = onPanView)
+                }
                 MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(48.dp), onClick = onKeyboard)
                 MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(48.dp), onClick = onReset)
+            }
+        }
+    }
+}
+
+/** Compact floating pill shown only when zoomed (> 1.05x) for 1-tap canvas pan or reset. */
+@Composable
+internal fun ZoomedCanvasChip(
+    scale: Float,
+    panActive: Boolean,
+    canTogglePan: Boolean,
+    modifier: Modifier = Modifier,
+    onTogglePan: () -> Unit,
+    onResetZoom: () -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = ColorSurfaceCard.copy(alpha = .9f),
+        shadowElevation = 4.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            if (canTogglePan) {
+                TextButton(
+                    onClick = onTogglePan,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier
+                        .heightIn(min = 32.dp)
+                        .background(
+                            if (panActive) ColorAccentCyan.copy(alpha = .14f) else Color.Transparent,
+                            RoundedCornerShape(16.dp)
+                        )
+                ) {
+                    Icon(
+                        MobileSymbol.Pan.image,
+                        contentDescription = null,
+                        tint = if (panActive) ColorAccentCyan else ColorTextPrimary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        tr("Pan canvas"),
+                        color = if (panActive) ColorAccentCyan else ColorTextPrimary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+            TextButton(
+                onClick = onResetZoom,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.heightIn(min = 32.dp)
+            ) {
+                Text(
+                    String.format(java.util.Locale.ROOT, "%.1f×", scale),
+                    color = ColorAccentCyan,
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Spacer(Modifier.width(3.dp))
+                Icon(
+                    MobileSymbol.Refresh.image,
+                    contentDescription = tr("Reset zoom"),
+                    tint = ColorTextSecondary,
+                    modifier = Modifier.size(14.dp)
+                )
             }
         }
     }

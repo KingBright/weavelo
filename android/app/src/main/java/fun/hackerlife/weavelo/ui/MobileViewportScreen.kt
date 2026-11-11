@@ -46,6 +46,7 @@ fun MobileViewportScreen(
 ) {
     StreamOrientation(active = true)
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
+    var lastControlMode by remember { mutableStateOf(TouchMode.DIRECT) }
     val isModifierBarVisible = WindowInsets.ime.getBottom(androidx.compose.ui.platform.LocalDensity.current) > 0
     var controlsExpanded by remember { mutableStateOf(false) }
     LaunchedEffect(controlsExpanded) {
@@ -387,16 +388,56 @@ fun MobileViewportScreen(
             }
         }
 
+    if (!isModifierBarVisible && transform.scale > 1.05f) {
+        ZoomedCanvasChip(
+            scale = transform.scale,
+            panActive = touchMode == TouchMode.VIEW,
+            canTogglePan = inputEnabled,
+            modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+            onTogglePan = {
+                if (touchMode == TouchMode.VIEW) {
+                    touchMode = lastControlMode
+                    WeaveloClient.setTouchMode(touchMode)
+                } else {
+                    lastControlMode = touchMode
+                    touchMode = TouchMode.VIEW
+                }
+            },
+            onResetZoom = {
+                transform = transform.reset()
+                if (inputEnabled && touchMode == TouchMode.VIEW) {
+                    touchMode = lastControlMode
+                    WeaveloClient.setTouchMode(touchMode)
+                }
+            }
+        )
+    }
     if (!isModifierBarVisible && controlsExpanded) {
         Box(Modifier.align(Alignment.BottomCenter)) {
         MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD, direct = touchMode == TouchMode.DIRECT,
+            panView = touchMode == TouchMode.VIEW,
             inputEnabled = inputEnabled,
-            onTrackpad = { touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) },
-            onDirect = { touchMode = TouchMode.DIRECT; WeaveloClient.setTouchMode(touchMode) },
+            onTrackpad = { lastControlMode = TouchMode.TRACKPAD; touchMode = TouchMode.TRACKPAD; WeaveloClient.setTouchMode(touchMode) },
+            onDirect = { lastControlMode = TouchMode.DIRECT; touchMode = TouchMode.DIRECT; WeaveloClient.setTouchMode(touchMode) },
+            onPanView = {
+                if (touchMode == TouchMode.VIEW && inputEnabled) {
+                    touchMode = lastControlMode
+                    WeaveloClient.setTouchMode(touchMode)
+                } else {
+                    if (touchMode != TouchMode.VIEW) lastControlMode = touchMode
+                    touchMode = TouchMode.VIEW
+                }
+            },
             onKeyboard = {
                 if (showKeyboard) { showKeyboard = false; textInputToken = null }
                 else { textInputToken = WeaveloClient.textInputToken(); showKeyboard = textInputToken != null }
-            }, onReset = { transform = transform.reset() })
+            }, onReset = {
+                transform = transform.reset()
+                if (inputEnabled && touchMode == TouchMode.VIEW) {
+                    touchMode = lastControlMode
+                    WeaveloClient.setTouchMode(touchMode)
+                }
+            })
         }
     }
     }

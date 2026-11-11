@@ -321,13 +321,16 @@ impl PortalInput {
                     self.button(&mut held, button_code(button)?, false).await
                 }
                 InputEvent::MouseScroll { delta_x, delta_y, .. } => {
+                    let Some((axis_x, axis_y)) = portal_scroll_axis(delta_x, delta_y) else {
+                        return Ok(());
+                    };
                     self.notify(
                         "NotifyPointerAxis",
                         &(
                             &self.session,
                             options(),
-                            f64::from(delta_x),
-                            f64::from(delta_y),
+                            axis_x,
+                            axis_y,
                         ),deadline,
                     )
                     .await
@@ -405,6 +408,15 @@ impl PortalInput {
 }
 fn options() -> std::collections::HashMap<&'static str, Value<'static>> {
     std::collections::HashMap::new()
+}
+/// Wire scroll deltas follow GPUI/macOS/Windows pixel sign (`delta_y < 0` scrolls down),
+/// whereas Wayland `wl_pointer::axis` / `NotifyPointerAxis` uses `+dy` for downward scroll
+/// at 1/3 pixel scale. Ignore phase-only zero deltas.
+fn portal_scroll_axis(delta_x: i32, delta_y: i32) -> Option<(f64, f64)> {
+    if delta_x == 0 && delta_y == 0 {
+        return None;
+    }
+    Some((-f64::from(delta_x) / 3.0, -f64::from(delta_y) / 3.0))
 }
 fn button_code(button: u8) -> Result<i32> {
     Ok(match button {

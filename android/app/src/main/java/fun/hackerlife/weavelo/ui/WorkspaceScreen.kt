@@ -633,8 +633,12 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
     var videoStatus by remember(pane.id, sessionKey, generation) { mutableStateOf<String?>("Waiting for video…") }
     val pointers = remember { mutableSetOf<Int>() }
     var touching by remember { mutableStateOf(false) }
+    val defaultControlMode = if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
     var touchMode by remember(pane.id, sessionKey, generation, pane.maxTouchPoints, pane.input) {
-        mutableStateOf(if (!pane.input) TouchMode.VIEW else if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT)
+        mutableStateOf(if (!pane.input) TouchMode.VIEW else defaultControlMode)
+    }
+    var lastControlMode by remember(pane.id, sessionKey, generation, pane.maxTouchPoints) {
+        mutableStateOf(defaultControlMode)
     }
     var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
@@ -721,10 +725,14 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                     JSONObject().put("action", when (action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
                         .put("pointer_id", id).put("normalized_x", x).put("normalized_y", y).put("pressure", pressure),geometry,
                     onProbe = { sequence, geometry -> if (surfaceToken == token) focusGate.record(gestureIntent,sequence,eventTime,geometry to globalIntent) }) { cx, cy ->
-                    if (surfaceToken == token) cursor = Offset(cx, cy)
-                if (surfaceToken == token && touchMode == TouchMode.TRACKPAD && transform.value.scale>1f) {
-                    transform.value=transform.value.reveal(cx,cy,measured.width.toFloat(),measured.height.toFloat())
-                }
+                    if (surfaceToken == token) {
+                        val nextCursor = Offset(cx, cy)
+                        val cursorMoved = (nextCursor - cursor).getDistance() > 0.0005f
+                        cursor = nextCursor
+                        if (cursorMoved && touchMode == TouchMode.TRACKPAD && transform.value.scale > 1f) {
+                            transform.value = transform.value.reveal(cx, cy, measured.width.toFloat(), measured.height.toFloat())
+                        }
+                    }
                 }
                 }
             },
@@ -954,9 +962,12 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             mobileMore = false
                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                             pointers.clear(); touching = false
-                            touchMode = if (touchMode == TouchMode.VIEW) {
-                                if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
-                            } else TouchMode.VIEW
+                            if (touchMode == TouchMode.VIEW) {
+                                touchMode = lastControlMode
+                            } else {
+                                lastControlMode = touchMode
+                                touchMode = TouchMode.VIEW
+                            }
                         })
                         DropdownMenuItem(enabled = pane.input, text = { Text(if (touchMode == TouchMode.TRACKPAD) {
                             if (pane.maxTouchPoints > 0) tr("Use multi-touch") else tr("Use direct touch")
@@ -964,9 +975,11 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                             mobileMore = false
                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                             pointers.clear(); touching = false
-                            touchMode = if (touchMode == TouchMode.TRACKPAD) {
+                            val nextMode = if (touchMode == TouchMode.TRACKPAD) {
                                 if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
                             } else TouchMode.TRACKPAD
+                            lastControlMode = nextMode
+                            touchMode = nextMode
                         })
                         if (!pane.input) DropdownMenuItem(
                             text = { Text(tr("Remote control is unavailable; you can adjust the view")) },
@@ -977,31 +990,78 @@ private fun WorkspaceVideo(pane: WorkspacePane, sessionKey: String, generation: 
                         if (!isPhoneScreen) DropdownMenuItem(
                             text = { Text(tr("Home is available for the shared Android screen")) },
                             enabled = false, onClick = {})
-                        DropdownMenuItem(text = { Text(tr("Reset zoom")) }, onClick = { mobileMore = false; transform.value = transform.value.reset() })
+                        DropdownMenuItem(text = { Text(tr("Reset zoom")) }, onClick = {
+                            mobileMore = false
+                            transform.value = transform.value.reset()
+                            if (pane.input && touchMode == TouchMode.VIEW) touchMode = lastControlMode
+                        })
                         DropdownMenuItem(text = { Text(tr("Connection actions")) }, onClick = { mobileMore = false; onMore() })
                     }
                 }
             }
         }
+        if (!imeVisible && transform.value.scale > 1.05f) {
+            ZoomedCanvasChip(
+                scale = transform.value.scale,
+                panActive = touchMode == TouchMode.VIEW,
+                canTogglePan = pane.input && token != 0L,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .safeDrawingPadding()
+                    .padding(start = 8.dp, top = if (hudVisible) 116.dp else 8.dp),
+                onTogglePan = {
+                    focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
+                    WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                    pointers.clear(); touching = false
+                    if (touchMode == TouchMode.VIEW) {
+                        touchMode = lastControlMode
+                    } else {
+                        lastControlMode = touchMode
+                        touchMode = TouchMode.VIEW
+                    }
+                },
+                onResetZoom = {
+                    WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                    pointers.clear(); touching = false
+                    transform.value = transform.value.reset()
+                    if (pane.input && touchMode == TouchMode.VIEW) touchMode = lastControlMode
+                }
+            )
+        }
       if (!mobileTarget && !imeVisible && (mobileControls || hudVisible)) {
         Box(Modifier.align(Alignment.BottomCenter)) {
         MobileInputControls(trackpad = touchMode == TouchMode.TRACKPAD,
             direct = touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE,
+            panView = touchMode == TouchMode.VIEW,
             inputEnabled = pane.input && token != 0L,
             onTrackpad = {
                 WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
-                pointers.clear(); touching = false; touchMode = TouchMode.TRACKPAD
+                pointers.clear(); touching = false
+                lastControlMode = TouchMode.TRACKPAD; touchMode = TouchMode.TRACKPAD
             }, onDirect = {
                 WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                 pointers.clear(); touching = false
-                touchMode = if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
+                val nextMode = if (pane.maxTouchPoints > 0) TouchMode.NATIVE else TouchMode.DIRECT
+                lastControlMode = nextMode; touchMode = nextMode
+            }, onPanView = {
+                WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                pointers.clear(); touching = false
+                if (touchMode == TouchMode.VIEW && pane.input) {
+                    touchMode = lastControlMode
+                } else {
+                    if (touchMode != TouchMode.VIEW) lastControlMode = touchMode
+                    touchMode = TouchMode.VIEW
+                }
             }, onKeyboard = {
                 focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
                 if (keyboardVisible) keyboardVisible = false else {
                     keyboardBinding = WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
                     keyboardVisible = keyboardBinding != null
                 }
-            }, onReset = { transform.value = transform.value.reset() })
+            }, onReset = {
+                transform.value = transform.value.reset()
+                if (pane.input && touchMode == TouchMode.VIEW) touchMode = lastControlMode
+            })
       }
       }
       }

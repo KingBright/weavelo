@@ -151,7 +151,7 @@ class ViewportTransformTest {
     }
 
     @Test
-    fun twoFingerGestureArbitrationPreservesRemoteScrollAndTapAtOneX() {
+    fun twoFingerGestureArbitrationPreservesRemoteScrollAcrossZoomLevels() {
         val initialDistance = 200f
         val initialCentroid = Offset(500f, 300f)
 
@@ -160,46 +160,51 @@ class ViewportTransformTest {
             classifyTwoFingerGesture(
                 currentScale = 1f,
                 initialDistance = initialDistance,
-                currentDistance = 201f,
+                currentDistance = 203f,
                 initialCentroid = initialCentroid,
                 currentCentroid = Offset(503f, 302f)
             )
         )
-        assertEquals(
-            TwoFingerGestureMode.REMOTE_GESTURE,
-            classifyTwoFingerGesture(
-                currentScale = 1f,
-                initialDistance = initialDistance,
-                currentDistance = 201f,
-                initialCentroid = initialCentroid,
-                currentCentroid = Offset(520f, 300f)
+        // Parallel two-finger drag scrolls remote apps at 1x AND while zoomed in.
+        for (scale in listOf(1f, 2f, 3.5f)) {
+            assertEquals(
+                TwoFingerGestureMode.REMOTE_GESTURE,
+                classifyTwoFingerGesture(
+                    currentScale = scale,
+                    initialDistance = initialDistance,
+                    currentDistance = 206f,
+                    initialCentroid = initialCentroid,
+                    currentCentroid = Offset(500f, 336f)
+                )
             )
-        )
+        }
     }
 
     @Test
-    fun twoFingerGestureArbitrationClaimsRealPinchAndZoomedPanLocally() {
+    fun twoFingerGestureArbitrationClaimsRealPinchAcrossZoomLevels() {
         val initialCentroid = Offset(500f, 300f)
-        assertEquals(
-            TwoFingerGestureMode.LOCAL_TRANSFORM,
-            classifyTwoFingerGesture(
-                currentScale = 1f,
-                initialDistance = 200f,
-                currentDistance = 220f,
-                initialCentroid = initialCentroid,
-                currentCentroid = initialCentroid
+        for (scale in listOf(1f, 2.2f)) {
+            assertEquals(
+                TwoFingerGestureMode.LOCAL_TRANSFORM,
+                classifyTwoFingerGesture(
+                    currentScale = scale,
+                    initialDistance = 200f,
+                    currentDistance = 224f,
+                    initialCentroid = initialCentroid,
+                    currentCentroid = initialCentroid
+                )
             )
-        )
-        assertEquals(
-            TwoFingerGestureMode.LOCAL_TRANSFORM,
-            classifyTwoFingerGesture(
-                currentScale = 2f,
-                initialDistance = 200f,
-                currentDistance = 200f,
-                initialCentroid = initialCentroid,
-                currentCentroid = Offset(540f, 300f)
+            assertEquals(
+                TwoFingerGestureMode.LOCAL_TRANSFORM,
+                classifyTwoFingerGesture(
+                    currentScale = scale,
+                    initialDistance = 200f,
+                    currentDistance = 172f,
+                    initialCentroid = initialCentroid,
+                    currentCentroid = Offset(508f, 304f)
+                )
             )
-        )
+        }
     }
 
     @Test
