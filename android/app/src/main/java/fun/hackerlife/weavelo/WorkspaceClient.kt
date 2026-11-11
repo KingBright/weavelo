@@ -569,6 +569,7 @@ object WorkspaceClient {
             .put("crop",JSONObject().put("x",g.x).put("y",g.y).put("width",g.cropWidth).put("height",g.cropHeight)) }
         runCatching { action(12, JSONObject().put("id", id).put("token", token)
             .put("mode", mode.code).put("width", width).put("height", height)
+            .put("natural_scroll", WeaveloClient.naturalScroll)
             .put("geometry",presented ?: JSONObject.NULL)
             .put("event", if(contacts==null) JSONObject().put("Touch",event) else JSONObject().put("TouchFrame",contacts)).toString()) }
             .onFailure { inputIssue(id, it.message ?: "Control is unavailable", if (it.message == null) AppText("Control is unavailable") else null) }

@@ -87,6 +87,9 @@ fun MobileViewportScreen(
     var playbackErrorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     var decodedFps by remember { mutableStateOf<Int?>(null) }
     var videoDimensions by remember { mutableStateOf(VideoDimensions(1920, 1080)) }
+    var baseMeasured by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var cursorPos by remember { mutableStateOf(0.5f to 0.5f) }
+    val naturalScroll by WeaveloClient.naturalScrollFlow.collectAsState()
     val mediaPaused by WeaveloClient.mediaPaused.collectAsState()
     val pausePending by WeaveloClient.mediaPausePending.collectAsState()
     var showStreamSettings by remember { mutableStateOf(false) }
@@ -150,6 +153,13 @@ fun MobileViewportScreen(
                 OutlinedTextField(value = keepAliveText, onValueChange = { keepAliveText = it },
                     label = { Text(tr("Background keepalive (seconds)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(naturalScroll, { WeaveloClient.updateNaturalScroll(it) })
+                    Column {
+                        Text(tr("Natural scrolling (Apple style)"))
+                        Text(tr("Content moves in the same direction as your fingers"), color = ColorTextSecondary, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     androidx.compose.material3.Checkbox(keepService, { keepService = it })
                     Text(tr("Keep this connection in background until Disconnect"))
                 }
@@ -186,14 +196,29 @@ fun MobileViewportScreen(
                 contentKey = videoDimensions to inputSessionToken,
                 modifier = Modifier.fillMaxSize(),
                 touchMode = touchMode,
+                onViewportSizeChanged = { baseMeasured = it },
                 sendTouch = { action, id, x, y, pressure, eventTime ->
                     touching = action == 0 || action == 1
                     if (action == 0 && controlsExpanded) controlsExpanded = false
                     if (gestureOwner != null) {
                         WeaveloClient.sendTouchEvent(gestureOwner, action, id, x, y, pressure, eventTime)
+                        if (touchMode == TouchMode.TRACKPAD) {
+                            cursorPos = WeaveloClient.cursorPosition()
+                        }
                     }
                 },
-                overlay = {},
+                overlay = {
+                    if (inputEnabled && touchMode == TouchMode.TRACKPAD) {
+                        WeaveloPointerOverlay(
+                            normX = cursorPos.first,
+                            normY = cursorPos.second,
+                            pressing = touching,
+                            transform = transform,
+                            baseWidth = baseMeasured.width.coerceAtLeast(1).toFloat(),
+                            baseHeight = baseMeasured.height.coerceAtLeast(1).toFloat()
+                        )
+                    }
+                },
                 factory = { context ->
                     SurfaceView(context).apply {
                         holder.addCallback(object : android.view.SurfaceHolder.Callback {

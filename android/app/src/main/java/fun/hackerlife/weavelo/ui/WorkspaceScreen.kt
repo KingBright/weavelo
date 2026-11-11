@@ -5,7 +5,6 @@ import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,10 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -529,10 +525,18 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 state.panes.any { it.id == pane.id && it.accepted } && (state.grid || state.selected == pane.id)
             var fps by remember(pane.id) { mutableStateOf(pane.fps.toString()) }
             var kbps by remember(pane.id) { mutableStateOf(pane.kbps.toString()) }
+            val naturalScroll by WeaveloClient.naturalScrollFlow.collectAsState()
             AlertDialog(onDismissRequest = { selectedSettings = null }, title = { Text(tr("Stream settings")) },
                 text = { Column(Modifier.verticalScroll(rememberScrollState())) {
                     OutlinedTextField(fps, { fps = it }, label = { Text(tr("Frames per second")) })
                     OutlinedTextField(kbps, { kbps = it }, label = { Text(tr("Bitrate (kbps)")) })
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = naturalScroll, onCheckedChange = { WeaveloClient.updateNaturalScroll(it) })
+                        Column {
+                            Text(tr("Natural scrolling (Apple style)"))
+                            Text(tr("Content moves in the same direction as your fingers"), color = ColorTextSecondary, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                     pane.audioOwner?.let { owner ->
                         Text(tr("Volume"))
                         Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it })
@@ -879,24 +883,14 @@ private fun WorkspaceVideo(
             },
             overlay = {
                 if (pane.input && pane.accepted && touchMode == TouchMode.TRACKPAD) {
-                    Canvas(Modifier.fillMaxSize()) {
-                        val bw = baseMeasured.width.coerceAtLeast(1).toFloat()
-                        val bh = baseMeasured.height.coerceAtLeast(1).toFloat()
-                        val (x, y) = transform.value.normalizedToScreen(
-                            cursor.x, cursor.y, bw, bh, size.width, size.height
-                        )
-                        val unit = 1.dp.toPx()
-                        val arrow = Path().apply {
-                            moveTo(0f, 0f); lineTo(0f, 20f * unit)
-                            lineTo(5f * unit, 15f * unit); lineTo(9f * unit, 23f * unit)
-                            lineTo(12f * unit, 21f * unit); lineTo(8f * unit, 13f * unit)
-                            lineTo(15f * unit, 13f * unit); close()
-                        }
-                        translate(x, y) {
-                            drawPath(arrow, Color.Black, style = Stroke(3f * unit))
-                            drawPath(arrow, Color.White)
-                        }
-                    }
+                    WeaveloPointerOverlay(
+                        normX = cursor.x,
+                        normY = cursor.y,
+                        pressing = touching,
+                        transform = transform.value,
+                        baseWidth = baseMeasured.width.coerceAtLeast(1).toFloat(),
+                        baseHeight = baseMeasured.height.coerceAtLeast(1).toFloat()
+                    )
                 }
                 (videoStatus ?: pane.inputError)?.let { message ->
                     Text(if (videoStatus != null) tr(message) else pane.inputErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,

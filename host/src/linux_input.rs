@@ -380,8 +380,10 @@ impl LinuxUinputInjector {
                     REL_HWHEEL,
                     &mut next_remainders.horizontal_pixels,
                 );
-                self.write_events(&batch, deadline)?;
-                *remainders = next_remainders;
+                if !batch.is_empty() {
+                    self.write_events(&batch, deadline)?;
+                    *remainders = next_remainders;
+                }
             }
             InputEvent::KeyDown(code) | InputEvent::KeyUp(code) => {
                 let down = matches!(event, InputEvent::KeyDown(_));

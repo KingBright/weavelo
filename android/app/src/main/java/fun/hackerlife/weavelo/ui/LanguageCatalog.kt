@@ -514,6 +514,8 @@ internal object LanguageCatalog {
         "• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)\n• Two-Finger Tap: Mouse Right Click" to "• 单击：鼠标左键\n• 触摸并拖动：鼠标拖选 / 拖动窗口\n• 长按（380 毫秒）：鼠标右键\n• 双指平行滑动：应用内自然滚动（原大与放大后均可用）\n• 双指轻点：鼠标右键",
         "• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Double-Tap & Hold Glide: Mouse Drag\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)" to "• 单指滑动：相对移动光标\n• 单击：鼠标左键\n• 双击不松手滑动：按住左键拖拽\n• 双指轻点：鼠标右键\n• 双指平行滑动：应用内自然滚动（原大与放大后均可用）",
         "• Two-Finger Pinch: Zoom & Pan Viewport\n• Three-Finger Drag / Pan Canvas Button: Move Zoomed Canvas" to "• 双指捏合张开：无级缩放并顺带平移视口\n• 三指拖动 / 移动画布按钮：平移放大后的画布",
+        "Natural scrolling (Apple style)" to "自然滚动（苹果风格）",
+        "Content moves in the same direction as your fingers" to "内容随手指滑动方向移动（上推向上滚、下拉向下滚）",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

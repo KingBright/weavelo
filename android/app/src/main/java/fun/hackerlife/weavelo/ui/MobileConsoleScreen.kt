@@ -941,6 +941,7 @@ private fun SettingsTabContent(
         }
 
         item {
+            val naturalScroll by WeaveloClient.naturalScrollFlow.collectAsState()
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -950,6 +951,21 @@ private fun SettingsTabContent(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(tr("Natural scrolling (Apple style)"), color = ColorTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(tr("Content moves in the same direction as your fingers"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 15.sp)
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = naturalScroll,
+                        enabled = nativeAvailable,
+                        onCheckedChange = { WeaveloClient.updateNaturalScroll(it) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(tr("Direct Touch (Screen-First)"), color = ColorAccentCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text(tr("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)\n• Two-Finger Tap: Mouse Right Click"), color = ColorTextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
                 Spacer(modifier = Modifier.height(4.dp))

@@ -1,19 +1,27 @@
 package `fun`.hackerlife.weavelo.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.dp
+import kotlin.math.min
 
 /** Small native vectors, cached once and kept out of the video frame path. */
 enum class MobileSymbol(path: String) {
@@ -174,6 +182,117 @@ internal fun ZoomedCanvasChip(
                     modifier = Modifier.size(14.dp)
                 )
             }
+        }
+    }
+}
+
+/**
+ * Signature Weavelo Aero-Prism remote cursor:
+ * Compact, nimble split-tail dual-facet pointer with pearlescent contrast halo,
+ * obsidian-slate left wing, luminous Weavelo cyan-cobalt right bevel, and tactile press pulse.
+ */
+@Composable
+internal fun WeaveloPointerOverlay(
+    normX: Float,
+    normY: Float,
+    pressing: Boolean,
+    transform: ViewportTransform,
+    baseWidth: Float,
+    baseHeight: Float,
+    modifier: Modifier = Modifier
+) {
+    val outerPath = remember { Path() }
+    val leftFacetPath = remember { Path() }
+    val rightFacetPath = remember { Path() }
+    Canvas(modifier.fillMaxSize()) {
+        val bw = baseWidth.coerceAtLeast(1f)
+        val bh = baseHeight.coerceAtLeast(1f)
+        val (tipX, tipY) = transform.normalizedToScreen(normX, normY, bw, bh, size.width, size.height)
+        val minViewportDim = min(size.width, size.height)
+        val len = min(14.5.dp.toPx(), minViewportDim * 0.052f).coerceIn(11.dp.toPx(), 14.5.dp.toPx())
+
+        val leftWingX = 0.04f * len
+        val leftWingY = 0.98f * len
+        val notchX = 0.33f * len
+        val notchY = 0.72f * len
+        val rightWingX = 0.74f * len
+        val rightWingY = 0.65f * len
+
+        outerPath.reset()
+        outerPath.moveTo(0f, 0f)
+        outerPath.lineTo(leftWingX, leftWingY)
+        outerPath.lineTo(notchX, notchY)
+        outerPath.lineTo(rightWingX, rightWingY)
+        outerPath.close()
+
+        leftFacetPath.reset()
+        leftFacetPath.moveTo(0f, 0f)
+        leftFacetPath.lineTo(leftWingX, leftWingY)
+        leftFacetPath.lineTo(notchX, notchY)
+        leftFacetPath.close()
+
+        rightFacetPath.reset()
+        rightFacetPath.moveTo(0f, 0f)
+        rightFacetPath.lineTo(notchX, notchY)
+        rightFacetPath.lineTo(rightWingX, rightWingY)
+        rightFacetPath.close()
+
+        if (pressing) {
+            drawCircle(
+                color = Color(0x4238BDF8),
+                radius = 5.2.dp.toPx(),
+                center = Offset(tipX, tipY)
+            )
+            drawCircle(
+                color = Color(0xB838BDF8),
+                radius = 3.6.dp.toPx(),
+                center = Offset(tipX, tipY),
+                style = Stroke(width = 1.dp.toPx())
+            )
+        }
+
+        translate(tipX + 0.85.dp.toPx(), tipY + 1.35.dp.toPx()) {
+            drawPath(outerPath, Color(0x52020617))
+        }
+
+        translate(tipX, tipY) {
+            drawPath(
+                path = outerPath,
+                color = Color(0xFFF8FAFC),
+                style = Stroke(
+                    width = 1.6.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+            drawPath(
+                path = leftFacetPath,
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B)),
+                    start = Offset.Zero,
+                    end = Offset(notchX, leftWingY)
+                )
+            )
+            drawPath(
+                path = rightFacetPath,
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFF38BDF8), Color(0xFF2563EB)),
+                    start = Offset.Zero,
+                    end = Offset(rightWingX, notchY)
+                )
+            )
+            drawLine(
+                color = Color(0xB8E0F2FE),
+                start = Offset(0.02f * len, 0.04f * len),
+                end = Offset(notchX * 0.96f, notchY * 0.96f),
+                strokeWidth = 0.75.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+            drawCircle(
+                color = Color.White,
+                radius = 0.85.dp.toPx(),
+                center = Offset(0.03f * len, 0.05f * len)
+            )
         }
     }
 }

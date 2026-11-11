@@ -294,6 +294,7 @@ pub struct RemoteBridgeClient {
     devices_tx: watch::Sender<Vec<BridgeDiscoveredDevice>>,
     pub devices_rx: watch::Receiver<Vec<BridgeDiscoveredDevice>>,
     touch_tracker: Arc<Mutex<TouchStateTracker>>,
+    cursor_pos: Mutex<(f32, f32)>,
     host_stats: Arc<SharedHostStats>,
     nalu_queue: Arc<Mutex<remote_core::video_queue::EncodedQueue<EncodedVideoNalu>>>,
     audio_queue: Arc<Mutex<VecDeque<EncodedAudioPacket>>>,
@@ -348,6 +349,7 @@ impl RemoteBridgeClient {
             devices_tx,
             devices_rx,
             touch_tracker: Arc::new(Mutex::new(TouchStateTracker::default())),
+            cursor_pos: Mutex::new((0.5, 0.5)),
             host_stats: Arc::new(SharedHostStats::default()),
             nalu_queue: Arc::new(Mutex::new(remote_core::video_queue::EncodedQueue::new(8))),
             audio_queue: Arc::new(Mutex::new(VecDeque::with_capacity(16))),
@@ -403,6 +405,16 @@ impl RemoteBridgeClient {
         if let Ok(mut tracker) = self.touch_tracker.lock() {
             tracker.set_bounds(width, height);
         }
+    }
+
+    pub fn set_natural_scroll(&self, natural: bool) {
+        if let Ok(mut tracker) = self.touch_tracker.lock() {
+            tracker.set_natural_scroll(natural);
+        }
+    }
+
+    pub fn cursor_position(&self) -> (f32, f32) {
+        self.cursor_pos.lock().map(|p| *p).unwrap_or((0.5, 0.5))
     }
 
     /// A viewport captures this local session token once. It cannot refresh a
@@ -500,8 +512,31 @@ impl RemoteBridgeClient {
             *intent = Some((binding, now, token));
             self.manual_input_owner.store(token, Relaxed);
         }
-        let events = self.touch_tracker.lock().unwrap().process_touch(action, pointer_id, norm_x, norm_y, pressure, now);
-        for event in events { live.connection.try_bound_input(binding, Some(event)); }
+        let (events, bounds) = {
+            let mut tracker = self.touch_tracker.lock().unwrap();
+            let bounds = tracker.bounds.clone();
+            (tracker.process_touch(action, pointer_id, norm_x, norm_y, pressure, now), bounds)
+        };
+        for event in events {
+            match &event {
+                protocol::InputEvent::MouseMove { dx, dy } => {
+                    if let Ok(mut pos) = self.cursor_pos.lock() {
+                        let w = f32::from(bounds.width.max(1));
+                        let h = f32::from(bounds.height.max(1));
+                        pos.0 = (pos.0 + (*dx as f32) / w).clamp(0.0, 1.0);
+                        pos.1 = (pos.1 + (*dy as f32) / h).clamp(0.0, 1.0);
+                    }
+                }
+                protocol::InputEvent::MouseMoveAbsolute { x, y } => {
+                    if let Ok(mut pos) = self.cursor_pos.lock() {
+                        pos.0 = f32::from(*x) / f32::from(u16::MAX);
+                        pos.1 = f32::from(*y) / f32::from(u16::MAX);
+                    }
+                }
+                _ => {}
+            }
+            live.connection.try_bound_input(binding, Some(event));
+        }
     }
 
     pub fn text_input_owner(&self) -> Option<String> {
@@ -745,7 +780,8 @@ impl RemoteBridgeClient {
     fn stop_live(&self) {
         *self.manual_token_binding.lock().unwrap() = None;
         *self.manual_input_intent.lock().unwrap() = None;
-            self.manual_input_owner.store(0, Relaxed);
+        *self.cursor_pos.lock().unwrap() = (0.5, 0.5);
+        self.manual_input_owner.store(0, Relaxed);
         self.host_stats.media_pause.end_session();
         if let Some(live) = self.live.lock().unwrap().take() {
             self.runtime().block_on(live.stop());

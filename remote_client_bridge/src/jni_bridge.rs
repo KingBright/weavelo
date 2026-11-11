@@ -737,6 +737,26 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSetScreen
 
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSetNaturalScroll(
+    _env: JNIEnv,
+    _class: JClass,
+    natural: jboolean,
+) {
+    client().set_natural_scroll(natural != 0);
+}
+
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeGetCursorPacked(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jlong {
+    let (x, y) = client().cursor_position();
+    (((x.to_bits() as u64) << 32) | (y.to_bits() as u64)) as jni::sys::jlong
+}
+
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeGetTelemetryJson(
     env: JNIEnv,
     _class: JClass,

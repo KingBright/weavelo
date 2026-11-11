@@ -105,6 +105,10 @@ object WeaveloClient {
         private set
     var streamBitrateKbps = 20_000
         private set
+    @Volatile var naturalScroll = true
+        private set
+    private val _naturalScroll = MutableStateFlow(true)
+    val naturalScrollFlow: StateFlow<Boolean> = _naturalScroll.asStateFlow()
     private val _mediaPaused = MutableStateFlow(false)
     val mediaPaused: StateFlow<Boolean> = _mediaPaused.asStateFlow()
     private val _mediaPausePending = MutableStateFlow(false)
@@ -152,6 +156,9 @@ object WeaveloClient {
             streamFps = prefs.getInt("fps", 60)
             streamBitrateKbps = prefs.getInt("bitrate_kbps", 20_000)
             backgroundKeepAliveSeconds = prefs.getInt("background_keepalive_seconds", 300).coerceIn(0, 86400)
+            naturalScroll = prefs.getBoolean("natural_scroll", true)
+            _naturalScroll.value = naturalScroll
+            nativeSetNaturalScroll(naturalScroll)
             nativeUpdateStreamRates(streamFps, streamBitrateKbps)
             refreshNetworkIdentity()
             nativeInitialized = true
@@ -333,6 +340,24 @@ object WeaveloClient {
         }
     }
 
+    fun updateNaturalScroll(enabled: Boolean) {
+        naturalScroll = enabled
+        _naturalScroll.value = enabled
+        appContext?.getSharedPreferences("stream", Context.MODE_PRIVATE)?.edit()
+            ?.putBoolean("natural_scroll", enabled)?.apply()
+        if (isNativeLoaded) {
+            nativeSetNaturalScroll(enabled)
+        }
+    }
+
+    fun cursorPosition(): Pair<Float, Float> {
+        if (!isNativeLoaded) return 0.5f to 0.5f
+        val packed = nativeGetCursorPacked()
+        val x = Float.fromBits((packed ushr 32).toInt()).coerceIn(0f, 1f)
+        val y = Float.fromBits((packed and 0xFFFFFFFFL).toInt()).coerceIn(0f, 1f)
+        return x to y
+    }
+
     fun pollVideoFrame(): EncodedVideoFrame? {
         if (!isNativeLoaded) return null
         val packed = nativePollVideoFrame() ?: return null
@@ -486,6 +511,8 @@ object WeaveloClient {
     private external fun nativeSendVirtualKey(keyName: String, pressed: Boolean)
     private external fun nativeSetTouchMode(modeCode: Int)
     private external fun nativeSetScreenBounds(width: Int, height: Int)
+    private external fun nativeSetNaturalScroll(natural: Boolean)
+    private external fun nativeGetCursorPacked(): Long
     private external fun nativeGetTelemetryJson(): String?
     private external fun nativePollVideoFrame(): ByteArray?
     private external fun nativeRequestKeyframe()

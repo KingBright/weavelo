@@ -97,6 +97,7 @@ impl WorkspaceTouch {
         self.support(supported).or(release)
     }
     pub fn native_touch_points(&self) -> u8 { self.native_touch_points }
+    pub fn set_natural_scroll(&mut self, natural: bool) { self.tracker.set_natural_scroll(natural); }
     pub fn current_surface(&self, token: u64) -> bool { token != 0 && token == self.surface && self.attached }
     /// Only a new gesture may change its mode/geometry. Late continuations
     /// cannot cancel or reinterpret the replacement gesture.
@@ -136,11 +137,18 @@ impl WorkspaceTouch {
                     self.cursor = (f64::from(x)/f64::from(u16::MAX),f64::from(y)/f64::from(u16::MAX));
                     output.push(InputEvent::MouseMoveAbsolute {x,y});
                 }
-                event @ (InputEvent::MouseDown(_) | InputEvent::MouseScroll {..}) if trackpad => {
+                event @ InputEvent::MouseDown(_) if trackpad => {
                     if let Some(g)=self.geometry {self.cursor=g.clamp_source_point(self.cursor);}
                     // Window input requires source-normalized coordinates. A tap
                     // uses the cursor, never the finger's position on the glass.
                     output.push(position(self.cursor)); output.push(event);
+                }
+                event @ InputEvent::MouseScroll { delta_x, delta_y, gesture } if trackpad => {
+                    if gesture.can_take_control(delta_x, delta_y) {
+                        if let Some(g)=self.geometry {self.cursor=g.clamp_source_point(self.cursor);}
+                        output.push(position(self.cursor));
+                    }
+                    output.push(event);
                 }
                 event => output.push(event),
             }

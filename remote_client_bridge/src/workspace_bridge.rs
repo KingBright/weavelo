@@ -518,6 +518,7 @@ impl MobileWorkspace {
         } else {Err("missing remote keyboard event".into())}
     }
     pub fn touch(&self, json: &str) -> Result<serde_json::Value, String> {
+        fn default_natural_scroll() -> bool { true }
         #[derive(serde::Deserialize)]
         struct Touch {
             id: u32,
@@ -527,6 +528,7 @@ impl MobileWorkspace {
             height: u16,
             event: protocol::InputEvent,
             #[serde(default)] geometry:Option<protocol::viewport::FrameGeometry>,
+            #[serde(default = "default_natural_scroll")] natural_scroll: bool,
         }
         let event: Touch = serde_json::from_str(json).map_err(|e| e.to_string())?;
         if !matches!(event.event, protocol::InputEvent::Touch { .. } | protocol::InputEvent::TouchFrame(_)) {
@@ -560,6 +562,7 @@ impl MobileWorkspace {
             3 if touch.native_touch_points()>0 && matches!(&event.event,protocol::InputEvent::TouchFrame(_)) => crate::touch_mapper::TouchMode::NativeTouch,
             _=>return Err("unsupported touch mode".into()),
         };
+        touch.set_natural_scroll(event.natural_scroll);
         let Some(releases)=touch.select_mode(event.token,mode,
             crate::touch_mapper::RemoteScreenBounds {width:event.width,height:event.height},starting)
         else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(serde_json::Value::Null)}; };
