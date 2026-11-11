@@ -324,7 +324,7 @@ pub fn list() -> Result<Vec<CaptureSourceInfo>, String> {
     observe_lifetimes()?;
     let mut native = monitors()?;
     let displays = native.clone();
-    let mut windows = Vec::new();
+    let mut windows: Vec<(u64, u32, u64, String, String, Rect)> = Vec::new();
     unsafe {
         EnumWindows(Some(enum_window), &mut windows as *mut _ as isize);
     }
