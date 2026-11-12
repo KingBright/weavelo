@@ -1380,11 +1380,20 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<UnifiedDashboard>) -> Di
                 .border_color(theme_border_fine(cx))
                 .shadow_sm()
                 .child(
-                    crate::product_components::tonal_icon_well(52.0, true, cx).child(
-                        icon(IconName::User)
-                            .size(px(24.0))
-                            .color(theme_accent_brand(cx)),
-                    ),
+                    div()
+                        .size(px(56.0))
+                        .rounded_full()
+                        .bg(crate::design_system::theme_brand_soft(cx))
+                        .border_1()
+                        .border_color(theme.border.focus)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            icon(IconName::User)
+                                .size(px(24.0))
+                                .color(theme_accent_brand(cx)),
+                        ),
                 )
                 .child(
                     div()
@@ -3696,7 +3705,32 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, cx: &mut Context<UnifiedDash
 }
 
 fn product_mark(cx: &mut Context<UnifiedDashboard>) -> Div {
-    crate::product_components::weavelo_brand_mark(22.0, cx)
+    let theme = cx.theme().clone();
+    let fg = theme.action.primary.fg;
+    div()
+        .size(px(22.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .bg(theme.action.primary.bg)
+        .text_color(fg)
+        .child(
+            div()
+                .size(px(10.0))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .child(div().h(px(3.0)).w_full().rounded(px(1.0)).bg(fg))
+                .child(
+                    div()
+                        .h(px(3.0))
+                        .w(px(6.0))
+                        .rounded(px(1.0))
+                        .bg(fg),
+                ),
+        )
 }
 
 fn qr_matrix_view(matrix: &remote_core::QrMatrix) -> Div {

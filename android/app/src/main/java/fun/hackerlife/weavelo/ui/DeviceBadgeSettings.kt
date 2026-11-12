@@ -2,17 +2,12 @@ package `fun`.hackerlife.weavelo.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -72,16 +67,7 @@ fun DeviceBadgeSettings() {
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(p.brandSoft)
-                    .border(BorderStroke(1.dp, p.brandBorder), RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(preview, tr("Device badge"), Modifier.size(30.dp))
-            }
+            Image(preview, tr("Device badge"), Modifier.size(40.dp))
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(
                     android.os.Build.MODEL,

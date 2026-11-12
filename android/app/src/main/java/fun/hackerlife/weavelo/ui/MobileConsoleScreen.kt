@@ -496,20 +496,11 @@ fun HostCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(11.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (activeStream) p.surfaceRaised else p.surfaceSunken)
-                        .border(1.dp, if (activeStream) p.brandBorder.copy(alpha = 0.6f) else p.borderMuted, RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        badge,
-                        contentDescription = trFormat("Device type: %s", tr(deviceBadge.displayName)),
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
+                Image(
+                    badge,
+                    contentDescription = trFormat("Device type: %s", tr(deviceBadge.displayName)),
+                    modifier = Modifier.size(38.dp)
+                )
                 Column(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(3.dp)

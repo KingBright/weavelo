@@ -8,7 +8,7 @@ use crate::design_system::{
 use crate::product_components::theme::ActiveTheme;
 use crate::product_components::{
     IconName, component::tooltip, device_badge_element, device_badge_image, icon,
-    segmented_track, tonal_icon_well,
+    segmented_track,
 };
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
@@ -131,10 +131,7 @@ impl RenderOnce for DeviceDrawer {
                         .flex()
                         .items_center()
                         .gap_2p5()
-                        .child(
-                            tonal_icon_well(36.0, active, cx)
-                                .child(device_badge_element(device_badge_image(row.badge, cx))),
-                        )
+                        .child(device_badge_element(device_badge_image(row.badge, cx)))
                         .child(
                             div()
                                 .min_w_0()

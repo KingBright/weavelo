@@ -335,8 +335,9 @@ impl RestoredDashboard {
                     .border_b_1()
                     .border_color(crate::design_system::theme_border_fine(cx))
                     .child(
-                        crate::product_components::tonal_icon_well(28.0, true, cx)
-                            .child(icon(IconName::Sharing).size(px(14.))),
+                        icon(IconName::Sharing)
+                            .size(px(16.))
+                            .color(crate::design_system::theme_accent_brand(cx)),
                     )
                     .child(
                         div()

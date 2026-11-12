@@ -2384,14 +2384,12 @@ fn stream_video_canvas_surface(
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(12.0))
-                            .bg(if theme.surface.canvas.l < 0.5 { Hsla::from(rgba(0x38bdf824)) } else { Hsla::from(rgb(0xeaf2ff)) })
-                            .border_1()
-                            .border_color(theme.border.focus)
+                            .rounded_full()
+                            .bg(theme.surface.sunken)
                             .child(
                                 icon(IconName::Maximize(false))
                                     .size(px(20.0))
-                                    .color(theme.action.primary.bg),
+                                    .color(theme_accent_brand(cx)),
                             ),
                     )
                     .child(
@@ -3205,11 +3203,18 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<RestoredDashboard>) -> D
                 .border_color(theme_border_fine(cx))
                 .shadow_sm()
                 .child(
-                    crate::product_components::tonal_icon_well(52.0, true, cx).child(
-                        icon(IconName::User)
-                            .size(px(24.0))
-                            .color(theme_accent_brand(cx)),
-                    ),
+                    div()
+                        .size(px(56.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(theme.status.info.bg)
+                        .child(
+                            icon(IconName::User)
+                                .size(px(26.0))
+                                .color(theme.status.info.fg),
+                        ),
                 )
                 .child(
                     div()
@@ -3461,7 +3466,7 @@ fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, source_ic
     }
     let window = matches!(source.source, protocol::session::CaptureSource::Window(_));
     let initial = window.then(|| source.application.trim().chars().next()).flatten();
-    let soft_bg: Hsla = if theme.surface.canvas.l < 0.5 { rgba(0x38bdf824).into() } else { rgb(0xeaf2ff).into() };
+    let soft_bg: Hsla = if theme.surface.canvas.l < 0.5 { rgba(0x38cfe024).into() } else { rgb(0xe3f3f5).into() };
     div().size(px(22.0)).flex_none().flex().items_center().justify_center()
         .rounded(px(6.0)).bg(soft_bg)
         .text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme.action.primary.bg)
@@ -4118,10 +4123,7 @@ fn drawer_devices_tab(
     };
     let local=div().flex().items_center().gap_2p5().px_3().py_2().rounded(px(12.))
         .bg(theme.surface.base).border_1().border_color(theme_border_fine(cx))
-        .child(
-            crate::product_components::tonal_icon_well(34.0, false, cx)
-                .child(crate::product_components::device_badge_element(badge.image(cx))),
-        )
+        .child(crate::product_components::device_badge_element(badge.image(cx)))
         .child(div().min_w_0().flex_1().flex().flex_col().gap_0p5()
             .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(theme.content.primary).child(name))
             .child(div().text_size(px(10.5)).text_color(theme.content.secondary).child(crate::i18n::message(&permission_hint)))
@@ -5812,7 +5814,7 @@ fn telemetry_metric_row(
 
 fn network_quality_icon(quality:NetworkQuality,theme:&Theme)->crate::product_components::ProductIcon {
     let dark = theme.surface.canvas.l < 0.5;
-    let cyan: Hsla = if dark { rgb(0x38bdf8).into() } else { rgb(0x0c7792).into() };
+    let cyan: Hsla = if dark { rgb(0x38cfe0).into() } else { rgb(0x087a8a).into() };
     let emerald: Hsla = if dark { rgb(0x34d399).into() } else { rgb(0x057a55).into() };
     let amber: Hsla = if dark { rgb(0xfbbf24).into() } else { rgb(0xb45309).into() };
     let rose: Hsla = if dark { rgb(0xf87171).into() } else { rgb(0xc83a37).into() };
@@ -5829,7 +5831,7 @@ fn network_quality_icon(quality:NetworkQuality,theme:&Theme)->crate::product_com
 
 fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: NetworkQuality, theme: &Theme) -> Div {
     let dark = theme.surface.canvas.l < 0.5;
-    let cyan: Hsla = if dark { rgb(0x38bdf8).into() } else { rgb(0x0c7792).into() };
+    let cyan: Hsla = if dark { rgb(0x38cfe0).into() } else { rgb(0x087a8a).into() };
     let emerald: Hsla = if dark { rgb(0x34d399).into() } else { rgb(0x057a55).into() };
     let amber: Hsla = if dark { rgb(0xfbbf24).into() } else { rgb(0xb45309).into() };
     if let Some(stats) = host_stats {
@@ -6288,7 +6290,32 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
 }
 
 fn product_mark(cx: &mut Context<RestoredDashboard>) -> Div {
-    crate::product_components::weavelo_brand_mark(22.0, cx)
+    let theme = cx.theme().clone();
+    let fg = theme.action.primary.fg;
+    div()
+        .size(px(22.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(5.0))
+        .bg(theme.action.primary.bg)
+        .text_color(fg)
+        .child(
+            div()
+                .size(px(10.0))
+                .flex()
+                .flex_col()
+                .justify_between()
+                .child(div().h(px(3.0)).w_full().rounded(px(1.0)).bg(fg))
+                .child(
+                    div()
+                        .h(px(3.0))
+                        .w(px(6.0))
+                        .rounded(px(1.0))
+                        .bg(fg),
+                ),
+        )
 }
 
 fn qr_matrix_view(matrix: &remote_core::QrMatrix) -> Div {

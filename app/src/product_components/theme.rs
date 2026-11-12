@@ -105,8 +105,8 @@ impl Theme {
             secondary: rgb(0x9AA8BC).into(),
             tertiary: rgb(0x6E7E94).into(),
             disabled: rgb(0x495567).into(),
-            on_primary: rgb(0x06131F).into(),
-            on_status: rgb(0x071921).into(),
+            on_primary: rgb(0x04181D).into(),
+            on_status: rgb(0x04181D).into(),
         };
 
         Self {
@@ -121,7 +121,7 @@ impl Theme {
             border: BorderTheme {
                 default: rgb(0x253041).into(),
                 muted: rgb(0x1B2331).into(),
-                focus: rgb(0x38BDF8).into(),
+                focus: rgb(0x38CFE0).into(),
                 divider: rgb(0x1E2736).into(),
             },
             action: ActionTheme {
@@ -134,12 +134,12 @@ impl Theme {
                     disabled_fg: content.disabled,
                 },
                 primary: ActionVariant {
-                    bg: rgb(0x38BDF8).into(),
-                    hover_bg: rgb(0x5CCBFB).into(),
-                    active_bg: rgb(0x1FA6E0).into(),
+                    bg: rgb(0x38CFE0).into(),
+                    hover_bg: rgb(0x5ADCEB).into(),
+                    active_bg: rgb(0x1FB5C7).into(),
                     fg: content.on_primary,
-                    disabled_bg: rgb(0x1E384B).into(),
-                    disabled_fg: rgb(0x6E8DA3).into(),
+                    disabled_bg: rgb(0x193840).into(),
+                    disabled_fg: rgb(0x698E97).into(),
                 },
                 danger: ActionVariant {
                     bg: rgb(0xF87171).into(),
@@ -164,8 +164,8 @@ impl Theme {
                     fg: rgb(0x2D0A0A).into(),
                 },
                 info: StatusVariant {
-                    bg: rgb(0x38BDF8).into(),
-                    fg: rgb(0x061926).into(),
+                    bg: rgb(0x38CFE0).into(),
+                    fg: rgb(0x04181D).into(),
                 },
             },
             shadow: ShadowTheme {
@@ -183,7 +183,7 @@ impl Theme {
             tertiary: rgb(0x64748B).into(),
             disabled: rgb(0x94A3B8).into(),
             on_primary: rgb(0xFFFFFF).into(),
-            on_status: rgb(0x091926).into(),
+            on_status: rgb(0x061F24).into(),
         };
 
         Self {
@@ -191,31 +191,31 @@ impl Theme {
                 canvas: rgb(0xF4F7FA).into(),
                 base: rgb(0xFFFFFF).into(),
                 raised: rgb(0xFFFFFF).into(),
-                sunken: rgb(0xEAEFF6).into(),
-                hover: rgb(0xE1E8F2).into(),
+                sunken: rgb(0xE9EFF5).into(),
+                hover: rgb(0xDFE8F0).into(),
             },
             content: content.clone(),
             border: BorderTheme {
-                default: rgb(0xDAE3EE).into(),
-                muted: rgb(0xE6EDF5).into(),
-                focus: rgb(0x1B56D0).into(),
-                divider: rgb(0xE2E9F2).into(),
+                default: rgb(0xD8E2EC).into(),
+                muted: rgb(0xE5EDF4).into(),
+                focus: rgb(0x087A8A).into(),
+                divider: rgb(0xE0E8F0).into(),
             },
             action: ActionTheme {
                 neutral: ActionVariant {
-                    bg: rgb(0xEEF3F8).into(),
-                    hover_bg: rgb(0xE2EAF3).into(),
-                    active_bg: rgb(0xD3DFEC).into(),
+                    bg: rgb(0xEEF3F7).into(),
+                    hover_bg: rgb(0xE1EAF2).into(),
+                    active_bg: rgb(0xD2DFEA).into(),
                     fg: content.primary,
                     disabled_bg: rgb(0xF1F5F9).into(),
                     disabled_fg: content.disabled,
                 },
                 primary: ActionVariant {
-                    bg: rgb(0x1B56D0).into(),
-                    hover_bg: rgb(0x1648B2).into(),
-                    active_bg: rgb(0x123B94).into(),
+                    bg: rgb(0x087A8A).into(),
+                    hover_bg: rgb(0x066775).into(),
+                    active_bg: rgb(0x055561).into(),
                     fg: content.on_primary,
-                    disabled_bg: rgb(0xA3B8E0).into(),
+                    disabled_bg: rgb(0x9AC8CF).into(),
                     disabled_fg: rgb(0xF8FAFC).into(),
                 },
                 danger: ActionVariant {
@@ -241,8 +241,8 @@ impl Theme {
                     fg: rgb(0x8E2420).into(),
                 },
                 info: StatusVariant {
-                    bg: rgb(0xE6F1FF).into(),
-                    fg: rgb(0x1446A8).into(),
+                    bg: rgb(0xE3F3F5).into(),
+                    fg: rgb(0x065F6C).into(),
                 },
             },
             shadow: ShadowTheme {
@@ -326,9 +326,9 @@ pub fn install(appearance: WindowAppearance, themes: ThemeSet, cx: &mut App) {
         p.fg_disabled = t.content.disabled;
         p.border = t.border.default;
         p.border_strong = if is_dark {
-            rgb(0x334155).into()
+            rgb(0x344258).into()
         } else {
-            rgb(0xc3cfde).into()
+            rgb(0xbfd0df).into()
         };
         p.focus = t.border.focus;
         p.accent = t.action.primary.bg;
@@ -336,9 +336,9 @@ pub fn install(appearance: WindowAppearance, themes: ThemeSet, cx: &mut App) {
         p.on_accent = t.action.primary.fg;
         p.link = t.border.focus;
         p.selection = if is_dark {
-            rgba(0x38bdf838).into()
+            rgba(0x38cfe038).into()
         } else {
-            rgba(0x1b56d029).into()
+            rgba(0x087a8a26).into()
         };
         p.danger = t.action.danger.bg;
         p.success = if is_dark {

@@ -674,7 +674,6 @@ impl Render for WorkspaceView {
             .bg(theme.surface.base)
             .border_1()
             .border_color(theme.border.default)
-            .child(crate::product_components::weavelo_brand_mark(26.0, cx))
             .child(layout_switcher)
             .child(
                 Button::new("clipboard", crate::i18n::tr("Clipboard"))

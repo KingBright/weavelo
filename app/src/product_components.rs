@@ -48,7 +48,8 @@ pub fn segmented_track(theme: &theme::Theme) -> Div {
         .border_color(theme.border.muted)
 }
 
-/// Sculpted tonal icon container for device badges, permissions, and composite headers.
+/// Sculpted tonal icon container for permissions and composite headers.
+#[allow(dead_code)]
 pub fn tonal_icon_well(size_px: f32, active: bool, cx: &App) -> Div {
     use theme::ActiveTheme;
     let theme = cx.theme();
@@ -72,23 +73,23 @@ pub fn tonal_icon_well(size_px: f32, active: bool, cx: &App) -> Div {
         })
 }
 
-/// Authentic Weavelo interlaced prism emblem inside a sculpted jewel badge.
+/// Original approved Weavelo brand mark geometry, recolored only via active theme tokens.
+#[allow(dead_code)]
 pub fn weavelo_brand_mark(size_px: f32, cx: &App) -> Div {
     use theme::ActiveTheme;
     let theme = cx.theme();
-    let glyph_px = (size_px * 0.68).round().max(12.0);
     div()
         .size(px(size_px))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px((size_px * 0.3).clamp(6.0, 10.0)))
+        .rounded(px((size_px * 0.24).clamp(5.0, 10.0)))
         .bg(theme.action.primary.bg)
         .child(
             svg()
                 .path("weavelo-brand/mark-mono.svg")
-                .size(px(glyph_px))
+                .size(px(size_px))
                 .text_color(theme.action.primary.fg),
         )
 }
@@ -136,7 +137,7 @@ pub mod assets {
             let bytes: Option<&'static [u8]> = match path {
                 "weavelo-brand/mark-light.svg" => Some(include_bytes!("../../assets/brand/weavelo/mark-light.svg")),
                 "weavelo-brand/mark-dark.svg" => Some(include_bytes!("../../assets/brand/weavelo/mark-dark.svg")),
-                "weavelo-brand/mark-mono.svg" => Some(include_bytes!("../../assets/brand/weavelo/mark-mono.svg")),
+                "weavelo-brand/mark-mono.svg" => Some(include_bytes!("product_components/icons/weavelo-mark-flat.svg")),
                 "weavelo-icons/server.svg" => {
                     Some(include_bytes!("product_components/icons/server.svg"))
                 }

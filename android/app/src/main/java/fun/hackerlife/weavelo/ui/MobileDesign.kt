@@ -20,18 +20,16 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
@@ -50,8 +48,8 @@ import kotlin.math.min
 
 /**
  * Unified Weavelo Brand Token System:
- * - Light: Prism Air (Warm mist alabaster + deep obsidian ink + Weavelo prism cobalt-indigo)
- * - Dark:  Obsidian Craft (Layered micro-crystal graphite + luminous prism sky-cyan)
+ * - Light: Prism Air (Cool mist alabaster + deep obsidian ink + authentic Weavelo prism teal #087A8A)
+ * - Dark:  Obsidian Craft (Layered micro-crystal graphite + luminous prism cyan #38CFE0)
  */
 @Immutable
 data class WeaveloPalette(
@@ -92,21 +90,21 @@ val PrismAirPalette = WeaveloPalette(
     canvas = Color(0xFFF4F7FA),
     surface = Color(0xFFFFFFFF),
     surfaceRaised = Color(0xFFFFFFFF),
-    surfaceSunken = Color(0xFFEAEFF6),
-    surfaceHover = Color(0xFFE1E8F2),
+    surfaceSunken = Color(0xFFE9EFF5),
+    surfaceHover = Color(0xFFDFE8F0),
     surfaceGlass = Color(0xF5FFFFFF),
-    border = Color(0xFFDAE3EE),
-    borderMuted = Color(0xFFE6EDF5),
-    borderStrong = Color(0xFFC3CFDE),
+    border = Color(0xFFD8E2EC),
+    borderMuted = Color(0xFFE5EDF4),
+    borderStrong = Color(0xFFBFD0DF),
     textPrimary = Color(0xFF0F172A),
     textSecondary = Color(0xFF475569),
     textTertiary = Color(0xFF64748B),
-    brand = Color(0xFF1B56D0),
+    brand = Color(0xFF087A8A),
     brandOn = Color(0xFFFFFFFF),
-    brandSoft = Color(0xFFEAF2FF),
-    brandBorder = Color(0xFF93B8FA),
-    prismCyan = Color(0xFF0C7792),
-    prismCyanSoft = Color(0xFFE4F4F8),
+    brandSoft = Color(0xFFE3F3F5),
+    brandBorder = Color(0xFF7CCAD4),
+    prismCyan = Color(0xFF087A8A),
+    prismCyanSoft = Color(0xFFE3F3F5),
     emeraldText = Color(0xFF057A55),
     emeraldDot = Color(0xFF10B981),
     emeraldSoft = Color(0xFFDCFCE7),
@@ -134,12 +132,12 @@ val ObsidianCraftPalette = WeaveloPalette(
     textPrimary = Color(0xFFF1F5F9),
     textSecondary = Color(0xFF9AA8BC),
     textTertiary = Color(0xFF6E7E94),
-    brand = Color(0xFF38BDF8),
-    brandOn = Color(0xFF06131F),
-    brandSoft = Color(0xFF142A3E),
-    brandBorder = Color(0xFF23668E),
-    prismCyan = Color(0xFF38BDF8),
-    prismCyanSoft = Color(0xFF132838),
+    brand = Color(0xFF38CFE0),
+    brandOn = Color(0xFF04181D),
+    brandSoft = Color(0xFF112B33),
+    brandBorder = Color(0xFF1F6878),
+    prismCyan = Color(0xFF38CFE0),
+    prismCyanSoft = Color(0xFF112B33),
     emeraldText = Color(0xFF34D399),
     emeraldDot = Color(0xFF34D399),
     emeraldSoft = Color(0xFF112C24),
@@ -298,55 +296,42 @@ fun WeaveloTheme(
     }
 }
 
-/** Authentic Weavelo interlaced geometric W emblem inside a sculpted jewel badge. */
+// Exact original approved Weavelo mark geometry from assets/brand/weavelo/app-square.svg (only color adapts to theme)
+private val OriginalWeaveloMarkVector: ImageVector by lazy {
+    ImageVector.Builder("WeaveloOriginalMark", 24.dp, 24.dp, 100f, 100f)
+        .addPath(
+            pathData = PathParser().parsePathString(
+                "M84.04012,33.05061 L88.14134,37.15183 L89.13349,38.33297 L89.99793,39.72531 L90.71118,41.24674 L91.24974,42.81514 L91.59010,44.34840 L91.70878,45.76439 L91.59010,47.18038 L91.24974,48.71364 L90.71118,50.28204 L89.99793,51.80347 L89.13349,53.19581 L88.14134,54.37695 L73.37695,69.14134 L72.19581,70.13349 L70.80347,70.99793 L69.28204,71.71118 L67.71364,72.24974 L66.18038,72.59010 L64.76439,72.70878 L63.34840,72.59010 L61.81514,72.24974 L60.24674,71.71118 L58.72531,70.99793 L57.33297,70.13349 L56.15183,69.14134 L29.08378,42.07329 L38.10646,33.05061 L64.76439,59.70854 L78.70854,45.76439 L75.01744,42.07329 L84.04012,33.05061 M11.85866,54.37695 L10.86651,53.19581 L10.00207,51.80347 L9.28882,50.28204 L8.75026,48.71364 L8.40990,47.18038 L8.29122,45.76439 L8.40990,44.34840 L8.75026,42.81514 L9.28882,41.24674 L10.00207,39.72531 L10.86651,38.33297 L11.85866,37.15183 L19.17049,29.84000 L37.21585,29.84000 L21.29146,45.76439 L35.23561,59.70854 L38.92671,56.01744 L47.94939,65.04012 L43.84817,69.14134 L42.66703,70.13349 L41.27469,70.99793 L39.75326,71.71118 L38.18486,72.24974 L36.65160,72.59010 L35.23561,72.70878 L33.81962,72.59010 L32.28636,72.24974 L30.71796,71.71118 L29.19653,70.99793 L27.80419,70.13349 L26.62305,69.14134 L11.85866,54.37695 M83.14951,29.84000 L61.07329,51.91622 L52.05061,42.89354 L65.10415,29.84000"
+            ).toNodes(),
+            pathFillType = PathFillType.EvenOdd,
+            fill = SolidColor(Color.White)
+        )
+        .build()
+}
+
+/** Original Weavelo brand icon design (exact app-square.svg / mark-dark.svg geometry), recolored to active theme. */
 @Composable
-fun WeaveloBrandEmblem(size: Dp = 30.dp, modifier: Modifier = Modifier) {
+fun WeaveloBrandEmblem(size: Dp = 28.dp, modifier: Modifier = Modifier) {
     val p = WeaveloTokens.colors
+    val bg = if (p.isDark) p.brandSoft else p.brand
+    val fg = if (p.isDark) p.brand else p.brandOn
     Box(
         modifier = modifier
             .size(size)
-            .clip(RoundedCornerShape(size * 0.3f))
-            .background(
-                Brush.linearGradient(
-                    colors = if (p.isDark) {
-                        listOf(Color(0xFF38BDF8), Color(0xFF1D6CE0))
-                    } else {
-                        listOf(Color(0xFF2563EB), Color(0xFF1643A8))
-                    }
-                )
-            )
-            .border(0.75.dp, Color.White.copy(alpha = if (p.isDark) 0.22f else 0.18f), RoundedCornerShape(size * 0.3f)),
+            .clip(RoundedCornerShape(size * 0.24f))
+            .background(bg)
+            .then(
+                if (p.isDark) Modifier.border(1.dp, p.brandBorder, RoundedCornerShape(size * 0.24f))
+                else Modifier
+            ),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(Modifier.size(size * 0.68f)) {
-            val w = this.size.width
-            val h = this.size.height
-            val strokeW = w * 0.135f
-            val glyphColor = if (p.isDark) Color(0xFF05131F) else Color.White
-            clipRect(left = 0f, top = h * 0.22f, right = w, bottom = h * 0.92f) {
-                val rectW = w * 0.66f
-                val rectH = h * 0.30f
-                val rx = w * 0.06f
-                rotate(45f, pivot = Offset(w * 0.38f, h * 0.50f)) {
-                    drawRoundRect(
-                        color = glyphColor,
-                        topLeft = Offset(w * 0.38f - rectW / 2f, h * 0.50f - rectH / 2f),
-                        size = Size(rectW, rectH),
-                        cornerRadius = CornerRadius(rx, rx),
-                        style = Stroke(width = strokeW, join = StrokeJoin.Round)
-                    )
-                }
-                rotate(-45f, pivot = Offset(w * 0.62f, h * 0.50f)) {
-                    drawRoundRect(
-                        color = glyphColor,
-                        topLeft = Offset(w * 0.62f - rectW / 2f, h * 0.50f - rectH / 2f),
-                        size = Size(rectW, rectH),
-                        cornerRadius = CornerRadius(rx, rx),
-                        style = Stroke(width = strokeW, join = StrokeJoin.Round)
-                    )
-                }
-            }
-        }
+        Icon(
+            imageVector = OriginalWeaveloMarkVector,
+            contentDescription = "Weavelo",
+            tint = fg,
+            modifier = Modifier.size(size)
+        )
     }
 }
 
@@ -1039,12 +1024,12 @@ internal fun WeaveloPointerOverlay(
 
         if (pressing) {
             drawCircle(
-                color = Color(0x4238BDF8),
+                color = Color(0x4238CFE0),
                 radius = 5.2.dp.toPx(),
                 center = Offset(tipX, tipY)
             )
             drawCircle(
-                color = Color(0xB838BDF8),
+                color = Color(0xB838CFE0),
                 radius = 3.6.dp.toPx(),
                 center = Offset(tipX, tipY),
                 style = Stroke(width = 1.dp.toPx())
@@ -1068,7 +1053,7 @@ internal fun WeaveloPointerOverlay(
             drawPath(
                 path = leftFacetPath,
                 brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B)),
+                    colors = listOf(Color(0xFF0F172A), Color(0xFF18343B)),
                     start = Offset.Zero,
                     end = Offset(notchX, leftWingY)
                 )
@@ -1076,13 +1061,13 @@ internal fun WeaveloPointerOverlay(
             drawPath(
                 path = rightFacetPath,
                 brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFF38BDF8), Color(0xFF1B56D0)),
+                    colors = listOf(Color(0xFF38CFE0), Color(0xFF087A8A)),
                     start = Offset.Zero,
                     end = Offset(rightWingX, notchY)
                 )
             )
             drawLine(
-                color = Color(0xB8E0F2FE),
+                color = Color(0xB8D9F7FA),
                 start = Offset(0.02f * len, 0.04f * len),
                 end = Offset(notchX * 0.96f, notchY * 0.96f),
                 strokeWidth = 0.75.dp.toPx(),

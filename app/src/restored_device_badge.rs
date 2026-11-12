@@ -296,10 +296,7 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
                 .items_center()
                 .gap_2p5()
                 .when_some(preview, |row, image| {
-                    row.child(
-                        crate::product_components::tonal_icon_well(36.0, true, cx)
-                            .child(gpui::img(image).size(px(24.0)).flex_none()),
-                    )
+                    row.child(gpui::img(image).size(px(28.0)).flex_none())
                 })
                 .child(
                     div()

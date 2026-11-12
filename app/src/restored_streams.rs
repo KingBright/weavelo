@@ -38,7 +38,7 @@ impl RestoredDashboard {
         div().size_full().flex().items_center().justify_center().p_4().bg(theme.surface.canvas)
             .child(div().w(px(420.)).max_w(relative(0.95)).flex().flex_col().gap_3().p_5()
                 .rounded(px(16.)).bg(crate::design_system::theme_glass_card(cx)).border_1().border_color(crate::design_system::theme_border_fine(cx)).shadow_lg()
-                .child(crate::product_components::tonal_icon_well(40.0, true, cx).child(icon(IconName::Receiving).size(px(20.)).color(crate::design_system::theme_accent_brand(cx))))
+                .child(icon(IconName::Receiving).size(px(24.)).color(crate::design_system::theme_accent_brand(cx)))
                 .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(div().text_size(px(12.)).text_color(theme.content.primary).child(self.native_window_title.clone()))
                 .child(div().text_size(px(11.5)).text_color(theme.content.secondary).child(detail))

@@ -1,15 +1,16 @@
 //! Shared desktop stage & status capsule surfaces, adaptive across Prism Air & Obsidian Craft.
 //! The production GPUI view and platform probe use these same functions.
-use crate::design_system::{theme_border_fine, theme_glass_card};
+use crate::design_system::{theme_accent_brand, theme_border_fine, theme_glass_card};
 use crate::product_components::{
+    IconName, icon,
     theme::{ActiveTheme, Theme},
-    weavelo_brand_mark,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub(crate) fn full_idle_canvas_stage<T: 'static>(cx: &mut Context<T>) -> Div {
     let theme = cx.theme().clone();
+    let accent = theme_accent_brand(cx);
     div()
         .w_full()
         .h_full()
@@ -22,15 +23,29 @@ pub(crate) fn full_idle_canvas_stage<T: 'static>(cx: &mut Context<T>) -> Div {
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap_3p5()
-                .px_10()
-                .py_8()
+                .gap_4()
+                .p_8()
                 .rounded(px(16.0))
                 .bg(theme_glass_card(cx))
                 .border_1()
                 .border_color(theme_border_fine(cx))
                 .shadow_lg()
-                .child(weavelo_brand_mark(52.0, cx))
+                .child(
+                    div()
+                        .size(px(60.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(theme.surface.sunken)
+                        .border_1()
+                        .border_color(accent)
+                        .child(
+                            icon(IconName::Server)
+                                .size(px(26.0))
+                                .color(accent),
+                        ),
+                )
                 .child(
                     div()
                         .text_size(px(18.0))
