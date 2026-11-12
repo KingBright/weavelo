@@ -147,6 +147,40 @@ fn foreground_root() -> usize {
     unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) as usize }
 }
 
+fn belongs_to_selected_window(
+    candidate: windows_sys::Win32::Foundation::HWND,
+    target: windows_sys::Win32::Foundation::HWND,
+    target_pid: u32,
+) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    if candidate.is_null() || target.is_null() {
+        return false;
+    }
+    unsafe {
+        let mut pid = 0_u32;
+        GetWindowThreadProcessId(candidate, &mut pid);
+        if pid != target_pid {
+            return false;
+        }
+        let root = GetAncestor(candidate, GA_ROOT);
+        if root == target {
+            return true;
+        }
+        let root_owner = GetAncestor(candidate, GA_ROOTOWNER);
+        let target_owner = GetAncestor(target, GA_ROOTOWNER);
+        if !root_owner.is_null() && root_owner == target_owner {
+            return true;
+        }
+        if !root.is_null() {
+            let style = GetWindowLongW(root, GWL_STYLE) as u32;
+            if style & WS_POPUP != 0 {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 fn repeat_delay() -> Duration {
     let mut setting = 0_u32;
     let read = unsafe { SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, (&mut setting as *mut u32).cast(), 0) };
@@ -193,7 +227,7 @@ impl WindowsInputInjector {
             width:unsafe{GetSystemMetrics(SM_CXVIRTUALSCREEN)}.try_into()?,height:unsafe{GetSystemMetrics(SM_CYVIRTUALSCREEN)}.try_into()?};
         if source.window {
             let hwnd=source.handle as usize as HWND;
-            if unsafe{GetAncestor(GetForegroundWindow(),GA_ROOT)}!=hwnd {
+            if !belongs_to_selected_window(unsafe { GetForegroundWindow() }, hwnd, source.pid) {
                 let pointer = pointer_activation_intent(&event);
                 let current_modifiers = self.modifiers.load(Ordering::Relaxed);
                 let fresh = fresh_window_intent(
@@ -202,28 +236,11 @@ impl WindowsInputInjector {
                 );
                 if pointer || fresh {
                     check_deadline(deadline)?;
-                    // Windows may reject foreground activation. Raise only the
-                    // selected HWND, without moving, resizing, or changing its
-                    // topmost policy. Pointer events still rely on the strict
-                    // hit test below; fresh keyboard/text/scroll events also
-                    // require that the HWND actually became foreground.
-                    unsafe { SetForegroundWindow(hwnd) };
-                    check_deadline(deadline)?;
-                    unsafe {
-                        SetWindowPos(
-                            hwnd,
-                            HWND_TOP,
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                        )
-                    };
+                    native_sources::activate_hwnd(hwnd);
                     check_deadline(deadline)?;
                     if fresh
                         && !pointer
-                        && unsafe { GetAncestor(GetForegroundWindow(), GA_ROOT) } != hwnd
+                        && !belongs_to_selected_window(unsafe { GetForegroundWindow() }, hwnd, source.pid)
                     {
                         return Err("The selected window is not focused".into());
                     }
@@ -239,10 +256,12 @@ impl WindowsInputInjector {
                 let (vx,vy)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,*x,*y)?;
                 let point=POINT{x:desktop.x+(f64::from(vx)/65535.0*f64::from(desktop.width-1)).round() as i32,
                     y:desktop.y+(f64::from(vy)/65535.0*f64::from(desktop.height-1)).round() as i32};
-                if unsafe{GetAncestor(WindowFromPoint(point),GA_ROOT)}!=hwnd {return Err("The selected window is covered at this pointer position".into());}
+                if !belongs_to_selected_window(unsafe { WindowFromPoint(point) }, hwnd, source.pid) {
+                    return Err("The selected window is covered at this pointer position".into());
+                }
             } else if matches!(&event,InputEvent::MouseDown(_)|InputEvent::MouseUp(_)|InputEvent::MouseScroll{..}) {
                 let mut point=POINT{x:0,y:0};
-                if unsafe{GetCursorPos(&mut point)}==0 || unsafe{GetAncestor(WindowFromPoint(point),GA_ROOT)}!=hwnd {
+                if unsafe{GetCursorPos(&mut point)}==0 || !belongs_to_selected_window(unsafe { WindowFromPoint(point) }, hwnd, source.pid) {
                     if matches!(&event, InputEvent::MouseScroll {delta_x,delta_y,gesture}
                         if !gesture.can_take_control(*delta_x,*delta_y)) { return Ok(None); }
                     return Err("Pointer is no longer inside the selected window".into());
@@ -395,7 +414,7 @@ impl WindowsInputInjector {
         match event {
             InputEvent::Text(text) => {
                 if self.modifiers.load(Ordering::Relaxed) & 0x0f != 0 {
-                    return Err("release remote modifiers before committing text".into());
+                    self.set_modifiers(0, deadline)?;
                 }
                 self.keyboard.lock().unwrap().repeat = None;
                 // SendInput inserts this UTF-16 array in order; the zero VK

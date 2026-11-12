@@ -6,7 +6,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_media_sys::CMTime;
-use remote_core::VideoEncoder;
+use remote_core::{VideoEncoder, VideoFrame};
 use std::error::Error;
 use std::ffi::c_void;
 use tokio::sync::{mpsc,Semaphore,OwnedSemaphorePermit};
@@ -108,6 +108,7 @@ pub struct MacVideoEncoder {
     fps: u32,
     bitrate_kbps: u32,
     viewport:Option<ViewportEncoding>,
+    family_cropper: Option<crate::macos_viewport::Cropper>,
 }
 
 extern "C" fn compression_callback(
@@ -419,6 +420,7 @@ impl MacVideoEncoder {
             fps,
             bitrate_kbps,
             viewport:None,
+            family_cropper: None,
         })
     }
 
@@ -428,7 +430,8 @@ impl MacVideoEncoder {
         if state.source_revision!=settings.source_revision {state.planner.reset();}
         state.source_revision=settings.source_revision;state.cap=[settings.width,settings.height];state.bitrate_cap=settings.bitrate_kbps;
         if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
-        self.update_rate_settings(settings.fps,self.bitrate_kbps.min(settings.bitrate_kbps))?;
+        let target_kbps=remote_core::viewport::bitrate_for_pixels(self.width,self.height,settings.fps,settings.bitrate_kbps);
+        self.update_rate_settings(settings.fps,target_kbps)?;
         Ok(())
     }
 
@@ -436,7 +439,7 @@ impl MacVideoEncoder {
     /// Reuse their actual latest IOSurface only when geometry or an IDR changed.
     pub(crate) async fn redraw_if_needed(&mut self,frame:MacVideoFrame)->Result<bool,Box<dyn Error+Send+Sync>> {
         let Some(state)=&mut self.viewport else{return Ok(false);};
-        let geometry=state.planner.plan([frame.width,frame.height],state.cap,state.source_revision,std::time::Instant::now())?;
+        let geometry=state.planner.plan([frame.width(),frame.height()],state.cap,state.source_revision,std::time::Instant::now())?;
         if !self.force_keyframe&&state.last_geometry.is_some_and(|last|last.revision==geometry.revision
             &&last.source_revision==geometry.source_revision){return Ok(false);}
         self.submit_frame(frame).await?;Ok(true)
@@ -582,21 +585,54 @@ impl VideoEncoder for MacVideoEncoder {
             Some(buf) => buf,
             None => return Ok(()),
         };
-        let (source_width, source_height) = (
+        let (raw_width, raw_height) = (
             cv_pixel_buffer.width() as u32,
             cv_pixel_buffer.height() as u32,
         );
+        let base_crop = frame.window_crop.filter(|c| {
+            c.width >= 2
+                && c.height >= 2
+                && c.x.saturating_add(c.width) <= raw_width
+                && c.y.saturating_add(c.height) <= raw_height
+        });
+        let (source_width, source_height) = base_crop.map_or((raw_width, raw_height), |c| (c.width, c.height));
         let geometry=if let Some(state)=&mut self.viewport {
-            Some(state.planner.plan([source_width,source_height],state.cap,state.source_revision,std::time::Instant::now())?)
+            let planned = state.planner.plan([source_width,source_height],state.cap,state.source_revision,std::time::Instant::now())?;
+            state.last_geometry = Some(planned);
+            Some(planned)
         } else {None};
-        let cropped=if let Some(g)=geometry.filter(|g|g.crop.x!=0||g.crop.y!=0
+        let cropped=if let Some(g)=geometry.filter(|g|base_crop.is_some()||g.crop.x!=0||g.crop.y!=0
             ||g.crop.width!=source_width||g.crop.height!=source_height||g.width!=source_width||g.height!=source_height) {
+            let mut gpu_geom = g;
+            if let Some(bc) = base_crop {
+                gpu_geom.source_width = raw_width;
+                gpu_geom.source_height = raw_height;
+                gpu_geom.crop.x = bc.x + g.crop.x;
+                gpu_geom.crop.y = bc.y + g.crop.y;
+            }
             let state=self.viewport.as_mut().unwrap();
             if state.cropper.is_none(){state.cropper=Some(crate::macos_viewport::Cropper::new()?);}
-            Some(state.cropper.as_mut().unwrap().crop(cv_pixel_buffer.as_ptr().cast(),g)?)
-        }else{None};
+            Some(state.cropper.as_mut().unwrap().crop(cv_pixel_buffer.as_ptr().cast(),gpu_geom)?)
+        } else if let Some(bc) = base_crop {
+            if self.family_cropper.is_none() {
+                self.family_cropper = Some(crate::macos_viewport::Cropper::new()?);
+            }
+            let out_w = (bc.width & !1).max(2);
+            let out_h = (bc.height & !1).max(2);
+            let gpu_geom = protocol::viewport::FrameGeometry {
+                revision: 1,
+                source_revision: 0,
+                demand_revision: 0,
+                source_width: raw_width,
+                source_height: raw_height,
+                crop: protocol::viewport::PixelRect { x: bc.x, y: bc.y, width: out_w, height: out_h },
+                width: out_w,
+                height: out_h,
+            };
+            Some(self.family_cropper.as_mut().unwrap().crop(cv_pixel_buffer.as_ptr().cast(), gpu_geom)?)
+        } else {None};
         let pixel_buffer=cropped.as_ref().map_or(cv_pixel_buffer.as_ptr().cast(),|buffer|buffer.0);
-        let (width,height)=geometry.map_or((source_width,source_height),|g|(g.width,g.height));
+        let (width,height)=geometry.map_or(((source_width & !1).max(2),(source_height & !1).max(2)),|g|(g.width,g.height));
         let bitrate=self.viewport.as_ref().map_or(self.bitrate_kbps,|state|
             remote_core::viewport::bitrate_for_pixels(width,height,self.fps,state.bitrate_cap));
         if (self.width, self.height, self.bitrate_kbps) != (width, height, bitrate) {

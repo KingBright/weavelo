@@ -42,7 +42,7 @@ internal fun OutgoingVideoQualityDialog(deliveryId: Long, onDismiss: () -> Unit)
     PrecisionDialog(
         title = tr("Outgoing screen quality"),
         subtitle = tr("Changes apply to this screen delivery. Receiver, network and device limits may reduce quality."),
-        onDismiss = { if (!saving) onDismiss() },
+        onDismissRequest = { if (!saving) onDismiss() },
         dismissButton = {
             PrecisionButton(
                 text = tr("Cancel"),
@@ -101,9 +101,7 @@ internal fun OutgoingVideoQualityDialog(deliveryId: Long, onDismiss: () -> Unit)
                         encoder.fps,
                         encoder.bitrateKbps,
                     ),
-                    containerColor = p.brandSoft,
-                    contentColor = p.brand,
-                    borderColor = p.brandBorder,
+                    tone = PillTone.BRAND,
                 )
             } else {
                 Text(

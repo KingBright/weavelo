@@ -10,6 +10,9 @@ use recording_api::Win32::UI::Input::KeyboardAndMouse::{
 mod actual {
     use super::recording_api as windows_sys;
     include!("windows_input.rs");
+    pub(super) fn family_member(candidate: usize, target: usize, pid: u32) -> bool {
+        belongs_to_selected_window(candidate as _, target as _, pid)
+    }
     pub(super) fn held_lock(
         input: &WindowsInputInjector,
     ) -> impl Sized + '_ {
@@ -23,12 +26,17 @@ mod actual {
 mod windows_sources {
     use protocol::session::CaptureSource;
     use crate::windows_capture_plan::Rect;
-    #[derive(Clone)] pub struct Selection {pub source:CaptureSource,pub bounds:Rect,pub handle:u64,pub window:bool}
+    #[derive(Clone)] pub struct Selection {pub source:CaptureSource,pub bounds:Rect,pub handle:u64,pub window:bool,pub pid:u32}
     impl Selection {
         pub fn current_bounds(&self)->Result<Rect,String>{Ok(self.bounds)}
         pub fn same_size(&self)->Result<Rect,String>{Ok(self.bounds)}
     }
-    pub fn resolve(source:CaptureSource)->Result<Selection,String>{let handle=match source{CaptureSource::Window(88)=>3,_=>1};Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle,window:matches!(source,CaptureSource::Window(_))})}
+    pub fn resolve(source:CaptureSource)->Result<Selection,String>{let handle=match source{CaptureSource::Window(88)=>3,_=>1};Ok(Selection{source,bounds:Rect{x:0,y:0,width:1920,height:1080},handle,window:matches!(source,CaptureSource::Window(_)),pid:handle as u32})}
+    pub fn activate_hwnd(window: super::recording_api::Win32::Foundation::HWND) {
+        use super::recording_api::Win32::UI::WindowsAndMessaging::*;
+        unsafe { SetForegroundWindow(window); SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+    }
     pub struct PhysicalCoordinates;
     impl PhysicalCoordinates {pub fn enter()->Result<Self,String>{Ok(Self)}}
 }
@@ -196,11 +204,23 @@ mod recording_api {
                 pub const SM_XVIRTUALSCREEN:i32=76;pub const SM_YVIRTUALSCREEN:i32=77;
                 pub const SM_CXVIRTUALSCREEN:i32=78;pub const SM_CYVIRTUALSCREEN:i32=79;
                 pub const GA_ROOT:u32=2;
+                pub const GA_ROOTOWNER:u32=3;
+                pub const GWL_STYLE:i32=-16;
+                pub const WS_POPUP:u32=0x80000000;
                 pub const HWND_TOP:HWND=core::ptr::null_mut();
                 pub const SWP_NOMOVE:u32=2;pub const SWP_NOSIZE:u32=1;pub const SWP_NOACTIVATE:u32=16;
                 pub unsafe fn GetSystemMetrics(index:i32)->i32{match index{78=>1920,79=>1080,_=>0}}
                 pub unsafe fn GetForegroundWindow()->HWND {let calls=super::super::super::super::CALLS.lock().unwrap();if calls.foreground_blocked {2usize as HWND}else{calls.foreground_window.max(1) as HWND}}
-                pub unsafe fn GetAncestor(window:HWND,_flags:u32)->HWND {window}
+                pub unsafe fn GetAncestor(window:HWND,flags:u32)->HWND {
+                    if flags == GA_ROOTOWNER && matches!(window as usize, 10 | 11) {1usize as HWND} else {window}
+                }
+                pub unsafe fn GetWindowThreadProcessId(window:HWND,pid:*mut u32)->u32 {
+                    let value=match window as usize {10 | 13 => 2, 11 | 12 => 1, other => other as u32};
+                    if !pid.is_null() { unsafe {*pid=value;} } value
+                }
+                pub unsafe fn GetWindowLongW(window:HWND,_index:i32)->i32 {
+                    if matches!(window as usize, 12 | 13) {WS_POPUP as i32} else {0}
+                }
                 pub unsafe fn SetForegroundWindow(window:HWND)->i32{let mut calls=super::super::super::super::CALLS.lock().unwrap();let window=window as usize;calls.activation_attempts.push(window);if calls.foreground_blocked {0}else{calls.foreground_window=window;1}}
                 pub unsafe fn SetWindowPos(_window:HWND,_after:HWND,_x:i32,_y:i32,_w:i32,_h:i32,flags:u32)->i32{
                     assert_eq!(flags,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -708,4 +728,14 @@ fn unicode_partial_down_survives_a_failed_up_until_owned_cleanup() {
     let unit="🙂".encode_utf16().next().unwrap();
     assert_eq!(CALLS.lock().unwrap().posted,vec![Posted::Unicode(unit,true),Posted::Unicode(unit,false)]);
     assert_eq!(CALLS.lock().unwrap().attempts,3,"cleanup never replays text");
+}
+
+#[test]
+fn window_family_requires_same_process_even_for_matching_root_owner() {
+    assert!(actual::family_member(1, 1, 1));
+    assert!(actual::family_member(11, 1, 1), "same-process owned dialog");
+    assert!(actual::family_member(12, 1, 1), "same-process popup");
+    assert!(!actual::family_member(10, 1, 1), "foreign owned window");
+    assert!(!actual::family_member(13, 1, 1), "foreign popup");
+    assert!(!actual::family_member(2, 1, 1), "foreign occlusion");
 }

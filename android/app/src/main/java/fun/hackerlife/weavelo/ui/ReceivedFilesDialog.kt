@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -140,7 +141,7 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
 
     PrecisionDialog(
         title = tr("Received files"),
-        onDismiss = onClose,
+        onDismissRequest = onClose,
         confirmButton = {
             PrecisionButton(
                 text = tr("Close"),
@@ -163,7 +164,7 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
             savedNotice?.let {
                 Text(
                     trFormat("Saved to Downloads: %s", it),
-                    color = p.successText,
+                    color = p.emeraldText,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                 )
@@ -211,8 +212,9 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                MobileIcon(
-                                    symbol = if (file.isDirectory) MobileSymbol.Folder else MobileSymbol.Files,
+                                Icon(
+                                    imageVector = (if (file.isDirectory) MobileSymbol.Folder else MobileSymbol.Files).image,
+                                    contentDescription = null,
                                     tint = p.brand,
                                     modifier = Modifier.size(18.dp),
                                 )
@@ -225,8 +227,9 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f),
                                 )
-                                MobileIcon(
-                                    symbol = MobileSymbol.ChevronRight,
+                                Icon(
+                                    imageVector = MobileSymbol.ChevronRight.image,
+                                    contentDescription = null,
                                     tint = p.textTertiary,
                                     modifier = Modifier.size(15.dp),
                                 )
@@ -251,14 +254,14 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
                                     )
                                     MobileAction(
                                         symbol = MobileSymbol.Share,
-                                        description = tr("Share"),
+                                        label = tr("Share"),
                                         tonalWell = true,
                                         modifier = Modifier.size(36.dp),
                                     ) { open(file, true) }
                                     onSendToDevice?.let { send ->
                                         MobileAction(
                                             symbol = MobileSymbol.Send,
-                                            description = tr("Send to device"),
+                                            label = tr("Send to device"),
                                             tonalWell = true,
                                             modifier = Modifier.size(36.dp),
                                         ) { send(file) }

@@ -82,13 +82,13 @@ internal fun NetworkStatusChip(
     }
 
     val textColor = when (status.tone) {
-        NetworkTone.ONLINE -> p.successText
+        NetworkTone.ONLINE -> p.emeraldText
         NetworkTone.WARNING -> p.warningText
         NetworkTone.ERROR -> p.dangerText
         NetworkTone.NEUTRAL -> p.textSecondary
     }
     val dotColor = when (status.tone) {
-        NetworkTone.ONLINE -> p.onlineDot
+        NetworkTone.ONLINE -> p.emeraldDot
         NetworkTone.WARNING -> p.warningText
         NetworkTone.ERROR -> p.dangerText
         NetworkTone.NEUTRAL -> p.textTertiary
@@ -100,7 +100,7 @@ internal fun NetworkStatusChip(
                 .heightIn(min = 34.dp)
                 .clip(RoundedCornerShape(50))
                 .background(p.surfaceGlass)
-                .border(1.dp, p.borderDefault, RoundedCornerShape(50))
+                .border(1.dp, p.border, RoundedCornerShape(50))
                 .clickable(role = Role.Button, onClickLabel = tr("Network details")) { pinned = !pinned }
                 .padding(horizontal = 11.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -120,9 +120,6 @@ internal fun NetworkStatusChip(
             expanded = pinned,
             onDismissRequest = { pinned = false },
             properties = PopupProperties(focusable = pinned),
-            shape = RoundedCornerShape(16.dp),
-            containerColor = p.surfaceRaised,
-            border = BorderStroke(1.dp, p.borderDefault),
             modifier = Modifier.widthIn(min = 180.dp, max = 236.dp),
         ) {
             Column(

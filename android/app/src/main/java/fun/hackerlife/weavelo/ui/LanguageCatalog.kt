@@ -517,6 +517,22 @@ internal object LanguageCatalog {
         "Natural scrolling (Apple style)" to "自然滚动（苹果风格）",
         "Content moves in the same direction as your fingers" to "内容随手指滑动方向移动（上推向上滚、下拉向下滚）",
         "View" to "查看",
+        "Window Stream & Layout" to "窗口独立画质与尺寸",
+        "Isolated · Global defaults untouched" to "独立会话 · 不修改全局默认",
+        "Reset default" to "恢复默认",
+        "Stream Clarity Scale" to "串流清晰度缩放",
+        "Native 100%" to "原生 100%",
+        "HD 75%" to "高清 75%",
+        "Std 50%" to "标准 50%",
+        "Saver 35%" to "省流 35%",
+        "Remote Window Size" to "远端窗口布局尺寸",
+        "Auto-restores on exit" to "断开或切源自动还原",
+        "Original size" to "保持原尺寸",
+        "Fit viewport" to "适配当前视口",
+        "900×1440 Portrait" to "900×1440 竖屏",
+        "Remote window adapted to" to "远端窗口已适配为",
+        "Host window resize timed out" to "远端窗口尺寸调整响应超时",
+        "Window resize unavailable" to "当前窗口不支持调整尺寸",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

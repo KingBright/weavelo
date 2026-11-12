@@ -119,9 +119,10 @@ impl ViewportPlanner {
             let interval=self.last_resize.is_none_or(|t|now.saturating_duration_since(t)>=RESIZE_INTERVAL);
             let old_fits=old.width<=source[0] && old.height<=source[1]
                 &&old.width<=cap[0]&&old.height<=cap[1];
-            // A sender's explicit quality change is a transaction, not a
-            // gesture: expose its new size immediately for encoder validation.
-            let explicit_cap_change=!receiver_density && self.last_limits.is_some_and(|(old_cap,_,_)|old_cap!=cap);
+            // An explicit stream quality or window clarity cap change is a
+            // deliberate user transaction, not a continuous zoom gesture:
+            // apply the new coded resolution immediately without 400ms lag.
+            let explicit_cap_change=self.last_limits.is_some_and(|(old_cap,_,_)|old_cap!=cap);
             let stable_pan=self.last_limits==Some(limits)&&self.last_visible.is_some_and(|v|(v.width,v.height)==(visible.width,visible.height));
             // Keep the old codec during active navigation. Per-frame geometry
             // restores the crop's true display aspect after GPU scaling, even
@@ -256,6 +257,27 @@ mod tests {
             let recovered = planner.plan(source, cap, 3, now + RESIZE_INTERVAL).unwrap();
             assert_eq!((recovered.width, recovered.height), (full.width, full.height));
         }
+    }
+    #[test]
+    fn explicit_receiver_cap_switch_updates_window_coded_size_immediately() {
+        let now = Instant::now();
+        let mut planner = ViewportPlanner::for_source(protocol::session::CaptureSource::Window(77));
+        let source = [1600, 1000];
+        let native = planner.plan(source, [1600, 1000], 3, now).unwrap();
+        assert_eq!((native.width, native.height), (1600, 1000));
+        // Even 10ms later (well inside the 400ms zoom-hysteresis window), an
+        // explicit user clarity switch (50% -> 800x500) must take effect immediately.
+        let half = planner
+            .plan(source, [800, 500], 3, now + Duration::from_millis(10))
+            .unwrap();
+        assert_eq!((half.width, half.height), (800, 500));
+        assert_ne!(half.revision, native.revision);
+        // Raising clarity back to 75% (1200x750) 20ms later also applies immediately.
+        let high = planner
+            .plan(source, [1200, 750], 3, now + Duration::from_millis(30))
+            .unwrap();
+        assert_eq!((high.width, high.height), (1200, 750));
+        assert_ne!(high.revision, half.revision);
     }
     #[test]
     fn continuous_window_zoom_keeps_codec_dimensions_until_the_gesture_settles() {

@@ -106,9 +106,6 @@ fun DeviceBadgeSettings() {
                 DropdownMenu(
                     expanded = expanded,
                     onDismissRequest = { expanded = false },
-                    shape = RoundedCornerShape(16.dp),
-                    containerColor = p.surfaceRaised,
-                    border = BorderStroke(1.dp, p.borderDefault),
                 ) {
                     listOf(
                         "automatic" to "Automatic",
@@ -120,7 +117,8 @@ fun DeviceBadgeSettings() {
                     ).forEach { (key, label) ->
                         PrecisionMenuItem(
                             text = tr(label),
-                            trailingBadge = if (activeKey == key) "✓" else null,
+                            symbol = MobileSymbol.Devices,
+                            checked = activeKey == key,
                             onClick = {
                                 expanded = false
                                 save(if (key == "automatic") key else JSONObject().put("preset", key))
@@ -133,7 +131,7 @@ fun DeviceBadgeSettings() {
                     )
                     PrecisionMenuItem(
                         text = tr("Choose image…"),
-                        leadingSymbol = MobileSymbol.Folder,
+                        symbol = MobileSymbol.Folder,
                         onClick = {
                             expanded = false
                             picker.launch("image/*")

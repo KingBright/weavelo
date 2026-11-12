@@ -12,7 +12,8 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HWND, LPARAM, POINT, RECT},
     Graphics::Gdi::ClientToScreen,
     System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        AttachThreadInput, GetCurrentThreadId, GetProcessTimes, OpenProcess,
+        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     },
     UI::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
@@ -483,6 +484,119 @@ impl Selection {
         }
         Ok(current)
     }
+}
+
+pub(crate) fn window_client_size(source: CaptureSource) -> Result<(u32, u32), String> {
+    let selected = resolve(source)?;
+    if !selected.window {
+        return Err("The selected source is not a window".into());
+    }
+    let bounds = selected.current_bounds()?;
+    Ok((bounds.width, bounds.height))
+}
+
+pub(crate) fn resize_window_client(
+    source: CaptureSource,
+    target_width: u32,
+    target_height: u32,
+) -> Result<(u32, u32), String> {
+    if !(240..=7680).contains(&target_width) || !(240..=7680).contains(&target_height) {
+        return Err("目标窗口尺寸超出允许范围 (240..=7680)".into());
+    }
+    let CaptureSource::Window(id) = source else {
+        return Err("当前源不是独立窗口，无法调整窗口几何尺寸".into());
+    };
+    let selected = resolve(source)?;
+    if !selected.window {
+        return Err("当前源不是独立窗口".into());
+    }
+    let hwnd = selected.handle as usize as HWND;
+    unsafe {
+        let _coordinates = PhysicalCoordinates::enter()?;
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return Err("远端窗口已最小化或隐藏，请先恢复窗口显示".into());
+        }
+        if IsZoomed(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        let mut outer: RECT = std::mem::zeroed();
+        let mut client: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut outer) == 0 || GetClientRect(hwnd, &mut client) == 0 {
+            return Err("读取远端 Windows 窗口边框尺寸失败".into());
+        }
+        let frame_w = (outer.right - outer.left) - (client.right - client.left);
+        let frame_h = (outer.bottom - outer.top) - (client.bottom - client.top);
+        let desired_outer_w = (target_width as i32).saturating_add(frame_w.max(0));
+        let desired_outer_h = (target_height as i32).saturating_add(frame_h.max(0));
+        if SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            desired_outer_w,
+            desired_outer_h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        ) == 0
+        {
+            return Err("远端 Windows 应用拒绝调整窗口尺寸（权限受限或固定尺寸窗口）".into());
+        }
+    }
+    let updated = client_rect(hwnd).ok_or_else(|| "调整后无法读取窗口客户区尺寸".to_string())?;
+    if let Some((entry, _)) = registry().lock().unwrap().entries.get_mut(&id)
+        && entry.window
+        && entry.handle == selected.handle
+    {
+        entry.bounds = updated;
+    }
+    Ok((updated.width, updated.height))
+}
+
+pub(crate) fn activate_hwnd(hwnd: HWND) {
+    unsafe {
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        let fg = GetForegroundWindow();
+        let fg_thread = if !fg.is_null() {
+            GetWindowThreadProcessId(fg, std::ptr::null_mut())
+        } else {
+            0
+        };
+        let cur_thread = GetCurrentThreadId();
+        let attached = fg_thread != 0
+            && cur_thread != 0
+            && fg_thread != cur_thread
+            && AttachThreadInput(cur_thread, fg_thread, 1) != 0;
+        let _ = SetForegroundWindow(hwnd);
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE,
+        );
+        if attached {
+            let _ = AttachThreadInput(cur_thread, fg_thread, 0);
+        }
+    }
+}
+
+pub(crate) fn focus_window_client(source: CaptureSource) -> Result<(), String> {
+    let selected = resolve(source)?;
+    if !selected.window {
+        return Ok(());
+    }
+    let hwnd = selected.handle as usize as HWND;
+    unsafe {
+        if IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
+            return Err("远端 Windows 窗口不可见或已关闭".into());
+        }
+    }
+    activate_hwnd(hwnd);
+    Ok(())
 }
 
 pub(crate) fn application_path(pid: u32) -> Option<String> {

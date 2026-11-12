@@ -96,6 +96,7 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
             val id = row.getJSONObject("source").getLong("Window")
             val demand = row.getJSONObject("demand")
             demand.put("artwork_epoch",row.getLong("artwork_epoch"))
+            demand.put("requested_size",row.opt("requested_size") ?: JSONObject.NULL)
             val allViews=demand.optJSONArray("views") ?: JSONArray()
             val views=JSONArray()
             for(index in 0 until allViews.length()) {
@@ -147,10 +148,26 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
                 }.onFailure { android.util.Log.w("Weavelo","Native application artwork unavailable",it) }.getOrNull()
                 var artworkEpoch = -1L
                 display = host.createApplication(app.packageName, width, height, density)
+                var appliedRequestedSize: Pair<Int, Int>? = null
                 var geometryAt = 0L
                 var observed: Target? = null
                 while (alive.get()) {
                     val current = demand
+                    val reqArr = current.optJSONArray("requested_size")
+                    val desiredSize = if (reqArr != null && reqArr.length() == 2) {
+                        Pair(reqArr.getInt(0), reqArr.getInt(1))
+                    } else null
+                    if (desiredSize != appliedRequestedSize) {
+                        val (targetW, targetH) = desiredSize ?: Pair(width, height)
+                        val baseShort = minOf(width, height).coerceAtLeast(1)
+                        val scaledDensity = ((density.toLong() * minOf(targetW, targetH)) / baseShort)
+                            .toInt().coerceIn(120, 640)
+                        runCatching {
+                            host.resize(display, targetW, targetH, scaledDensity)
+                            appliedRequestedSize = desiredSize
+                            geometryAt = 0L
+                        }
+                    }
                     if (android.os.SystemClock.elapsedRealtime() >= geometryAt) {
                         val dimensions = JSONObject(host.applicationGeometry(display))
                         observed = Target(host,display,app.packageName,dimensions.getInt("width"),

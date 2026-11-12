@@ -99,7 +99,7 @@ fun InvitationDialog(onDismiss: () -> Unit) {
     PrecisionDialog(
         title = tr("Invite a device"),
         subtitle = invitation?.networkName,
-        onDismiss = onDismiss,
+        onDismissRequest = onDismiss,
         confirmButton = {
             PrecisionButton(
                 text = tr("Close"),

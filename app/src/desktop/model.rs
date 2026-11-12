@@ -47,6 +47,7 @@ pub struct SessionState<Texture, Pan: Default> {
     camera_switch: Option<protocol::session::CameraSwitchRequest>,
     pub delivery_request_id: Option<u64>,
     pub activity_revision: u64,
+    focus_sequence: u64,
     pub status: String,
     pub error: String,
     input_error: Option<String>,
@@ -70,6 +71,8 @@ pub struct SessionState<Texture, Pan: Default> {
     pub muted: bool,
     host_audio_request: Option<AudioOutputRequest>,
     host_audio_status: Option<(u64, AudioOutputStatus)>,
+    pub window_resize_request: Option<u32>,
+    pub window_resize_notice: Option<Result<(u32, u32), String>>,
     pub zoom: f32,
     pub pan: Pan,
     pub fit: bool,
@@ -191,6 +194,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             source_revision: 0,
             host_audio_request: None,
             host_audio_status: None,
+            window_resize_request: None,
+            window_resize_notice: None,
             confirmed: false,
             supports_input: false,
             // The authenticated connection authorizes control. Source, lease,
@@ -202,6 +207,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             camera_switch: None,
             delivery_request_id: None,
             activity_revision: 0,
+            focus_sequence: 0,
             status: "Authenticated device connection".into(),
             error: String::new(),
             input_error: None,
@@ -383,6 +389,59 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         }));
         // The source picker requests its own catalog. Starting video must not
         // enqueue an unrelated expensive catalog ahead of Subscribe.
+    }
+    pub fn configure_stream(
+        &mut self,
+        w: u32,
+        h: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+    ) -> Result<(), String> {
+        self.request.width = w;
+        self.request.height = h;
+        self.request.fps = fps;
+        self.request.bitrate_kbps = bitrate_kbps;
+        if self.media.is_some() {
+            self.conn.try_update_settings(&self.request)?;
+        }
+        Ok(())
+    }
+    pub fn resize_window(&mut self, target_size: Option<(u32, u32)>) -> Result<u32, String> {
+        if !matches!(self.source, CaptureSource::Window(_)) {
+            return Err("当前捕获源不是独立应用窗口".into());
+        }
+        self.next_request = self.next_request.wrapping_add(1).max(1000);
+        let request_id = self.next_request;
+        self.conn.try_control_checked(SessionCommand::ResizeWindow {
+            id: self.video_id,
+            source_revision: self.source_revision,
+            request_id,
+            target_size,
+        })?;
+        self.window_resize_request = Some(request_id);
+        self.window_resize_notice = None;
+        Ok(request_id)
+    }
+    pub fn focus_source(&mut self) -> bool {
+        if self.locked
+            || !self.connected
+            || !self.confirmed
+            || !self.supports_input
+            || self.video_error.is_some()
+        {
+            return false;
+        }
+        if let Some(reason) = self.input_error.take()
+            && self.error == reason
+        {
+            self.clear_transient_error();
+        }
+        self.focus_sequence = self.focus_sequence.saturating_add(1);
+        self.conn.try_control(SessionCommand::FocusSource {
+            id: self.video_id,
+            source_revision: self.source_revision,
+            sequence: self.focus_sequence,
+        })
     }
     pub fn switch_source(&mut self, source: CaptureSource) {
         // A previously denied source must be explicitly selectable again after
@@ -683,10 +742,15 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     pub fn can_input(&self) -> bool {
         self.can_computer_use_input() && self.input_focused
     }
+    pub fn can_prepare_text_input(&self) -> bool {
+        self.can_input_ignoring_transient_error() && self.input_focused
+    }
     pub fn can_computer_use_input(&self) -> bool {
+        self.input_error.is_none() && self.can_input_ignoring_transient_error()
+    }
+    fn can_input_ignoring_transient_error(&self) -> bool {
         let recovery = self.stats.video_recovery.snapshot();
         self.video_error.is_none()
-            && self.input_error.is_none()
             && !recovery.waiting
             && self.connected
             && self.confirmed
@@ -786,7 +850,13 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
     pub fn poll(&mut self) {
         if self.can_input() && (!self.keys.is_empty()||!self.mouse.is_empty()||self.modifiers!=0) {
             let healthy=self.conn.input_binding(self.video_id,self.source_revision).is_some_and(|binding|self.conn.refresh_bound_input(binding));
-            if !healthy {self.fail_input("Input paused after the window stopped responding; enable control to continue".into());}
+            if !healthy {
+                if self.conn.peer_is_responsive() {
+                    self.release_input();
+                } else {
+                    self.fail_input("Input paused after the window stopped responding; enable control to continue".into());
+                }
+            }
         }
         let recovery = self.stats.video_recovery.snapshot();
         self.first_frame_after = self.first_frame_after.max(recovery.began_at);
@@ -864,6 +934,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.source_revision = request_id;
                     self.host_audio_request = None;
                     self.host_audio_status = None;
+                    self.window_resize_request = None;
+                    self.window_resize_notice = None;
                     self.request.source = source;
                     self.supports_input = supports_input;
                     self.clear_transient_error();
@@ -895,8 +967,22 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     && self.host_audio_status.as_ref().is_none_or(|(previous, _)| generation > *previous) => {
                     self.host_audio_status = Some((generation, status));
                 }
+                SessionCommand::WindowResized {
+                    id,
+                    source_revision,
+                    request_id,
+                    applied_size,
+                } if id == self.video_id
+                    && source_revision == self.source_revision
+                    && self.window_resize_request == Some(request_id) =>
+                {
+                    self.window_resize_request = None;
+                    self.window_resize_notice = Some(applied_size);
+                }
                 SessionCommand::Closed { reason, .. } => {
                     self.camera_switch=None;self.pending=None;
+                    self.window_resize_request = None;
+                    self.window_resize_notice = None;
                     self.release_input();
                     self.connected = false;
                     self.reconcile_clipboard();
@@ -912,7 +998,18 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.fail_video("Screen sharing ended".into());
                 }
                 SessionCommand::TextRejected {binding,reason,..} if binding.connection_id==self.conn.id && binding.subscription_id==self.video_id && binding.source_revision==self.source_revision() => {
-                    self.fail_input(reason);
+                    self.release_input();
+                    let fatal_source = !self.confirmed
+                        || !self.supports_input
+                        || !self.connected
+                        || self.video_error.is_some()
+                        || reason.contains("source is unavailable")
+                        || reason.contains("source changed");
+                    if fatal_source {
+                        self.fail_input(reason);
+                    } else {
+                        self.status = "Text input resynchronized; continue typing".into();
+                    }
                 }
                 SessionCommand::Error { request_id, reason }
                     if request_id == self.video_id && reason.starts_with("INPUT_UNAVAILABLE:") =>

@@ -239,6 +239,97 @@ fn forward_delivery_cancel(lease:Option<watch::Receiver<bool>>,cancel:broadcast:
     })))
 }
 
+#[cfg(target_os = "linux")]
+fn linux_x11_window_size(win_id: u32) -> Result<(u32, u32), String> {
+    let output = std::process::Command::new("xdotool")
+        .args(["getwindowgeometry", "--shell", &win_id.to_string()])
+        .output()
+        .map_err(|_| "当前 Linux 环境未安装 xdotool，暂不支持调整窗口几何尺寸".to_string())?;
+    if !output.status.success() {
+        return Err("无法读取远端 Linux X11 窗口几何尺寸".into());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut w = None;
+    let mut h = None;
+    for line in text.lines() {
+        if let Some(val) = line.strip_prefix("WIDTH=") {
+            w = val.trim().parse::<u32>().ok();
+        } else if let Some(val) = line.strip_prefix("HEIGHT=") {
+            h = val.trim().parse::<u32>().ok();
+        }
+    }
+    w.zip(h)
+        .filter(|&(w, h)| w >= 2 && h >= 2)
+        .ok_or_else(|| "解析 Linux X11 窗口尺寸失败".into())
+}
+
+#[cfg(target_os = "linux")]
+fn focus_linux_window_blocking(source: CaptureSource) -> Result<(), String> {
+    if crate::linux_kwin::is_kwin_window(source) {
+        return Ok(());
+    }
+    let CaptureSource::Window(win_id) = source else {
+        return Ok(());
+    };
+    let _ = std::process::Command::new("xdotool")
+        .args(["windowactivate", &win_id.to_string()])
+        .status();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn resize_linux_window_blocking(
+    source: CaptureSource,
+    width: u32,
+    height: u32,
+) -> Result<(u32, u32), String> {
+    if crate::linux_kwin::is_kwin_window(source) {
+        return Err("当前 Linux Wayland 窗口由 KWin 合成器托管尺寸，已仅启用串流清晰度实时缩放".into());
+    }
+    let CaptureSource::Window(win_id) = source else {
+        return Err("当前源不是独立应用窗口".into());
+    };
+    if !(240..=7680).contains(&width) || !(240..=7680).contains(&height) {
+        return Err("目标窗口尺寸超出允许范围 (240..=7680)".into());
+    }
+    let status = std::process::Command::new("xdotool")
+        .args([
+            "windowsize",
+            &win_id.to_string(),
+            &width.to_string(),
+            &height.to_string(),
+        ])
+        .status()
+        .map_err(|_| "当前 Linux 会话不支持远程重排窗口尺寸，已保持串流清晰度缩放".to_string())?;
+    if !status.success() {
+        return Err("远端 Linux 窗口拒绝了尺寸调整请求".into());
+    }
+    Ok(linux_x11_window_size(win_id).unwrap_or((width, height)))
+}
+
+fn restore_window_size_blocking(saved: (CaptureSource, Option<i32>, (u32, u32))) {
+    let (source, pid, (w, h)) = saved;
+    let CaptureSource::Window(win_id) = source else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(pid) = pid {
+        let _ = crate::window_input::resize_window(win_id, pid, w, h);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = pid;
+        let _ = crate::windows_sources::resize_window_client(CaptureSource::Window(win_id), w, h);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (win_id, pid);
+        let _ = resize_linux_window_blocking(source, w, h);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let _ = (win_id, pid, w, h);
+}
+
 struct Subscription {
     _delivery_cancel: Option<DeliveryCancellation>,
     settings_revision: u64,
@@ -255,9 +346,11 @@ struct Subscription {
     audio_active: bool,
     supports_input: bool,
     input_target: Option<InputTarget>,
+    original_window_size: Option<(CaptureSource, Option<i32>, (u32, u32))>,
     #[cfg(target_os = "macos")]
     input_probe: fn(InputTarget) -> Result<(), String>,
     last_input_error: Option<Instant>,
+    last_focus: (u32, u64),
     source_revision: u32,
     video_sequence: Arc<std::sync::atomic::AtomicU16>,
     #[cfg(target_os = "windows")]
@@ -268,6 +361,9 @@ struct Subscription {
     kwin_capture: Option<PreparedKwinCapture>,
 }
 impl Subscription {
+    fn take_window_restore(&mut self) -> Option<(CaptureSource, Option<i32>, (u32, u32))> {
+        self.original_window_size.take()
+    }
     fn viewport(&mut self,demand:protocol::viewport::ViewportDemand)->Result<u64,String> {
         demand.validate()?;
         if self.request.id!=demand.id || self.source_revision!=demand.source_revision || matches!(self.request.source,CaptureSource::Camera(_)) {
@@ -306,6 +402,9 @@ impl Subscription {
 }
 impl Drop for Subscription {
     fn drop(&mut self) {
+        if let Some(saved) = self.original_window_size.take() {
+            std::thread::spawn(move || restore_window_size_blocking(saved));
+        }
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = &self.native_capture {
             capture.revoke();
@@ -695,6 +794,7 @@ impl Connection {
     }
     async fn unsubscribe_owned(&mut self, id: u32) -> Result<(), String> {
         let subscription = self.subscriptions.get_mut(&id).unwrap();
+        let saved_window_size = subscription.take_window_restore();
         subscription.supports_input = false;
         subscription.input_target = None;
         let _ = subscription.cancel.send(());
@@ -714,6 +814,9 @@ impl Connection {
         #[cfg(target_os = "linux")]
         let kwin_capture = subscription.kwin_capture.clone();
         self.subscriptions.remove(&id);
+        if let Some(saved) = saved_window_size {
+            let _ = tokio::task::spawn_blocking(move || restore_window_size_blocking(saved)).await;
+        }
         if let Err(error) = capture_result {
             self.worker_failure = true;
             return Err(error);
@@ -778,6 +881,11 @@ impl Connection {
             task.abort();
             self.retiring_tasks.push(task);
         }
+        let saved_windows: Vec<_> = self
+            .subscriptions
+            .values_mut()
+            .filter_map(Subscription::take_window_restore)
+            .collect();
         for subscription in self.subscriptions.values_mut() {
             let _ = subscription.cancel.send(());
             subscription.task.abort();
@@ -795,6 +903,14 @@ impl Connection {
             }
         }
         self.subscriptions.clear();
+        if !saved_windows.is_empty() {
+            let _ = tokio::task::spawn_blocking(move || {
+                for saved in saved_windows {
+                    restore_window_size_blocking(saved);
+                }
+            })
+            .await;
+        }
         #[cfg(all(unix, any(test, target_os = "linux")))]
         for (_, capture) in self.native_capture.drain() {
             capture.revoke();
@@ -1542,6 +1658,18 @@ impl Connection {
         });
         let bridge=forward_delivery_cancel(self.delivery_cancel.clone(),cancel.clone(),vec![task.abort_handle()]);
         let audio_owner = audio_key.and_then(|key| self.audio_groups.get(&key).map(|g| g.owner));
+        let preserved_window_size = self
+            .subscriptions
+            .get_mut(&id)
+            .and_then(Subscription::take_window_restore)
+            .and_then(|saved| {
+                if saved.0 == request.source {
+                    Some(saved)
+                } else {
+                    std::thread::spawn(move || restore_window_size_blocking(saved));
+                    None
+                }
+            });
         self.subscriptions.insert(
             id,
             Subscription {
@@ -1560,9 +1688,11 @@ impl Connection {
                 audio_active,
                 supports_input,
                 input_target,
+                original_window_size: preserved_window_size,
                 #[cfg(target_os = "macos")]
                 input_probe: mac_input_status,
                 last_input_error: None,
+                last_focus: (0, 0),
                 source_revision,
                 video_sequence,
                 #[cfg(target_os = "windows")]
@@ -2606,7 +2736,18 @@ async fn run_host_service_inner(
                                         if revision > s.settings_revision {
                                             s.settings_revision = revision;
                                             s.request.width = width; s.request.height = height; s.request.fps = fps; s.request.bitrate_kbps = bitrate_kbps;
+                                            #[cfg(target_os = "windows")]
+                                            if let Some(InputTarget::Windows { source, canvas, width: src_w, height: src_h }) = &mut s.input_target
+                                                && let Ok(sel) = crate::windows_sources::resolve(*source)
+                                                && let Ok(bounds) = sel.current_bounds()
+                                                && let Ok(fitted) = crate::windows_capture_plan::fit(bounds, width, height)
+                                            {
+                                                *canvas = fitted;
+                                                *src_w = bounds.width;
+                                                *src_h = bounds.height;
+                                            }
                                             s.settings.send_modify(|v| { v.width=width; v.height=height; v.fps=fps; v.bitrate_kbps=bitrate_kbps; });
+                                            s.request_keyframe();
                                         }
                                         SessionCommand::Configured { id, revision:s.settings_revision }
                                     } else { SessionCommand::Error { request_id:id, reason:"subscription is unavailable".into() } };
@@ -2822,6 +2963,223 @@ async fn run_host_service_inner(
                                     if let Some((generation, status)) = peers.get_mut(&addr).and_then(|peer| peer.set_audio_output(request, authorized)) {
                                         input_owner.during_control(&injector, send_session(&udp_sender, addr, SessionCommand::AudioOutputState { request, generation, status })).await;
                                     }
+                                }
+                                SessionCommand::FocusSource { id, source_revision, sequence } => {
+                                    let focus_job = peers.get_mut(&addr).and_then(|peer| {
+                                        if !peer.can_scoped_input(id, source_revision) {
+                                            return None;
+                                        }
+                                        let s = peer.subscriptions.get_mut(&id)?;
+                                        if !s.supports_input
+                                            || s.source_revision != source_revision
+                                            || s.task.is_finished()
+                                            || (source_revision, sequence) <= s.last_focus
+                                        {
+                                            return None;
+                                        }
+                                        s.last_focus = (source_revision, sequence);
+                                        #[cfg(target_os = "macos")]
+                                        let hint_pid = match s.input_target {
+                                            Some(InputTarget::Window { id: tid, pid }) if tid == match s.request.source { CaptureSource::Window(w) => w, _ => 0 } => Some(pid),
+                                            _ => s.original_window_size.and_then(|(_, p, _)| p),
+                                        };
+                                        #[cfg(not(target_os = "macos"))]
+                                        let hint_pid: Option<i32> = None;
+                                        Some((s.request.source, hint_pid))
+                                    });
+                                    if let Some((source, hint_pid)) = focus_job {
+                                        if input_owner.owner != Some((addr, id)) {
+                                            let _ = input_owner.release(&injector).await;
+                                        }
+                                        if let CaptureSource::Window(win_id) = source {
+                                            // Serialize native activation with source changes and
+                                            // later focus commands. Input acquires its own binding.
+                                            input_owner.during_control(&injector, tokio::task::spawn_blocking(move || {
+                                                #[cfg(target_os = "macos")]
+                                                {
+                                                    if let Some(pid) = hint_pid.or_else(|| {
+                                                        crate::capture_sources::list()
+                                                            .ok()?
+                                                            .into_iter()
+                                                            .find(|i| i.source == source)?
+                                                            .process_id
+                                                    }) {
+                                                        let _ = crate::window_input::focus_window(win_id, pid);
+                                                    }
+                                                }
+                                                #[cfg(target_os = "windows")]
+                                                {
+                                                    let _ = (win_id, hint_pid);
+                                                    let _ = crate::windows_sources::focus_window_client(source);
+                                                }
+                                                #[cfg(target_os = "linux")]
+                                                {
+                                                    let _ = (win_id, hint_pid);
+                                                    let _ = focus_linux_window_blocking(source);
+                                                }
+                                            })).await.ok();
+                                        }
+                                    }
+                                }
+                                SessionCommand::ResizeWindow { id, source_revision, request_id, target_size } => {
+                                    let outcome = match peers.get_mut(&addr).and_then(|peer| peer.subscriptions.get_mut(&id)) {
+                                        None => Err("窗口订阅不存在或已关闭".to_string()),
+                                        Some(s) if s.source_revision != source_revision || s.task.is_finished() => {
+                                            Err("窗口会话源已切换，请重试".to_string())
+                                        }
+                                        Some(s) => match s.request.source {
+                                            CaptureSource::Window(win_id) => {
+                                                let source = CaptureSource::Window(win_id);
+                                                let saved_snapshot = if target_size.is_none() {
+                                                    s.take_window_restore()
+                                                } else {
+                                                    s.original_window_size
+                                                };
+                                                #[cfg(target_os = "macos")]
+                                                let hint_pid = match s.input_target {
+                                                    Some(InputTarget::Window { id: tid, pid }) if tid == win_id => Some(pid),
+                                                    _ => saved_snapshot.and_then(|(_, p, _)| p),
+                                                };
+                                                #[cfg(not(target_os = "macos"))]
+                                                let hint_pid: Option<i32> = None;
+                                                let op = tokio::task::spawn_blocking(move || -> Result<(Option<(Option<i32>, (u32, u32))>, (u32, u32)), String> {
+                                                    match target_size {
+                                                        None => {
+                                                            if let Some((_, saved_pid, (orig_w, orig_h))) = saved_snapshot {
+                                                                #[cfg(target_os = "macos")]
+                                                                {
+                                                                    let pid = saved_pid
+                                                                        .or(hint_pid)
+                                                                        .or_else(|| crate::capture_sources::list().ok()?.into_iter().find(|i| i.source == source)?.process_id)
+                                                                        .ok_or_else(|| "无法定位远端应用进程".to_string())?;
+                                                                    let applied = crate::window_input::resize_window(win_id, pid, orig_w, orig_h)?;
+                                                                    return Ok((None, applied));
+                                                                }
+                                                                #[cfg(target_os = "windows")]
+                                                                {
+                                                                    let _ = (saved_pid, hint_pid);
+                                                                    let applied = crate::windows_sources::resize_window_client(source, orig_w, orig_h)?;
+                                                                    return Ok((None, applied));
+                                                                }
+                                                                #[cfg(target_os = "linux")]
+                                                                {
+                                                                    let _ = (saved_pid, hint_pid, win_id);
+                                                                    let applied = resize_linux_window_blocking(source, orig_w, orig_h)?;
+                                                                    return Ok((None, applied));
+                                                                }
+                                                            }
+                                                            #[cfg(target_os = "macos")]
+                                                            {
+                                                                let pid = hint_pid
+                                                                    .or_else(|| crate::capture_sources::list().ok()?.into_iter().find(|i| i.source == source)?.process_id)
+                                                                    .ok_or_else(|| "无法定位远端应用进程".to_string())?;
+                                                                return Ok((None, crate::window_input::window_logical_size(win_id, pid)?));
+                                                            }
+                                                            #[cfg(target_os = "windows")]
+                                                            {
+                                                                let _ = (hint_pid, win_id);
+                                                                return Ok((None, crate::windows_sources::window_client_size(source)?));
+                                                            }
+                                                            #[cfg(target_os = "linux")]
+                                                            {
+                                                                let _ = hint_pid;
+                                                                if crate::linux_kwin::is_kwin_window(source) {
+                                                                    return Err("当前 Linux Wayland 窗口保持原始合成器尺寸".into());
+                                                                }
+                                                                return Ok((None, linux_x11_window_size(win_id)?));
+                                                            }
+                                                            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                                                            {
+                                                                let _ = (source, win_id, hint_pid);
+                                                                Err("当前宿主平台不支持窗口尺寸调整".into())
+                                                            }
+                                                        }
+                                                        Some((tw, th)) => {
+                                                            #[cfg(target_os = "macos")]
+                                                            {
+                                                                let pid = hint_pid
+                                                                    .or_else(|| crate::capture_sources::list().ok()?.into_iter().find(|i| i.source == source)?.process_id)
+                                                                    .ok_or_else(|| "无法定位远端应用进程".to_string())?;
+                                                                let initial = if saved_snapshot.is_none() {
+                                                                    Some((Some(pid), crate::window_input::window_logical_size(win_id, pid)?))
+                                                                } else {
+                                                                    None
+                                                                };
+                                                                let applied = crate::window_input::resize_window(win_id, pid, tw, th)?;
+                                                                Ok((initial, applied))
+                                                            }
+                                                            #[cfg(target_os = "windows")]
+                                                            {
+                                                                let _ = (hint_pid, win_id);
+                                                                let initial = if saved_snapshot.is_none() {
+                                                                    Some((None, crate::windows_sources::window_client_size(source)?))
+                                                                } else {
+                                                                    None
+                                                                };
+                                                                let applied = crate::windows_sources::resize_window_client(source, tw, th)?;
+                                                                Ok((initial, applied))
+                                                            }
+                                                            #[cfg(target_os = "linux")]
+                                                            {
+                                                                let _ = hint_pid;
+                                                                if crate::linux_kwin::is_kwin_window(source) {
+                                                                    return Err("当前 Linux Wayland 窗口由 KWin 合成器托管尺寸，已仅启用串流清晰度实时缩放".into());
+                                                                }
+                                                                let initial = if saved_snapshot.is_none() {
+                                                                    linux_x11_window_size(win_id).ok().map(|sz| (None, sz))
+                                                                } else {
+                                                                    None
+                                                                };
+                                                                let applied = resize_linux_window_blocking(source, tw, th)?;
+                                                                Ok((initial, applied))
+                                                            }
+                                                            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                                                            {
+                                                                let _ = (source, win_id, hint_pid, tw, th);
+                                                                Err("当前宿主平台不支持窗口尺寸调整".into())
+                                                            }
+                                                        }
+                                                    }
+                                                }).await;
+                                                match op {
+                                                    Err(join_err) => Err(format!("窗口尺寸调整任务失败: {join_err}")),
+                                                    Ok(Err(reason)) => Err(reason),
+                                                    Ok(Ok((initial_captured, applied))) => {
+                                                        if let Some(s) = peers.get_mut(&addr).and_then(|peer| peer.subscriptions.get_mut(&id))
+                                                            && s.source_revision == source_revision
+                                                            && s.request.source == source
+                                                        {
+                                                            if let Some((orig_pid, orig_wh)) = initial_captured
+                                                                && s.original_window_size.is_none()
+                                                            {
+                                                                s.original_window_size = Some((source, orig_pid, orig_wh));
+                                                            }
+                                                            #[cfg(target_os = "windows")]
+                                                            if let Some(InputTarget::Windows { source: tgt_src, canvas, width: src_w, height: src_h }) = &mut s.input_target
+                                                                && let Ok(sel) = crate::windows_sources::resolve(*tgt_src)
+                                                                && let Ok(bounds) = sel.current_bounds()
+                                                                && let Ok(fitted) = crate::windows_capture_plan::fit(bounds, s.request.width, s.request.height)
+                                                            {
+                                                                *canvas = fitted;
+                                                                *src_w = bounds.width;
+                                                                *src_h = bounds.height;
+                                                            }
+                                                            s.request_keyframe();
+                                                        }
+                                                        Ok(applied)
+                                                    }
+                                                }
+                                            }
+                                            _ => Err("仅独立应用窗口支持调整远端窗口尺寸".to_string()),
+                                        },
+                                    };
+                                    let reply = SessionCommand::WindowResized {
+                                        id,
+                                        source_revision,
+                                        request_id,
+                                        applied_size: outcome,
+                                    };
+                                    input_owner.during_control(&injector, send_session(&udp_sender, addr, reply)).await;
                                 }
                                 _ => {}
                             },
@@ -4667,9 +5025,11 @@ mod failure_admission_tests {
                 audio_active: false,
                 supports_input: true,
                 input_target: Some(InputTarget::Desktop),
+                original_window_size: None,
                 #[cfg(target_os = "macos")]
                 input_probe: |_| Ok(()),
                 last_input_error: None,
+                last_focus: (0, 0),
                 source_revision: 10,
                 video_sequence: Arc::new(std::sync::atomic::AtomicU16::new(37)),
                 #[cfg(target_os = "windows")]

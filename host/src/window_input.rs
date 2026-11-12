@@ -31,6 +31,7 @@ unsafe extern "C" {
     fn AXUIElementSetAttributeValue(element: CFTypeRef, name: CFTypeRef, value: CFTypeRef) -> i32;
     fn AXUIElementPerformAction(element: CFTypeRef, action: CFTypeRef) -> i32;
     fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
+    fn AXValueCreate(kind: u32, value: *const std::ffi::c_void) -> CFTypeRef;
     fn AXValueGetType(value: CFTypeRef) -> u32;
     fn AXValueGetValue(value: CFTypeRef, kind: u32, output: *mut std::ffi::c_void) -> bool;
     fn CGWindowListCopyWindowInfo(options: u32, window: u32) -> CFTypeRef;
@@ -283,6 +284,149 @@ fn hidden_fullscreen_caption(child: &WindowDescription, titlebar: &WindowDescrip
 pub(crate) fn native_frame_caption_ids() -> Result<std::collections::HashSet<u32>, String> {
     Ok(catalog_frame_caption_ids(&windows(16, 0)?))
 }
+
+pub(crate) fn window_has_parked_fullscreen_titlebar(id: u32) -> bool {
+    let Ok(list) = windows(16, 0) else { return false; };
+    let Some(content) = list.iter().find(|w| w.id == id && w.layer == 0) else { return false; };
+    list.iter().any(|titlebar| {
+        titlebar.id != content.id
+            && titlebar.pid == content.pid
+            && titlebar.layer == 0
+            && titlebar.unnamed
+            && titlebar.alpha == 0.
+            && (titlebar.bounds.size.height - 32.).abs() <= 1.
+            && (content.bounds.origin.x - titlebar.bounds.origin.x).abs() <= 1.
+            && (content.bounds.size.width - titlebar.bounds.size.width).abs() <= 1.
+            && (content.bounds.origin.y - titlebar.bounds.origin.y - titlebar.bounds.size.height).abs() <= 1.
+    })
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DetachedOverlayPlan {
+    pub union_bounds: CGRect,
+    pub excluded_window_ids: Vec<u32>,
+}
+
+fn union_rect(a: CGRect, b: CGRect) -> CGRect {
+    let min_x = a.origin.x.min(b.origin.x);
+    let min_y = a.origin.y.min(b.origin.y);
+    let max_x = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);
+    let max_y = (a.origin.y + a.size.height).max(b.origin.y + b.size.height);
+    CGRect::new(
+        &CGPoint::new(min_x, min_y),
+        &CGSize::new((max_x - min_x).max(2.0), (max_y - min_y).max(2.0)),
+    )
+}
+
+fn rects_related(parent: CGRect, child: CGRect) -> bool {
+    let margin = 160.0;
+    child.origin.x <= parent.origin.x + parent.size.width + margin
+        && child.origin.x + child.size.width >= parent.origin.x - margin
+        && child.origin.y <= parent.origin.y + parent.size.height + margin
+        && child.origin.y + child.size.height >= parent.origin.y - margin
+}
+
+fn ax_window_is_dialog_or_sheet(
+    application: &CFType,
+    list: &[WindowDescription],
+    pid: i32,
+    candidate: &WindowDescription,
+) -> bool {
+    let Some(ax_windows) = attr(application, "AXWindows").and_then(|v| v.downcast::<CFArray>()) else {
+        return false;
+    };
+    for raw in ax_windows.iter() {
+        let win = unsafe { CFType::wrap_under_get_rule(*raw) };
+        let Some(bounds) = ax_window_bounds(&win) else { continue; };
+        if focused_window_id(list, pid, bounds) != Some(candidate.id) {
+            continue;
+        }
+        if attr(&win, "AXModal")
+            .and_then(|v| v.downcast::<CFBoolean>())
+            .is_some_and(|v| v.into())
+        {
+            return true;
+        }
+        if let Some(subrole) = attr(&win, "AXSubrole").and_then(|v| v.downcast::<CFString>()) {
+            let s = subrole.to_string();
+            if matches!(
+                s.as_str(),
+                "AXDialog" | "AXSystemDialog" | "AXSheet" | "AXFloatingWindow" | "AXPopover"
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn active_detached_overlay(id: u32, pid: i32) -> Option<DetachedOverlayPlan> {
+    if id == 0 || pid <= 0 {
+        return None;
+    }
+    let raw = unsafe { AXUIElementCreateApplication(pid) };
+    if raw.is_null() {
+        return None;
+    }
+    let application = unsafe { CFType::wrap_under_create_rule(raw) };
+    unsafe {
+        AXUIElementSetMessagingTimeout(application.as_CFTypeRef(), 0.04);
+    }
+    let frontmost: bool = attr(&application, "AXFrontmost")
+        .and_then(|v| v.downcast::<CFBoolean>())
+        .map(Into::into)
+        .unwrap_or(false);
+    if !frontmost {
+        return None;
+    }
+    let list = windows(1 | 16, 0).ok()?;
+    let selected_idx = list
+        .iter()
+        .position(|w| w.id == id && w.pid == pid && w.visible && w.alpha > 0.)?;
+    let selected_win = list[selected_idx];
+    // If another process covers the top of this window stack, do not switch to display capture.
+    if list[..selected_idx]
+        .iter()
+        .any(|w| w.pid != pid && w.visible && w.alpha > 0. && w.layer == 0 && rects_related(selected_win.bounds, w.bounds))
+    {
+        return None;
+    }
+    let mut overlay_ids = std::collections::HashSet::new();
+    let mut union = selected_win.bounds;
+    for w in &list[..selected_idx] {
+        if w.pid != pid || !w.visible || w.alpha <= 0. {
+            continue;
+        }
+        if frame_accessory(w, &selected_win) {
+            continue;
+        }
+        if w.layer >= 3 && w.bounds.size.width >= 16.0 && w.bounds.size.height >= 16.0 && rects_related(selected_win.bounds, w.bounds) {
+            overlay_ids.insert(w.id);
+            union = union_rect(union, w.bounds);
+        } else if w.layer == 0 {
+            if ax_window_is_dialog_or_sheet(&application, &list, pid, w) && rects_related(selected_win.bounds, w.bounds) {
+                overlay_ids.insert(w.id);
+                union = union_rect(union, w.bounds);
+            } else {
+                // Another independent standard window of the same app is above `selected_win`.
+                return None;
+            }
+        }
+    }
+    if overlay_ids.is_empty() {
+        return None;
+    }
+    let excluded_window_ids = list
+        .iter()
+        .filter(|w| w.pid == pid && w.id != id && !overlay_ids.contains(&w.id) && w.layer == 0)
+        .map(|w| w.id)
+        .collect();
+    Some(DetachedOverlayPlan {
+        union_bounds: union,
+        excluded_window_ids,
+    })
+}
+
 fn front_of_app(windows: &[WindowDescription], pid: i32) -> Option<u32> {
     windows
         .iter()
@@ -457,14 +601,181 @@ impl WindowTarget {
         }
         Ok(w.bounds)
     }
+}
+
+pub(crate) fn focus_window(id: u32, pid: i32) -> Result<(), String> {
+    let target = WindowTarget::new(id, pid)?;
+    target
+        .focus_for_input(
+            None,
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(120)),
+        )
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn window_logical_size(id: u32, pid: i32) -> Result<(u32, u32), String> {
+    if id == 0 || pid <= 0 {
+        return Err("Invalid selected window identity".into());
+    }
+    let desc = current(id, pid)?;
+    let w = (desc.bounds.size.width.round() as i64).clamp(2, 16_384) as u32;
+    let h = (desc.bounds.size.height.round() as i64).clamp(2, 16_384) as u32;
+    Ok((w, h))
+}
+
+pub(crate) fn resize_window(
+    id: u32,
+    pid: i32,
+    target_width: u32,
+    target_height: u32,
+) -> Result<(u32, u32), String> {
+    if id == 0 || pid <= 0 {
+        return Err("无效的远端窗口标识".into());
+    }
+    if !(240..=7680).contains(&target_width) || !(240..=7680).contains(&target_height) {
+        return Err("目标窗口尺寸超出允许范围 (240..=7680)".into());
+    }
+    if !permission_available() {
+        return Err("需要在远端 Mac 开启辅助功能权限才能调整窗口尺寸".into());
+    }
+    let snapshot = current(id, pid)?;
+    let raw_app = unsafe { AXUIElementCreateApplication(pid) };
+    if raw_app.is_null() {
+        return Err("无法连接远端应用的辅助功能接口".into());
+    }
+    let application = unsafe { CFType::wrap_under_create_rule(raw_app) };
+    unsafe {
+        AXUIElementSetMessagingTimeout(application.as_CFTypeRef(), 0.25);
+    }
+    let ax_windows = attr(&application, "AXWindows")
+        .and_then(|v| v.downcast::<CFArray>())
+        .ok_or_else(|| "无法枚举远端应用窗口列表".to_string())?;
+    let on_screen = windows(1 | 16, 0).unwrap_or_default();
+    let mut matched = None;
+    for raw in ax_windows.iter() {
+        let w = unsafe { CFType::wrap_under_get_rule(*raw) };
+        let mut owner_pid = 0;
+        if unsafe { AXUIElementGetPid(w.as_CFTypeRef(), &mut owner_pid) } != 0 || owner_pid != pid {
+            continue;
+        }
+        let Some(bounds) = ax_window_bounds(&w) else {
+            continue;
+        };
+        let exact_id = focused_window_id(&on_screen, pid, bounds) == Some(id);
+        let exact_snapshot = (bounds.origin.x - snapshot.bounds.origin.x).abs() <= 1.0
+            && (bounds.origin.y - snapshot.bounds.origin.y).abs() <= 1.0
+            && (bounds.size.width - snapshot.bounds.size.width).abs() <= 1.0
+            && (bounds.size.height - snapshot.bounds.size.height).abs() <= 1.0;
+        if exact_id || exact_snapshot {
+            if matched.is_some() {
+                return Err("同名或重叠窗口几何存在歧义，已拒绝改尺寸以保护其他窗口".into());
+            }
+            matched = Some(w);
+        }
+    }
+    let window = matched.ok_or_else(|| "未定位到对应的远端可缩放窗口（可能已最小化或关闭）".to_string())?;
+    if attr(&window, "AXFullScreen")
+        .and_then(|v| v.downcast::<CFBoolean>())
+        .is_some_and(|v| v.into())
+    {
+        return Err("该远端窗口处于全屏空间模式，请先退出全屏再调整窗口尺寸".into());
+    }
+    let size_attr = CFString::new("AXSize");
+    let mut settable = false;
+    if unsafe {
+        AXUIElementIsAttributeSettable(
+            window.as_CFTypeRef(),
+            size_attr.as_CFTypeRef(),
+            &mut settable,
+        )
+    } != 0
+        || !settable
+    {
+        return Err("该远端应用窗口固定了尺寸，不支持动态缩放".into());
+    }
+    let desired = CGSize::new(f64::from(target_width), f64::from(target_height));
+    let raw_val = unsafe { AXValueCreate(2, (&desired as *const CGSize).cast()) };
+    if raw_val.is_null() {
+        return Err("创建窗口尺寸参数失败".into());
+    }
+    let ax_val = unsafe { CFType::wrap_under_create_rule(raw_val) };
+    let status = unsafe {
+        AXUIElementSetAttributeValue(
+            window.as_CFTypeRef(),
+            size_attr.as_CFTypeRef(),
+            ax_val.as_CFTypeRef(),
+        )
+    };
+    if status != 0 {
+        return Err("远端应用未接受新的窗口尺寸".into());
+    }
+    let actual = ax_window_bounds(&window)
+        .map(|b| {
+            (
+                (b.size.width.round() as i64).clamp(2, 16_384) as u32,
+                (b.size.height.round() as i64).clamp(2, 16_384) as u32,
+            )
+        })
+        .or_else(|| window_logical_size(id, pid).ok())
+        .unwrap_or((target_width, target_height));
+    Ok(actual)
+}
+
+impl WindowTarget {
     fn app_frontmost(&self) -> bool {
         attr(&self.application, "AXFrontmost")
             .and_then(|v| v.downcast::<CFBoolean>())
             .is_some_and(|v| v.into())
     }
+    fn is_associated_child_or_popup(&self, list: &[WindowDescription], surface_id: u32) -> bool {
+        if surface_id == self.id {
+            return true;
+        }
+        let Some(surface_idx) = list
+            .iter()
+            .position(|w| w.id == surface_id && w.pid == self.pid && w.visible && w.alpha > 0.)
+        else {
+            return false;
+        };
+        let Some(selected_idx) = list
+            .iter()
+            .position(|w| w.id == self.id && w.pid == self.pid && w.visible && w.alpha > 0.)
+        else {
+            return false;
+        };
+        if surface_idx >= selected_idx {
+            return false;
+        }
+        let selected_win = &list[selected_idx];
+        if list[surface_idx + 1..selected_idx].iter().any(|w| {
+            w.pid == self.pid
+                && w.visible
+                && w.alpha > 0.
+                && w.layer == 0
+                && !frame_accessory(w, selected_win)
+                && !ax_window_is_dialog_or_sheet(&self.application, list, self.pid, w)
+        }) {
+            return false;
+        }
+        let surface = &list[surface_idx];
+        if frame_accessory(surface, selected_win) || (surface.layer == 0 && surface.generic_frame_caption) {
+            return true;
+        }
+        if surface.layer > 0 && rects_related(selected_win.bounds, surface.bounds) {
+            return true;
+        }
+        surface.layer == 0
+            && rects_related(selected_win.bounds, surface.bounds)
+            && ax_window_is_dialog_or_sheet(&self.application, list, self.pid, surface)
+    }
     pub fn focused(&self) -> bool {
-        self.app_frontmost() && windows(1 | 16, 0).is_ok_and(|list|
-            keyboard_focus(&list,self.id,self.pid,|require_editor|self.focused_ax_window(&list,require_editor)))
+        self.app_frontmost()
+            && windows(1 | 16, 0).is_ok_and(|list| {
+                keyboard_focus(&list, self.id, self.pid, |require_editor| {
+                    self.focused_ax_window(&list, require_editor)
+                }) || front_of_app(&list, self.pid)
+                    .is_some_and(|front| self.is_associated_child_or_popup(&list, front))
+            })
     }
     fn focused_ax_window(&self, list:&[WindowDescription], require_editor:bool)->Option<u32> {
         let window=attr(&self.application,"AXFocusedWindow")?;
@@ -480,9 +791,9 @@ impl WindowTarget {
     }
     fn raise_selected_window(&self, deadline: Option<std::time::Instant>) {
         let Ok(list) = windows(1 | 16, 0) else { return; };
-        let Some(windows) = attr(&self.application, "AXWindows").and_then(|v| v.downcast::<CFArray>()) else { return; };
+        let Some(ax_windows) = attr(&self.application, "AXWindows").and_then(|v| v.downcast::<CFArray>()) else { return; };
         let mut selected = None;
-        for raw in windows.iter() {
+        for raw in ax_windows.iter() {
             if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) { return; }
             let window = unsafe { CFType::wrap_under_get_rule(*raw) };
             let mut pid = 0;
@@ -496,6 +807,24 @@ impl WindowTarget {
         if let Some(window) = selected {
             if current(self.id, self.pid).is_err() { return; }
             if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) { return; }
+            let set_bool = |attribute: &str, value: CFBoolean| {
+                let attr_name = CFString::new(attribute);
+                unsafe {
+                    let _ = AXUIElementSetAttributeValue(
+                        window.as_CFTypeRef(),
+                        attr_name.as_CFTypeRef(),
+                        value.as_CFTypeRef(),
+                    );
+                }
+            };
+            if attr(&window, "AXMinimized")
+                .and_then(|v| v.downcast::<CFBoolean>())
+                .is_some_and(|v| v.into())
+            {
+                set_bool("AXMinimized", CFBoolean::false_value());
+            }
+            set_bool("AXMain", CFBoolean::true_value());
+            set_bool("AXFocused", CFBoolean::true_value());
             let action = CFString::new("AXRaise");
             unsafe { AXUIElementPerformAction(window.as_CFTypeRef(), action.as_CFTypeRef()); }
         }
@@ -530,15 +859,15 @@ impl WindowTarget {
         if !window.visible || window.alpha <= 0. {
             return Err("Restore the selected window on the host desktop before controlling it".into());
         }
-        let r = window.bounds;
+        let r = active_detached_overlay(self.id, self.pid)
+            .map(|plan| plan.union_bounds)
+            .unwrap_or(window.bounds);
         let p = crate::input_injector::normalized_pointer_location(x, y, r);
-        // Same-process window ordering excludes the wrong document or sheet.
-        // Cross-process hit testing below uses Accessibility, not the bounding box
-        // of Dock's transparent full-screen Stage Manager surface.
-        if top_at(list.iter().filter(|w| w.pid == self.pid), p) == Some(self.id) {
-            // The global HID path is allowed only after the public hit-test agrees
-            // the point belongs to the selected process. An AXApplication result
-            // is sufficient here; a window title or synthetic AX child is not used.
+        // Same-process window ordering allows the selected window and its own
+        // popups/menus/modal dialogs while excluding sibling document windows.
+        if top_at(list.iter().filter(|w| w.pid == self.pid), p)
+            .is_some_and(|top| top == self.id || self.is_associated_child_or_popup(&list, top))
+        {
             if pointer_hit_pid(p)? != self.pid {
                 return Err("Another application covers the selected point; foreground window input is blocked".into());
             }

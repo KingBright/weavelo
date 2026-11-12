@@ -205,6 +205,7 @@ enum class MobileSymbol(path: String) {
     Pan("M12 3v18 M3 12h18 M9 6l3-3 3 3 M9 18l3 3 3-3 M6 9l-3 3 3 3 M18 9l3 3-3 3"),
     ExpandVertical("M12 3v18 M8.5 6.5L12 3l3.5 3.5 M8.5 17.5L12 21l3.5-3.5 M5 3h14 M5 21h14"),
     Audio("M11 5L6 9H3v6h3l5 4z M15 8a6 6 0 0 1 0 8 M18 5a10 10 0 0 1 0 14"),
+    AudioMuted("M11 5L6 9H3v6h3l5 4z M16 9l6 6 M22 9l-6 6"),
     Notifications("M6 9a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4"),
     Rotate("M4 7a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M17 10h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2"),
     Collapse("M6 15l6-6 6 6"),
@@ -359,6 +360,7 @@ fun PrecisionCard(
     contentPadding: PaddingValues = PaddingValues(14.dp),
     onClick: (() -> Unit)? = null,
     enabled: Boolean = true,
+    verticalSpacing: Dp = 0.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val p = WeaveloTokens.colors
@@ -383,6 +385,7 @@ fun PrecisionCard(
                 if (onClick != null) mod.clickable(enabled = enabled, onClick = onClick) else mod
             }
             .padding(contentPadding),
+        verticalArrangement = Arrangement.spacedBy(verticalSpacing),
         content = content
     )
 }
@@ -677,6 +680,7 @@ fun PrecisionTextField(
     modifier: Modifier = Modifier,
     singleLine: Boolean = true,
     isError: Boolean = false,
+    monospace: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default
 ) {
     val p = WeaveloTokens.colors
@@ -687,6 +691,9 @@ fun PrecisionTextField(
         singleLine = singleLine,
         isError = isError,
         keyboardOptions = keyboardOptions,
+        textStyle = androidx.compose.ui.text.TextStyle(
+            fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default
+        ),
         shape = RoundedCornerShape(12.dp),
         colors = OutlinedTextFieldDefaults.colors(
             focusedTextColor = p.textPrimary,
@@ -812,6 +819,7 @@ fun PrecisionMenuItem(
     onClick: () -> Unit,
     enabled: Boolean = true,
     checked: Boolean = false,
+    subtitle: String? = null,
     destructive: Boolean = false
 ) {
     val p = WeaveloTokens.colors
@@ -839,15 +847,20 @@ fun PrecisionMenuItem(
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Icon(symbol.image, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
-        Text(
-            text = text,
-            color = fg,
-            fontSize = 13.sp,
-            fontWeight = if (checked || destructive) FontWeight.SemiBold else FontWeight.Medium,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = text,
+                color = fg,
+                fontSize = 13.sp,
+                fontWeight = if (checked || destructive) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(subtitle, color = p.textSecondary, fontSize = 11.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            }
+        }
         if (checked) {
             Icon(MobileSymbol.Check.image, contentDescription = null, tint = p.brand, modifier = Modifier.size(16.dp))
         }

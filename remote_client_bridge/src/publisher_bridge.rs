@@ -758,8 +758,24 @@ impl MobilePublisher {
                                             let updated=SubscriptionRequest{width,height,fps,bitrate_kbps,..sub.request.clone()};
                                             if !valid(&updated){reply(&sender,addr,SessionCommand::Error{request_id:id,reason:"Unsupported stream settings".into()}).await;continue;}
                                             if revision>sub.settings_revision{sub.settings_revision=revision;sub.request=updated;}
+                                            let stream=sub.screen_stream;
                                             let response=SessionCommand::Configured{id,revision:sub.settings_revision};
-                                            recompute(&peers,&shared);reply(&sender,addr,response).await;
+                                            recompute(&peers,&shared);
+                                            shared.lock().unwrap().request_view_keyframe(stream);
+                                            reply(&sender,addr,response).await;
+                                        }
+                                        SessionCommand::ResizeWindow{id,source_revision,request_id,target_size} if peers.contains_key(&addr)=>{
+                                            let response=match peers.get(&addr).and_then(|p|p.subscriptions.get(&id)) {
+                                                None=>SessionCommand::WindowResized{id,source_revision,request_id,applied_size:Err("独立应用订阅不存在或已关闭".into())},
+                                                Some(_) if source_revision!=0=>SessionCommand::WindowResized{id,source_revision,request_id,applied_size:Err("独立应用会话源版本已过期".into())},
+                                                Some(sub)=>{
+                                                    let source=sub.request.source;
+                                                    let applied=shared.lock().unwrap().set_window_target_size(source,target_size);
+                                                    if applied.is_ok() {shared_input.lock().unwrap().revoke_peer(addr);}
+                                                    SessionCommand::WindowResized{id,source_revision,request_id,applied_size:applied}
+                                                }
+                                            };
+                                            reply(&sender,addr,response).await;
                                         }
                                         SessionCommand::Unsubscribe{id} if peers.contains_key(&addr)=>{
                                             let peer=peers.get_mut(&addr).unwrap();
@@ -877,7 +893,8 @@ impl MobilePublisher {
         let ids=media.sources.iter().filter(|(id,entry)|matches!(id,CaptureSource::Window(_))
             && entry.enabled && entry.demand.subscriptions>0).map(|(id,_)|*id).collect::<Vec<_>>();
         serde_json::Value::Array(ids.into_iter().map(|source| {
-            serde_json::json!({"source":source,"artwork_epoch":media.sources[&source].artwork_epoch,"demand":media.screen_source_demand(source)})
+            let requested_size=media.sources[&source].target_window_size.map(|(w,h)|[w,h]);
+            serde_json::json!({"source":source,"artwork_epoch":media.sources[&source].artwork_epoch,"requested_size":requested_size,"demand":media.screen_source_demand(source)})
         }).collect())
     }
     pub fn set_application_artwork(&self,source:CaptureSource,grant:u64,epoch:u64,icon:Option<protocol::interaction::ApplicationIcon>)->Result<(),String> {

@@ -39,7 +39,7 @@ struct Root:std::enable_shared_from_this<Root> {
     winrt::event_token arrived{},closed{};bool listening=false;UINT32 pool_width=0,pool_height=0;
     std::shared_ptr<RawFrame> latest;HRESULT failure=S_OK;unsigned long long sequence=0;
     ScreenTimestamp timestamp;
-    explicit Root(ScreenTimestamp clock):timestamp(clock){}
+    explicit Root(ScreenTimestamp clock, const Device* shared=nullptr):gpu(shared ? *shared : Device()),timestamp(clock){}
     void fail(HRESULT hr){std::lock_guard<std::mutex> lock(state);failure=hr;changed.notify_all();}
     void initialize(UINT64 handle,bool window) {
         // Capture workers may tear down the last WinRT apartment before a
@@ -109,12 +109,52 @@ static std::shared_ptr<Root> capture_root(UINT64 handle,UINT32 source,bool windo
 }
 struct Slot {ComPtr<ID3D11Texture2D> texture;ComPtr<ID3D11VideoProcessorOutputView> output;bool used=false;};
 struct SlotLease {std::shared_ptr<Slot> slot;explicit SlotLease(std::shared_ptr<Slot> value):slot(std::move(value)){slot->used=true;}~SlotLease(){slot->used=false;}};
+struct PopupOverlay { HWND hwnd; RECT rect; };
+struct PopupEnumCtx { HWND target; HWND target_owner; DWORD target_pid; RECT outer; std::vector<PopupOverlay> list; };
+static BOOL CALLBACK enum_window_popups(HWND w, LPARAM lparam) {
+    auto* ctx = reinterpret_cast<PopupEnumCtx*>(lparam);
+    if (w == ctx->target) return FALSE; // Anything behind target is occluded by target
+    if (!IsWindowVisible(w) || IsIconic(w)) return TRUE;
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) return TRUE;
+    HWND owner = GetAncestor(w, GA_ROOTOWNER);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    const auto style = static_cast<ULONG>(GetWindowLongW(w, GWL_STYLE));
+    const bool associated = pid == ctx->target_pid &&
+        ((owner != nullptr && owner == ctx->target_owner) || (style & WS_POPUP) != 0);
+    if (!associated) return TRUE;
+    RECT r{};
+    if (FAILED(DwmGetWindowAttribute(w, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r))) || r.right - r.left < 4 || r.bottom - r.top < 4) {
+        if (!GetWindowRect(w, &r) || r.right - r.left < 4 || r.bottom - r.top < 4) return TRUE;
+    }
+    RECT clipped{};
+    if (IntersectRect(&clipped, &r, &ctx->outer)) {
+        ctx->list.push_back(PopupOverlay{w, r});
+    }
+    return TRUE;
+}
+static std::vector<PopupOverlay> collect_window_popups(UINT64 handle, bool window) {
+    if (!window) return {};
+    HWND hwnd = reinterpret_cast<HWND>(handle);
+    RECT outer{};
+    if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &outer, sizeof(outer)))) return {};
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    PopupEnumCtx ctx{hwnd, GetAncestor(hwnd, GA_ROOTOWNER), pid, outer, {}};
+    EnumWindows(enum_window_popups, reinterpret_cast<LPARAM>(&ctx));
+    std::reverse(ctx.list.begin(), ctx.list.end());
+    return ctx.list;
+}
+
 class Cropper {
     Root& root;ComPtr<ID3D11VideoDevice> device;ComPtr<ID3D11VideoContext1> context;
     ComPtr<ID3D11VideoProcessorEnumerator> enumerator;ComPtr<ID3D11VideoProcessor> processor;
+    ComPtr<ID3D11Texture2D> composite;UINT32 src_w=0,src_h=0;
     std::vector<std::shared_ptr<Slot>> slots;
+    std::map<HWND,std::shared_ptr<Root>> popup_roots;
 public:
-    Cropper(Root& root,UINT32 source_width,UINT32 source_height,const Plan& p):root(root) {
+    Cropper(Root& root,UINT32 source_width,UINT32 source_height,const Plan& p):root(root),src_w(source_width),src_h(source_height) {
         check(root.gpu.device.As(&device),"D3D11 video processor device");check(root.gpu.context.As(&context),"D3D11 video color context");
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC desc{};desc.InputFrameFormat=D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
         desc.InputWidth=source_width;desc.InputHeight=source_height;desc.OutputWidth=p.width;desc.OutputHeight=p.height;
@@ -130,12 +170,58 @@ public:
         }
     }
     bool available()const{return std::any_of(slots.begin(),slots.end(),[](const auto& s){return !s->used;});}
-    Raw crop(const std::shared_ptr<RawFrame>& frame,RECT base,const Plan& p,LONGLONG pts) {
+    Raw crop(const std::shared_ptr<RawFrame>& frame,RECT base,const Plan& p,LONGLONG pts,UINT64 handle=0,const std::vector<PopupOverlay>* popups=nullptr) {
         const auto submitted=Clock::now();
         auto slot=*std::find_if(slots.begin(),slots.end(),[](const auto& s){return !s->used;});
         auto lease=std::make_shared<SlotLease>(slot);
+        ID3D11Texture2D* source_tex = frame->texture.Get();
+        if (popups && !popups->empty() && handle != 0) {
+            RECT outer{};
+            if (SUCCEEDED(DwmGetWindowAttribute(reinterpret_cast<HWND>(handle), DWMWA_EXTENDED_FRAME_BOUNDS, &outer, sizeof(outer)))) {
+                for (auto it=popup_roots.begin();it!=popup_roots.end();) {
+                    if (std::none_of(popups->begin(),popups->end(),[&](const auto& p){return p.hwnd==it->first;})) it=popup_roots.erase(it);
+                    else ++it;
+                }
+                if (!composite) {
+                    D3D11_TEXTURE2D_DESC td{};
+                    frame->texture->GetDesc(&td);
+                    td.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
+                    td.MiscFlags=0;
+                    check(root.gpu.device->CreateTexture2D(&td,nullptr,&composite),"Window family GPU texture");
+                }
+                root.gpu.context->CopyResource(composite.Get(),frame->texture.Get());
+                for (const auto& pop:*popups) {
+                    auto& capture=popup_roots[pop.hwnd];
+                    if (!capture) {
+                        capture=std::make_shared<Root>(root.timestamp,&root.gpu);
+                        capture->initialize(reinterpret_cast<UINT64>(pop.hwnd),true);
+                    }
+                    std::shared_ptr<RawFrame> overlay;
+                    bool failed=false;
+                    {std::lock_guard<std::mutex> lock(capture->state);
+                        failed=FAILED(capture->failure);
+                        overlay=capture->latest;
+                    }
+                    if (failed) {capture.reset();continue;}
+                    if (!overlay || LONG(overlay->width)!=pop.rect.right-pop.rect.left ||
+                        LONG(overlay->height)!=pop.rect.bottom-pop.rect.top) continue;
+                    // Copy only this authorized window's native texture. No desktop
+                    // pixels or synchronous PrintWindow callbacks enter the stream.
+                    const LONG left=std::max(outer.left,pop.rect.left),top=std::max(outer.top,pop.rect.top);
+                    const LONG right=std::min(outer.right,pop.rect.right),bottom=std::min(outer.bottom,pop.rect.bottom);
+                    if (right<=left || bottom<=top) continue;
+                    D3D11_BOX box{UINT(left-pop.rect.left),UINT(top-pop.rect.top),0,
+                        UINT(right-pop.rect.left),UINT(bottom-pop.rect.top),1};
+                    root.gpu.context->CopySubresourceRegion(composite.Get(),0,UINT(left-outer.left),UINT(top-outer.top),0,
+                        overlay->texture.Get(),0,&box);
+                }
+                source_tex=composite.Get();
+            }
+        } else {
+            popup_roots.clear();
+        }
         ComPtr<ID3D11VideoProcessorInputView> input;D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC view{};view.ViewDimension=D3D11_VPIV_DIMENSION_TEXTURE2D;
-        check(device->CreateVideoProcessorInputView(frame->texture.Get(),enumerator.Get(),&view,&input),"WGC GPU input view");
+        check(device->CreateVideoProcessorInputView(source_tex,enumerator.Get(),&view,&input),"WGC GPU input view");
         RECT source{base.left+LONG(p.x),base.top+LONG(p.y),base.left+LONG(p.x+p.crop_width),base.top+LONG(p.y+p.crop_height)};
         RECT output{0,0,LONG(p.width),LONG(p.height)};ComPtr<ID3D11Query> completion;D3D11_QUERY_DESC query{D3D11_QUERY_EVENT,0};
         check(root.gpu.device->CreateQuery(&query,&completion),"GPU capture completion");
@@ -188,7 +274,7 @@ static void run(Worker* owner,UINT64 handle,UINT32 source,bool window,bool scope
         struct Dpi {DPI_AWARENESS_CONTEXT old;~Dpi(){if(old)SetThreadDpiAwarenessContext(old);}} dpi{previous};
         auto root=capture_root(handle,source,window,scoped,scope.data(),timestamp);{std::lock_guard<std::mutex> lock(owner->state);owner->root=root;}
         std::unique_ptr<Encoder> encoder;std::unique_ptr<Cropper> cropper;Plan active{},last{};
-        UINT32 raw_width=0,raw_height=0;unsigned long long submitted_sequence=0;LONGLONG pts=0;bool draining=false;
+        UINT32 raw_width=0,raw_height=0;unsigned long long submitted_sequence=0;LONGLONG pts=0;bool draining=false;bool had_popups=false;
         const Signal color{MFVideoTransferMatrix_BT709,MFVideoPrimaries_BT709,MFVideoTransFunc_sRGB,MFNominalRange_16_235};
         while(!owner->stop.load()) {
             if(encoder)encoder->drain(nullptr,context,packet);
@@ -200,16 +286,18 @@ static void run(Worker* owner,UINT64 handle,UINT32 source,bool window,bool scope
                 if(w>=2&&h>=2&&make_plan(context,w,h,&plan)) {
                     if(plan.x+plan.crop_width>w||plan.y+plan.crop_height>h||plan.width<2||plan.height<2||!plan.fps||!plan.kbps)
                         throw Failure{E_BOUNDS,"Invalid viewport geometry"};
+                    const auto popups=collect_window_popups(handle,window);
+                    const bool popup_dirty=!popups.empty()||had_popups;
                     const bool changed=draining||!encoder||active.width!=plan.width||active.height!=plan.height||active.fps!=plan.fps||active.kbps!=plan.kbps;
                     if(changed&&encoder&&encoder->inflight()) {if(!draining){encoder->finish_input();draining=true;}}
                     else {
                         if(changed){encoder.reset();cropper.reset();encoder=std::make_unique<Encoder>(root->gpu,plan.width,plan.height,plan.fps,plan.kbps*1000,color);active=plan;draining=false;}
                         if(!cropper||changed||raw_width!=frame->width||raw_height!=frame->height){cropper=std::make_unique<Cropper>(*root,frame->width,frame->height,plan);raw_width=frame->width;raw_height=frame->height;}
-                        const bool refresh=changed||owner->keyframe.load()||frame->sequence!=submitted_sequence||std::memcmp(&plan,&last,4*sizeof(UINT32))!=0;
+                        const bool refresh=changed||owner->keyframe.load()||frame->sequence!=submitted_sequence||popup_dirty||std::memcmp(&plan,&last,4*sizeof(UINT32))!=0;
                         if(refresh&&encoder->ready()&&cropper->available()&&admit(context,timestamp())) {
                             if(owner->keyframe.exchange(false))encoder->force_keyframe();
-                            auto raw=cropper->crop(frame,rect,plan,++pts*10'000'000/plan.fps);
-                            encoder->submit(std::move(raw));last=plan;submitted_sequence=frame->sequence;
+                            auto raw=cropper->crop(frame,rect,plan,++pts*10'000'000/plan.fps,handle,&popups);
+                            encoder->submit(std::move(raw));last=plan;submitted_sequence=frame->sequence;had_popups=!popups.empty();
                         }
                     }
                 }

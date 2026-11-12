@@ -90,6 +90,7 @@ fn generated_frame(
     Ok(MacVideoFrame {
         width,
         height,
+        window_crop: None,
         sample_buffer: std::sync::Arc::new(sample),
         capture_time_ms: (index * 33) as u32,
         timing: protocol::FrameTimingCheckpoints::default(),

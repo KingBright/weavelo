@@ -67,7 +67,7 @@ extern "C" fn frame(context:*mut c_void,sample:*mut c_void,width:u32,height:u32,
     if frames.count.fetch_add(1,Ordering::Relaxed)==0 {frames.first.store(capture_ts,Ordering::Relaxed);}
     frames.last.store(capture_ts,Ordering::Relaxed);
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u32;
-    frames.slot.push(MacVideoFrame {width,height,sample_buffer:Arc::new(sample_buffer),capture_time_ms:now,pacing_ts_us,timing:protocol::FrameTimingCheckpoints::new(capture_ts)});
+    frames.slot.push(MacVideoFrame {width,height,window_crop:None,sample_buffer:Arc::new(sample_buffer),capture_time_ms:now,pacing_ts_us,timing:protocol::FrameTimingCheckpoints::new(capture_ts)});
 }
 struct StopContext {
     frames:Arc<CameraFrames>,

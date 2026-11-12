@@ -106,11 +106,8 @@ internal fun AppUpdateCard(
             update.release?.let { release ->
                 PrecisionPillBadge(
                     text = "v${release.version}",
-                    containerColor = p.successSoft,
-                    contentColor = p.successText,
-                    borderColor = p.successBorder,
+                    tone = PillTone.EMERALD,
                     showDot = true,
-                    dotColor = p.onlineDot,
                 )
             }
         }
@@ -122,7 +119,7 @@ internal fun AppUpdateCard(
         update.release?.let { release ->
             Text(
                 trFormat("Latest version: v%s (Build %d)", release.version, release.code),
-                color = p.successText,
+                color = p.emeraldText,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
             )

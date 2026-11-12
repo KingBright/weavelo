@@ -38,7 +38,7 @@ fn main() {
             .define("NOMINMAX",None).define("WIN32_LEAN_AND_MEAN",None);
         if std::env::var("CARGO_CFG_TARGET_ENV").as_deref()==Ok("msvc"){build.flag("/EHsc");}
         build.compile("weavelo_camera");
-        for library in ["mfplat","mf","mfreadwrite","mfuuid","d3d11","dxgi","ole32","oleaut32","cfgmgr32","windowsapp","dwmapi"] {
+        for library in ["mfplat","mf","mfreadwrite","mfuuid","d3d11","dxgi","ole32","oleaut32","cfgmgr32","windowsapp","dwmapi","user32"] {
             println!("cargo:rustc-link-lib={library}");
         }
     }

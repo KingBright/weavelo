@@ -409,6 +409,7 @@ pub(crate) struct ViewSnapshot {
     pub input_status: String,
     pub input_eligible: bool,
     pub computer_use_status: ComputerUseVisualStatus,
+    pub window_resize_notice: Option<Result<(u32, u32), String>>,
 }
 impl OriginalOwner {
     pub fn new(backend: Arc<UnifiedServiceOwner>) -> Arc<Self> {
@@ -585,6 +586,7 @@ impl OriginalOwner {
                 input_status: "Connecting to selected device".into(),
                 input_eligible: false,
                 computer_use_status,
+                window_resize_notice: None,
             };
         }
         if let Some(e) = p.active() {
@@ -627,6 +629,7 @@ impl OriginalOwner {
                 },
                 input_eligible: s.can_input(),
                 computer_use_status,
+                window_resize_notice: s.window_resize_notice.clone(),
             }
         } else {
             let role = self.backend.runtime().lock().unwrap().role_state().clone();
@@ -652,6 +655,7 @@ impl OriginalOwner {
                 input_status: "Choose a device".into(),
                 input_eligible: false,
                 computer_use_status,
+                window_resize_notice: None,
             }
         }
     }
@@ -1405,8 +1409,34 @@ impl OriginalOwner {
             .ok_or("Selected connection changed; settings were not sent")?;
         // Identity check and source mutation share the same lock. A switch between
         // the UI's check and execution must never send settings to another device.
-        let source = e.session.source;
-        Self::switch_session_source(e, source, w, h, fps, bitrate)
+        if e.session.media.is_some() {
+            e.session.configure_stream(w, h, fps, bitrate)?;
+            Ok(())
+        } else {
+            let source = e.session.source;
+            Self::switch_session_source(e, source, w, h, fps, bitrate)
+        }
+    }
+
+    pub fn resize_active_window(
+        &self,
+        binding: &SourceViewBinding,
+        target_size: Option<(u32, u32)>,
+    ) -> Result<u32, Error> {
+        let mut p = self.pool.lock().unwrap();
+        let e = p.active_mut().ok_or("No active connection")?;
+        if !e.session.connected {
+            return Err("Selected connection is disconnected".into());
+        }
+        let connection = e.session.conn.clone();
+        binding
+            .apply(
+                &connection,
+                remote_core::shared_files::current_share_scope(),
+                || e.session.resize_window(target_size),
+            )
+            .ok_or("Selected connection changed; window resize was not sent")?
+            .map_err(Into::into)
     }
 
     // Call only while holding pool: explicit local user intent cannot race a
@@ -1781,13 +1811,16 @@ impl OriginalOwner {
     pub(crate) fn text_input_owner(&self) -> Option<(SourceViewBinding,remote_core::workspace_session::TextInputOwner)> {
         let pool=self.pool.lock().unwrap();
         let session=&pool.active()?.session;
-        if !session.can_input() {return None;}
+        if !session.can_prepare_text_input() {return None;}
         Some((SourceViewBinding::new(&session.conn,remote_core::shared_files::current_share_scope()),
             session.conn.text_input_owner(session.video_id,session.source_revision())?))
     }
     pub(crate) fn commit_viewing_text(&self,view:&SourceViewBinding,binding:remote_core::workspace_session::TextInputOwner,text:&str) -> Result<(),String> {
         let mut pool=self.pool.lock().unwrap();
         let session=&mut pool.active_mut().ok_or("remote connection closed")?.session;
+        if !session.can_input() {
+            let _ = session.retry_input();
+        }
         if !session.can_input() || !view.matches(&session.conn,remote_core::shared_files::current_share_scope())
             || session.conn.text_input_owner(session.video_id,session.source_revision())!=Some(binding) {
             return Err("text input source changed; focus the current remote picture".into());
@@ -1802,6 +1835,12 @@ impl OriginalOwner {
         self.revoke_computer_use();
         let Some(entry) = pool.active_mut() else { return false; };
         entry.session.retry_input()
+    }
+    pub(crate) fn focus_viewing_source(&self) -> bool {
+        let mut pool = self.pool.lock().unwrap();
+        self.revoke_computer_use();
+        let Some(entry) = pool.active_mut() else { return false; };
+        entry.session.focus_source()
     }
     pub fn queue_viewing_input(&self, event: InputEvent) -> bool {
         self.queue_input_for(None,event)

@@ -400,10 +400,10 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
         Unit
     }
     override fun resize(id: Int, width: Int, height: Int, density: Int) = call {
-        // Keep an app display's base dimensions stable. Its orientation is
-        // managed separately through owned task requests and geometry revisions.
-        check(!applications.containsKey(id)) { "Independent display geometry is fixed" }
         validate(width, height, density)
+        if (applications.containsKey(id)) {
+            cancelInput(id)
+        }
         owned(id).resize(width, height, density)
     }
     override fun release(id: Int) = call { owned(id); releaseOwned(id) }

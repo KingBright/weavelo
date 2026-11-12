@@ -740,5 +740,22 @@
   "Current version: v{version}": "当前版本：v{version}",
   "Current version: v{version} · {commit}": "当前版本：v{version} · {commit}",
   "product_components/icons/sound-muted.svg": "product_components/icons/sound-muted.svg",
-  "weavelo-icons/sound-muted.svg": "weavelo-icons/sound-muted.svg"
+  "weavelo-icons/sound-muted.svg": "weavelo-icons/sound-muted.svg",
+  "Window Stream & Layout": "窗口独立画质与尺寸",
+  "Isolated · Global defaults untouched": "独立会话 · 不修改全局默认",
+  "Reset default": "恢复默认",
+  "Stream Clarity Scale": "串流清晰度缩放",
+  "Native 100%": "原生 100%",
+  "HD 75%": "高清 75%",
+  "Std 50%": "标准 50%",
+  "Saver 35%": "省流 35%",
+  "Remote Window Size": "远端窗口布局尺寸",
+  "Auto-restores on exit": "断开或切源自动还原",
+  "Original size": "保持原尺寸",
+  "Fit viewport": "适配当前视口",
+  "900×1440 Portrait": "900×1440 竖屏",
+  "Remote window adapted to": "远端窗口已适配为",
+  "Window Frame Rate:": "窗口独立帧率：",
+  "Window Bitrate:": "窗口独立码率：",
+  "Custom window FPS and bitrate (kbps)": "自定义当前窗口帧率 (FPS) 与码率 (kbps)"
 }

@@ -244,9 +244,6 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = onDismiss,
-                shape = RoundedCornerShape(18.dp),
-                containerColor = p.surfaceRaised,
-                border = BorderStroke(1.dp, p.borderStrong)
             ) {
                 Column(
                     modifier = Modifier
@@ -714,11 +711,25 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 ?: selectedPane
             val settingsCurrent = state.connected && state.connectionGeneration == settingsGeneration &&
                 state.panes.any { it.id == pane.id && it.accepted } && (state.grid || state.selected == pane.id)
-            var fps by remember(pane.id) { mutableStateOf(pane.fps.toString()) }
-            var kbps by remember(pane.id) { mutableStateOf(pane.kbps.toString()) }
+            var fps by remember(pane.id, pane.fps) { mutableStateOf(pane.fps.toString()) }
+            var kbps by remember(pane.id, pane.kbps) { mutableStateOf(pane.kbps.toString()) }
             val naturalScroll by WeaveloClient.naturalScrollFlow.collectAsState()
+            val isWindowSource = pane.source.isWindow
+            val srcW = pane.source.width.coerceAtLeast(2)
+            val srcH = pane.source.height.coerceAtLeast(2)
+            val (encW, encH) = WorkspaceClient.scaledEncodeSize(srcW, srcH, pane.windowScalePercent)
+            val baseStreamPrefs = remember { context.getSharedPreferences("stream", android.content.Context.MODE_PRIVATE) }
+            val isWindowCustomized = isWindowSource && (
+                pane.windowScalePercent != 100 ||
+                    pane.windowLayoutPreset != "original" ||
+                    pane.fps != baseStreamPrefs.getInt("fps", 60) ||
+                    pane.kbps != baseStreamPrefs.getInt("bitrate_kbps", 20_000) ||
+                    pane.windowResizeNotice != null
+                )
+            val localMetrics = context.resources.displayMetrics
             PrecisionDialog(
-                title = tr("Stream settings"),
+                title = if (isWindowSource) tr("Window Stream & Layout") else tr("Stream settings"),
+                subtitle = if (isWindowSource) tr("Isolated · Global defaults untouched") else null,
                 onDismissRequest = { selectedSettings = null },
                 icon = MobileSymbol.Settings,
                 dismissButton = {
@@ -732,10 +743,18 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 confirmButton = {
                     PrecisionButton(
                         text = tr("Apply"),
+                        enabled = settingsCurrent,
                         onClick = {
                             val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
                             if (f != null && k != null && f > 0 && k > 0) {
-                                WorkspaceClient.settings(pane.id, sessionKey, settingsGeneration, fps = f, kbps = k)
+                                val (w, h) = WorkspaceClient.scaledEncodeSize(srcW, srcH, pane.windowScalePercent)
+                                WorkspaceClient.settings(
+                                    pane.id, sessionKey, settingsGeneration,
+                                    width = if (!pane.source.isCamera) w else null,
+                                    height = if (!pane.source.isCamera) h else null,
+                                    fps = f, kbps = k,
+                                    scalePercent = pane.windowScalePercent
+                                )
                                 selectedSettings = null
                             }
                         },
@@ -746,10 +765,148 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             ) {
                 Column(
                     modifier = Modifier
-                        .heightIn(max = 380.dp)
+                        .heightIn(max = 440.dp)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    if (!pane.source.isCamera) {
+                        PrecisionCard(sunken = true, contentPadding = PaddingValues(11.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = tr("Stream Clarity Scale"),
+                                    color = p.textPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    PrecisionPillBadge(
+                                        text = "${encW}×${encH}",
+                                        tone = PillTone.BRAND,
+                                        monospace = true
+                                    )
+                                    if (isWindowCustomized) {
+                                        PrecisionButton(
+                                            text = tr("Reset default"),
+                                            enabled = settingsCurrent,
+                                            style = PrecisionButtonStyle.SUBTLE,
+                                            compact = true,
+                                            onClick = {
+                                                WorkspaceClient.resetWindowOverride(pane.id, sessionKey, settingsGeneration, srcW, srcH)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            PrecisionSegmentedRow(
+                                options = listOf(
+                                    100 to tr("Native 100%"),
+                                    75 to tr("HD 75%"),
+                                    50 to tr("Std 50%"),
+                                    35 to tr("Saver 35%")
+                                ),
+                                selected = pane.windowScalePercent,
+                                enabled = settingsCurrent,
+                                modifier = Modifier.fillMaxWidth(),
+                                onSelect = { pct ->
+                                    val (w, h) = WorkspaceClient.scaledEncodeSize(srcW, srcH, pct)
+                                    WorkspaceClient.settings(
+                                        pane.id, sessionKey, settingsGeneration,
+                                        width = w, height = h,
+                                        scalePercent = pct
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    if (isWindowSource) {
+                        PrecisionCard(sunken = true, contentPadding = PaddingValues(11.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = tr("Remote Window Size"),
+                                    color = p.textPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = tr("Auto-restores on exit"),
+                                    color = p.textTertiary,
+                                    fontSize = 10.5.sp
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            val layoutRows = listOf(
+                                listOf(
+                                    "original" to tr("Original size"),
+                                    "fit_viewport" to tr("Fit viewport")
+                                ),
+                                listOf(
+                                    "1280x800" to "1280×800",
+                                    "1440x900" to "1440×900",
+                                    "900x1440" to tr("900×1440 Portrait")
+                                )
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                layoutRows.forEach { rowItems ->
+                                    PrecisionSegmentedRow(
+                                        options = rowItems,
+                                        selected = pane.windowLayoutPreset,
+                                        enabled = settingsCurrent,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        onSelect = { preset ->
+                                            val target = WorkspaceClient.presetWindowTargetSize(
+                                                preset,
+                                                localMetrics.widthPixels,
+                                                localMetrics.heightPixels
+                                            )
+                                            WorkspaceClient.resizeWindow(
+                                                pane.id, sessionKey, settingsGeneration,
+                                                preset = preset,
+                                                targetWidth = target?.first,
+                                                targetHeight = target?.second
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                            pane.windowResizeNotice?.let { notice ->
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = if (pane.windowResizeError) tr(notice) else "${tr("Remote window adapted to")} $notice",
+                                    color = if (pane.windowResizeError) p.dangerText else p.brand,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                    PrecisionSegmentedRow(
+                        options = listOf(
+                            30 to "30 FPS",
+                            60 to "60 FPS",
+                            120 to "120 FPS"
+                        ),
+                        selected = fps.toIntOrNull() ?: pane.fps,
+                        enabled = settingsCurrent,
+                        modifier = Modifier.fillMaxWidth(),
+                        onSelect = { selectedFps ->
+                            fps = selectedFps.toString()
+                            val currentKbps = kbps.toIntOrNull() ?: pane.kbps
+                            WorkspaceClient.settings(
+                                pane.id, sessionKey, settingsGeneration,
+                                fps = selectedFps,
+                                kbps = currentKbps.coerceAtLeast(500)
+                            )
+                        }
+                    )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         PrecisionTextField(
                             value = fps,
@@ -1086,16 +1243,33 @@ private fun WorkspaceVideo(
     var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
     val nativeViewport = remember(pane.id, sessionKey, generation) { java.util.concurrent.atomic.AtomicReference<GpuVideoSurface?>() }
-    LaunchedEffect(baseMeasured, dimensions, pane.accepted, keyboardVisible, imeVisible) {
+    LaunchedEffect(baseMeasured, dimensions, pane.windowScalePercent, pane.accepted, keyboardVisible, imeVisible) {
         if (!pane.accepted || keyboardVisible || imeVisible) return@LaunchedEffect
-        delay(250)
+        delay(200)
         val quarterTurn = pane.source.rotation % 180 != 0
-        (if (!pane.source.isCamera) MediaCodecPlayer.screenSize(dimensions.width,dimensions.height) else VideoDimensions.fitEncoder(dimensions.width, dimensions.height,
-            if (pane.source.isCamera) (if (quarterTurn) baseMeasured.height else baseMeasured.width).coerceAtMost(4096) else 4096,
-            if (pane.source.isCamera) (if (quarterTurn) baseMeasured.width else baseMeasured.height).coerceAtMost(4096) else 4096, 2, 2))
-            ?.takeIf { it.width >= 32 && it.height >= 32 }?.let {
+        if (!pane.source.isCamera) {
+            val (scaledW, scaledH) = WorkspaceClient.scaledEncodeSize(dimensions.width, dimensions.height, pane.windowScalePercent)
+            if (scaledW >= 32 && scaledH >= 32) {
+                WorkspaceClient.settings(pane.id, sessionKey, generation, width = scaledW, height = scaledH)
+            }
+        } else {
+            VideoDimensions.fitEncoder(
+                dimensions.width, dimensions.height,
+                (if (quarterTurn) baseMeasured.height else baseMeasured.width).coerceAtMost(4096),
+                (if (quarterTurn) baseMeasured.width else baseMeasured.height).coerceAtMost(4096), 2, 2
+            )?.takeIf { it.width >= 32 && it.height >= 32 }?.let {
                 WorkspaceClient.settings(pane.id, sessionKey, generation, width = it.width, height = it.height)
             }
+        }
+    }
+    LaunchedEffect(pane.id, sessionKey, generation, pane.accepted, pane.windowLayoutPreset, containerMeasured) {
+        if (!pane.accepted || !pane.source.isWindow || pane.windowLayoutPreset != "fit_viewport") return@LaunchedEffect
+        if (containerMeasured.width < 64 || containerMeasured.height < 64) return@LaunchedEffect
+        delay(220)
+        val (fitW, fitH) = WorkspaceClient.fitRemoteWindowViewport(containerMeasured.width, containerMeasured.height)
+        if (kotlin.math.abs(dimensions.width - fitW) >= 24 || kotlin.math.abs(dimensions.height - fitH) >= 24) {
+            WorkspaceClient.resizeWindow(pane.id, sessionKey, generation, preset = "fit_viewport", targetWidth = fitW, targetHeight = fitH)
+        }
     }
     LaunchedEffect(pane.id, sessionKey, generation, pane.accepted) {
         if (!pane.accepted || pane.source.isCamera) return@LaunchedEffect

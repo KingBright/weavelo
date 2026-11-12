@@ -332,25 +332,103 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) struct CapturePlan {
+    pub filter: screencapturekit::prelude::SCContentFilter,
+    pub stream_size: (u32, u32),
+    pub window_crop: Option<protocol::viewport::PixelRect>,
+    pub includes_children: bool,
+    pub family_display_mode: bool,
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn filter(
     source: CaptureSource,
 ) -> Result<(screencapturekit::prelude::SCContentFilter, (u32, u32)), Box<dyn Error + Send + Sync>>
 {
+    let plan = capture_plan(source)?;
+    let logical_pixels = plan
+        .window_crop
+        .map_or(plan.stream_size, |c| (c.width, c.height));
+    Ok((plan.filter, logical_pixels))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn capture_plan(
+    source: CaptureSource,
+) -> Result<CapturePlan, Box<dyn Error + Send + Sync>> {
     use screencapturekit::prelude::*;
     let content = SCShareableContent::get()?;
     match source {
         CaptureSource::Camera(_) => Err("Camera source requires native camera capture".into()),
         CaptureSource::Window(id) => {
-            let window = content
-                .windows()
-                .into_iter()
+            let all_windows = content.windows();
+            let window = all_windows
+                .iter()
                 .find(|window| window.window_id() == id)
                 .ok_or("selected window is no longer available")?;
             if !mac_window_is_shareable(window.window_layer(), window.is_on_screen()) {
                 return Err("Selected window is a hidden auxiliary panel. Choose an open application window.".into());
             }
-            let filter = SCContentFilter::create().with_window(&window).build();
-            let size = window_pixel_size(&window, &filter);
+            let includes_children = !crate::window_input::window_has_parked_fullscreen_titlebar(id);
+            if let Some(app) = window.owning_application()
+                && let Some(overlay) = crate::window_input::active_detached_overlay(id, app.process_id())
+            {
+                let cx = overlay.union_bounds.origin.x + overlay.union_bounds.size.width * 0.5;
+                let cy = overlay.union_bounds.origin.y + overlay.union_bounds.size.height * 0.5;
+                for display in content.displays() {
+                    let probe = SCContentFilter::create().with_display(&display).build();
+                    let drect = probe.content_rect();
+                    let (dx, dy, dw, dh) = (
+                        drect.origin().x,
+                        drect.origin().y,
+                        drect.size().width,
+                        drect.size().height,
+                    );
+                    if dw < 2.0 || dh < 2.0 || cx < dx || cx >= dx + dw || cy < dy || cy >= dy + dh {
+                        continue;
+                    }
+                    let x0 = overlay.union_bounds.origin.x.max(dx);
+                    let y0 = overlay.union_bounds.origin.y.max(dy);
+                    let x1 = (overlay.union_bounds.origin.x + overlay.union_bounds.size.width).min(dx + dw);
+                    let y1 = (overlay.union_bounds.origin.y + overlay.union_bounds.size.height).min(dy + dh);
+                    if x1 - x0 >= 4.0 && y1 - y0 >= 4.0 {
+                        let excluded_refs: Vec<_> = all_windows
+                            .iter()
+                            .filter(|w| overlay.excluded_window_ids.contains(&w.window_id()))
+                            .collect();
+                        let fam_filter = SCContentFilter::create()
+                            .with_display(&display)
+                            .with_including_applications(&[&app], &excluded_refs)
+                            .build();
+                        let scale = f64::from(fam_filter.point_pixel_scale()).clamp(1.0, 4.0);
+                        let disp_px_w = (((dw * scale).round() as u32) & !1).max(2);
+                        let disp_px_h = (((dh * scale).round() as u32) & !1).max(2);
+                        let crop_x = (((x0 - dx) * scale).floor().max(0.0) as u32) & !1;
+                        let crop_y = (((y0 - dy) * scale).floor().max(0.0) as u32) & !1;
+                        let max_w = disp_px_w.saturating_sub(crop_x) & !1;
+                        let max_h = disp_px_h.saturating_sub(crop_y) & !1;
+                        let crop_w = ((((x1 - x0) * scale).round() as u32) & !1).clamp(2, max_w.max(2));
+                        let crop_h = ((((y1 - y0) * scale).round() as u32) & !1).clamp(2, max_h.max(2));
+                        if crop_x + crop_w <= disp_px_w && crop_y + crop_h <= disp_px_h {
+                            return Ok(CapturePlan {
+                                filter: fam_filter,
+                                stream_size: (disp_px_w, disp_px_h),
+                                window_crop: Some(protocol::viewport::PixelRect {
+                                    x: crop_x,
+                                    y: crop_y,
+                                    width: crop_w,
+                                    height: crop_h,
+                                }),
+                                includes_children,
+                                family_display_mode: true,
+                            });
+                        }
+                    }
+                    break;
+                }
+            }
+            let filter = SCContentFilter::create().with_window(window).build();
+            let size = window_pixel_size(window, &filter);
             let scale = f64::from(filter.point_pixel_scale()).clamp(1.0, 4.0);
             let frame = window.frame().size();
             // Compare point sizes, never Retina pixels with logical bounds.
@@ -360,7 +438,13 @@ pub(crate) fn filter(
                 let title = window.title().ok_or("The selected window has no stable title")?;
                 crate::window_input::WindowTarget::new(id, app.process_id())?.restore_for_capture(&title)?;
             }
-            Ok((filter, size))
+            Ok(CapturePlan {
+                filter,
+                stream_size: size,
+                window_crop: None,
+                includes_children,
+                family_display_mode: false,
+            })
         }
         CaptureSource::MainDisplay | CaptureSource::Display(_) => {
             let id = match source {
@@ -372,10 +456,13 @@ pub(crate) fn filter(
                 .into_iter()
                 .find(|display| display.display_id() == id)
                 .ok_or("selected display is no longer available")?;
-            Ok((
-                SCContentFilter::create().with_display(&display).build(),
-                (display.width(), display.height()),
-            ))
+            Ok(CapturePlan {
+                filter: SCContentFilter::create().with_display(&display).build(),
+                stream_size: (display.width(), display.height()),
+                window_crop: None,
+                includes_children: false,
+                family_display_mode: false,
+            })
         }
     }
 }

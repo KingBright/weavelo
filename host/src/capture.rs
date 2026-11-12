@@ -30,6 +30,7 @@ impl StreamHealth {
 pub struct MacVideoFrame {
     pub width: u32,
     pub height: u32,
+    pub window_crop: Option<protocol::viewport::PixelRect>,
     pub sample_buffer: Arc<CMSampleBuffer>,
     pub capture_time_ms: u32,
     pub timing: protocol::FrameTimingCheckpoints,
@@ -39,10 +40,10 @@ pub struct MacVideoFrame {
 
 impl VideoFrame for MacVideoFrame {
     fn width(&self) -> u32 {
-        self.width
+        self.window_crop.map_or(self.width, |c| c.width)
     }
     fn height(&self) -> u32 {
-        self.height
+        self.window_crop.map_or(self.height, |c| c.height)
     }
 
     fn handle_kind(&self) -> VideoFrameHandleKind {
@@ -54,6 +55,7 @@ struct StreamOutput {
     slot: Arc<remote_core::LatestFrameSlot<MacVideoFrame>>,
     source: protocol::session::CaptureSource,
     resources: Option<Arc<crate::lifecycle::Resources>>,
+    window_crop: Arc<std::sync::Mutex<Option<protocol::viewport::PixelRect>>>,
     last_format: std::sync::atomic::AtomicU64,
 }
 
@@ -87,9 +89,11 @@ impl SCStreamOutputTrait for StreamOutput {
                 self.last_format.store(format, Relaxed);
             }
         }
+        let active_crop = *self.window_crop.lock().unwrap_or_else(|e| e.into_inner());
         let frame = MacVideoFrame {
             width: buffer.width() as u32,
             height: buffer.height() as u32,
+            window_crop: active_crop,
             sample_buffer: Arc::new(sample),
             capture_time_ms: now_ms,
             timing: protocol::FrameTimingCheckpoints::new(capture_ts_us),
@@ -113,6 +117,9 @@ pub struct MacVideoCapturer {
     target_width: u32,
     source: protocol::session::CaptureSource,
     source_size: (u32, u32),
+    includes_children: bool,
+    family_display_mode: bool,
+    window_crop: Arc<std::sync::Mutex<Option<protocol::viewport::PixelRect>>>,
     geometry_checked: std::time::Instant,
     target_height: u32,
     target_fps: u32,
@@ -134,6 +141,9 @@ impl MacVideoCapturer {
             target_width,
             source: protocol::session::CaptureSource::MainDisplay,
             source_size: (0, 0),
+            includes_children: false,
+            family_display_mode: false,
+            window_crop: Arc::new(std::sync::Mutex::new(None)),
             geometry_checked: std::time::Instant::now(),
             target_height,
             target_fps,
@@ -186,7 +196,7 @@ impl MacVideoCapturer {
         Ok(())
     }
 
-    fn configuration(&self, size: (u32, u32)) -> SCStreamConfiguration {
+    fn configuration(&self, size: (u32, u32), includes_children: bool, family_display_mode: bool) -> SCStreamConfiguration {
         // Preserve the selected source's native pixels. Each independent viewer
         // crops/scales its IOSurface on the GPU, so zoom never magnifies a
         // previously downscaled 1080p capture of a Retina window/display.
@@ -202,18 +212,13 @@ impl MacVideoCapturer {
         config.set_pixel_format(screencapturekit::stream::configuration::PixelFormat::YCbCr_420v);
         config.set_color_matrix(&crate::video_color::capture_yuv_matrix());
         config.set_shows_cursor(false);
-        if matches!(self.source, protocol::session::CaptureSource::Window(_)) {
-            // The visual rectangle must be the same rectangle used for normalized input.
+        if matches!(self.source, protocol::session::CaptureSource::Window(_)) && !family_display_mode {
             // Shadows are decorations outside the AX/CG window bounds.
             config.set_ignores_shadows_single_window(true);
-            // SCK otherwise includes associated native windows by default. In
-            // fullscreen AppKit parks a hidden titlebar above the selected
-            // content; that extra 32pt changes scaling without changing its
-            // input bounds. A fixed-window source owns this window only.
-            config.set_includes_child_windows(false);
+            // Include associated child popovers/menus/sheets unless AppKit fullscreen
+            // parked a hidden 32pt titlebar above the content window.
+            config.set_includes_child_windows(includes_children);
             config.set_scales_to_fit(true);
-            // A selected window owns its full content even when Stage Manager
-            // places its thumbnail partly outside the desktop's visible clip.
             config.set_ignore_global_clip_single_window(true);
             config.set_capture_resolution_type(
                 screencapturekit::stream::configuration::SCCaptureResolutionType::Best,
@@ -222,12 +227,22 @@ impl MacVideoCapturer {
         config
     }
 
+    pub(crate) fn invalidate_geometry_check(&mut self) {
+        self.geometry_checked = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or_else(std::time::Instant::now);
+    }
+
     pub fn update_resolution_and_fps(
         &mut self,
         width: u32,
         height: u32,
         fps: u32,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if !matches!(self.source, protocol::session::CaptureSource::Camera(_)) {
+            self.invalidate_geometry_check();
+            let _ = self.refresh_geometry();
+        }
         if (self.target_width, self.target_height, self.target_fps) == (width, height, fps) {
             return Ok(());
         }
@@ -242,27 +257,37 @@ impl MacVideoCapturer {
             return Ok(());
         }
         if let Some(stream) = &self.stream {
-            stream.update_configuration(&self.configuration(self.source_size))?;
+            stream.update_configuration(&self.configuration(self.source_size, self.includes_children, self.family_display_mode))?;
         }
         Ok(())
     }
-    fn refresh_geometry(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if self.geometry_checked.elapsed() < std::time::Duration::from_secs(1) {
-            return Ok(());
+    fn refresh_geometry(&mut self) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        let interval = if matches!(self.source, protocol::session::CaptureSource::Window(_)) {
+            std::time::Duration::from_millis(250)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        if self.geometry_checked.elapsed() < interval {
+            return Ok(false);
         }
         self.geometry_checked = std::time::Instant::now();
         if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
-            return if self.camera.as_ref().is_some_and(|camera|camera.is_running()) {Ok(())}
+            return if self.camera.as_ref().is_some_and(|camera|camera.is_running()) {Ok(false)}
                 else {Err("Camera stopped or its permission was revoked".into())};
         }
-        let (_, size) = crate::capture_sources::filter(self.source)?;
-        if size != self.source_size {
-            self.source_size = size;
+        let plan = crate::capture_sources::capture_plan(self.source)?;
+        if plan.family_display_mode != self.family_display_mode {
+            return Ok(true);
+        }
+        *self.window_crop.lock().unwrap_or_else(|e| e.into_inner()) = plan.window_crop;
+        if (plan.stream_size, plan.includes_children) != (self.source_size, self.includes_children) {
+            self.source_size = plan.stream_size;
+            self.includes_children = plan.includes_children;
             if let Some(stream) = &self.stream {
-                stream.update_configuration(&self.configuration(size))?;
+                stream.update_configuration(&self.configuration(plan.stream_size, plan.includes_children, plan.family_display_mode))?;
             }
         }
-        Ok(())
+        Ok(false)
     }
     pub(crate) fn update_capture_fps(&mut self,fps:u32)->Result<(),Box<dyn Error+Send+Sync>> {
         self.update_resolution_and_fps(self.target_width,self.target_height,fps)
@@ -278,20 +303,24 @@ impl VideoCapturer for MacVideoCapturer {
         if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
             return self.start_camera();
         }
-        let (filter, size) = crate::capture_sources::filter(self.source)?;
-        self.source_size = size;
-        let config = self.configuration(size);
+        let plan = crate::capture_sources::capture_plan(self.source)?;
+        self.source_size = plan.stream_size;
+        self.includes_children = plan.includes_children;
+        self.family_display_mode = plan.family_display_mode;
+        *self.window_crop.lock().unwrap_or_else(|e| e.into_inner()) = plan.window_crop;
+        let config = self.configuration(plan.stream_size, plan.includes_children, plan.family_display_mode);
         let output = StreamOutput {
             slot: self.slot.clone(),
             source: self.source,
             resources: self.resources.clone(),
+            window_crop: self.window_crop.clone(),
             last_format: std::sync::atomic::AtomicU64::new(0),
         };
 
         // A late callback belongs to this capture generation only. A restart
         // must never inherit its old stream's stop/error signal.
         let failure=self.stream_health.restart();
-        let mut stream = SCStream::new_with_delegate(&filter, &config,StreamDelegate(failure));
+        let mut stream = SCStream::new_with_delegate(&plan.filter, &config,StreamDelegate(failure));
         stream.add_output_handler(output, SCStreamOutputType::Screen);
         stream.start_capture()?;
 
@@ -346,10 +375,18 @@ impl VideoCapturer for MacVideoCapturer {
             if !self.camera_started {return Err("capture owner has ended".into());}
             self.await_owned_stop().await?;self.start_camera()?;
         }
-        let health=self.stream_health.current();
+        let mut health=self.stream_health.current();
         loop {
             if let Some(reason)=health.reason(){return Err(format!("Native screen capture stopped: {reason}").into());}
-            self.refresh_geometry()?;
+            if self.refresh_geometry()? {
+                self.stop_owned_stream();
+                self.await_owned_stop().await?;
+                self.minimum_capture_ts_us = remote_core::timing::quanta_now_us();
+                drop(self.slot.take());
+                self.start().await?;
+                health = self.stream_health.current();
+                continue;
+            }
             let next=tokio::select!{
                 _=health.changed.notified()=>continue,
                 frame=tokio::time::timeout(

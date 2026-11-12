@@ -106,10 +106,32 @@ impl Default for UiPreferences {
     }
 }
 
+fn default_window_clarity_percent() -> u32 {
+    100
+}
+
+fn default_window_layout_preset() -> String {
+    "original".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowAppPreference {
+    #[serde(default = "default_window_clarity_percent")]
+    pub clarity_percent: u32,
+    #[serde(default = "default_window_layout_preset")]
+    pub layout_preset: String,
+    #[serde(default = "default_fps")]
+    pub fps: u32,
+    #[serde(default = "default_bitrate_kbps")]
+    pub bitrate_kbps: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UserPreferences {
     #[serde(default)]
     pub stream: StreamPreferences,
+    #[serde(default)]
+    pub window_overrides: std::collections::BTreeMap<String, WindowAppPreference>,
     #[serde(default)]
     pub side_services: SideServicePreferences,
     #[serde(default)]
@@ -119,6 +141,16 @@ pub struct UserPreferences {
 }
 
 impl UserPreferences {
+    pub fn window_override_key(device_id: &str, application: &str) -> Option<String> {
+        let dev = device_id.trim();
+        let app = application.trim();
+        if dev.is_empty() || app.is_empty() {
+            None
+        } else {
+            Some(format!("{dev}::{app}"))
+        }
+    }
+
     pub fn default_preferences_dir() -> PathBuf {
         default_app_private_mesh_dir()
     }

@@ -38,6 +38,7 @@ pub(crate) struct Source {
     pub artwork: Option<Option<protocol::interaction::ApplicationIcon>>,
     pub artwork_epoch: u64,
     pub catalog_icon: Option<protocol::interaction::ApplicationIcon>,
+    pub target_window_size: Option<(u32, u32)>,
 }
 pub(crate) struct ActiveRequest<'a> {
     pub stream: u64,
@@ -69,7 +70,7 @@ impl MediaSources {
         this.sources.insert(CaptureSource::MainDisplay,Source {
             info:CaptureSourceInfo {source:CaptureSource::MainDisplay,title:"Android selected screen or app".into(),
                 application:"MediaProjection".into(),process_id:None,width:1080,height:1920,supports_input:false,camera:None},
-            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,
+            enabled:screen,audio:screen&&audio,grant:1,demand:CaptureDemand{epoch:1,grant:1,..Default::default()},capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,target_window_size:None,
         });this
     }
     fn next(&mut self)->u64 {
@@ -95,7 +96,7 @@ impl MediaSources {
                 existing.info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,target_window_size:None,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }Ok(bindings)
     }
@@ -120,7 +121,7 @@ impl MediaSources {
                 let id=info.source;self.sources.get_mut(&id).unwrap().info=info;continue;
             }
             let epoch=self.next();
-            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,
+            self.sources.insert(info.source,Source{info,enabled:true,audio:false,grant:epoch,capture_rotation:0,artwork:None,artwork_epoch:1,catalog_icon:None,target_window_size:None,
                 demand:CaptureDemand{epoch,grant:epoch,..Default::default()}});
         }
         Ok(())
@@ -326,11 +327,36 @@ impl MediaSources {
             let entry=self.sources.get_mut(&id).unwrap();
             if next.subscriptions==0 && entry.demand.subscriptions>0 {
                 entry.artwork=None;
+                entry.target_window_size=None;
                 // A quick reconnect can reuse the still-closing native worker.
                 // Its cached icon may be republished, but old completions cannot.
                 entry.artwork_epoch=entry.artwork_epoch.checked_add(1).expect("artwork generation exhausted");
             }
             entry.demand=next;
+        }
+    }
+    pub fn set_window_target_size(&mut self,source:CaptureSource,target_size:Option<(u32,u32)>)->Result<(u32,u32),String> {
+        if !matches!(source,CaptureSource::Window(_)) {
+            return Err("仅独立应用窗口支持调整远端虚拟屏幕尺寸".into());
+        }
+        let entry=self.sources.get_mut(&source)
+            .filter(|entry|entry.enabled&&entry.demand.subscriptions>0)
+            .ok_or_else(||"独立应用窗口当前未处于活跃订阅状态".to_owned())?;
+        match target_size {
+            Some((w,h))=>{
+                if !(240..=4096).contains(&w)||!(240..=4096).contains(&h)||u64::from(w)*u64::from(h)>8_388_608 {
+                    return Err("目标虚拟窗口尺寸超出设备编码器允许范围".into());
+                }
+                let aligned=((w&!1).max(240),(h&!1).max(240));
+                entry.target_window_size=Some(aligned);
+                entry.demand.keyframe=entry.demand.keyframe.saturating_add(1);
+                Ok(aligned)
+            }
+            None=>{
+                entry.target_window_size=None;
+                entry.demand.keyframe=entry.demand.keyframe.saturating_add(1);
+                Ok((entry.info.width,entry.info.height))
+            }
         }
     }
     pub fn request_keyframe(&mut self,source:CaptureSource){if let Some(entry)=self.sources.get_mut(&source){entry.demand.keyframe=entry.demand.keyframe.saturating_add(1);}}

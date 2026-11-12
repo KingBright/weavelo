@@ -34,12 +34,13 @@ internal fun tr(key: String): String = LanguageCatalog.text(LocalLanguage.curren
 
 /** Self-named options inside a recessed segmented track. */
 @Composable
-internal fun LanguageSelector() {
+internal fun LanguageSelector(modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier) {
     val controller = LocalLanguage.current ?: return
     PrecisionSegmentedRow(
         options = listOf(AppLanguage.CHINESE to "中文", AppLanguage.ENGLISH to "English"),
         selected = controller.language,
         onSelect = controller::select,
+        modifier = modifier,
     )
 }
 

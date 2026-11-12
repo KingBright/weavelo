@@ -251,6 +251,23 @@ pub enum SessionCommand {
         generation: u64,
         status: crate::audio_output::AudioOutputStatus,
     },
+    ResizeWindow {
+        id: u32,
+        source_revision: u32,
+        request_id: u32,
+        target_size: Option<(u32, u32)>,
+    },
+    WindowResized {
+        id: u32,
+        source_revision: u32,
+        request_id: u32,
+        applied_size: Result<(u32, u32), String>,
+    },
+    FocusSource {
+        id: u32,
+        source_revision: u32,
+        sequence: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,6 +378,47 @@ mod tests {
         for(index,command)in commands.into_iter().enumerate(){
             let bytes=bincode::serialize(&command).unwrap();assert_eq!(&bytes[..4],&(27u32+index as u32).to_le_bytes());
             let decoded:SessionCommand=bincode::deserialize(&bytes).unwrap();assert_eq!(bincode::serialize(&decoded).unwrap(),bytes);
+        }
+    }
+    #[test]
+    fn window_resize_commands_round_trip_within_control_budget() {
+        assert!(std::mem::size_of::<SessionCommand>() <= 120);
+        let commands = [
+            SessionCommand::ResizeWindow {
+                id: 7,
+                source_revision: 3,
+                request_id: 41,
+                target_size: Some((1440, 900)),
+            },
+            SessionCommand::ResizeWindow {
+                id: 7,
+                source_revision: 3,
+                request_id: 42,
+                target_size: None,
+            },
+            SessionCommand::WindowResized {
+                id: 7,
+                source_revision: 3,
+                request_id: 41,
+                applied_size: Ok((1440, 900)),
+            },
+            SessionCommand::WindowResized {
+                id: 7,
+                source_revision: 3,
+                request_id: 42,
+                applied_size: Err("window is not resizable".into()),
+            },
+            SessionCommand::FocusSource {
+                id: 7,
+                source_revision: 3,
+                sequence: 9,
+            },
+        ];
+        for (expected_tag, command) in [44u32, 44, 45, 45, 46].into_iter().zip(commands) {
+            let bytes = bincode::serialize(&command).unwrap();
+            assert_eq!(&bytes[..4], &expected_tag.to_le_bytes());
+            let decoded: SessionCommand = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(bincode::serialize(&decoded).unwrap(), bytes);
         }
     }
 

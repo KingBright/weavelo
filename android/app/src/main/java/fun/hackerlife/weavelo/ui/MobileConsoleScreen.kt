@@ -593,9 +593,6 @@ fun HostCard(
                     DropdownMenu(
                         expanded = sendMenu && !sending,
                         onDismissRequest = { sendMenu = false },
-                        shape = RoundedCornerShape(16.dp),
-                        containerColor = p.surfaceRaised,
-                        border = BorderStroke(1.dp, p.borderStrong)
                     ) {
                         Column(
                             modifier = Modifier

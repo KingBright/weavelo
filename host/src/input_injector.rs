@@ -284,8 +284,8 @@ impl MacInputInjector {
     }
 
     fn commit_text(&self, text: &protocol::interaction::CommittedText, deadline: Option<Instant>) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if self.current_modifiers() & 0x0f != 0 {
-            return Err("release remote modifiers before committing text".into());
+        if self.current_modifiers() & 0x0f != 0 && !self.set_modifiers(0, deadline) {
+            return Err("text input target changed or dispatch expired".into());
         }
         // Small UTF-16 batches retain surrogate pairs, with no keyboard-layout or
         // clipboard mutation. Native dispatch confirmation is not field readback.

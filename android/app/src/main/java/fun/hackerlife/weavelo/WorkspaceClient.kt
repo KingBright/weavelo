@@ -30,7 +30,9 @@ data class WorkspacePane(val id: Int, val source: WorkspaceSource, val fps: Int,
     val width: Int = 1280, val height: Int = 720, val audioOwner: Int? = null, val input: Boolean = false,
     val accepted: Boolean = false, val appearance: RemoteAppearance? = null, val inputError: String? = null, val videoError: String? = null,
     val audioOutput: WorkspaceAudioOutput = WorkspaceAudioOutput(),
-    val maxTouchPoints: Int = 0, val inputErrorText: AppText? = null, val videoErrorText: AppText? = null, val telemetry: TelemetrySnapshot = TelemetrySnapshot())
+    val maxTouchPoints: Int = 0, val inputErrorText: AppText? = null, val videoErrorText: AppText? = null, val telemetry: TelemetrySnapshot = TelemetrySnapshot(),
+    val windowScalePercent: Int = 100, val windowLayoutPreset: String = "original",
+    val windowResizeNotice: String? = null, val windowResizeError: Boolean = false)
 internal enum class WorkspaceNavigation(val wireValue: String) { BACK("back"), HOME("home") }
 
 internal fun isAndroidProjectionSource(source: String, application: String): Boolean =
@@ -99,6 +101,8 @@ object WorkspaceClient {
     private val cameraSwitches = HashMap<Long, CameraSwitch>()
     private data class PendingAudioOutput(val pane: Int, val deadline: Long)
     private val pendingAudioOutputs = HashMap<Long, PendingAudioOutput>()
+    private var windowResizeSeq = 20_000
+    private val pendingWindowResizes = HashMap<Int, Pair<Int, Long>>()
 
     private fun action(op: Int, payload: String = ""): String {
         val result = nativeAction(op, payload)
@@ -262,6 +266,46 @@ object WorkspaceClient {
         initialSource.cancel(sessionKey)
         addNative(source)
     }
+    private fun windowOverrideKey(source: WorkspaceSource): String? {
+        if (!source.isWindow) return null
+        val dev = deviceId.trim()
+        val app = source.application.trim().ifEmpty { source.title.trim() }
+        return if (dev.isNotEmpty() && app.isNotEmpty()) "$dev::$app" else null
+    }
+    fun fitRemoteWindowViewport(viewW: Int, viewH: Int): Pair<Int, Int> {
+        if (viewW < 64 || viewH < 64) return 1280 to 800
+        val shortEdge = minOf(viewW, viewH).toDouble()
+        val upscale = if (shortEdge < 680.0) 720.0 / shortEdge else 1.0
+        var w = viewW * upscale
+        var h = viewH * upscale
+        val downscale = minOf(2560.0 / w, 2560.0 / h, 1.0)
+        w *= downscale
+        h *= downscale
+        return ((w.toInt() and -2).coerceIn(320, 2560)) to ((h.toInt() and -2).coerceIn(320, 2560))
+    }
+    fun presetWindowTargetSize(preset: String, viewW: Int = 0, viewH: Int = 0): Pair<Int, Int>? = when (preset) {
+        "fit_viewport" -> if (viewW >= 64 && viewH >= 64) fitRemoteWindowViewport(viewW, viewH) else null
+        "1280x800" -> 1280 to 800
+        "1440x900" -> 1440 to 900
+        "1600x1000" -> 1600 to 1000
+        "900x1440" -> 900 to 1440
+        else -> null
+    }
+    fun scaledEncodeSize(srcWidth: Int, srcHeight: Int, scalePercent: Int): Pair<Int, Int> {
+        val sw = if (srcWidth >= 2) srcWidth else 1920
+        val sh = if (srcHeight >= 2) srcHeight else 1080
+        val pct = scalePercent.coerceIn(25, 100) / 100.0
+        val rawW = (sw * pct).toInt().coerceAtLeast(32)
+        val rawH = (sh * pct).toInt().coerceAtLeast(32)
+        val fitted = runCatching { MediaCodecPlayer.screenSize(rawW, rawH) }.getOrNull()
+        if (fitted != null && fitted.width >= 32 && fitted.height >= 32) {
+            return fitted.width to fitted.height
+        }
+        val edgeScale = minOf(4096.0 / rawW, 4096.0 / rawH, 1.0)
+        val areaScale = minOf(kotlin.math.sqrt(8_294_400.0 / (rawW.toDouble() * rawH.toDouble())), 1.0)
+        val s = minOf(edgeScale, areaScale)
+        return (((rawW * s).toInt() and -2).coerceIn(32, 4096)) to (((rawH * s).toInt() and -2).coerceIn(32, 4096))
+    }
     private fun addNative(source: WorkspaceSource) {
         val incoming = ownership.request()?.incomingId
         if (incoming != null && source.source.toString() !in DirectedDelivery.sources(incoming)) {
@@ -271,14 +315,35 @@ object WorkspaceClient {
         if (existing != null) { mutable.value = mutable.value.copy(selected = existing.id); activity(); return }
         // Conservative default for mobile hardware; source count is distinct from visible decoder count.
         if (mutable.value.panes.size >= minOf(4, mutable.value.maxSubscriptions)) { mutable.value = mutable.value.copy(status = "This connection supports ${minOf(4, mutable.value.maxSubscriptions)} window(s)", statusText = AppText("This connection supports %d window(s)", listOf(minOf(4, mutable.value.maxSubscriptions)))); return }
-        val prefs = checkNotNull(context).getSharedPreferences("stream", Context.MODE_PRIVATE)
-        val pane = WorkspacePane(nextId, source, prefs.getInt("fps", 60), prefs.getInt("bitrate_kbps", 20_000))
+        val ctx = checkNotNull(context)
+        val prefs = ctx.getSharedPreferences("stream", Context.MODE_PRIVATE)
+        val defaultFps = prefs.getInt("fps", 60)
+        val defaultKbps = prefs.getInt("bitrate_kbps", 20_000)
+        var scalePercent = 100
+        var layoutPreset = "original"
+        var paneFps = defaultFps
+        var paneKbps = defaultKbps
+        windowOverrideKey(source)?.let { key ->
+            ctx.getSharedPreferences("window_stream_overrides", Context.MODE_PRIVATE).getString(key, null)?.let { raw ->
+                runCatching {
+                    val obj = JSONObject(raw)
+                    scalePercent = obj.optInt("scale", 100).coerceIn(35, 100)
+                    layoutPreset = obj.optString("layout", "original")
+                    paneFps = obj.optInt("fps", defaultFps).coerceAtLeast(1)
+                    paneKbps = obj.optInt("kbps", defaultKbps).coerceAtLeast(500)
+                }
+            }
+        }
+        val (initW, initH) = if (source.isWindow) scaledEncodeSize(source.width, source.height, scalePercent) else 1280 to 720
+        val pane = WorkspacePane(nextId, source, paneFps, paneKbps, width = initW, height = initH,
+            windowScalePercent = scalePercent, windowLayoutPreset = layoutPreset)
         nextId += 256
         mutable.value = mutable.value.copy(panes = mutable.value.panes + pane, selected = pane.id, status = "Connected", statusText = AppText("Connected"))
         command("Subscribe", request(pane)); activity()
     }
     fun remove(id: Int) = guarded {
         cameraSwitches.entries.removeAll { it.value.pane == id }
+        pendingWindowResizes.entries.removeAll { it.value.first == id }
         cameraReplacements.entries.removeAll { it.value.first == id }
         command("Unsubscribe", JSONObject().put("id", id))
         removePane(id, "Receiving stopped", reasonText = AppText("Receiving stopped"))
@@ -368,15 +433,82 @@ object WorkspaceClient {
             if (pane.id == id) pane.copy(audioOutput = update(pane.audioOutput)) else pane
         })
     }
-    fun settings(id: Int, sessionKey: String, generation: Long, width: Int? = null, height: Int? = null, fps: Int? = null, kbps: Int? = null) = guarded {
+    private fun saveWindowOverride(pane: WorkspacePane) {
+        val ctx = context ?: return
+        val key = windowOverrideKey(pane.source) ?: return
+        val basePrefs = ctx.getSharedPreferences("stream", Context.MODE_PRIVATE)
+        val defaultFps = basePrefs.getInt("fps", 60)
+        val defaultKbps = basePrefs.getInt("bitrate_kbps", 20_000)
+        val winPrefs = ctx.getSharedPreferences("window_stream_overrides", Context.MODE_PRIVATE)
+        if (pane.windowScalePercent == 100 && pane.windowLayoutPreset == "original" && pane.fps == defaultFps && pane.kbps == defaultKbps) {
+            winPrefs.edit().remove(key).apply()
+        } else {
+            val json = JSONObject()
+                .put("scale", pane.windowScalePercent)
+                .put("layout", pane.windowLayoutPreset)
+                .put("fps", pane.fps)
+                .put("kbps", pane.kbps)
+            winPrefs.edit().putString(key, json.toString()).apply()
+        }
+    }
+    fun settings(id: Int, sessionKey: String, generation: Long, width: Int? = null, height: Int? = null, fps: Int? = null, kbps: Int? = null, scalePercent: Int? = null) = guarded {
         if (!currentView(id, sessionKey, generation, false)) return@guarded
         val pane = mutable.value.panes.find { it.id == id } ?: return@guarded
         if (!pane.accepted) return@guarded
-        val updated = pane.copy(width = width ?: pane.width, height = height ?: pane.height, fps = fps ?: pane.fps, kbps = kbps ?: pane.kbps)
+        val updated = pane.copy(
+            width = width ?: pane.width,
+            height = height ?: pane.height,
+            fps = fps ?: pane.fps,
+            kbps = kbps ?: pane.kbps,
+            windowScalePercent = scalePercent ?: pane.windowScalePercent
+        )
         appRequire(updated.fps > 0 && updated.kbps > 0, "Frame rate and bitrate must be positive")
+        if (pane.source.isWindow && (fps != null || kbps != null || scalePercent != null)) {
+            saveWindowOverride(updated)
+        }
         if (updated == pane) return@guarded
         action(3, request(updated).toString())
         mutable.value = mutable.value.copy(panes = mutable.value.panes.map { if (it.id == id) updated else it })
+    }
+    fun resizeWindow(id: Int, sessionKey: String, generation: Long, preset: String, targetWidth: Int? = null, targetHeight: Int? = null) = guarded {
+        if (!currentView(id, sessionKey, generation, false)) return@guarded
+        val pane = mutable.value.panes.find { it.id == id && it.accepted && it.source.isWindow } ?: return@guarded
+        val updated = pane.copy(windowLayoutPreset = preset, windowResizeNotice = null, windowResizeError = false)
+        saveWindowOverride(updated)
+        val reqId = ++windowResizeSeq
+        pendingWindowResizes[reqId] = id to (SystemClock.elapsedRealtime() + 8_500L)
+        val targetJson = if (targetWidth != null && targetHeight != null) {
+            JSONArray().put(targetWidth).put(targetHeight)
+        } else JSONObject.NULL
+        mutable.value = mutable.value.copy(panes = mutable.value.panes.map { if (it.id == id) updated else it })
+        command("ResizeWindow", JSONObject().put("id", pane.id).put("source_revision", 0)
+            .put("request_id", reqId).put("target_size", targetJson))
+    }
+    fun resetWindowOverride(id: Int, sessionKey: String, generation: Long, srcWidth: Int, srcHeight: Int) = guarded {
+        if (!currentView(id, sessionKey, generation, false)) return@guarded
+        val pane = mutable.value.panes.find { it.id == id && it.accepted && it.source.isWindow } ?: return@guarded
+        val ctx = checkNotNull(context)
+        val basePrefs = ctx.getSharedPreferences("stream", Context.MODE_PRIVATE)
+        val defaultFps = basePrefs.getInt("fps", 60)
+        val defaultKbps = basePrefs.getInt("bitrate_kbps", 20_000)
+        val (capW, capH) = scaledEncodeSize(srcWidth, srcHeight, 100)
+        val updated = pane.copy(
+            width = capW,
+            height = capH,
+            fps = defaultFps,
+            kbps = defaultKbps,
+            windowScalePercent = 100,
+            windowLayoutPreset = "original",
+            windowResizeNotice = null,
+            windowResizeError = false
+        )
+        saveWindowOverride(updated)
+        mutable.value = mutable.value.copy(panes = mutable.value.panes.map { if (it.id == id) updated else it })
+        action(3, request(updated).toString())
+        val reqId = ++windowResizeSeq
+        pendingWindowResizes[reqId] = id to (SystemClock.elapsedRealtime() + 8_500L)
+        command("ResizeWindow", JSONObject().put("id", pane.id).put("source_revision", 0)
+            .put("request_id", reqId).put("target_size", JSONObject.NULL))
     }
     fun viewport(id: Int,sessionKey: String,generation: Long,visible: IntArray,width: Int,height: Int) = guarded {
         if (!currentView(id,sessionKey,generation,false)) return@guarded
@@ -613,6 +745,15 @@ object WorkspaceClient {
                     localPlayback = "Unknown", message = null, messageText = AppText("Host audio request timed out; state unknown")) }
             }
         }
+        pendingWindowResizes.entries.removeAll { (_, pending) ->
+            val (paneId, deadline) = pending
+            if (deadline < SystemClock.elapsedRealtime()) {
+                mutable.value = mutable.value.copy(panes = mutable.value.panes.map { p ->
+                    if (p.id == paneId) p.copy(windowResizeNotice = "Host window resize timed out", windowResizeError = true) else p
+                })
+                true
+            } else mutable.value.panes.none { it.id == paneId }
+        }
         cameraSwitches.entries.removeAll { (_, pending) ->
             if (pending.deadline < SystemClock.elapsedRealtime()) {
                 mutable.value = mutable.value.copy(status = "Camera switch timed out; retry", statusText = AppText("Camera switch timed out; retry"))
@@ -675,6 +816,28 @@ object WorkspaceClient {
                             replaceCameraView(pane, pending.source)
                         } else mutable.value = mutable.value.copy(status = ready.optString("Err", "Camera switch was rejected"), statusText = if (ready.has("Err")) null else AppText("Camera switch was rejected"))
                     }
+                }
+            }
+            control?.optJSONObject("WindowResized")?.let { reply ->
+                val reqId = reply.getInt("request_id")
+                val paneId = reply.getInt("id")
+                if (pendingWindowResizes.remove(reqId)?.first == paneId && reply.getInt("source_revision") == 0) {
+                    val applied = reply.getJSONObject("applied_size")
+                    val okArr = applied.optJSONArray("Ok")
+                    val isErr = okArr == null
+                    val notice = if (okArr != null && okArr.length() == 2) {
+                        "${okArr.getInt(0)} × ${okArr.getInt(1)}"
+                    } else {
+                        applied.optString("Err", "Window resize unavailable")
+                    }
+                    mutable.value = mutable.value.copy(panes = mutable.value.panes.map { p ->
+                        if (p.id == paneId) {
+                            p.copy(
+                                windowResizeNotice = if (p.windowLayoutPreset == "original" && !isErr) null else notice,
+                                windowResizeError = isErr
+                            )
+                        } else p
+                    })
                 }
             }
             control?.optJSONObject("EditorFocus")?.let { reply ->
@@ -767,10 +930,21 @@ object WorkspaceClient {
                 else removePane(id, "The source stopped sharing", reasonText = AppText("The source stopped sharing"))
             }
             control?.optJSONObject("Subscribed")?.let { subscribed ->
+                val subId = subscribed.getInt("id")
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map {
-                    if (it.id == subscribed.getInt("id")) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input"),
+                    if (it.id == subId) it.copy(audioOwner = if (subscribed.isNull("audio_owner")) null else subscribed.getInt("audio_owner"), input = subscribed.getBoolean("supports_input"),
                         maxTouchPoints = subscribed.getInt("max_touch_points").coerceIn(0,10), accepted = true, videoError = null, videoErrorText = null) else it
                 })
+                mutable.value.panes.firstOrNull { it.id == subId && it.source.isWindow && it.windowLayoutPreset != "original" }?.let { winPane ->
+                    presetWindowTargetSize(winPane.windowLayoutPreset)?.let { (tw, th) ->
+                        val reqId = ++windowResizeSeq
+                        pendingWindowResizes[reqId] = subId to (SystemClock.elapsedRealtime() + 8_500L)
+                        runCatching {
+                            command("ResizeWindow", JSONObject().put("id", subId).put("source_revision", 0)
+                                .put("request_id", reqId).put("target_size", JSONArray().put(tw).put(th)))
+                        }
+                    }
+                }
                 activity()
             }
             control?.optJSONObject("Error")?.let {

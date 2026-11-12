@@ -804,17 +804,29 @@ impl RestoredDashboard {
                         .child(crate::i18n::tr("Open picture in picture"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_popout_pip_window(cx))),
                 )
-                .child(drawer_network_telemetry_tab(
-                    self.stream_settings.values().resolution(),
-                    self.stream_settings.values().fps,
-                    self.stream_settings.values().bitrate_kbps,
-                    self.media_controls(cx),
-                    host_stats,
-                    self.owner.clone(),
-                    false,
-                    self.pipeline_diagnostics_open,
-                    cx,
-                )),
+                .child(
+                    if matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_)) {
+                        self.window_stream_quality_panel(
+                            snapshot,
+                            host_stats,
+                            viewport_width,
+                            viewport_height,
+                            cx,
+                        )
+                    } else {
+                        drawer_network_telemetry_tab(
+                            self.stream_settings.values().resolution(),
+                            self.stream_settings.values().fps,
+                            self.stream_settings.values().bitrate_kbps,
+                            self.media_controls(cx),
+                            host_stats,
+                            self.owner.clone(),
+                            false,
+                            self.pipeline_diagnostics_open,
+                            cx,
+                        )
+                    },
+                ),
             StreamPanel::More => self.stream_more_panel(snapshot, cx),
         };
         let compact_panel = viewport_width < 420.0 || viewport_height < 280.0;
@@ -1165,5 +1177,388 @@ impl RestoredDashboard {
             );
         }
         body
+    }
+
+    fn window_stream_quality_panel(
+        &self,
+        snapshot: &DashboardSnapshot,
+        host_stats: Option<&UiHostStats>,
+        viewport_width: f32,
+        viewport_height: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = cx.theme().clone();
+        let view = cx.weak_entity();
+        let ov = self.window_stream_override;
+        let baseline = self.stream_settings.values();
+        let live_source = self
+            .active_window_app_identity(snapshot)
+            .map(|(_, _, _, sz)| sz)
+            .unwrap_or((1920, 1080));
+        let encoded_cap = ov.clarity.compute_cap(live_source);
+        let local_vp = {
+            let w = viewport_width.round() as i64;
+            let h = (viewport_height - window_fit::STREAM_HEADER_HEIGHT_PX).round() as i64;
+            (w >= 120 && h >= 120).then_some((w as u32, h as u32))
+        };
+        let can_reset = !ov.is_default(baseline) || snapshot.window_resize_notice.is_some();
+
+        let mut clarity_track = crate::product_components::segmented_track(&theme).flex_wrap();
+        for (scale, label) in [
+            (WindowClarityScale::Native100, "Native 100%"),
+            (WindowClarityScale::High75, "HD 75%"),
+            (WindowClarityScale::Standard50, "Std 50%"),
+            (WindowClarityScale::Saver35, "Saver 35%"),
+        ] {
+            let active = ov.clarity == scale;
+            let variant = if active {
+                ely_gpui_component::buttons::ButtonVariant::Primary
+            } else {
+                ely_gpui_component::buttons::ButtonVariant::Ghost
+            };
+            clarity_track = clarity_track.child(
+                ely_gpui_component::buttons::Button::new(
+                    format!("win-clarity-{}", scale.percent()),
+                    "",
+                )
+                .variant(variant)
+                .control_size(ely_gpui_component::theme::ControlSize::Sm)
+                .rounded(px(7.0))
+                .h(px(25.0))
+                .px_2p5()
+                .child(crate::i18n::tr(label))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_window_clarity(scale, cx);
+                })),
+            );
+        }
+
+        let layout_options = [
+            (WindowLayoutPreset::KeepOriginal, "Original size"),
+            (WindowLayoutPreset::FitLocalViewport, "Fit viewport"),
+            (WindowLayoutPreset::Fixed1280x800, "1280×800"),
+            (WindowLayoutPreset::Fixed1440x900, "1440×900"),
+            (WindowLayoutPreset::Fixed1600x1000, "1600×1000"),
+            (WindowLayoutPreset::Portrait900x1440, "900×1440 Portrait"),
+        ];
+
+        let resize_feedback = match &snapshot.window_resize_notice {
+            Some(Ok((w, h))) => Some((
+                format!("{} {w} × {h}", crate::i18n::tr("Remote window adapted to")),
+                crate::design_system::theme_accent_cyan(cx),
+            )),
+            Some(Err(reason)) => Some((crate::i18n::message(reason), theme.status.warning)),
+            None => None,
+        };
+
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.content.primary)
+                                    .child(crate::i18n::tr("Window Stream & Layout")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(crate::design_system::theme_accent_cyan(cx))
+                                    .child(crate::i18n::tr("Isolated · Global defaults untouched")),
+                            ),
+                    )
+                    .when(can_reset, |row| {
+                        row.child(
+                            command_button("reset-window-stream", ActionVariantKind::Neutral, cx)
+                                .h(px(23.0))
+                                .px_2p5()
+                                .rounded_full()
+                                .text_size(px(10.0))
+                                .child(crate::i18n::tr("Reset default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reset_window_stream_override(cx);
+                                })),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .p_3p5()
+                    .bg(theme.surface.base)
+                    .border_1()
+                    .border_color(crate::design_system::theme_border_fine(cx))
+                    .rounded(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.content.secondary)
+                                            .child(crate::i18n::tr("Stream Clarity Scale")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(crate::design_system::theme_accent_cyan(cx))
+                                            .child(format!(
+                                                "{}×{} → {}×{}",
+                                                live_source.0, live_source.1, encoded_cap.0, encoded_cap.1
+                                            )),
+                                    ),
+                            )
+                            .child(clarity_track),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.content.secondary)
+                                            .child(crate::i18n::tr("Remote Window Size")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(9.5))
+                                            .text_color(theme.content.tertiary)
+                                            .child(crate::i18n::tr("Auto-restores on exit")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_1p5()
+                                    .children(layout_options.into_iter().map(|(preset, label)| {
+                                        let active = ov.layout == preset;
+                                        let variant = if active {
+                                            ActionVariantKind::Primary
+                                        } else {
+                                            ActionVariantKind::Neutral
+                                        };
+                                        command_button(
+                                            format!("win-layout-{}", preset.key()),
+                                            variant,
+                                            cx,
+                                        )
+                                        .h(px(24.0))
+                                        .text_size(px(10.0))
+                                        .child(crate::i18n::tr(label).to_owned())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.select_window_layout(preset, local_vp, cx);
+                                        }))
+                                    })),
+                            )
+                            .when_some(resize_feedback, |col, (msg, color)| {
+                                col.child(div().text_size(px(10.0)).text_color(color).child(msg))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.content.secondary)
+                                    .child(crate::i18n::tr("Window Frame Rate:")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_1p5()
+                                    .children(
+                                        [
+                                            (30u32, "30 FPS (Power Save)"),
+                                            (60, "60 FPS (Standard)"),
+                                            (120, "120 FPS (High-Hz)"),
+                                        ]
+                                        .into_iter()
+                                        .map(|(fps, label)| {
+                                            let variant = if ov.fps == fps {
+                                                ActionVariantKind::Primary
+                                            } else {
+                                                ActionVariantKind::Neutral
+                                            };
+                                            command_button(format!("win_fps_{fps}"), variant, cx)
+                                                .h(px(24.0))
+                                                .text_size(px(10.0))
+                                                .child(crate::i18n::tr(label).to_owned())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.select_window_fps(fps, cx);
+                                                }))
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.content.secondary)
+                                    .child(crate::i18n::tr("Window Bitrate:")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_1p5()
+                                    .children(
+                                        [
+                                            (2_000u32, "2 Mbps"),
+                                            (5_000, "5 Mbps"),
+                                            (10_000, "10 Mbps"),
+                                            (20_000, "20 Mbps"),
+                                            (40_000, "40 Mbps"),
+                                        ]
+                                        .into_iter()
+                                        .map(|(kbps, label)| {
+                                            let variant = if ov.bitrate_kbps == kbps {
+                                                ActionVariantKind::Primary
+                                            } else {
+                                                ActionVariantKind::Neutral
+                                            };
+                                            command_button(
+                                                format!("win_bitrate_{kbps}"),
+                                                variant,
+                                                cx,
+                                            )
+                                            .h(px(24.0))
+                                            .text_size(px(10.0))
+                                            .child(crate::i18n::tr(label).to_owned())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.select_window_bitrate(kbps, cx);
+                                            }))
+                                        }),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .child(crate::i18n::tr("Custom window FPS and bitrate (kbps)")),
+                    )
+                    .child(
+                        component::text_input("win_custom_fps")
+                            .content(self.window_fps_draft.clone())
+                            .on_change({
+                                let view = view.clone();
+                                move |text, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.window_fps_draft = text.to_string();
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        component::text_input("win_custom_bitrate")
+                            .content(self.window_bitrate_draft.clone())
+                            .on_change({
+                                let view = view.clone();
+                                move |text, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.window_bitrate_draft = text.to_string();
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        command_button("apply_win_custom_stream", ActionVariantKind::Primary, cx)
+                            .child(crate::i18n::tr("Apply custom values"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.apply_window_custom_rates(cx);
+                            })),
+                    )
+                    .when_some(self.window_settings_error.as_ref(), |col, err| {
+                        col.child(div().text_size(px(10.5)).text_color(theme.status.danger).child(err.clone()))
+                    })
+                    .child(
+                        command_button("toggle_win_media_pause", ActionVariantKind::Neutral, cx)
+                            .child(if self.manual_media_paused {
+                                crate::i18n::tr("Resume media")
+                            } else {
+                                crate::i18n::tr("Pause media · keep connected")
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_stream_media_paused(!this.manual_media_paused, cx);
+                            })),
+                    ),
+            );
+
+        if let Some(stats) = host_stats {
+            content = content
+                .child(
+                    div()
+                        .pt_1()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.content.primary)
+                        .child(crate::i18n::tr("Live Transport & Latency Telemetry")),
+                )
+                .child(
+                    telemetry_metric_row(
+                        "Capture → receive (est.)",
+                        stats.capture_receive.value(),
+                        crate::design_system::theme_accent_cyan(cx),
+                        cx,
+                    )
+                    .id("win_capture_receive_metric")
+                    .tooltip(tooltip(stats.capture_receive.detail()).build()),
+                )
+                .child(telemetry_metric_row(
+                    "Video frame rate",
+                    format!("{:.1} fps", stats.fps),
+                    crate::design_system::theme_online_dot(cx),
+                    cx,
+                ));
+        }
+        content
     }
 }

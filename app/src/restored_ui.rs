@@ -65,7 +65,10 @@ use remote_core::{
     pairing_qr::{encode_pairing_qr, qr_matrix_from_payload},
     role::RoleKind,
     session_tabs::{SessionCommandState, SessionTabsAction, SessionTabsEffect},
-    stream_settings::{StreamSettingsAction, StreamSettingsState, StreamSettingsValues},
+    stream_settings::{
+        StreamSettingsAction, StreamSettingsState, StreamSettingsValues,
+        WindowClarityScale, WindowLayoutPreset, WindowStreamOverride,
+    },
 };
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -623,10 +626,19 @@ struct RestoredDashboard {
     input_locked: bool,
     capture_supports_input: bool,
     stream_settings: StreamSettingsState,
+    window_stream_override: WindowStreamOverride,
+    window_override_bound: Option<(String, protocol::session::CaptureSource, String)>,
+    window_last_applied_cap: Option<(protocol::session::CaptureSource, (u32, u32))>,
+    window_last_fitted_viewport: Option<(protocol::session::CaptureSource, (u32, u32))>,
+    window_fps_draft: String,
+    window_bitrate_draft: String,
+    window_settings_error: Option<String>,
     manual_media_paused: bool,
     pause_when_inactive: bool,
     window_active: bool,
     window_visible: Option<bool>,
+    last_remote_focus: Option<((u32, remote_core::video_recovery::VideoEpoch), Instant)>,
+    auto_focused_source: Option<(u32, remote_core::video_recovery::VideoEpoch)>,
     telemetry_engine: remote_core::PipelineTelemetryEngine,
 
     show_apps_menu: bool,
@@ -831,16 +843,51 @@ impl RestoredDashboard {
                 width: prefs.stream.width, height: prefs.stream.height,
                 fps: prefs.stream.fps, bitrate_kbps: prefs.stream.bitrate_kbps,
             }),
+            window_stream_override: WindowStreamOverride::from_baseline(StreamSettingsValues {
+                width: prefs.stream.width, height: prefs.stream.height,
+                fps: prefs.stream.fps, bitrate_kbps: prefs.stream.bitrate_kbps,
+            }),
+            window_override_bound: None,
+            window_last_applied_cap: None,
+            window_last_fitted_viewport: None,
+            window_fps_draft: prefs.stream.fps.to_string(),
+            window_bitrate_draft: prefs.stream.bitrate_kbps.to_string(),
+            window_settings_error: None,
             manual_media_paused: false,
             pause_when_inactive: prefs.ui.pause_when_inactive,
             window_active: window.is_window_active(),
             window_visible: window.is_window_visible(),
+            last_remote_focus: None,
+            auto_focused_source: None,
             telemetry_engine: remote_core::PipelineTelemetryEngine::new(0, 300),
             show_apps_menu: false,
             toolbar_revealed: false,
             toolbar_hovered: false,
             last_toolbar_activity: Instant::now(),
             capture_error_seen: None,
+        }
+    }
+
+    fn request_remote_source_focus(&mut self) {
+        if self.input_locked
+            || !self.capture_supports_input
+            || self.drawer_open
+            || self.show_apps_menu
+            || self.source_selection.is_some()
+            || self.network_details_open
+        {
+            return;
+        }
+        let Some(identity) = self.bound_source else { return; };
+        if self
+            .last_remote_focus
+            .is_some_and(|(prev, at)| prev == identity && at.elapsed() < Duration::from_millis(80))
+        {
+            return;
+        }
+        if self.owner.focus_viewing_source() {
+            self.last_remote_focus = Some((identity, Instant::now()));
+            self.auto_focused_source = Some(identity);
         }
     }
 
@@ -852,17 +899,26 @@ impl RestoredDashboard {
         })
         .detach();
         cx.observe_window_activation(window, |this, window, cx| {
+            let was_active = this.window_active;
             this.window_active = window.is_window_active();
             if this.window_active && this.drawer_open && this.active_tab == DrawerTab::Security {
                 this.refresh_local_permissions(cx);
             }
             this.window_visible = window.is_window_visible();
+            this.sync_media_pause();
             if !this.window_active {
                 this.reset_pointer_scroll();
                 this.owner.release_input();
                 this.pointer_input = PointerInputTracker::default();
+            } else if !was_active
+                && !this.drawer_open
+                && !this.show_apps_menu
+                && this.source_selection.is_none()
+                && !this.network_details_open
+            {
+                window.focus(&this.input_focus);
+                this.request_remote_source_focus();
             }
-            this.sync_media_pause();
             cx.notify();
         }).detach();
         let input_geometry = |window: &Window| {
@@ -932,6 +988,7 @@ impl RestoredDashboard {
             input_status: snapshot.input_status,
             input_eligible: snapshot.input_eligible,
             computer_use_status: snapshot.computer_use_status,
+            window_resize_notice: snapshot.window_resize_notice,
         }
     }
 
@@ -954,10 +1011,6 @@ impl RestoredDashboard {
                 .unwrap_or_else(|| Arc::new(Mutex::new(None)));
         }
         self.input_locked = state.locked;
-        if state.input_failed {
-            self.toolbar_revealed = true;
-            self.last_toolbar_activity = Instant::now();
-        }
         self.status = if let Some(error) = state.error {
             error
         } else if matches!(state.role, RoleState::Viewing(_)) {
@@ -1490,10 +1543,17 @@ impl RestoredDashboard {
         self.toolbar_hovered = false;
         self.last_toolbar_activity = Instant::now();
         let owner = self.owner.clone();
+        let source_for_init = source.clone();
         cx.spawn(async move |view, cx| {
             let Some(values) = view.update(cx, |this, _| {
                 (this.source_commands.is_current(ticket) && this.owner.source_binding_is_current(&binding))
-                    .then(|| this.stream_settings.values())
+                    .then(|| {
+                        if matches!(source_for_init.source, protocol::session::CaptureSource::Window(_)) {
+                            this.effective_initial_window_values(&source_for_init)
+                        } else {
+                            this.stream_settings.values()
+                        }
+                    })
             }).unwrap_or(None) else { return; };
             if let Err(err) = owner
                 .switch_bound_enumerated_source(&binding, &source, values.width, values.height, values.fps, values.bitrate_kbps)
@@ -2638,8 +2698,33 @@ impl Render for RestoredDashboard {
         owned_gui_stage(7);
         owned_gui_stage(8);
         self.sync_input_session(&role, cx);
+        if self.window_active
+            && matches!(role, RoleState::Viewing(_))
+            && self.capture_supports_input
+            && !self.input_locked
+            && !self.drawer_open
+            && !self.show_apps_menu
+            && self.source_selection.is_none()
+            && !self.network_details_open
+            && self.bound_source.is_some()
+            && self.auto_focused_source != self.bound_source
+        {
+            window.focus(&this.input_focus);
+            self.request_remote_source_focus();
+        }
         let active_session = role.session().cloned();
-        if matches!(role,RoleState::Viewing(_)) {self.stream_source=Some(snapshot.active_capture_source);}
+        if matches!(role,RoleState::Viewing(_)) {
+            self.stream_source=Some(snapshot.active_capture_source);
+            let vp = window.viewport_size();
+            let vp_w = f32::from(vp.width).round() as i64;
+            let vp_h = (f32::from(vp.height) - fit_chrome[1]).round() as i64;
+            let local_vp = (vp_w >= 120 && vp_h >= 120).then_some((vp_w as u32, vp_h as u32));
+            self.reconcile_window_stream_override(&snapshot, local_vp, cx);
+        } else if !matches!(role, RoleState::Connecting(_)) {
+            self.window_override_bound = None;
+            self.window_last_applied_cap = None;
+            self.window_last_fitted_viewport = None;
+        }
         let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
         let peer=active_session.as_ref().map(|s|s.peer.display_name.as_str()).or_else(|| {
             self.stream_device.as_ref().and_then(|id|snapshot.devices.iter().find(|device|&device.device_id==id))
@@ -2685,9 +2770,9 @@ impl Render for RestoredDashboard {
         }).flatten();
         // The native text client must be ready with the current, focused grant;
         // a display debounce here would silently discard the first typed text.
-        let input_ready = snapshot.input_eligible
+        let text_host_ready = (snapshot.input_eligible || (snapshot.active_capture_supports_input && matches!(role, RoleState::Viewing(_))))
             && self.input_focus.is_focused(window) && !show_drawer && !self.show_apps_menu && self.source_selection.is_none();
-        let text_binding=if self.text_mode && input_ready && !self.input_locked {
+        let text_binding=if self.text_mode && text_host_ready && !self.input_locked {
             self.owner.text_input_owner()
         } else {None};
         if let Some((view,binding))=text_binding {
@@ -2743,6 +2828,9 @@ impl Render for RestoredDashboard {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
         let Some(keystroke) = fresh_key_down(event) else { return; };
                 if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
+                    if !this.input_locked && this.owner.retry_viewing_input() {
+                        this.pointer_input = PointerInputTracker::default();
+                    }
                     if this.text_mode && text_key_stays_local(keystroke, this.remote_text.as_ref().is_some_and(|input|input.read(cx).composing())) {
                         return;
                     }
@@ -3036,15 +3124,18 @@ fn full_video_surface(
             if let Some(input)=&this.remote_text {input.update(cx,|input,_|input.anchor=Some(event.position));}
             window.focus(&this.input_focus);
             // AppKit can deliver the focusing click before GPUI's queued activation observer.
-            let active = window.is_window_active_now();
-            if active != this.window_active {
+            // Activate immediately and let the first click both raise the remote window and hit its target.
+            let was_active = this.window_active;
+            let mut active = window.is_window_active_now();
+            if !active {
+                window.activate_window();
+                active = true;
+            }
+            if active != was_active {
                 this.window_active = active;
                 this.window_visible = window.is_window_visible();
                 this.sync_media_pause();
-            }
-            if !active {
-                cx.stop_propagation();
-                return;
+                this.request_remote_source_focus();
             }
             if this.queue_pointer_move(event.position, true) {
                 this.queue_pointer_button(event.button, true);
@@ -4243,6 +4334,309 @@ impl RestoredDashboard {
                 .detach();
             }
         }
+        cx.notify();
+    }
+
+    fn load_saved_window_override(
+        &self,
+        device_id: &str,
+        app_name: &str,
+    ) -> Option<WindowStreamOverride> {
+        let key = crate::preferences::UserPreferences::window_override_key(device_id, app_name)?;
+        let prefs = crate::preferences::UserPreferences::load();
+        let saved = prefs.window_overrides.get(&key)?;
+        Some(WindowStreamOverride {
+            clarity: WindowClarityScale::from_percent(saved.clarity_percent),
+            layout: WindowLayoutPreset::from_key(&saved.layout_preset),
+            fps: saved.fps.max(1),
+            bitrate_kbps: saved.bitrate_kbps.max(500),
+        })
+    }
+
+    fn effective_initial_window_values(
+        &self,
+        info: &protocol::session::CaptureSourceInfo,
+    ) -> StreamSettingsValues {
+        let baseline = self.stream_settings.values();
+        let device_id = self
+            .owner
+            .snapshot()
+            .role
+            .session()
+            .map(|s| s.peer.device_id.clone())
+            .or_else(|| self.stream_device.clone())
+            .unwrap_or_default();
+        let app_name = if !info.application.trim().is_empty() {
+            info.application.trim()
+        } else {
+            info.title.trim()
+        };
+        let ov = self
+            .load_saved_window_override(&device_id, app_name)
+            .unwrap_or_else(|| WindowStreamOverride::from_baseline(baseline));
+        ov.effective_stream_values((info.width, info.height))
+    }
+
+    pub(super) fn active_window_app_identity(
+        &self,
+        snapshot: &DashboardSnapshot,
+    ) -> Option<(String, protocol::session::CaptureSource, String, (u32, u32))> {
+        if !matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_)) {
+            return None;
+        }
+        let device_id = snapshot
+            .role
+            .session()
+            .map(|s| s.peer.device_id.clone())
+            .or_else(|| self.stream_device.clone())?;
+        let catalog_entry = snapshot
+            .capture_sources
+            .iter()
+            .find(|info| info.source == snapshot.active_capture_source);
+        let app_name = catalog_entry
+            .map(|i| i.application.trim())
+            .filter(|s| !s.is_empty())
+            .or_else(|| catalog_entry.map(|i| i.title.trim()).filter(|s| !s.is_empty()))
+            .unwrap_or("Window")
+            .to_string();
+        let live_source = self
+            .current_frame
+            .as_ref()
+            .and_then(|f| f.frame_geometry)
+            .filter(|g| self.owner.accepts_frame_source_revision(g.source_revision))
+            .map(|g| (g.source_width, g.source_height))
+            .or_else(|| {
+                catalog_entry
+                    .map(|i| (i.width, i.height))
+                    .filter(|&(w, h)| w >= 2 && h >= 2)
+            })
+            .unwrap_or((1920, 1080));
+        Some((device_id, snapshot.active_capture_source, app_name, live_source))
+    }
+
+    fn persist_window_app_override(&self, device_id: &str, app_name: &str) {
+        let Some(key) = crate::preferences::UserPreferences::window_override_key(device_id, app_name) else {
+            return;
+        };
+        let ov = self.window_stream_override;
+        let baseline = self.stream_settings.values();
+        let _ = crate::preferences::UserPreferences::update(|prefs| {
+            if ov.is_default(baseline) {
+                prefs.window_overrides.remove(&key);
+            } else {
+                prefs.window_overrides.insert(
+                    key,
+                    crate::preferences::WindowAppPreference {
+                        clarity_percent: ov.clarity.percent(),
+                        layout_preset: ov.layout.key().to_string(),
+                        fps: ov.fps,
+                        bitrate_kbps: ov.bitrate_kbps,
+                    },
+                );
+            }
+        });
+    }
+
+    fn apply_live_window_stream_values(
+        &mut self,
+        values: StreamSettingsValues,
+        report_error: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(connection) = self.owner.active_connection().map(|c| Arc::downgrade(&c)) else {
+            return;
+        };
+        let owner = self.owner.clone();
+        cx.spawn(async move |view, cx| {
+            let result = owner
+                .update_stream_settings(
+                    &connection,
+                    values.width,
+                    values.height,
+                    values.fps,
+                    values.bitrate_kbps,
+                )
+                .await;
+            if report_error && let Err(err) = result {
+                let _ = view.update(cx, |this, cx| {
+                    if this.owner.stream_settings_binding_is_current(&connection) {
+                        this.window_settings_error = Some(err.to_string());
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn reconcile_window_stream_override(
+        &mut self,
+        snapshot: &DashboardSnapshot,
+        local_viewport: Option<(u32, u32)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(snapshot) else {
+            self.window_override_bound = None;
+            self.window_last_applied_cap = None;
+            self.window_last_fitted_viewport = None;
+            self.window_settings_error = None;
+            return;
+        };
+        let bound_key = (device_id.clone(), source, app_name.clone());
+        if self.window_override_bound.as_ref() != Some(&bound_key) {
+            let loaded = self
+                .load_saved_window_override(&device_id, &app_name)
+                .unwrap_or_else(|| WindowStreamOverride::from_baseline(self.stream_settings.values()));
+            self.window_stream_override = loaded;
+            self.window_fps_draft = loaded.fps.to_string();
+            self.window_bitrate_draft = loaded.bitrate_kbps.to_string();
+            self.window_settings_error = None;
+            self.window_override_bound = Some(bound_key);
+            self.window_last_applied_cap = None;
+            self.window_last_fitted_viewport = None;
+            if loaded.layout != WindowLayoutPreset::KeepOriginal
+                && let Some(target_wh) = loaded.layout.target_size(local_viewport)
+                && let Some(binding) = snapshot.source_binding.as_ref()
+            {
+                self.window_last_fitted_viewport = Some((source, target_wh));
+                let _ = self.owner.resize_active_window(binding, Some(target_wh));
+            }
+        }
+        let desired = self.window_stream_override.effective_stream_values(live_source);
+        let desired_cap = (desired.width, desired.height);
+        if self.window_last_applied_cap != Some((source, desired_cap)) {
+            self.window_last_applied_cap = Some((source, desired_cap));
+            self.apply_live_window_stream_values(desired, false, cx);
+        }
+        if self.window_stream_override.layout == WindowLayoutPreset::FitLocalViewport
+            && let Some(vp) = local_viewport
+            && let Some(target_wh) = WindowLayoutPreset::FitLocalViewport.target_size(Some(vp))
+            && self.window_last_fitted_viewport.is_none_or(|(s, prev)| {
+                s != source || prev.0.abs_diff(target_wh.0) >= 24 || prev.1.abs_diff(target_wh.1) >= 24
+            })
+        {
+            self.window_last_fitted_viewport = Some((source, target_wh));
+            if let Some(binding) = snapshot.source_binding.as_ref() {
+                let _ = self.owner.resize_active_window(binding, Some(target_wh));
+            }
+        }
+    }
+
+    pub(super) fn select_window_clarity(&mut self, scale: WindowClarityScale, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot();
+        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+            return;
+        };
+        self.window_stream_override.clarity = scale;
+        self.window_settings_error = None;
+        self.persist_window_app_override(&device_id, &app_name);
+        let values = self.window_stream_override.effective_stream_values(live_source);
+        self.window_last_applied_cap = Some((source, (values.width, values.height)));
+        self.apply_live_window_stream_values(values, true, cx);
+        cx.notify();
+    }
+
+    pub(super) fn select_window_layout(
+        &mut self,
+        preset: WindowLayoutPreset,
+        local_viewport: Option<(u32, u32)>,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot();
+        let Some((device_id, source, app_name, _)) = self.active_window_app_identity(&snapshot) else {
+            return;
+        };
+        self.window_stream_override.layout = preset;
+        self.window_settings_error = None;
+        self.persist_window_app_override(&device_id, &app_name);
+        let target = preset.target_size(local_viewport);
+        self.window_last_fitted_viewport = target.map(|wh| (source, wh));
+        if let Some(binding) = snapshot.source_binding.as_ref()
+            && let Err(err) = self.owner.resize_active_window(binding, target)
+        {
+            self.window_settings_error = Some(err.to_string());
+        }
+        cx.notify();
+    }
+
+    pub(super) fn select_window_fps(&mut self, fps: u32, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot();
+        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+            return;
+        };
+        self.window_stream_override.fps = fps;
+        self.window_fps_draft = fps.to_string();
+        self.window_settings_error = None;
+        self.persist_window_app_override(&device_id, &app_name);
+        let values = self.window_stream_override.effective_stream_values(live_source);
+        self.window_last_applied_cap = Some((source, (values.width, values.height)));
+        self.apply_live_window_stream_values(values, true, cx);
+        cx.notify();
+    }
+
+    pub(super) fn select_window_bitrate(&mut self, kbps: u32, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot();
+        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+            return;
+        };
+        self.window_stream_override.bitrate_kbps = kbps;
+        self.window_bitrate_draft = kbps.to_string();
+        self.window_settings_error = None;
+        self.persist_window_app_override(&device_id, &app_name);
+        let values = self.window_stream_override.effective_stream_values(live_source);
+        self.window_last_applied_cap = Some((source, (values.width, values.height)));
+        self.apply_live_window_stream_values(values, true, cx);
+        cx.notify();
+    }
+
+    pub(super) fn apply_window_custom_rates(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot();
+        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+            return;
+        };
+        let parsed = self
+            .window_fps_draft
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .zip(self.window_bitrate_draft.trim().parse::<u32>().ok());
+        let Some((fps, bitrate_kbps)) = parsed.filter(|&(f, b)| {
+            protocol::validate_video_settings(live_source.0.max(2), live_source.1.max(2), f, b).is_ok()
+        }) else {
+            self.window_settings_error = Some(
+                crate::i18n::tr("Enter positive whole numbers for FPS and kbps.").to_string(),
+            );
+            cx.notify();
+            return;
+        };
+        self.window_stream_override.fps = fps;
+        self.window_stream_override.bitrate_kbps = bitrate_kbps;
+        self.window_settings_error = None;
+        self.persist_window_app_override(&device_id, &app_name);
+        let values = self.window_stream_override.effective_stream_values(live_source);
+        self.window_last_applied_cap = Some((source, (values.width, values.height)));
+        self.apply_live_window_stream_values(values, true, cx);
+        cx.notify();
+    }
+
+    pub(super) fn reset_window_stream_override(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot();
+        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+            return;
+        };
+        let baseline = self.stream_settings.values();
+        self.window_stream_override = WindowStreamOverride::from_baseline(baseline);
+        self.window_fps_draft = self.window_stream_override.fps.to_string();
+        self.window_bitrate_draft = self.window_stream_override.bitrate_kbps.to_string();
+        self.window_settings_error = None;
+        self.window_last_fitted_viewport = None;
+        self.persist_window_app_override(&device_id, &app_name);
+        if let Some(binding) = snapshot.source_binding.as_ref() {
+            let _ = self.owner.resize_active_window(binding, None);
+        }
+        let values = self.window_stream_override.effective_stream_values(live_source);
+        self.window_last_applied_cap = Some((source, (values.width, values.height)));
+        self.apply_live_window_stream_values(values, false, cx);
         cx.notify();
     }
 
@@ -6381,6 +6775,7 @@ struct DashboardSnapshot {
     input_status: String,
     input_eligible: bool,
     computer_use_status: crate::desktop::original_owner::ComputerUseVisualStatus,
+    window_resize_notice: Option<Result<(u32, u32), String>>,
 }
 
 // Coarse state in the existing control, exact backend reason in its tooltip.

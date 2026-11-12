@@ -567,6 +567,21 @@ impl WorkspaceConnection {
             .await
             .map_err(|_| "connection closed".into())
     }
+    pub fn try_update_settings(&self, request: &SubscriptionRequest) -> Result<u64, String> {
+        let revision = self
+            .settings_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.try_control_checked(SessionCommand::Configure {
+            id: request.id,
+            revision,
+            width: request.width,
+            height: request.height,
+            fps: request.fps,
+            bitrate_kbps: request.bitrate_kbps,
+        })?;
+        Ok(revision)
+    }
     pub async fn update_settings(&self, request: &SubscriptionRequest) -> Result<(), String> {
         self.commands
             .send(Command::Control(SessionCommand::Configure {
@@ -851,6 +866,9 @@ fn request_key(command: &SessionCommand) -> Option<(u8, u32)> {
         SessionCommand::SetAudioOutput(request) | SessionCommand::AudioOutputState { request, .. } => {
             Some((11, request.id))
         }
+        SessionCommand::ResizeWindow { id, .. } | SessionCommand::WindowResized { id, .. } => {
+            Some((12, *id))
+        }
         _ => None,
     }
 }
@@ -861,13 +879,14 @@ fn confirmation_timeout_reason(category:u8) -> &'static str {
         5=>"host clipboard confirmation timed out", 6=>"host video settings confirmation timed out",
         7=>"host input release confirmation timed out", 8=>"host source switch confirmation timed out",
         9=>"host connection close confirmation timed out", 10=>"host artwork request timed out",
-        11=>"host audio output confirmation timed out", _=>"host confirmation timed out",
+        11=>"host audio output confirmation timed out", 12=>"host window resize confirmation timed out",
+        _=>"host confirmation timed out",
     }
 }
 /// Classify only the local, category-preserving timeout messages emitted below.
 /// Other authenticated peer errors keep their existing handling. No wire change.
 pub fn confirmation_timeout_affects_media(reason:&str) -> Option<bool> {
-    (1..=10).find(|category|confirmation_timeout_reason(*category)==reason)
+    (1..=12).find(|category|confirmation_timeout_reason(*category)==reason)
         .map(|category|matches!(category,2|4|8))
 }
 
@@ -878,7 +897,8 @@ pub fn trace_control_event(connection_id: u32, stage: &str, command: &SessionCom
     let Some((category, request_id)) = request_key(command).or_else(|| match command {
         SessionCommand::Error { request_id, .. } => Some((0,*request_id)), _=>None }) else { return; };
     let category = match category {0=>"error",1=>"sources",2=>"subscribe",3=>"unsubscribe",4=>"activity",
-        5=>"clipboard",6=>"configure",7=>"input_release",8=>"source_switch",9=>"close",_=>"unknown"};
+        5=>"clipboard",6=>"configure",7=>"input_release",8=>"source_switch",9=>"close",
+        11=>"audio_output",12=>"resize_window",_=>"unknown"};
     eprintln!("SESSION_CONTROL_TRACE {}", serde_json::json!({"at_unix_ms":now_unix_ms(),
         "connection_id":connection_id,"request_id":request_id,"category":category,"stage":stage,
         "elapsed_ms":elapsed.map(|v|v.as_millis() as u64),"gui_pending":gui_pending}));
@@ -942,6 +962,7 @@ impl Actor {
         }
         if let SessionCommand::SwitchSource { id, .. } = &command {
             self.pending.remove(&(11, *id));
+            self.pending.remove(&(12, *id));
             // Only the latest intent for this subscription may reopen video.
             // Late acknowledgements of superseded requests are ignored.
             self.pending.retain(|_, pending| {
@@ -983,6 +1004,7 @@ impl Actor {
                 self.pending.remove(&(6, *id));
                 self.pending.remove(&(7, *id));
                 self.pending.remove(&(11, *id));
+                self.pending.remove(&(12, *id));
                 self.pending.retain(|_, pending|
                     !matches!(pending.command, SessionCommand::SwitchSource { id: requested, .. } | SessionCommand::GetSourceAppearance { id: requested, .. } if requested == *id));
             }
@@ -1074,7 +1096,7 @@ impl Actor {
                 _ => None,
             })
             .collect();
-        self.pending.retain(|key, _| key.0 == 11 || key.1 != request_id);
+        self.pending.retain(|key, _| matches!(key.0, 11 | 12) || key.1 != request_id);
         // Video was gated while waiting, so even a rejected switch has skipped
         // compressed references. Recover the retained source from a keyframe.
         for id in video {
@@ -1119,6 +1141,18 @@ impl Actor {
                     status.requested == request.mode && self.subscriptions.get(&request.id).is_some_and(|view|
                         view.source_revision == request.source_revision && view.audio_output.is_some_and(|(latest, previous)|
                             latest == *request && *generation > previous))
+                },
+                SessionCommand::WindowResized { id, source_revision, request_id, .. } => {
+                    self.subscriptions.get(id).is_some_and(|view| view.source_revision == *source_revision)
+                        && pending.is_some_and(|p| matches!(
+                            &p.command,
+                            SessionCommand::ResizeWindow {
+                                id: exp_id,
+                                source_revision: exp_src,
+                                request_id: exp_req,
+                                ..
+                            } if exp_id == id && exp_src == source_revision && exp_req == request_id
+                        ))
                 },
                 _ => pending.is_none_or(|pending| match (&pending.command, command) {
                     (SessionCommand::Configure { revision, .. }, SessionCommand::Configured { revision: accepted, .. }) => accepted >= revision,
@@ -1224,6 +1258,15 @@ impl Actor {
                     private_supported: true,
                     message: Some(confirmation_timeout_reason(key.0).into()),
                 },
+            });
+            return;
+        }
+        if let SessionCommand::ResizeWindow { id, source_revision, request_id, .. } = pending.command {
+            let _ = self.control_tx.send(SessionCommand::WindowResized {
+                id,
+                source_revision,
+                request_id,
+                applied_size: Err(confirmation_timeout_reason(key.0).into()),
             });
             return;
         }

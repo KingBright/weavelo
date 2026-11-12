@@ -43,12 +43,12 @@ internal fun PlaybackAudioDialog(
     PrecisionDialog(
         title = tr("Choose audio to share"),
         subtitle = tr("For app audio, select the same app in Android's screen picker. Some apps prevent capture. Phone audio stays on; computer-only playback is unavailable."),
-        onDismiss = onDismiss,
+        onDismissRequest = onDismiss,
         dismissButton = if (showVideoOnly) {
             {
                 PrecisionButton(
                     text = tr("Share without audio"),
-                    leadingSymbol = MobileSymbol.SoundMuted,
+                    leadingSymbol = MobileSymbol.AudioMuted,
                     style = PrecisionButtonStyle.TONAL,
                     compact = true,
                     onClick = onVideoOnly,
@@ -69,7 +69,7 @@ internal fun PlaybackAudioDialog(
                 item {
                     PrecisionMenuItem(
                         text = tr("All eligible device audio"),
-                        leadingSymbol = MobileSymbol.Sound,
+                        symbol = MobileSymbol.Audio,
                         onClick = { onSelect(null) },
                     )
                     if (choices.isNotEmpty()) {
@@ -81,7 +81,7 @@ internal fun PlaybackAudioDialog(
                     PrecisionMenuItem(
                         text = choice.label,
                         subtitle = if (showPackage) choice.target.packageName else null,
-                        leadingSymbol = MobileSymbol.Window,
+                        symbol = MobileSymbol.Sources,
                         onClick = { onSelect(choice.target) },
                     )
                 }
