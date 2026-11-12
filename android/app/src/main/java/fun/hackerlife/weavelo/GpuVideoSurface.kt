@@ -228,7 +228,9 @@ internal class GpuVideoSurface(
             if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display,context)
             EGL14.eglReleaseThread(); DisplayOwner.release()
         }
-        callbacks.quitSafely();callbacks.join(1000)
+        callbacks.quitSafely()
+        try { callbacks.join(1000) }
+        catch (_: InterruptedException) { Thread.currentThread().interrupt() }
     }
     companion object {
         private const val VERTEX = """
