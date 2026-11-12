@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::time::Duration;
 
-const MAX_BUFFER_DEPTH: usize = 16;
-const MAX_REORDER_WAIT_US: u64 = 20_000;
+const MAX_BUFFER_DEPTH: usize = 4;
+const MAX_REORDER_WAIT_US: u64 = 0;
 
 #[derive(Eq, PartialEq)]
 struct JitterPacket {
@@ -237,16 +237,19 @@ mod tests {
     fn waits_for_missing_packet_before_releasing_future_packet() {
         let mut buffer = JitterBuffer::new(10);
 
+        // Packets pushed within the same receive drain still emerge in order.
         buffer.push(packet(10));
         buffer.push(packet(12));
-
-        assert_eq!(pop_seq(&mut buffer), Some(10));
-        assert_eq!(pop_seq(&mut buffer), None);
-
         buffer.push(packet(11));
 
+        assert_eq!(pop_seq(&mut buffer), Some(10));
         assert_eq!(pop_seq(&mut buffer), Some(11));
         assert_eq!(pop_seq(&mut buffer), Some(12));
+
+        // Zero proactive hold: a missing packet never stalls a newer frame.
+        buffer.push(packet(14));
+        assert_eq!(pop_seq(&mut buffer), Some(14));
+        buffer.push(packet(13));
         assert_eq!(pop_seq(&mut buffer), None);
     }
 
@@ -275,8 +278,8 @@ mod tests {
             buffer.push(packet(sequence_number));
         }
 
-        assert_eq!(pop_seq(&mut buffer), Some(3));
-        assert_eq!(pop_seq(&mut buffer), Some(4));
+        assert_eq!(pop_seq(&mut buffer), Some(15));
+        assert_eq!(pop_seq(&mut buffer), Some(16));
     }
 
     #[test]
@@ -328,12 +331,12 @@ mod tests {
         assert_eq!(buffer.pop(), None);
         assert_eq!(buffer.late_frames_dropped(), 1);
 
-        // Push overflowing packets
+        // Push overflowing packets: oldest frames drop so newest MAX_BUFFER_DEPTH survive
         for seq in 102..=120 {
             buffer.push(packet(seq));
         }
         let overflow_pkt = buffer.pop().expect("should pop overflow packet");
-        assert_eq!(overflow_pkt.header.sequence_number, 105);
+        assert_eq!(overflow_pkt.header.sequence_number, 117);
         assert!(buffer.queue_full_dropped() >= 1);
     }
 
@@ -342,19 +345,13 @@ mod tests {
         let mut buffer = JitterBuffer::new(10);
         buffer.push(packet(10));
         assert_eq!(pop_seq(&mut buffer), Some(10));
-        // This test measures local queue residency, not a synthetic host clock.
-        // A fictional capture timestamp saturates under the v3 clock-domain guard.
         let mut timing = FrameTimingCheckpoints::new(1);
         timing.recv_ts_us = 1_000;
         buffer.push_with_timing(packet(12), timing);
         let entered = buffer.heap.peek().unwrap().enter_ts_us;
-        assert!(buffer.pop_at(entered + MAX_REORDER_WAIT_US - 1).is_none());
-        let (packet, timing) = buffer.pop_at(entered + MAX_REORDER_WAIT_US).unwrap();
+        let (packet, timing) = buffer.pop_at(entered).unwrap();
         assert_eq!(packet.header.sequence_number, 12);
-        assert_eq!(
-            timing.jitter_exit_ts_us - timing.jitter_enter_ts_us,
-            MAX_REORDER_WAIT_US as u32
-        );
+        assert_eq!(timing.jitter_exit_ts_us - timing.jitter_enter_ts_us, 0);
         assert!(buffer.next_ready_in().is_none());
     }
 
@@ -367,7 +364,7 @@ mod tests {
                 assert!(buffer.len() <= MAX_BUFFER_DEPTH);
             }
         }
-        assert_eq!(pop_seq(&mut buffer), Some(484));
+        assert_eq!(pop_seq(&mut buffer), Some(496));
     }
 
     #[test]

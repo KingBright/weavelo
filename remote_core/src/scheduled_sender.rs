@@ -35,6 +35,8 @@ impl Default for ScheduledDataSenderConfig {
 pub struct ScheduledDataSender {
     realtime_tx: mpsc::Sender<DataEnvelope>,
     reliable_tx: mpsc::Sender<DataEnvelope>,
+    latest_video_overflow: Arc<std::sync::Mutex<std::collections::HashMap<u32, DataEnvelope>>>,
+    overflow_notify: Arc<tokio::sync::Notify>,
     counters: Arc<ScheduledDataSenderCounters>,
 }
 
@@ -60,6 +62,7 @@ struct ScheduledDataSenderCounters {
     scheduler_dropped_stale_realtime: AtomicU64,
     scheduler_dropped_realtime_capacity: AtomicU64,
     scheduler_rejected_reliable_capacity: AtomicU64,
+    pending_video_evictions: AtomicU64,
     sent_realtime: AtomicU64,
     sent_reliable: AtomicU64,
     send_errors: AtomicU64,
@@ -86,25 +89,60 @@ impl ScheduledDataSender {
     pub fn spawn(
         udp_sender: UdpSender,
         target: SocketAddr,
+        config: ScheduledDataSenderConfig,
+    ) -> (Self, ScheduledDataSenderJoin) {
+        Self::spawn_inner(udp_sender, target, config, false)
+    }
+
+    pub fn spawn_low_latency_realtime(
+        udp_sender: UdpSender,
+        target: SocketAddr,
+    ) -> (Self, ScheduledDataSenderJoin) {
+        Self::spawn_inner(
+            udp_sender,
+            target,
+            ScheduledDataSenderConfig {
+                scheduler: LaneSchedulerConfig {
+                    max_realtime_queued: 8,
+                    max_reliable_queued: 64,
+                },
+                realtime_queue_capacity: 8,
+                reliable_queue_capacity: 64,
+            },
+            true,
+        )
+    }
+
+    fn spawn_inner(
+        udp_sender: UdpSender,
+        target: SocketAddr,
         mut config: ScheduledDataSenderConfig,
+        evict_older_video: bool,
     ) -> (Self, ScheduledDataSenderJoin) {
         config.realtime_queue_capacity = config.realtime_queue_capacity.max(1);
         config.reliable_queue_capacity = config.reliable_queue_capacity.max(1);
         let (realtime_tx, realtime_rx) = mpsc::channel(config.realtime_queue_capacity);
         let (reliable_tx, reliable_rx) = mpsc::channel(config.reliable_queue_capacity);
+        let latest_video_overflow = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let overflow_notify = Arc::new(tokio::sync::Notify::new());
         let counters = Arc::new(ScheduledDataSenderCounters::default());
         let worker = tokio::spawn(run_sender_worker(
             udp_sender,
             target,
             config.scheduler,
+            evict_older_video,
             realtime_rx,
             reliable_rx,
+            latest_video_overflow.clone(),
+            overflow_notify.clone(),
             counters.clone(),
         ));
         (
             Self {
                 realtime_tx,
                 reliable_tx,
+                latest_video_overflow,
+                overflow_notify,
                 counters,
             },
             worker,
@@ -151,6 +189,43 @@ impl ScheduledDataSender {
         }
     }
 
+    /// Enqueue a realtime video frame without blocking; if the ingress channel is
+    /// full, overwrite the per-stream overflow slot so only the newest frame survives.
+    pub fn send_latest_video(&self, envelope: DataEnvelope) -> Result<(), ScheduledDataSendError> {
+        match self.realtime_tx.try_send(envelope) {
+            Ok(()) => {
+                self.counters.entrance_enqueued.fetch_add(1, Relaxed);
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Full(envelope)) => {
+                let stream_id = envelope.header.stream_id;
+                let replaced = self
+                    .latest_video_overflow
+                    .lock()
+                    .unwrap()
+                    .insert(stream_id, envelope)
+                    .is_some();
+                self.counters.entrance_enqueued.fetch_add(1, Relaxed);
+                if replaced {
+                    self.counters
+                        .scheduler_dropped_realtime_capacity
+                        .fetch_add(1, Relaxed);
+                }
+                self.counters.pending_video_evictions.fetch_add(1, Relaxed);
+                self.overflow_notify.notify_one();
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.counters.entrance_closed.fetch_add(1, Relaxed);
+                Err(ScheduledDataSendError::Closed)
+            }
+        }
+    }
+
+    pub fn take_video_evictions(&self) -> u64 {
+        self.counters.pending_video_evictions.swap(0, Relaxed)
+    }
+
     pub fn stats(&self) -> ScheduledDataSenderStats {
         ScheduledDataSenderStats {
             entrance_queued: (self.realtime_tx.max_capacity() - self.realtime_tx.capacity())
@@ -181,18 +256,27 @@ async fn run_sender_worker(
     udp_sender: UdpSender,
     target: SocketAddr,
     scheduler_config: LaneSchedulerConfig,
+    evict_older_video: bool,
     mut realtime_rx: mpsc::Receiver<DataEnvelope>,
     mut reliable_rx: mpsc::Receiver<DataEnvelope>,
+    latest_video_overflow: Arc<std::sync::Mutex<std::collections::HashMap<u32, DataEnvelope>>>,
+    overflow_notify: Arc<tokio::sync::Notify>,
     counters: Arc<ScheduledDataSenderCounters>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut scheduler = LaneScheduler::with_config(scheduler_config);
+    let mut scheduler =
+        LaneScheduler::with_config(scheduler_config).with_latest_video_only(evict_older_video);
     let mut realtime_open = true;
     let mut reliable_open = true;
 
     loop {
         // Always ingest deadline-sensitive traffic before choosing the next
         // packet. This keeps bulk backpressure completely off the hot path.
-        drain_realtime_ingress(&mut realtime_rx, &mut scheduler, &counters);
+        drain_realtime_ingress(
+            &mut realtime_rx,
+            &latest_video_overflow,
+            &mut scheduler,
+            &counters,
+        );
 
         if let Some(envelope) = pop_next_observed(&mut scheduler, now_ms(), &counters) {
             send_scheduled_envelope(&udp_sender, target, envelope, &counters).await?;
@@ -205,16 +289,24 @@ async fn run_sender_worker(
 
         tokio::select! {
             biased;
+            _ = overflow_notify.notified() => {
+                drain_realtime_ingress(
+                    &mut realtime_rx,
+                    &latest_video_overflow,
+                    &mut scheduler,
+                    &counters,
+                );
+            }
             maybe = realtime_rx.recv(), if realtime_open => {
                 match maybe {
-                    Some(envelope) => record_push_result(&counters, scheduler.push(envelope, now_ms())),
+                    Some(envelope) => push_observed(&mut scheduler, envelope, &counters),
                     None => realtime_open = false,
                 }
             }
             maybe = reliable_rx.recv(), if reliable_open => {
                 match maybe {
                     Some(envelope) => {
-                        record_push_result(&counters, scheduler.push(envelope, now_ms()));
+                        push_observed(&mut scheduler, envelope, &counters);
                         // Bulk traffic is allowed to yield one executor turn so a
                         // simultaneously-produced realtime/control packet can
                         // preempt it. Realtime itself is never timer-delayed.
@@ -235,17 +327,53 @@ fn pop_next_observed(
     let before = scheduler.stats().dropped_stale_realtime;
     let next = scheduler.pop_next(now_ms);
     let expired = scheduler.stats().dropped_stale_realtime - before;
-    counters.scheduler_dropped_stale_realtime.fetch_add(expired, Relaxed);
+    if expired > 0 {
+        counters.scheduler_dropped_stale_realtime.fetch_add(expired, Relaxed);
+        counters.pending_video_evictions.fetch_add(expired, Relaxed);
+    }
     next
+}
+
+fn push_observed(
+    scheduler: &mut LaneScheduler,
+    envelope: DataEnvelope,
+    counters: &ScheduledDataSenderCounters,
+) {
+    let before_evicted = scheduler.evicted_video_frames();
+    let result = scheduler.push(envelope, now_ms());
+    let evicted = scheduler.evicted_video_frames() - before_evicted;
+    if evicted > 0 {
+        counters
+            .scheduler_dropped_realtime_capacity
+            .fetch_add(evicted, Relaxed);
+        counters.pending_video_evictions.fetch_add(evicted, Relaxed);
+    }
+    if matches!(
+        result,
+        SchedulerPushResult::DroppedStaleRealtime | SchedulerPushResult::DroppedRealtimeForCapacity
+    ) {
+        counters.pending_video_evictions.fetch_add(1, Relaxed);
+    }
+    record_push_result(counters, result);
 }
 
 fn drain_realtime_ingress(
     rx: &mut mpsc::Receiver<DataEnvelope>,
+    latest_video_overflow: &std::sync::Mutex<std::collections::HashMap<u32, DataEnvelope>>,
     scheduler: &mut LaneScheduler,
     counters: &ScheduledDataSenderCounters,
 ) {
     while let Ok(envelope) = rx.try_recv() {
-        record_push_result(counters, scheduler.push(envelope, now_ms()));
+        push_observed(scheduler, envelope, counters);
+    }
+    let overflow: Vec<DataEnvelope> = latest_video_overflow
+        .lock()
+        .unwrap()
+        .drain()
+        .map(|(_, env)| env)
+        .collect();
+    for envelope in overflow {
+        push_observed(scheduler, envelope, counters);
     }
 }
 
@@ -430,6 +558,8 @@ mod tests {
         let scheduled = ScheduledDataSender {
             realtime_tx,
             reliable_tx,
+            latest_video_overflow: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            overflow_notify: Arc::new(tokio::sync::Notify::new()),
             counters: Arc::new(ScheduledDataSenderCounters::default()),
         };
 

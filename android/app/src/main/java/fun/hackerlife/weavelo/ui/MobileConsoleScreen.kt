@@ -556,7 +556,7 @@ fun HostCard(
                 }
             }
 
-            // Tier 2: Primary Capsule CTA + Tonal Icon Wells
+            // Tier 2: Compact Primary Capsule CTA + Right-Aligned Tonal Icon Wells
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -568,9 +568,10 @@ fun HostCard(
                     enabled = enabled,
                     style = PrecisionButtonStyle.PRIMARY,
                     compact = true,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.widthIn(min = 84.dp),
                     onClick = onConnect
                 )
+                Spacer(Modifier.weight(1f))
                 Box {
                     MobileAction(
                         symbol = if (sending) MobileSymbol.Close else MobileSymbol.Share,

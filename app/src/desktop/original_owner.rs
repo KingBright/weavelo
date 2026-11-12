@@ -1991,6 +1991,14 @@ impl OriginalOwner {
         for e in &mut p.sessions { e.session.set_clipboard(enabled); }
         p.active().is_some_and(|e| e.session.conn.clipboard_available)
     }
+    pub fn force_resync_clipboard(&self) {
+        let mut p = self.pool.lock().unwrap();
+        p.clipboard_preference = true;
+        if let Some(e) = p.active_mut() {
+            e.session.set_clipboard(false);
+            e.session.set_clipboard(true);
+        }
+    }
     pub fn supports_file_transfer(&self) -> bool {
         let p = self.pool.lock().unwrap();
         p.active().is_some_and(|e| e.session.conn.files_available)
@@ -2079,6 +2087,40 @@ impl OriginalOwner {
         p.active()
             .map(|e| e.session.transfers.lock().unwrap().snapshots())
             .unwrap_or_default()
+    }
+    pub fn clear_finished_transfers(&self) {
+        let p = self.pool.lock().unwrap();
+        if let Some(e) = p.active() {
+            e.session.transfers.lock().unwrap().compact_history(0);
+        }
+    }
+    pub fn recent_received_files(&self, limit: usize) -> Vec<(String, PathBuf, u64)> {
+        let dir = self.receive_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut items: Vec<(std::time::SystemTime, String, PathBuf, u64)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') {
+                    return None;
+                }
+                let meta = std::fs::symlink_metadata(&path).ok()?;
+                if !meta.is_file() {
+                    return None;
+                }
+                let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                Some((modified, name, path, meta.len()))
+            })
+            .collect();
+        items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        items
+            .into_iter()
+            .take(limit)
+            .map(|(_, name, path, size)| (name, path, size))
+            .collect()
     }
     pub fn receive_dir(&self) -> PathBuf {
         self.pool.lock().unwrap().receive_dir.clone()

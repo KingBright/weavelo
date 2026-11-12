@@ -37,11 +37,16 @@ internal class MediaCodecPlayer(
     private var decoder: MediaCodec? = null
     private var decodedFrames = 0L
     val outputFrames: Long get() = frameTarget?.outputFrames ?: decodedFrames
+    @Volatile var lastDecodeLatencyMs: Float = 0f
+        private set
+    private val submitTimeNsByPts = java.util.LinkedHashMap<Long, Long>()
     private var lastInputPts = Long.MIN_VALUE
     @Synchronized
     fun start(width: Int = 1920, height: Int = 1080, mimeType: String = MediaFormat.MIMETYPE_VIDEO_HEVC) {
         stop()
         decodedFrames = 0
+        lastDecodeLatencyMs = 0f
+        submitTimeNsByPts.clear()
         frameTarget?.reset(resetCount = true)
         require(width > 0 && height > 0 && surface.isValid) { "Invalid video surface or dimensions" }
         var candidate: MediaCodec? = null
@@ -54,11 +59,16 @@ internal class MediaCodecPlayer(
                         .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback)) {
                     setInteger(MediaFormat.KEY_MAX_WIDTH,width);setInteger(MediaFormat.KEY_MAX_HEIGHT,height)
                 }
-                if (Build.VERSION.SDK_INT >= 30 && codec.codecInfo
-                        .getCapabilitiesForType(mimeType).isFeatureSupported("low-latency")) {
-                    setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                if (Build.VERSION.SDK_INT >= 30) {
+                    runCatching { setInteger(MediaFormat.KEY_LOW_LATENCY, 1) }
                 }
+                setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
                 setInteger(MediaFormat.KEY_PRIORITY, 0) // Realtime priority
+                // Vendor hardware zero-reorder / low-latency hints (Qualcomm, MediaTek, Hisilicon/vivo, Unisoc)
+                setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+                setInteger("vendor.mtk.vdec.avc.lowlatency", 1)
+                setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
+                setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
             }
             codec.configure(format, surface, null, 0)
             codec.start()
@@ -93,6 +103,11 @@ internal class MediaCodecPlayer(
         // media timestamp, then match the actual latched SurfaceTexture image.
         val queuedPts = maxOf(ptsUs,lastInputPts + 1)
         frameTarget?.register(queuedPts,geometry)
+        while (submitTimeNsByPts.size >= 64) {
+            val oldest = submitTimeNsByPts.keys.firstOrNull() ?: break
+            submitTimeNsByPts.remove(oldest)
+        }
+        submitTimeNsByPts[queuedPts] = System.nanoTime()
         codec.queueInputBuffer(inputIndex, 0, payloadSize, queuedPts,
             if (isKeyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
         lastInputPts = queuedPts
@@ -101,36 +116,65 @@ internal class MediaCodecPlayer(
     }
 
     @Synchronized
-    fun drain() {
-        val codec = decoder ?: return
+    fun drain(): Boolean {
+        val codec = decoder ?: return false
         val info = MediaCodec.BufferInfo()
-        try { repeat(16) {
-            val index = codec.dequeueOutputBuffer(info, 0)
-            when {
-                index >= 0 -> {
-                    val render = surface.isValid && info.size > 0
-                    codec.releaseOutputBuffer(index, render)
-                    if (render) decodedFrames++
+        var latestIndex = -1
+        var latestSize = 0
+        var latestPtsUs = 0L
+        var produced = false
+        try {
+            repeat(24) {
+                val index = codec.dequeueOutputBuffer(info, 0)
+                when {
+                    index >= 0 -> {
+                        if (latestIndex >= 0) {
+                            // Zero-delay rule: drop superseded decoded frames without rendering!
+                            codec.releaseOutputBuffer(latestIndex, false)
+                            submitTimeNsByPts.remove(latestPtsUs)
+                        }
+                        latestIndex = index
+                        latestSize = info.size
+                        latestPtsUs = info.presentationTimeUs
+                    }
+                    index == MediaCodec.INFO_TRY_AGAIN_LATER -> return@repeat
+                    index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val format = codec.outputFormat
+                        val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                        val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                        fun dimension(key: String, fallback: Int) =
+                            if (format.containsKey(key)) format.getInteger(key) else fallback
+                        VideoDimensions.fromDecodedFrame(width, height,
+                            dimension("crop-left", 0), dimension("crop-top", 0),
+                            dimension("crop-right", width - 1), dimension("crop-bottom", height - 1))
+                            ?.let(onVideoSizeChanged)
+                    }
                 }
-                index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
-                index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    val format = codec.outputFormat
-                    val width = format.getInteger(MediaFormat.KEY_WIDTH)
-                    val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-                    fun dimension(key: String, fallback: Int) =
-                        if (format.containsKey(key)) format.getInteger(key) else fallback
-                    VideoDimensions.fromDecodedFrame(width, height,
-                        dimension("crop-left", 0), dimension("crop-top", 0),
-                        dimension("crop-right", width - 1), dimension("crop-bottom", height - 1))
-                        ?.let(onVideoSizeChanged)
+                if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return@repeat
+            }
+            if (latestIndex >= 0) {
+                val render = surface.isValid && latestSize > 0
+                val submittedNs = submitTimeNsByPts.remove(latestPtsUs)
+                if (submittedNs != null) {
+                    val costMs = ((System.nanoTime() - submittedNs).coerceAtLeast(0L)) / 1_000_000f
+                    lastDecodeLatencyMs = if (lastDecodeLatencyMs <= 0.05f) costMs else lastDecodeLatencyMs * 0.8f + costMs * 0.2f
+                }
+                codec.releaseOutputBuffer(latestIndex, render)
+                if (render) {
+                    decodedFrames++
+                    produced = true
                 }
             }
-        } } finally { frameTarget?.renderPending() }
+        } finally {
+            frameTarget?.renderPending()
+        }
+        return produced
     }
 
     @Synchronized
     fun flush() {
         decoder?.flush()
+        submitTimeNsByPts.clear()
         frameTarget?.reset()
     }
 

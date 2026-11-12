@@ -13,7 +13,7 @@ use protocol::session::{
 use protocol::{AudioControlTarget, ContentKind, ControlMessage, DataEnvelope, InputEvent};
 use protocol::audio_output::{AudioOutputRequest, AudioOutputStatus, LocalPlayback};
 use remote_core::net::{MultiplexedPacket, UdpMultiplexer, UdpSender};
-use remote_core::scheduled_sender::{ScheduledDataSender, ScheduledDataSenderConfig};
+use remote_core::scheduled_sender::ScheduledDataSender;
 use remote_core::session_crypto::{
     load_session_psk, now_unix_ms, random_bytes_16, require_session_auth,
 };
@@ -1079,8 +1079,7 @@ impl Connection {
 
     fn new(id: u32, addr: SocketAddr, udp: UdpSender, config: &HostServiceConfig) -> Self {
         let (cancel, cancel_rx) = broadcast::channel(8);
-        let (sender, sender_task) =
-            ScheduledDataSender::spawn(udp, addr, ScheduledDataSenderConfig::default());
+        let (sender, sender_task) = ScheduledDataSender::spawn_low_latency_realtime(udp, addr);
         let (files, file_inbound_rx) = channel_if(
             config.enable_file_transfer
                 || env_flag_enabled("WEAVELO_FILE_CLIPBOARD")

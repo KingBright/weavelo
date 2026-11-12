@@ -118,6 +118,9 @@ impl RestoredDashboard {
             panel = panel.child(self.device_files_panel(&context, cx));
         } else {
             panel = panel.child(file_transfer_panel(self.owner.clone(), cx));
+            if self.owner.supports_clipboard_sync() {
+                panel = panel.child(clipboard_quick_panel(self.owner.clone(), cx));
+            }
         }
         let contexts: Vec<_> = self
             .exit_group

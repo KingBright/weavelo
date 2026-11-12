@@ -532,6 +532,17 @@ async fn run_discovery_runtime_inner(
     let send_announcement = config.announcement.clone();
     let live_capabilities = config.live_capabilities.clone();
     let send_targets = config.announce_targets.clone();
+    let expand_lan_interfaces = config.bind_addr.ip().is_unspecified()
+        && send_targets.iter().any(|target| {
+            matches!(target.ip(), IpAddr::V4(addr) if addr == std::net::Ipv4Addr::BROADCAST)
+        });
+    let lan_port = send_targets
+        .iter()
+        .find(|target| {
+            matches!(target.ip(), IpAddr::V4(addr) if addr == std::net::Ipv4Addr::BROADCAST)
+        })
+        .map(|target| target.port())
+        .unwrap_or(config.bind_addr.port());
     let sender_events_tx = events_tx.clone();
     let sender_diagnostics = diagnostics.clone();
     let relay_targets: Vec<_> = config.route_overrides.iter()
@@ -541,6 +552,8 @@ async fn run_discovery_runtime_inner(
     let mut send_cancel_rx = cancel_rx.resubscribe();
     let sender_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(config.announce_interval);
+        let mut interface_sockets: std::collections::HashMap<std::net::Ipv4Addr, UdpSocket> =
+            std::collections::HashMap::new();
         loop {
             tokio::select! {
                 _ = send_cancel_rx.recv() => break,
@@ -565,6 +578,26 @@ async fn run_discovery_runtime_inner(
                                 let _ = sender_events_tx.send(DiscoveryEvent::Error(format!(
                                     "discovery announce to {target} failed: {err}"
                                 )));
+                            }
+                        }
+                    }
+                    if expand_lan_interfaces && lan_port != 0 {
+                        let routes = local_ipv4_broadcast_routes(lan_port);
+                        interface_sockets.retain(|ip, _| routes.iter().any(|(active_ip, _)| active_ip == ip));
+                        for (local_ip, directed_broadcast) in routes {
+                            if !interface_sockets.contains_key(&local_ip)
+                                && let Ok(bound) = bind_interface_broadcast_socket(local_ip)
+                            {
+                                interface_sockets.insert(local_ip, bound);
+                            }
+                            if let Some(iface_sock) = interface_sockets.get(&local_ip) {
+                                let _ = iface_sock.send_to(&send_packet, directed_broadcast).await;
+                                let limited = SocketAddr::from((std::net::Ipv4Addr::BROADCAST, lan_port));
+                                if directed_broadcast != limited {
+                                    let _ = iface_sock.send_to(&send_packet, limited).await;
+                                }
+                            } else {
+                                let _ = send_socket.send_to(&send_packet, directed_broadcast).await;
                             }
                         }
                     }
@@ -712,6 +745,103 @@ pub fn parse_discovery_port(value: Option<&str>) -> Result<u16, DiscoveryError> 
         return Err(DiscoveryError::InvalidPort(value.to_string()));
     }
     Ok(port)
+}
+
+fn bind_interface_broadcast_socket(local_ip: std::net::Ipv4Addr) -> Result<UdpSocket, DiscoveryError> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .map_err(|source| DiscoveryError::Io("iface_socket", source.to_string()))?;
+    let _ = socket.set_broadcast(true);
+    socket
+        .set_nonblocking(true)
+        .map_err(|source| DiscoveryError::Io("iface_nonblocking", source.to_string()))?;
+    socket
+        .bind(&SocketAddr::from((local_ip, 0)).into())
+        .map_err(|source| DiscoveryError::Io("iface_bind", source.to_string()))?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    UdpSocket::from_std(std_socket)
+        .map_err(|source| DiscoveryError::Io("iface_from_std", source.to_string()))
+}
+
+#[cfg(unix)]
+fn local_ipv4_broadcast_routes(port: u16) -> Vec<(std::net::Ipv4Addr, SocketAddr)> {
+    let mut out = Vec::new();
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) != 0 || ifap.is_null() {
+            return out;
+        }
+        let mut cur = ifap;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            let flags = ifa.ifa_flags as i32;
+            let is_up = (flags & libc::IFF_UP) != 0;
+            let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
+            let is_p2p = (flags & libc::IFF_POINTOPOINT) != 0;
+            if is_up && !is_loopback && !is_p2p && !ifa.ifa_addr.is_null() {
+                if i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET {
+                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                    if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() {
+                        let bcast = if !ifa.ifa_netmask.is_null()
+                            && i32::from((*ifa.ifa_netmask).sa_family) == libc::AF_INET
+                        {
+                            let mask_sin = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
+                            let mask = u32::from_be(mask_sin.sin_addr.s_addr);
+                            if mask != 0 && mask != u32::MAX {
+                                std::net::Ipv4Addr::from(u32::from(ip) | !mask)
+                            } else {
+                                std::net::Ipv4Addr::BROADCAST
+                            }
+                        } else {
+                            std::net::Ipv4Addr::BROADCAST
+                        };
+                        let entry = (ip, SocketAddr::from((bcast, port)));
+                        if !out.contains(&entry) {
+                            out.push(entry);
+                        }
+                    }
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+    }
+    out
+}
+
+#[cfg(not(unix))]
+fn local_ipv4_broadcast_routes(port: u16) -> Vec<(std::net::Ipv4Addr, SocketAddr)> {
+    let mut out = Vec::new();
+    let probes = [
+        "192.168.1.1:80",
+        "192.168.0.1:80",
+        "192.168.31.1:80",
+        "10.0.0.1:80",
+        "172.16.0.1:80",
+        "8.8.8.8:80",
+        "223.5.5.5:80",
+    ];
+    for probe in probes {
+        if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0")
+            && sock.connect(probe).is_ok()
+            && let Ok(SocketAddr::V4(local)) = sock.local_addr()
+        {
+            let ip = *local.ip();
+            if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() {
+                let octets = ip.octets();
+                let bcast = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], 255);
+                let entry = (ip, SocketAddr::from((bcast, port)));
+                if !out.contains(&entry) {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn bind_discovery_socket(bind_addr: SocketAddr) -> Result<UdpSocket, DiscoveryError> {

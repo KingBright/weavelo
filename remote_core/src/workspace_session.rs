@@ -1580,6 +1580,12 @@ impl Actor {
             view.handler
                 .handle_with_host_timing(packet, size, timing)
                 .await;
+            if let Some((target, session_id)) = view.handler.take_keyframe_request() {
+                let _ = self
+                    .sender
+                    .send_control(&ControlMessage::RequestKeyframe { session_id }, target)
+                    .await;
+            }
         }
     }
 }
@@ -2364,7 +2370,7 @@ mod tests {
         actor.packet(source_video(7,10),FrameTimingCheckpoints::default()).await;
         assert_eq!(ours.try_recv().unwrap().0.header.sequence_number,10);
         actor.packet(source_video(7,12),FrameTimingCheckpoints::default()).await;
-        assert!(ours.try_recv().is_err()); // Missing 11 leaves old video in reorder.
+        assert_eq!(ours.try_recv().unwrap().0.header.sequence_number,12);
         actor.request(SessionCommand::SwitchSource{id:7,request_id:100,source:CaptureSource::Display(88)}).await;
         actor.packet(source_video(7,13),FrameTimingCheckpoints::default()).await;
         actor.packet(source_video(8,1),FrameTimingCheckpoints::default()).await;

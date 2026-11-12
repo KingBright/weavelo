@@ -1209,6 +1209,9 @@ impl MediaPacketHandler {
             }
             if crate::media_plane::is_hevc_keyframe(&ordered_pkt.payload) {
                 self.needs_keyframe = false;
+                if !self.stats_net.video_recovery.tracks_output() {
+                    self.last_keyframe_request = None;
+                }
             }
             self.last_seq = Some(seq);
             if self.last_loss_calc.elapsed() >= Duration::from_secs(1) {
@@ -1598,7 +1601,7 @@ mod tests {
     async fn reordered_packets_and_sequence_zero_do_not_inflate_loss() {
         let (event_tx, _) = mpsc::unbounded_channel();
         let mut handler = test_media_handler(Arc::new(AtomicU32::new(7)), event_tx);
-        for sequence_number in [u16::MAX, 1, 0, 2, 2] {
+        for sequence_number in [u16::MAX, 0, 1, 2, 2] {
             let mut packet = video_packet(7);
             packet.header.sequence_number = sequence_number;
             handler.handle(packet, 16).await;
@@ -1606,6 +1609,15 @@ mod tests {
         assert_eq!(handler.packets_expected, 4);
         assert_eq!(handler.packets_lost, 0);
         assert_eq!(handler.last_seq, Some(2));
+
+        // Zero proactive hold skips missing older frame 3 immediately to deliver 4.
+        for sequence_number in [4, 3] {
+            let mut packet = video_packet(7);
+            packet.header.sequence_number = sequence_number;
+            handler.handle(packet, 16).await;
+        }
+        assert_eq!(handler.last_seq, Some(4));
+        assert!(handler.needs_keyframe);
     }
 
     #[tokio::test]

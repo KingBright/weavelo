@@ -469,7 +469,7 @@ pub struct BoundWebSocketRelayTunnel {
 impl BoundTcpRelayTunnel {
     pub async fn bind(config: TcpRelayTunnelConfig) -> io::Result<Self> {
         let socket = UdpSocket::bind(config.bind_addr).await?;
-        crate::net::configure_udp_buffers(&socket);
+        crate::net::configure_relay_tunnel_udp_buffers(&socket);
         Ok(Self { socket, config })
     }
 
@@ -649,7 +649,7 @@ impl BoundWebSocketRelayTunnel {
             crate::init_crypto_provider();
         }
         let socket = UdpSocket::bind(config.bind_addr).await?;
-        crate::net::configure_udp_buffers(&socket);
+        crate::net::configure_relay_tunnel_udp_buffers(&socket);
         Ok(Self { socket, config, diagnostics: Arc::new(RelayTunnelDiagnostics::default()) })
     }
 
@@ -791,16 +791,34 @@ impl BoundWebSocketRelayTunnel {
                         self.diagnostics.ping_sent();
                     }
                     received = self.socket.recv_from(&mut buf) => {
-                        let (len, addr) = received?;
-                        *local_target_addr.lock().unwrap_or_else(|e|e.into_inner())=Some(addr);
-                        let encoded = RelayPacket::Data {
-                            group_id: self.config.group_id.clone(),
-                            peer_id: self.config.peer_id.clone(),
-                            payload: buf[..len].to_vec(),
+                        let (mut len, mut addr) = received?;
+                        let mut batched = 0usize;
+                        loop {
+                            *local_target_addr.lock().unwrap_or_else(|e|e.into_inner())=Some(addr);
+                            let encoded = RelayPacket::Data {
+                                group_id: self.config.group_id.clone(),
+                                peer_id: self.config.peer_id.clone(),
+                                payload: buf[..len].to_vec(),
+                            }
+                            .encode();
+                            writer
+                                .feed(Message::Binary(Bytes::from(encoded)))
+                                .await
+                                .map_err(websocket_io_error)?;
+                            self.diagnostics.data_sent();
+                            batched += 1;
+                            if batched >= 32 {
+                                break;
+                            }
+                            match self.socket.try_recv_from(&mut buf) {
+                                Ok((next_len, next_addr)) => {
+                                    len = next_len;
+                                    addr = next_addr;
+                                }
+                                Err(_) => break,
+                            }
                         }
-                        .encode();
-                        send_websocket_binary(&mut writer, encoded).await?;
-                        self.diagnostics.data_sent();
+                        writer.flush().await.map_err(websocket_io_error)?;
                         tokio::task::yield_now().await;
                     }
                 }

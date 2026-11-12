@@ -8,6 +8,7 @@ use tokio::net::UdpSocket;
 
 pub const DEFAULT_CONTROL_PORT: u16 = 39271;
 const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const RELAY_TUNNEL_UDP_BUFFER_BYTES: usize = 256 * 1024;
 
 /// Relay adapters carry the same fragmented frames as the application socket.
 /// Small OS defaults can discard encoded references on these local UDP hops
@@ -16,6 +17,14 @@ const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) fn configure_udp_buffers(socket: &UdpSocket) {
     let socket = socket2::SockRef::from(socket);
     let _ = socket.set_recv_buffer_size(UDP_BUFFER_BYTES);
+    let _ = socket.set_send_buffer_size(UDP_BUFFER_BYTES);
+}
+
+/// Relay TCP/WebSocket local UDP adapters must accommodate one burst of
+/// fragments without silently hoarding multi-second megabytes of stale video.
+pub(crate) fn configure_relay_tunnel_udp_buffers(socket: &UdpSocket) {
+    let socket = socket2::SockRef::from(socket);
+    let _ = socket.set_recv_buffer_size(RELAY_TUNNEL_UDP_BUFFER_BYTES);
     let _ = socket.set_send_buffer_size(UDP_BUFFER_BYTES);
 }
 

@@ -47,13 +47,43 @@ internal fun primaryScreenSource(sources: List<WorkspaceSource>): WorkspaceSourc
 }
 
 data class RemoteSharedFile(val id: Long, val name: String, val sizeBytes: Long)
+data class ActiveTransferItem(
+    val id: Long,
+    val incoming: Boolean,
+    val name: String,
+    val doneBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val state: String = "started",
+    val path: String? = null,
+    val groupId: Long? = null,
+    val updatedAtMs: Long = 0L,
+) {
+    val isRunning: Boolean get() = state == "started" || state == "progress"
+    val progressFraction: Float
+        get() = when {
+            state == "completed" -> 1f
+            totalBytes <= 0L -> 0f
+            else -> (doneBytes.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f)
+        }
+}
+data class ClipboardHistoryEntry(
+    val id: Long,
+    val text: String? = null,
+    val imagePath: String? = null,
+    val filePaths: List<String> = emptyList(),
+    val fromRemote: Boolean = false,
+    val pinned: Boolean = false,
+    val timestampMs: Long = System.currentTimeMillis(),
+)
 data class WorkspaceState(val deviceId: String = "", val transferring: Boolean = false, val remoteFiles: List<RemoteSharedFile> = emptyList(), val sharedNext: Long? = null, val sharedBusy: Boolean = false, val sessionKey: String = "", val connectionGeneration: Long = 0, val connected: Boolean = false, val clipboard: Boolean = false, val maxSubscriptions: Int = 4,
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
     val sourcesLoaded: Boolean = false,
     val androidHost: Boolean = false,
     val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
     val incomingEnded: Boolean = false, val connectionId: Long = 0,
-    val statusText: AppText? = AppText("Connecting…"))
+    val statusText: AppText? = AppText("Connecting…"),
+    val activeTransfers: List<ActiveTransferItem> = emptyList(),
+    val clipboardHistory: List<ClipboardHistoryEntry> = emptyList())
 
 object WorkspaceClient {
     private external fun nativeAction(operation: Int, payload: String): String
@@ -103,6 +133,70 @@ object WorkspaceClient {
     private val pendingAudioOutputs = HashMap<Long, PendingAudioOutput>()
     private var windowResizeSeq = 20_000
     private val pendingWindowResizes = HashMap<Int, Pair<Int, Long>>()
+    private var clipboardEntrySeq = 1_000L
+    private val localDecodeLatencies = java.util.concurrent.ConcurrentHashMap<Int, Float>()
+    private val activeSurfaceTokens = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    fun reportLocalDecodeLatency(id: Int, decodeMs: Float) {
+        if (decodeMs.isFinite() && decodeMs >= 0f) {
+            localDecodeLatencies[id] = decodeMs
+        }
+    }
+
+    private fun loadPinnedClipboardEntries(ctx: Context?): List<ClipboardHistoryEntry> {
+        val prefs = ctx?.getSharedPreferences("clipboard_favorites", Context.MODE_PRIVATE) ?: return emptyList()
+        val raw = prefs.getString("pinned_texts", null) ?: return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                val text = obj.optString("text").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                ClipboardHistoryEntry(
+                    id = ++clipboardEntrySeq,
+                    text = text,
+                    fromRemote = obj.optBoolean("from_remote", false),
+                    pinned = true,
+                    timestampMs = obj.optLong("ts", System.currentTimeMillis())
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun persistPinnedClipboardEntries(entries: List<ClipboardHistoryEntry>) {
+        val ctx = context ?: return
+        val arr = JSONArray()
+        entries.filter { it.pinned && !it.text.isNullOrBlank() }.take(16).forEach { entry ->
+            arr.put(JSONObject().put("text", entry.text).put("from_remote", entry.fromRemote).put("ts", entry.timestampMs))
+        }
+        ctx.getSharedPreferences("clipboard_favorites", Context.MODE_PRIVATE)
+            .edit().putString("pinned_texts", arr.toString()).apply()
+    }
+
+    private fun recordClipboardEntry(text: String? = null, imagePath: String? = null, filePaths: List<String> = emptyList(), fromRemote: Boolean) {
+        if (text.isNullOrBlank() && imagePath.isNullOrBlank() && filePaths.isEmpty()) return
+        val current = mutable.value.clipboardHistory
+        val existingMatch = current.firstOrNull {
+            (!text.isNullOrBlank() && it.text == text) ||
+                (!imagePath.isNullOrBlank() && it.imagePath == imagePath)
+        }
+        val entry = ClipboardHistoryEntry(
+            id = existingMatch?.id ?: ++clipboardEntrySeq,
+            text = text,
+            imagePath = imagePath,
+            filePaths = filePaths,
+            fromRemote = fromRemote,
+            pinned = existingMatch?.pinned ?: false,
+            timestampMs = System.currentTimeMillis()
+        )
+        val pinnedRest = current.filter { it.id != entry.id && it.pinned }
+        val unpinnedRest = current.filter { it.id != entry.id && !it.pinned }
+        val updated = if (entry.pinned) {
+            (listOf(entry) + pinnedRest + unpinnedRest).take(30)
+        } else {
+            (pinnedRest + listOf(entry) + unpinnedRest).take(30)
+        }
+        mutable.value = mutable.value.copy(clipboardHistory = updated)
+    }
 
     private fun action(op: Int, payload: String = ""): String {
         val result = nativeAction(op, payload)
@@ -237,10 +331,11 @@ object WorkspaceClient {
         pendingShareList = 0L
         mutable.value = mutable.value.copy(connected = true, sourcesLoaded = false, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
             files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
-            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, audioOutput = WorkspaceAudioOutput(), telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"))
+            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, audioOutput = WorkspaceAudioOutput(), telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"),
+            clipboardHistory = mutable.value.clipboardHistory.ifEmpty { loadPinnedClipboardEntries(context) })
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
-    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); if (active) action(1); active = false; retainingConnection = false }
+    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); activeSurfaceTokens.clear(); localDecodeLatencies.clear(); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
         ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
     }
@@ -391,6 +486,8 @@ object WorkspaceClient {
             selected=if(mutable.value.selected==pane.id) next.id else mutable.value.selected)
     }
     private fun removePane(id: Int, reason: String, rejected: Boolean = false, reasonText: AppText? = null) {
+        activeSurfaceTokens.remove(id)
+        localDecodeLatencies.remove(id)
         val previous = mutable.value
         if (previous.panes.none { it.id == id }) return
         val panes = previous.panes.filter { it.id != id }
@@ -523,6 +620,44 @@ object WorkspaceClient {
         lastFileAction = SystemClock.elapsedRealtime()
         action(4, file.absolutePath)
     }
+    fun sendFiles(files: List<File>, expectedSessionKey: String) = guarded {
+        if (files.isEmpty()) return@guarded
+        appCheck(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey, "The destination changed or disconnected. Select the file again for the intended device.")
+        lastFileAction = SystemClock.elapsedRealtime()
+        if (files.size == 1) {
+            action(4, files[0].absolutePath)
+        } else {
+            val arr = JSONArray(files.map { it.absolutePath })
+            action(9, JSONObject().put("send_files", arr).toString())
+        }
+    }
+    fun cancelTransfer(transferId: Long) = guarded {
+        if (!active || !mutable.value.connected) return@guarded
+        action(9, JSONObject().put("cancel_transfer_id", transferId).toString())
+    }
+    fun cancelTransferGroup(groupId: Long) = guarded {
+        if (!active || !mutable.value.connected) return@guarded
+        action(9, JSONObject().put("cancel_group_id", groupId).toString())
+    }
+    fun clearFinishedTransfers() = guarded {
+        mutable.value = mutable.value.copy(activeTransfers = mutable.value.activeTransfers.filter { it.isRunning })
+    }
+    fun togglePinClipboardEntry(entryId: Long) = guarded {
+        val next = mutable.value.clipboardHistory.map { if (it.id == entryId) it.copy(pinned = !it.pinned) else it }
+            .sortedWith(compareByDescending<ClipboardHistoryEntry> { it.pinned }.thenByDescending { it.timestampMs })
+        mutable.value = mutable.value.copy(clipboardHistory = next)
+        persistPinnedClipboardEntries(next)
+    }
+    fun removeClipboardEntry(entryId: Long) = guarded {
+        val next = mutable.value.clipboardHistory.filterNot { it.id == entryId }
+        mutable.value = mutable.value.copy(clipboardHistory = next)
+        persistPinnedClipboardEntries(next)
+    }
+    fun clearClipboardHistory() = guarded {
+        val pinnedOnly = mutable.value.clipboardHistory.filter { it.pinned }
+        mutable.value = mutable.value.copy(clipboardHistory = pinnedOnly)
+        persistPinnedClipboardEntries(pinnedOnly)
+    }
     fun publishSharedFile(file: File, expectedSessionKey: String) = guarded {
         appCheck(active && mutable.value.connected && mutable.value.sessionKey == expectedSessionKey, "The selected device session changed")
         action(8, file.absolutePath)
@@ -553,9 +688,26 @@ object WorkspaceClient {
         mutable.value = mutable.value.copy(clipboard = enabled)
         if (!enabled) pendingClipboard = null
     }
-    fun sendClipboard(value: JSONObject) = guarded { lastFileAction = SystemClock.elapsedRealtime(); action(7, value.toString()) }
+    fun sendClipboard(value: JSONObject) = guarded {
+        lastFileAction = SystemClock.elapsedRealtime()
+        action(7, value.toString())
+        val files = value.optJSONArray("files")?.let { arr -> (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
+        recordClipboardEntry(
+            text = value.optString("text").takeIf { value.has("text") && it.isNotBlank() },
+            imagePath = value.optString("image").takeIf { value.has("image") && it.isNotBlank() },
+            filePaths = files,
+            fromRemote = false
+        )
+    }
     private fun applyClipboard(value: JSONObject) {
         if (!mutable.value.clipboard) return
+        val files = value.optJSONArray("clipboard_files")?.let { arr -> (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() } }.orEmpty()
+        recordClipboardEntry(
+            text = value.optString("text").takeIf { value.has("text") && it.isNotBlank() },
+            imagePath = value.optString("image").takeIf { value.has("image") && it.isNotBlank() },
+            filePaths = files,
+            fromRemote = true
+        )
         if (background) { pendingClipboard = value; return }
         val ctx = checkNotNull(context)
         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -667,10 +819,22 @@ object WorkspaceClient {
     fun surface(id: Int, sessionKey: String, generation: Long, token: Long, phase: String, eventTime: Long = SystemClock.uptimeMillis()) = guarded {
         if (!currentView(id, sessionKey, generation, phase == "begin" || phase == "ready" || phase == "alive")) return@guarded
         val currentPhase = if (phase == "alive" && SystemClock.uptimeMillis() - eventTime !in 0L..250L) "cancel" else phase
+        if (currentPhase == "begin" || currentPhase == "ready" || currentPhase == "alive") {
+            activeSurfaceTokens[id] = token
+        } else {
+            activeSurfaceTokens.remove(id, token)
+        }
         action(11, JSONObject().put("id", id).put("token", token).put("phase", currentPhase).toString())
         if (currentPhase == "begin" || currentPhase == "ready") inputIssue(id, null)
         if (currentPhase == "ready") ownership.request()?.incomingId?.let {
             DirectedDelivery.rendered(it, generation, id, mutable.value.panes)
+        }
+    }
+    fun typeTextIntoPane(id: Int, sessionKey: String, generation: Long, text: String) {
+        if (text.isEmpty()) return
+        val surfTok = activeSurfaceTokens[id] ?: return
+        keyboardBinding(id, sessionKey, generation, surfTok)?.let { owner ->
+            keyboard(id, sessionKey, generation, surfTok, owner, text = text)
         }
     }
     internal fun presented(id: Int, sessionKey: String, generation: Long, token: Long, geometry: VideoFrameGeometry) = guarded {
@@ -776,7 +940,11 @@ object WorkspaceClient {
                 val now = SystemClock.elapsedRealtime()
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
                     val sample = byId[pane.id]
-                    pane.copy(telemetry = if (sample == null) TelemetrySnapshot() else TelemetrySnapshot(
+                    val localDecode = localDecodeLatencies[pane.id] ?: pane.telemetry.latencyMs
+                    pane.copy(telemetry = if (sample == null) TelemetrySnapshot(latencyMs = localDecode) else TelemetrySnapshot(
+                        fps = nullableTelemetryNumber(sample.opt("fps"))?.toFloat() ?: 0f,
+                        latencyMs = localDecode,
+                        captureReceiveEstimateMs = nullableTelemetryNumber(sample.opt("video_e2e_latency_ms")),
                         networkRttMs = nullableTelemetryNumber(sample.opt("network_rtt_ms")),
                         packetLossPercent = nullableTelemetryNumber(sample.opt("packet_loss_percent"))?.toFloat() ?: Float.NaN,
                         videoBitrateKbps = if (sample.isNull("video_bitrate_kbps")) -1 else sample.optInt("video_bitrate_kbps", -1),
@@ -983,6 +1151,57 @@ object WorkspaceClient {
                 response?.optJSONObject("Rejected")?.let { rejected ->
                     if (id == pendingShareList) pendingShareList = 0L
                     mutable.value = mutable.value.copy(sharedBusy = pendingShareList != 0L, status = rejected.getString("message"), statusText = null)
+                }
+                detail.optJSONObject("transfer")?.let { tx ->
+                    val tid = tx.optLong("id", -1L)
+                    if (tid >= 0L) {
+                        val incoming = tx.optBoolean("incoming", true)
+                        val txState = tx.optString("state", "started")
+                        val existing = mutable.value.activeTransfers.firstOrNull { it.id == tid && it.incoming == incoming }
+                        val item = ActiveTransferItem(
+                            id = tid,
+                            incoming = incoming,
+                            name = tx.optString("name").ifBlank {
+                                tx.optString("path").substringAfterLast('/').substringAfterLast('\\')
+                                    .ifBlank { existing?.name ?: "File #$tid" }
+                            },
+                            doneBytes = tx.optLong("done_bytes", if (txState == "completed") (existing?.totalBytes ?: 0L) else (existing?.doneBytes ?: 0L)),
+                            totalBytes = tx.optLong("total_bytes", existing?.totalBytes ?: 0L),
+                            state = txState,
+                            path = tx.optString("path").takeIf { it.isNotBlank() } ?: existing?.path,
+                            groupId = if (tx.isNull("group_id")) existing?.groupId else tx.optLong("group_id"),
+                            updatedAtMs = System.currentTimeMillis()
+                        )
+                        val updated = (listOf(item) + mutable.value.activeTransfers.filterNot { it.id == tid && it.incoming == incoming }).take(24)
+                        mutable.value = mutable.value.copy(activeTransfers = updated)
+                    }
+                }
+                detail.optJSONObject("progress")?.let { prog ->
+                    val tid = prog.optLong("id", -1L)
+                    val incoming = prog.optBoolean("incoming", true)
+                    val done = detail.optLong("done_bytes", 0L)
+                    val total = detail.optLong("total_bytes", 0L)
+                    if (tid >= 0L) {
+                        val existing = mutable.value.activeTransfers.firstOrNull { it.id == tid && it.incoming == incoming }
+                        val item = (existing ?: ActiveTransferItem(
+                            id = tid,
+                            incoming = incoming,
+                            name = if (incoming) "Incoming #$tid" else "Outgoing #$tid"
+                        )).copy(
+                            doneBytes = done,
+                            totalBytes = if (total > 0L) total else (existing?.totalBytes ?: 0L),
+                            state = "progress",
+                            updatedAtMs = System.currentTimeMillis()
+                        )
+                        val updated = mutable.value.activeTransfers.let { list ->
+                            if (list.any { it.id == tid && it.incoming == incoming }) {
+                                list.map { if (it.id == tid && it.incoming == incoming) item else it }
+                            } else {
+                                (listOf(item) + list).take(24)
+                            }
+                        }
+                        mutable.value = mutable.value.copy(activeTransfers = updated)
+                    }
                 }
             }
         }

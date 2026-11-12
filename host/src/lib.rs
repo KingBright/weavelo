@@ -454,7 +454,11 @@ async fn send_media_packet(
             + extra_len as u64;
         let envelope = envelope.with_transport_timing(timing);
         if let Some(scheduled_sender) = scheduled_sender {
-            scheduled_sender.send(envelope).await?;
+            if envelope.header.kind == protocol::ContentKind::VideoH265 {
+                scheduled_sender.send_latest_video(envelope)?;
+            } else {
+                scheduled_sender.send(envelope).await?;
+            }
         } else {
             udp_sender.send_data(&envelope, client_addr).await?;
         }
@@ -1236,7 +1240,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             }, if !paused && capture_ready && !matches!(source,protocol::session::CaptureSource::Camera(_)) => {
                 #[cfg(target_os="macos")]
                 {
-                    if keyframe_requested.swap(false,Relaxed){video_encoder.request_keyframe();}
+                    let evicted = scheduled_media_sender.as_ref().is_some_and(|s| s.take_video_evictions() > 0);
+                    if keyframe_requested.swap(false,Relaxed) || evicted {video_encoder.request_keyframe();}
                     if let Some((sequence,frame))=video_capturer.snapshot(){
                         let started=std::time::Instant::now();
                         if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(sequence);resources.video_submit.record(started.elapsed());}
@@ -1244,7 +1249,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
                 #[cfg(target_os="linux")]
                 {
-                    if keyframe_requested.swap(false,Relaxed){video_encoder.request_keyframe();}
+                    let evicted = scheduled_media_sender.as_ref().is_some_and(|s| s.take_video_evictions() > 0);
+                    if keyframe_requested.swap(false,Relaxed) || evicted {video_encoder.request_keyframe();}
                     if let Some(frame)=video_capturer.snapshot(){let stamp=frame.stamp;let started=std::time::Instant::now();
                         if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(stamp);resources.video_submit.record(started.elapsed());}
                     }
@@ -1338,7 +1344,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 let frame = frame_res?;
                 stats_video.video_frames_captured.fetch_add(1, Relaxed);
                 resources.captured_frames.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if keyframe_requested.swap(false, Relaxed) {
+                let evicted = scheduled_media_sender
+                    .as_ref()
+                    .is_some_and(|s| s.take_video_evictions() > 0);
+                if keyframe_requested.swap(false, Relaxed) || evicted {
                     video_encoder.request_keyframe();
                 }
                 let started=std::time::Instant::now();
@@ -1347,6 +1356,15 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             }
             chunk_res = video_encoder.pull_encoded_chunk() => {
                 let chunk = chunk_res?;
+                #[cfg(target_os="windows")]
+                {
+                    let evicted = scheduled_media_sender
+                        .as_ref()
+                        .is_some_and(|s| s.take_video_evictions() > 0);
+                    if keyframe_requested.swap(false, Relaxed) || evicted {
+                        video_encoder.request_keyframe();
+                    }
+                }
                 #[cfg(target_os="linux")]
                 if let Some(timing)=chunk.native_timing {
                     resources.native_encode_total.record(std::time::Duration::from_secs_f64(f64::from(chunk.encode_cost_ms)/1000.));

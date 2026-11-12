@@ -4973,6 +4973,10 @@ fn drawer_security_tab(
             },
             cx,
         ))
+        .when(
+            clipboard_sync_enabled && side_services.clipboard_sync.available,
+            |this| this.child(clipboard_quick_panel(owner.clone(), cx)),
+        )
         .child(security_toggle_row(
             "File Transfer",
             "Transfer files across the active session",
@@ -5104,7 +5108,7 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
                         .min_w_0()
                         .truncate()
                         .text_size(px(11.))
-                        .child(crate::i18n::tr_format!("{} · {} bytes", file.name, file.size_bytes)),
+                        .child(format!("{} · {}", file.name, format_human_bytes(file.size_bytes))),
                 )
                 .child(
                     command_button(format!("pull_{}", file.id), ActionVariantKind::Primary, cx)
@@ -5137,26 +5141,296 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         );
     }
     panel = panel.child(pager);
-    panel.child(file_transfer_rows(owner, cx))
+    panel = panel.child(file_transfer_rows(owner.clone(), cx));
+    let recent_local = owner.recent_received_files(6);
+    if !recent_local.is_empty() {
+        panel = panel.child(
+            div()
+                .pt_1()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.content.secondary)
+                        .child(crate::i18n::tr("Received files (local)")),
+                )
+                .children(recent_local.into_iter().enumerate().map(|(idx, (name, path, size))| {
+                    let open_path = path.clone();
+                    let reveal_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| owner.receive_dir());
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .px_2p5()
+                        .py_1p5()
+                        .rounded(px(8.))
+                        .bg(theme.surface.sunken)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(theme.content.primary)
+                                .child(format!("{} · {}", name, format_human_bytes(size))),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(
+                                    command_button(format!("open_local_rx_{idx}"), ActionVariantKind::Neutral, cx)
+                                        .h(px(24.0))
+                                        .text_size(px(10.0))
+                                        .child(crate::i18n::tr("Open"))
+                                        .on_click(move |_, _, _| open_file_with_system_default(open_path.clone())),
+                                )
+                                .child(
+                                    command_button(format!("reveal_local_rx_{idx}"), ActionVariantKind::Neutral, cx)
+                                        .h(px(24.0))
+                                        .text_size(px(10.0))
+                                        .child(crate::i18n::tr("Reveal"))
+                                        .on_click(move |_, _, _| open_directory_in_file_manager(reveal_dir.clone())),
+                                ),
+                        )
+                })),
+        );
+    }
+    panel
+}
+
+fn format_human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let kb = bytes as f64 / 1024.0;
+    if kb < 1024.0 {
+        return format!("{kb:.1} KB");
+    }
+    let mb = kb / 1024.0;
+    if mb < 1024.0 {
+        return format!("{mb:.1} MB");
+    }
+    let gb = mb / 1024.0;
+    format!("{gb:.2} GB")
+}
+
+pub(super) fn clipboard_quick_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>) -> Div {
+    let theme = cx.theme().clone();
+    let view = cx.weak_entity();
+    let sync_enabled = owner.clipboard_sync_enabled();
+    let available = owner.supports_clipboard_sync();
+    let local_text = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    let preview = if local_text.trim().is_empty() {
+        crate::i18n::tr("Local clipboard has no plain text (images/files still sync automatically).").to_owned()
+    } else {
+        let compact = local_text.trim().replace('\n', " ↵ ");
+        let chars: Vec<char> = compact.chars().collect();
+        if chars.len() > 96 {
+            format!("{}…", chars[..96].iter().collect::<String>())
+        } else {
+            compact
+        }
+    };
+    let toggle_owner = owner.clone();
+    let toggle_view = view.clone();
+    let resync_owner = owner.clone();
+    let resync_view = view.clone();
+    let clear_view = view;
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_3p5()
+        .rounded(px(12.))
+        .bg(theme.surface.base)
+        .border_1()
+        .border_color(theme_border_fine(cx))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.content.primary)
+                        .child(crate::i18n::tr("Clipboard manager")),
+                )
+                .child(
+                    command_button(
+                        "clipboard_quick_toggle",
+                        if sync_enabled { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+                        cx,
+                    )
+                    .h(px(24.0))
+                    .text_size(px(10.0))
+                    .disabled(!available)
+                    .child(crate::i18n::tr(if sync_enabled { "Sync · On" } else { "Sync · Off" }))
+                    .on_click(move |_, _, cx| {
+                        let _ = toggle_view.update(cx, |_, cx| {
+                            toggle_owner.set_clipboard_sync_enabled(!sync_enabled);
+                            cx.notify();
+                        });
+                    }),
+                ),
+        )
+        .child(
+            div()
+                .p_2p5()
+                .rounded(px(8.))
+                .bg(theme.surface.sunken)
+                .text_size(px(11.0))
+                .text_color(if local_text.trim().is_empty() {
+                    theme.content.tertiary
+                } else {
+                    theme.content.primary
+                })
+                .child(preview),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .child(
+                    command_button("clipboard_resync_now", ActionVariantKind::Primary, cx)
+                        .h(px(26.0))
+                        .text_size(px(10.5))
+                        .disabled(!available)
+                        .child(crate::i18n::tr("Push clipboard now"))
+                        .on_click(move |_, _, cx| {
+                            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            }
+                            let _ = resync_view.update(cx, |_, cx| {
+                                resync_owner.force_resync_clipboard();
+                                cx.notify();
+                            });
+                        }),
+                )
+                .child(
+                    command_button("clipboard_clear_local", ActionVariantKind::Neutral, cx)
+                        .h(px(26.0))
+                        .text_size(px(10.5))
+                        .disabled(local_text.is_empty())
+                        .child(crate::i18n::tr("Clear local clipboard"))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
+                            let _ = clear_view.update(cx, |_, cx| cx.notify());
+                        }),
+                ),
+        )
 }
 
 fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>) -> Div {
     let theme = cx.theme().clone();
+    let view = cx.weak_entity();
     let binding = owner.file_view_binding();
+    let snapshots = owner.file_transfer_snapshot();
+    let has_finished = snapshots.iter().any(|t| !t.is_running());
     let mut panel = div().flex().flex_col().gap_2();
-    for transfer in owner.file_transfer_snapshot() {
+    if has_finished {
+        let clear_owner = owner.clone();
+        panel = panel.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.content.secondary)
+                        .child(crate::i18n::tr("Transfer queue")),
+                )
+                .child(
+                    command_button("clear_finished_transfers", ActionVariantKind::Neutral, cx)
+                        .h(px(22.0))
+                        .text_size(px(10.0))
+                        .child(crate::i18n::tr("Clear finished"))
+                        .on_click(move |_, _, cx| {
+                            clear_owner.clear_finished_transfers();
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        }),
+                ),
+        );
+    }
+    for transfer in snapshots {
+        let pct = (transfer.progress() * 100.0).clamp(0.0, 100.0);
+        let arrow = match transfer.direction {
+            client::TransferDirection::Outgoing => "↑",
+            client::TransferDirection::Incoming => "↓",
+        };
+        let byte_summary = if transfer.total_bytes > 0 {
+            format!(
+                "{} / {}",
+                format_human_bytes(transfer.transferred_bytes),
+                format_human_bytes(transfer.total_bytes)
+            )
+        } else {
+            format_human_bytes(transfer.transferred_bytes)
+        };
+        let bar_color = match transfer.status {
+            client::TransferStatus::Running => theme_accent_cyan(cx),
+            client::TransferStatus::Completed => theme_accent_emerald(cx),
+            client::TransferStatus::Cancelled => theme_accent_amber(cx),
+            client::TransferStatus::Error => crate::design_system::theme_accent_rose(cx),
+        };
         let mut row = div()
             .flex()
             .flex_col()
-            .gap_1()
-            .p_2()
-            .rounded(px(6.))
+            .gap_1p5()
+            .p_2p5()
+            .rounded(px(8.))
             .bg(theme.surface.sunken)
-            .child(div().text_size(px(11.)).child(format!(
-                "{} · {:.0}%",
-                transfer.label,
-                transfer.progress() * 100.
-            )))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(format!("{arrow} {} · {pct:.0}%", transfer.label)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(theme.content.tertiary)
+                            .child(byte_summary),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(4.))
+                    .rounded_full()
+                    .bg(theme.surface.base)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui::relative(transfer.progress().clamp(0.02, 1.0)))
+                            .rounded_full()
+                            .bg(bar_color),
+                    ),
+            )
             .child(
                 div()
                     .text_size(px(10.))
@@ -5174,6 +5448,8 @@ fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashbo
                     ActionVariantKind::Danger,
                     cx,
                 )
+                .h(px(24.0))
+                .text_size(px(10.0))
                 .child(crate::i18n::tr("Cancel"))
                 .on_click(move |_, _, _| o.cancel_bound_transfer(&transfer_binding, target)),
             );
@@ -5181,6 +5457,20 @@ fn file_transfer_rows(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashbo
         panel = panel.child(row);
     }
     panel
+}
+
+fn open_file_with_system_default(path: std::path::PathBuf) {
+    tokio::task::spawn_blocking(move || {
+        if !path.is_file() {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("/usr/bin/open").arg(&path).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("explorer.exe").arg(&path).spawn();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+    });
 }
 fn normalize_picked_file_path(path: std::path::PathBuf) -> std::path::PathBuf {
     let Ok(meta) = std::fs::symlink_metadata(&path) else {

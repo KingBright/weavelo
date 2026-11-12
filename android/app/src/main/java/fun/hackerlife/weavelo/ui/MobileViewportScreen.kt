@@ -322,35 +322,56 @@ fun MobileViewportScreen(
                                                 sampleFrames = codec.outputFrames
                                                 pauseHandled = false
                                             }
+                                            var didWork = false
                                             if (pending == null) {
-                                                val frame = WeaveloClient.pollVideoFrame()
-                                                if (frame != null && (!waitingForKeyframe || frame.keyframe)) {
-                                                    pending = frame
-                                                    pendingSince = now
+                                                var latestKeyframe: `fun`.hackerlife.weavelo.EncodedVideoFrame? = null
+                                                val batch = ArrayList<`fun`.hackerlife.weavelo.EncodedVideoFrame>(12)
+                                                while (batch.size < 12) {
+                                                    val next = WeaveloClient.pollVideoFrame() ?: break
+                                                    if (next.keyframe) latestKeyframe = next
+                                                    batch.add(next)
+                                                }
+                                                if (batch.isNotEmpty()) {
+                                                    didWork = true
+                                                    val startIdx = if (latestKeyframe != null) batch.indexOfLast { it === latestKeyframe }.coerceAtLeast(0) else 0
+                                                    for (idx in startIdx until batch.size) {
+                                                        val candidate = batch[idx]
+                                                        if (waitingForKeyframe && !candidate.keyframe) continue
+                                                        if (codec.feedNalu(candidate.data, candidate.keyframe, candidate.ptsUs, candidate.dataOffset)) {
+                                                            waitingForKeyframe = false
+                                                        } else {
+                                                            pending = candidate
+                                                            pendingSince = now
+                                                            break
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                val frame = pending
+                                                if (frame != null) {
+                                                    if (codec.feedNalu(frame.data, frame.keyframe, frame.ptsUs, frame.dataOffset)) {
+                                                        pending = null
+                                                        waitingForKeyframe = false
+                                                        didWork = true
+                                                    } else if (now - pendingSince > 80_000_000L) {
+                                                        pending = null
+                                                        waitingForKeyframe = true
+                                                    }
                                                 }
                                             }
-                                            val frame = pending
-                                            if (frame != null) {
-                                                if (codec.feedNalu(frame.data, frame.keyframe, frame.ptsUs, frame.dataOffset)) {
-                                                    pending = null
-                                                    waitingForKeyframe = false
-                                                } else if (now - pendingSince > 100_000_000L) {
-                                                    pending = null
-                                                    waitingForKeyframe = true
-                                                }
-                                            }
-                                            codec.drain()
+                                            if (codec.drain()) didWork = true
                                             if (now - sampleTime >= 500_000_000L) {
                                                 val fps = ((codec.outputFrames - sampleFrames) * 1_000_000_000.0 / (now - sampleTime)).toInt()
                                                 post { if (active.get()) decodedFps = fps }
                                                 sampleTime = now
                                                 sampleFrames = codec.outputFrames
                                             }
-                                            if (waitingForKeyframe && now - lastKeyframeRequest >= 1_000_000_000L) {
+                                            if (waitingForKeyframe && now - lastKeyframeRequest >= 500_000_000L) {
                                                 WeaveloClient.requestKeyframe()
                                                 lastKeyframeRequest = now
                                             }
                                             val audioPacket = WeaveloClient.pollAudioPacket()
+                                            if (audioPacket != null) didWork = true
                                             if (audioEnabled) {
                                                 try {
                                                     if (audioPacket != null) audioPlayer.feed(audioPacket)
@@ -361,7 +382,7 @@ fun MobileViewportScreen(
                                                     report("Audio unavailable: ${e.message}", e, `fun`.hackerlife.weavelo.AppText("Audio unavailable: %s", listOf(e.message ?: "")))
                                                 }
                                             }
-                                            if (frame == null || pending != null) Thread.sleep(4)
+                                            if (!didWork) java.util.concurrent.locks.LockSupport.parkNanos(400_000L)
                                         }
                                     } catch (_: InterruptedException) {
                                         Thread.currentThread().interrupt()

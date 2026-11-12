@@ -11,7 +11,7 @@ use std::error::Error;
 use std::ffi::c_void;
 use tokio::sync::{mpsc,Semaphore,OwnedSemaphorePermit};
 use std::sync::Arc;
-const ENCODE_CAPACITY:usize=4;
+const ENCODE_CAPACITY:usize=2;
 use video_toolbox_sys::compression::{
     VTCompressionSessionCompleteFrames, VTCompressionSessionCreate,
     VTCompressionSessionEncodeFrame, VTCompressionSessionInvalidate, VTCompressionSessionRef,

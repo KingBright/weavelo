@@ -40,11 +40,13 @@ internal fun networkIndicator(session: SessionState, telemetry: TelemetrySnapsho
     if (session != SessionState.STREAMING) return NetworkIndicator("Not connected", NetworkTone.ERROR)
     if (!freshNetworkTelemetry(session, telemetry, now)) return NetworkIndicator("Network unknown", NetworkTone.NEUTRAL)
     val rtt = telemetry.networkRttMs?.takeIf { it.isFinite() && it >= 0 }
+    val decodeMs = telemetry.latencyMs.takeIf { it.isFinite() && it > 0f } ?: 0f
+    val videoE2e = telemetry.captureReceiveEstimateMs?.takeIf { it.isFinite() && it >= 0 }?.let { it + decodeMs }
     val loss = telemetry.packetLossPercent.takeIf { it.isFinite() && it in 0f..100f }
     return when {
-        (rtt != null && rtt > 150) || (loss != null && loss >= 5) -> NetworkIndicator("Network poor", NetworkTone.ERROR)
-        (rtt != null && rtt > 80) || (loss != null && loss >= 1) -> NetworkIndicator("Network fair", NetworkTone.WARNING)
-        rtt == null || loss == null -> NetworkIndicator("Network unknown", NetworkTone.NEUTRAL)
+        (videoE2e != null && videoE2e > 180) || (rtt != null && rtt > 150) || (loss != null && loss >= 5) -> NetworkIndicator("Network poor", NetworkTone.ERROR)
+        (videoE2e != null && videoE2e > 90) || (rtt != null && rtt > 80) || (loss != null && loss >= 1) -> NetworkIndicator("Network fair", NetworkTone.WARNING)
+        videoE2e == null && (rtt == null || loss == null) -> NetworkIndicator("Network unknown", NetworkTone.NEUTRAL)
         else -> NetworkIndicator("Network good", NetworkTone.ONLINE)
     }
 }
@@ -64,7 +66,12 @@ internal fun NetworkStatusChip(
     val status = networkIndicator(session, telemetry, sampleNow)
     val fresh = freshNetworkTelemetry(session, telemetry, sampleNow)
     val rtt = telemetry.networkRttMs?.takeIf { fresh && it.isFinite() && it >= 0 }
-    val latency = rtt?.let { String.format(Locale.ROOT, "%.0f ms", it) }
+    val decodeMs = telemetry.latencyMs.takeIf { fresh && it.isFinite() && it > 0f }
+    val videoE2e = telemetry.captureReceiveEstimateMs?.takeIf { fresh && it.isFinite() && it >= 0 }
+        ?.let { it + (decodeMs ?: 0f) }
+    val rttLabel = rtt?.let { String.format(Locale.ROOT, "%.0f ms", it) }
+    val videoLabel = videoE2e?.let { trFormat("Video %.0f ms", it) }
+    val primaryMetric = videoLabel ?: rttLabel?.let { "RTT $it" }
     val loss = telemetry.packetLossPercent.takeIf { fresh && it.isFinite() && it in 0f..100f }
     val routeLabel = when (route?.trim()?.uppercase(Locale.ROOT)) {
         null, "" -> null
@@ -75,8 +82,8 @@ internal fun NetworkStatusChip(
     }
     val chipText = when {
         session != SessionState.STREAMING -> tr(status.label)
-        routeLabel != null && latency != null -> "$routeLabel · $latency"
-        latency != null -> latency
+        routeLabel != null && primaryMetric != null -> "$routeLabel · $primaryMetric"
+        primaryMetric != null -> primaryMetric
         routeLabel != null -> "$routeLabel · ${tr(status.label)}"
         else -> tr(status.label)
     }
@@ -147,7 +154,9 @@ internal fun NetworkStatusChip(
                 HorizontalDivider(color = p.borderMuted)
                 NetworkDetail("Connection", tr(status.label))
                 if (routeLabel != null) NetworkDetail("Route", routeLabel)
-                NetworkDetail("Network RTT", latency ?: "—")
+                NetworkDetail("Video E2E latency", videoE2e?.let { String.format(Locale.ROOT, "%.0f ms", it) } ?: "—")
+                NetworkDetail("Decode latency", decodeMs?.let { String.format(Locale.ROOT, "%.1f ms", it) } ?: "—")
+                NetworkDetail("Network RTT", rttLabel ?: "—")
                 NetworkDetail("Packet loss rate", loss?.let { String.format(Locale.ROOT, "%.1f%%", it) } ?: "—")
                 NetworkDetail(
                     "Video bitrate",

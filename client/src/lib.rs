@@ -482,7 +482,7 @@ impl ClientMediaRuntime {
         let decode_epoch = stats.video_recovery.source_counter();
         #[cfg(target_os = "macos")]
         let (video_payload, mut payload_rx) = tokio::sync::watch::channel((0_u64, true));
-        let (decode_tx, decode_rx) = remote_core::video_queue::channel(8);
+        let (decode_tx, decode_rx) = remote_core::video_queue::channel(2);
         #[cfg(target_os = "macos")]
         let video_ingress = Arc::new(Mutex::new(decode_rx));
 
@@ -876,9 +876,9 @@ pub async fn run_client_binary() -> Result<(), Box<dyn Error + Send + Sync>> {
     let shared_frame: Arc<Mutex<Option<MacDecodedVideoFrame>>> = Arc::new(Mutex::new(None));
     let render_shared_frame = shared_frame.clone();
 
-    // Decouple decoding from receiving
+    // Decouple decoding from receiving with minimal low-latency depth
     let (decode_tx, mut decode_rx) =
-        remote_core::video_queue::channel(8);
+        remote_core::video_queue::channel(2);
 
     // Decode Task
     spawn(async move {

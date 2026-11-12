@@ -757,5 +757,15 @@
   "Remote window adapted to": "远端窗口已适配为",
   "Window Frame Rate:": "窗口独立帧率：",
   "Window Bitrate:": "窗口独立码率：",
-  "Custom window FPS and bitrate (kbps)": "自定义当前窗口帧率 (FPS) 与码率 (kbps)"
+  "Custom window FPS and bitrate (kbps)": "自定义当前窗口帧率 (FPS) 与码率 (kbps)",
+  "Received files (local)": "本地已收文件",
+  "Reveal": "定位目录",
+  "Clipboard manager": "剪贴板管理",
+  "Sync · On": "双向同步 · 开启",
+  "Sync · Off": "双向同步 · 关闭",
+  "Push clipboard now": "立即推送剪贴板",
+  "Clear local clipboard": "清空本机剪贴板",
+  "Local clipboard has no plain text (images/files still sync automatically).": "本机剪贴板暂无纯文本（图片与文件复制仍会自动同步）。",
+  "Transfer queue": "传输队列",
+  "Clear finished": "清理已完成"
 }

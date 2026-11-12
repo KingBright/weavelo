@@ -160,7 +160,9 @@ internal class GpuVideoSurface(
     }
     fun register(ptsUs: Long, geometry: VideoFrameGeometry?) {
         checkThread()
-        check(metadata.size < 128) { "Video decoder retained too many geometry records" }
+        while (metadata.size >= 96) {
+            metadata.pollFirstEntry()
+        }
         check(!metadata.containsKey(ptsUs)) { "Video frame timestamp was reused" }
         metadata[ptsUs] = geometry
         lastRegisteredPts = ptsUs

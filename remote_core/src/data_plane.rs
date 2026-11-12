@@ -160,9 +160,11 @@ pub struct LaneScheduler {
     realtime: BinaryHeap<RealtimeQueueEntry>,
     reliable: VecDeque<DataEnvelope>,
     config: LaneSchedulerConfig,
+    evict_older_video: bool,
     dropped_stale_realtime: u64,
     dropped_realtime_capacity: u64,
     rejected_reliable_capacity: u64,
+    evicted_video_frames: u64,
 }
 
 impl LaneScheduler {
@@ -175,10 +177,21 @@ impl LaneScheduler {
             realtime: BinaryHeap::new(),
             reliable: VecDeque::new(),
             config,
+            evict_older_video: false,
             dropped_stale_realtime: 0,
             dropped_realtime_capacity: 0,
             rejected_reliable_capacity: 0,
+            evicted_video_frames: 0,
         }
+    }
+
+    pub fn with_latest_video_only(mut self, enabled: bool) -> Self {
+        self.evict_older_video = enabled;
+        self
+    }
+
+    pub fn evicted_video_frames(&self) -> u64 {
+        self.evicted_video_frames
     }
 
     pub fn push(&mut self, envelope: DataEnvelope, now_ms: u64) -> SchedulerPushResult {
@@ -186,6 +199,24 @@ impl LaneScheduler {
             if is_stale(&envelope, now_ms) {
                 self.dropped_stale_realtime += 1;
                 return SchedulerPushResult::DroppedStaleRealtime;
+            }
+
+            if self.evict_older_video && envelope.header.kind == ContentKind::VideoH265 {
+                let stream_id = envelope.header.stream_id;
+                let has_older = self.realtime.iter().any(|entry| {
+                    entry.0.header.kind == ContentKind::VideoH265
+                        && entry.0.header.stream_id == stream_id
+                });
+                if has_older {
+                    let mut queued = std::mem::take(&mut self.realtime).into_vec();
+                    let before = queued.len();
+                    queued.retain(|entry| {
+                        !(entry.0.header.kind == ContentKind::VideoH265
+                            && entry.0.header.stream_id == stream_id)
+                    });
+                    self.evicted_video_frames += (before - queued.len()) as u64;
+                    self.realtime = BinaryHeap::from(queued);
+                }
             }
 
             self.realtime.push(RealtimeQueueEntry(envelope));

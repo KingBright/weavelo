@@ -65,14 +65,54 @@ impl Queues {
         let detail=match &event {
             FileTransferEvent::SharedResponse {request_id,response}=>serde_json::json!({"shared_request_id":request_id,"shared_response":response}),
             FileTransferEvent::IncomingClipboardReady {paths,..}=>serde_json::json!({"clipboard_files":paths}),
-            FileTransferEvent::IncomingCompleted {path,..}=>serde_json::json!({"path":path}),
-            FileTransferEvent::Error {message,..}=>serde_json::json!({"error":message}),
-            FileTransferEvent::IncomingProgress {transfer_id,..}=>serde_json::json!({"progress":{"incoming":true,"id":transfer_id}}),
-            FileTransferEvent::OutgoingProgress {transfer_id,..}=>serde_json::json!({"progress":{"incoming":false,"id":transfer_id}}),
+            FileTransferEvent::IncomingStarted {transfer_id,name,size_bytes,path,group,..}=>serde_json::json!({
+                "transfer":{"id":transfer_id,"incoming":true,"state":"started","name":name,"done_bytes":0,"total_bytes":size_bytes,"path":path,"group_id":group.as_ref().map(|g|g.group_id)}
+            }),
+            FileTransferEvent::OutgoingStarted {transfer_id,name,size_bytes,group,..}=>serde_json::json!({
+                "transfer":{"id":transfer_id,"incoming":false,"state":"started","name":name,"done_bytes":0,"total_bytes":size_bytes,"group_id":group.as_ref().map(|g|g.group_id)}
+            }),
+            FileTransferEvent::OutgoingGroupStarted {group_id,file_count,total_size_bytes}=>serde_json::json!({
+                "group":{"group_id":group_id,"state":"started","total_files":file_count,"total_bytes":total_size_bytes}
+            }),
+            FileTransferEvent::IncomingCompleted {transfer_id,path,size_bytes,group,..}=>serde_json::json!({
+                "path":path,
+                "transfer":{"id":transfer_id,"incoming":true,"state":"completed","done_bytes":size_bytes,"total_bytes":size_bytes,"path":path,"group_id":group.as_ref().map(|g|g.group_id)}
+            }),
+            FileTransferEvent::OutgoingCompleted {transfer_id,group,..}=>serde_json::json!({
+                "transfer":{"id":transfer_id,"incoming":false,"state":"completed","group_id":group.as_ref().map(|g|g.group_id)}
+            }),
+            FileTransferEvent::IncomingCancelled {transfer_id,path,group,..}=>serde_json::json!({
+                "transfer":{"id":transfer_id,"incoming":true,"state":"cancelled","path":path,"group_id":group.as_ref().map(|g|g.group_id)}
+            }),
+            FileTransferEvent::OutgoingCancelled {transfer_id,group,..}=>serde_json::json!({
+                "transfer":{"id":transfer_id,"incoming":false,"state":"cancelled","group_id":group.as_ref().map(|g|g.group_id)}
+            }),
+            FileTransferEvent::OutgoingGroupCompleted {group_id,..}=>serde_json::json!({
+                "group":{"group_id":group_id,"state":"completed"}
+            }),
+            FileTransferEvent::IncomingGroupCompleted {group_id,paths,total_size_bytes}=>serde_json::json!({
+                "group":{"group_id":group_id,"state":"completed","paths":paths,"total_bytes":total_size_bytes}
+            }),
+            FileTransferEvent::IncomingGroupCancelled {group_id}|FileTransferEvent::OutgoingGroupCancelled {group_id}=>serde_json::json!({
+                "group":{"group_id":group_id,"state":"cancelled"}
+            }),
+            FileTransferEvent::Error {transfer_id,message}=>serde_json::json!({"error":message,"transfer_id":transfer_id}),
+            FileTransferEvent::IncomingProgress {transfer_id,received_bytes,total_size,..}=>serde_json::json!({
+                "progress":{"incoming":true,"id":transfer_id},
+                "done_bytes":received_bytes,
+                "total_bytes":total_size
+            }),
+            FileTransferEvent::OutgoingProgress {transfer_id,sent_bytes,total_size,..}=>serde_json::json!({
+                "progress":{"incoming":false,"id":transfer_id},
+                "done_bytes":sent_bytes,
+                "total_bytes":total_size
+            }),
             _=>serde_json::Value::Null,
         };
         let coalesce=detail.get("progress").is_some()
-            && self.events.back().is_some_and(|last|last.get("detail")==Some(&detail));
+            && self.events.back().is_some_and(|last|{
+                last.get("detail").and_then(|d|d.get("progress")) == detail.get("progress")
+            });
         let value=serde_json::json!({"file":file_status(&event),"detail":detail});
         if coalesce {*self.events.back_mut().unwrap()=value;}
         else {if self.events.len()==128 {self.events.pop_front();}self.events.push_back(value);}
@@ -372,7 +412,7 @@ impl MobileWorkspace {
         let mut touch=WorkspaceTouch::new();
         touch.source=Some(request.source);
         self.touches.lock().unwrap().insert(id,touch);
-        let (tx, mut rx) = remote_core::video_queue::channel(4);
+        let (tx, mut rx) = remote_core::video_queue::channel(2);
         let telemetry = Arc::new(SharedHostStats::default());
         self.connection
             .subscribe(
@@ -392,7 +432,7 @@ impl MobileWorkspace {
                 if waiting && !keyframe {continue;}
                 let (result, discarded) = {
                     let mut state = state.lock().unwrap();
-                    let queue = state.video.entry(id).or_insert_with(||remote_core::video_queue::EncodedQueue::new(4));
+                    let queue = state.video.entry(id).or_insert_with(||remote_core::video_queue::EncodedQueue::new(2));
                     queue.push(EncodedVideoNalu {
                         data: packet.payload, keyframe, pts_us: timing.capture_ts_us as i64,
                     }, keyframe, source_epoch)
@@ -621,6 +661,39 @@ impl MobileWorkspace {
             return Err("Peer does not support files".into());
         }
         let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        if let Some(transfer_id) = value["cancel_transfer_id"].as_u64() {
+            return self
+                .connection
+                .file_commands
+                .send(FileTransferCommand::CancelTransfer { transfer_id })
+                .await
+                .map_err(|e| e.to_string());
+        }
+        if let Some(group_id) = value["cancel_group_id"].as_u64() {
+            return self
+                .connection
+                .file_commands
+                .send(FileTransferCommand::CancelGroup { group_id })
+                .await
+                .map_err(|e| e.to_string());
+        }
+        if let Some(paths) = value["send_files"].as_array() {
+            let files = paths
+                .iter()
+                .map(|p| {
+                    Ok(remote_core::file_transfer_runtime::FileTransferGroupFile {
+                        path: p.as_str().ok_or("invalid file path")?.into(),
+                        mime_type: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            return self
+                .connection
+                .file_commands
+                .send(FileTransferCommand::SendFileGroup { files })
+                .await
+                .map_err(|e| e.to_string());
+        }
         let request_id = value["request_id"].as_u64().ok_or("missing request ID")?;
         let request =
             serde_json::from_value(value["request"].clone()).map_err(|e| e.to_string())?;
@@ -755,10 +828,22 @@ fn subscription_telemetry(id: u32, shared: &SharedHostStats) -> serde_json::Valu
     let stats = shared.snapshot();
     let fresh = stats.updated_at.is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(5));
     let rtt = shared.rtt_summary().map(|rtt| rtt.latest_ms).filter(|rtt| rtt.is_finite() && *rtt >= 0.0);
+    let e2e = shared
+        .estimated_e2e_latency_ms()
+        .filter(|ms| ms.is_finite() && *ms >= 0.0);
+    let encode_ms = (fresh && stats.latency.is_finite() && stats.latency > 0.0).then_some(stats.latency);
+    let fps = (fresh && stats.fps.is_finite() && stats.fps > 0.0).then_some(stats.fps);
     let loss = (fresh && stats.packet_loss_rate.is_finite() && (0.0..=100.0).contains(&stats.packet_loss_rate))
         .then_some(stats.packet_loss_rate);
-    serde_json::json!({"id":id,"network_rtt_ms":rtt,"packet_loss_percent":loss,
-        "video_bitrate_kbps":fresh.then_some(stats.bitrate_kbps)})
+    serde_json::json!({
+        "id": id,
+        "network_rtt_ms": rtt,
+        "video_e2e_latency_ms": e2e,
+        "encode_latency_ms": encode_ms,
+        "fps": fps,
+        "packet_loss_percent": loss,
+        "video_bitrate_kbps": fresh.then_some(stats.bitrate_kbps)
+    })
 }
 
 #[cfg(test)]

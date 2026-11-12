@@ -89,7 +89,23 @@ object WeaveloClient {
         android.util.Log.e("WeaveloNative", code)
     }
     private var appContext: Context? = null
+    private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
     private val pauseExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    @Synchronized private fun updateLanMulticastLock(enabled: Boolean) {
+        val ctx = appContext ?: return
+        runCatching {
+            if (enabled) {
+                val lock = multicastLock ?: ctx.getSystemService(android.net.wifi.WifiManager::class.java)
+                    ?.createMulticastLock("weavelo-lan-discovery")
+                    ?.apply { setReferenceCounted(false) }
+                    ?.also { multicastLock = it }
+                if (lock != null && !lock.isHeld) lock.acquire()
+            } else {
+                multicastLock?.let { if (it.isHeld) it.release() }
+            }
+        }
+    }
     @Volatile var backgrounded = true
         private set
     private var surfaceUnavailable = false
@@ -151,6 +167,7 @@ object WeaveloClient {
         if (!initialized) startupFailed("native-initialization-rejected")
         else nativeStartupError = ""
         if (initialized) {
+            updateLanMulticastLock(!backgrounded)
             nativeSetNetworkEnabled(!backgrounded)
             val prefs = context.getSharedPreferences("stream", Context.MODE_PRIVATE)
             streamFps = prefs.getInt("fps", 60)
@@ -181,6 +198,7 @@ object WeaveloClient {
 
     private fun connectNow(deviceId: String, endpoint: String) {
         if (isNativeLoaded) {
+            updateLanMulticastLock(true)
             nativeSetNetworkEnabled(true)
             _sessionState.value = SessionState.CONNECTING
             appContext?.let { context ->
@@ -211,7 +229,10 @@ object WeaveloClient {
     private fun disconnectNow() {
         if (isNativeLoaded) {
             nativeDisconnect()
-            if (backgrounded) nativeSetNetworkEnabled(false)
+            if (backgrounded) {
+                nativeSetNetworkEnabled(false)
+                updateLanMulticastLock(false)
+            }
         }
         _sessionError.value = ""
         _sessionState.value = SessionState.DISCONNECTED
@@ -233,6 +254,7 @@ object WeaveloClient {
             }
             updateMediaPause()
             pauseExecutor.execute {
+                updateLanMulticastLock(true)
                 if (isNativeLoaded) nativeSetNetworkEnabled(true)
                 if (resume != null && synchronized(this) { generation == connectionGeneration }) {
                     connectNow(resume.first, resume.second)
@@ -241,7 +263,10 @@ object WeaveloClient {
         } else {
             updateMediaPause()
             if (lastConnection == null) {
-                pauseExecutor.execute { if (isNativeLoaded) nativeSetNetworkEnabled(false) }
+                pauseExecutor.execute {
+                    if (isNativeLoaded) nativeSetNetworkEnabled(false)
+                    updateLanMulticastLock(false)
+                }
             }
         }
     }

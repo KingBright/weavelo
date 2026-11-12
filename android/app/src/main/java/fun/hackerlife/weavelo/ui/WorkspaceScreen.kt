@@ -108,6 +108,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     var localError by remember { mutableStateOf<String?>(null) }
     var localErrorText by remember { mutableStateOf<`fun`.hackerlife.weavelo.AppText?>(null) }
     var receivedFiles by remember { mutableStateOf(false) }
+    var fileHubInitialTab by remember { mutableStateOf("received") }
+    var clipboardCenterOpen by remember { mutableStateOf(false) }
     var backgroundSettings by remember { mutableStateOf(false) }
     var shareSelection by rememberSaveable(endpoint, deviceId) { mutableStateOf(false) }
     var pickerSessionKey by rememberSaveable(endpoint, deviceId) { mutableStateOf("") }
@@ -122,7 +124,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     BackHandler(enabled = foreground) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastImeClosedAtMs in 0..400L) return@BackHandler
-        val hasOverlay = sourcePicker || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || backgroundSettings
+        val hasOverlay = sourcePicker || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || clipboardCenterOpen || backgroundSettings
         when {
             ZeroOcclusionHudPolicy.evaluateBackPress(hasOverlay) == BackPressAction.ToggleControls -> {
                 if (state.panes.isEmpty() || now - lastBackPressMs in 1..2000L) {
@@ -137,6 +139,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             selectedSettings != null -> selectedSettings = null
             sharedFilesOpen -> sharedFilesOpen = false
             receivedFiles -> receivedFiles = false
+            clipboardCenterOpen -> clipboardCenterOpen = false
             backgroundSettings -> backgroundSettings = false
         }
     }
@@ -147,18 +150,30 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val publishSelection = shareSelection
         val selectedSessionKey = pickerSessionKey
-        if (uri != null) scope.launch(Dispatchers.IO) {
+        if (uris.isNotEmpty()) scope.launch(Dispatchers.IO) {
             runCatching {
-                val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                    if (it.moveToFirst()) it.getString(0) else null
-                }?.substringAfterLast('/')?.substringAfterLast('\\')?.takeIf { it != "." && it != ".." && it.isNotBlank() } ?: "shared-file"
                 val directory = File(context.cacheDir, "outgoing/${java.util.UUID.randomUUID()}").apply { mkdirs() }
-                val file = File(directory, name)
-                checkNotNull(context.contentResolver.openInputStream(uri)).use { input -> file.outputStream().use { output -> input.copyTo(output, 64 * 1024) } }
-                if (publishSelection) WorkspaceClient.publishSharedFile(file, selectedSessionKey) else WorkspaceClient.sendFile(file, selectedSessionKey)
+                val copiedFiles = uris.take(32).mapIndexed { idx, uri ->
+                    val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                        if (it.moveToFirst()) it.getString(0) else null
+                    }?.substringAfterLast('/')?.substringAfterLast('\\')?.takeIf { it != "." && it != ".." && it.isNotBlank() } ?: "shared-file-$idx"
+                    val slotDir = File(directory, idx.toString()).apply { mkdirs() }
+                    val file = File(slotDir, name)
+                    checkNotNull(context.contentResolver.openInputStream(uri)).use { input -> file.outputStream().use { output -> input.copyTo(output, 64 * 1024) } }
+                    file
+                }
+                if (publishSelection) {
+                    copiedFiles.forEach { WorkspaceClient.publishSharedFile(it, selectedSessionKey) }
+                } else {
+                    WorkspaceClient.sendFiles(copiedFiles, selectedSessionKey)
+                    withContext(Dispatchers.Main) {
+                        fileHubInitialTab = "transfers"
+                        receivedFiles = true
+                    }
+                }
             }.onFailure { withContext(Dispatchers.Main) { localError = it.message; localErrorText = `fun`.hackerlife.weavelo.appTextOf(it) } }
         }
     }
@@ -275,47 +290,43 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     )
                     HorizontalDivider(color = p.borderMuted)
                     PrecisionMenuItem(
-                        text = tr("Send file"),
+                        text = tr("File transfer & manager"),
+                        symbol = MobileSymbol.Files,
+                        onClick = {
+                            onDismiss()
+                            fileHubInitialTab = if (state.activeTransfers.any { it.isRunning }) "transfers" else "received"
+                            receivedFiles = true
+                        }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Send files"),
                         symbol = MobileSymbol.Send,
                         enabled = state.connected && state.files,
                         onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }
                     )
                     PrecisionMenuItem(
-                        text = tr("Share file with network"),
-                        symbol = MobileSymbol.Share,
-                        enabled = state.connected,
-                        onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }
-                    )
-                    PrecisionMenuItem(
                         text = tr("Retrieve shared files"),
                         symbol = MobileSymbol.Download,
                         enabled = state.connected && state.files && !state.sharedBusy,
-                        onClick = { onDismiss(); sharedFilesOpen = true; WorkspaceClient.listSharedFiles() }
-                    )
-                    PrecisionMenuItem(
-                        text = tr("Received files"),
-                        symbol = MobileSymbol.Folder,
-                        onClick = { onDismiss(); receivedFiles = true }
-                    )
-                    PrecisionMenuItem(
-                        text = tr("Clear my shared list"),
-                        symbol = MobileSymbol.Close,
-                        enabled = state.connected,
-                        onClick = { onDismiss(); WorkspaceClient.clearSharedFiles() }
+                        onClick = { onDismiss(); WorkspaceClient.listSharedFiles(); fileHubInitialTab = "remote"; receivedFiles = true }
                     )
                     HorizontalDivider(color = p.borderMuted)
                     PrecisionMenuItem(
-                        text = tr("Clipboard"),
+                        text = tr("Clipboard manager"),
                         symbol = MobileSymbol.Clipboard,
                         checked = state.clipboard,
                         enabled = state.connected && state.clipboardAvailable,
-                        onClick = { onDismiss(); WorkspaceClient.enableClipboard(!state.clipboard) }
+                        onClick = { onDismiss(); clipboardCenterOpen = true }
                     )
                     PrecisionMenuItem(
                         text = tr("Send clipboard"),
                         symbol = MobileSymbol.Copy,
-                        enabled = state.connected && state.clipboard,
-                        onClick = { onDismiss(); sendClipboardNow() }
+                        enabled = state.connected && state.clipboardAvailable,
+                        onClick = {
+                            onDismiss()
+                            if (!state.clipboard) WorkspaceClient.enableClipboard(true)
+                            sendClipboardNow()
+                        }
                     )
                     PrecisionMenuItem(
                         text = tr("Background"),
@@ -454,6 +465,13 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                         pane.source.source.toString(), pane.source.isWindow),
                                                     sessionActionsContent = { open, onDismiss ->
                                                         SessionActionsDropdown(open, onDismiss)
+                                                    },
+                                                    onOpenFiles = {
+                                                        fileHubInitialTab = if (state.activeTransfers.any { it.isRunning }) "transfers" else "received"
+                                                        receivedFiles = true
+                                                    },
+                                                    onOpenClipboard = {
+                                                        clipboardCenterOpen = true
                                                     },
                                                     onError = { message, text ->
                                                         localError = message
@@ -1045,10 +1063,42 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 }
             }
         }
-        if (receivedFiles) ReceivedFilesDialog(onSendToDevice = if (state.connected && state.files) { file ->
-            receivedFiles = false
-            WorkspaceClient.sendFile(file, sessionKey)
-        } else null) { receivedFiles = false }
+        if (receivedFiles) {
+            ReceivedFilesDialog(
+                onSendToDevice = if (state.connected && state.files) { file ->
+                    WorkspaceClient.sendFile(file, sessionKey)
+                    fileHubInitialTab = "transfers"
+                } else null,
+                sessionKey = sessionKey,
+                initialTab = fileHubInitialTab,
+                onPickSendFiles = {
+                    pickerSessionKey = sessionKey
+                    shareSelection = false
+                    filePicker.launch(arrayOf("*/*"))
+                },
+                onPickShareFiles = {
+                    pickerSessionKey = sessionKey
+                    shareSelection = true
+                    filePicker.launch(arrayOf("*/*"))
+                },
+                onClose = { receivedFiles = false }
+            )
+        }
+        if (clipboardCenterOpen) {
+            ClipboardCenterDialog(
+                sessionKey = sessionKey,
+                onSendPhoneClipboard = {
+                    if (!state.clipboard) WorkspaceClient.enableClipboard(true)
+                    sendClipboardNow()
+                },
+                onTypeIntoRemote = activePane?.takeIf { it.accepted && it.input }?.let { pane ->
+                    { textToType: String ->
+                        WorkspaceClient.typeTextIntoPane(pane.id, sessionKey, state.connectionGeneration, textToType)
+                    }
+                },
+                onClose = { clipboardCenterOpen = false }
+            )
+        }
     }
 }
 
@@ -1092,6 +1142,8 @@ private fun WorkspaceVideo(
     isPhoneScreen: Boolean,
     canRemoteBack: Boolean,
     sessionActionsContent: @Composable (Boolean, () -> Unit) -> Unit,
+    onOpenFiles: () -> Unit = {},
+    onOpenClipboard: () -> Unit = {},
     onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit
 ) {
     val p = WeaveloTokens.colors
@@ -1471,20 +1523,54 @@ private fun WorkspaceVideo(
                                     var startupReported = false
                                     var receivedPackets = 0L
                                     var submittedPackets = 0L
+                                    val batch = ArrayList<ByteArray>(16)
                                     while (running.get()) {
+                                        var didWork = false
                                         if (pending == null) {
-                                            pending = WorkspaceClient.nativeMedia(pane.id, false)
-                                            if (pending != null) receivedPackets++
-                                            pendingSince = System.nanoTime()
+                                            batch.clear()
+                                            while (batch.size < 16) {
+                                                val pkt = WorkspaceClient.nativeMedia(pane.id, false) ?: break
+                                                receivedPackets++
+                                                batch.add(pkt)
+                                            }
+                                            if (batch.isNotEmpty()) {
+                                                didWork = true
+                                                // Zero proactive delay: if a newer IDR keyframe is already in this batch,
+                                                // skip all superseded older frames before that IDR immediately!
+                                                val lastKeyframeIdx = batch.indexOfLast { it.size > 9 && it[0].toInt() != 0 }
+                                                val startIdx = if (lastKeyframeIdx > 0) lastKeyframeIdx else 0
+                                                for (idx in startIdx until batch.size) {
+                                                    val candidate = batch[idx]
+                                                    if (candidate.size <= 9) continue
+                                                    val keyframe = candidate[0].toInt() != 0
+                                                    val pts = ByteBuffer.wrap(candidate, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                                                    if (waiting && !keyframe) continue
+                                                    if (player.feedNalu(candidate, keyframe, pts, 9)) {
+                                                        waiting = false
+                                                        submittedPackets++
+                                                    } else {
+                                                        pending = candidate
+                                                        pendingSince = System.nanoTime()
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            val bytes = pending
+                                            if (bytes != null && bytes.size > 9) {
+                                                val keyframe = bytes[0].toInt() != 0
+                                                val pts = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                                                if (waiting && !keyframe) {
+                                                    pending = null
+                                                } else if (player.feedNalu(bytes, keyframe, pts, 9)) {
+                                                    pending = null
+                                                    waiting = false
+                                                    submittedPackets++
+                                                    didWork = true
+                                                }
+                                            }
                                         }
-                                        val bytes = pending
-                                        if (bytes != null && bytes.size > 9) {
-                                            val keyframe = bytes[0].toInt() != 0
-                                            val pts = ByteBuffer.wrap(bytes, 1, 8).order(ByteOrder.LITTLE_ENDIAN).long
-                                            if (waiting && !keyframe) pending = null
-                                            else if (player.feedNalu(bytes, keyframe, pts, 9)) { pending = null; waiting = false; submittedPackets++ }
-                                        }
-                                        if (pending != null && System.nanoTime() - pendingSince > 250_000_000) {
+                                        if (pending != null && System.nanoTime() - pendingSince > 120_000_000L) {
                                             pending = null; waiting = true
                                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "reset")
                                             reportedGeometry = null
@@ -1494,7 +1580,11 @@ private fun WorkspaceVideo(
                                             WorkspaceClient.keyframe(pane.id)
                                             lastRequest = System.nanoTime()
                                         }
-                                        player.drain()
+                                        val drained = player.drain()
+                                        if (drained) {
+                                            didWork = true
+                                            WorkspaceClient.reportLocalDecodeLatency(pane.id, player.lastDecodeLatencyMs)
+                                        }
                                         if (!reportedFirstFrame && player.outputFrames > framesBeforeReset) {
                                             post { if (running.get() && surfaceToken == token) videoStatus = null }
                                             WorkspaceClient.surface(pane.id, sessionKey, generation, token, "ready")
@@ -1515,8 +1605,10 @@ private fun WorkspaceVideo(
                                                 receivedPackets,submittedPackets,player.outputFrames)
                                             post { if (running.get() && surfaceToken == token) videoStatus = message }
                                         }
-                                        if (waiting && System.nanoTime() - lastRequest > 1_000_000_000) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
-                                        Thread.sleep(4)
+                                        if (waiting && System.nanoTime() - lastRequest > 500_000_000L) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
+                                        if (!didWork) {
+                                            java.util.concurrent.locks.LockSupport.parkNanos(400_000L)
+                                        }
                                     }
                                 } catch (e: Exception) { if (running.get()) post { currentError(e.message ?: "Video decoder failed", `fun`.hackerlife.weavelo.appTextOf(e) ?: if (e.message == null) `fun`.hackerlife.weavelo.AppText("Video decoder failed") else null) } }
                                 finally {
@@ -1690,6 +1782,24 @@ private fun WorkspaceVideo(
                                 if (routeBadge != null) {
                                     PrecisionPillBadge(text = routeBadge, tone = PillTone.EMERALD, showDot = true)
                                 }
+                            }
+                            MobileAction(
+                                symbol = MobileSymbol.Files,
+                                label = tr("File transfer & manager"),
+                                tonalWell = true,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                sideDrawerOpen = false
+                                onOpenFiles()
+                            }
+                            MobileAction(
+                                symbol = MobileSymbol.Clipboard,
+                                label = tr("Clipboard manager"),
+                                tonalWell = true,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                sideDrawerOpen = false
+                                onOpenClipboard()
                             }
                             Box {
                                 MobileAction(
@@ -1919,11 +2029,20 @@ private fun WorkspaceVideo(
                 Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val localClipCtx = LocalContext.current
                 Row(
                     Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    VirtualKeyPill(name = tr("Paste"), active = false, enabled = token != 0L) {
+                        val clip = localClipCtx.getSystemService(android.content.ClipboardManager::class.java)?.primaryClip
+                        val clipText = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+                        val owner = keyboardBinding ?: WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)
+                        if (!clipText.isNullOrEmpty() && owner != null) {
+                            WorkspaceClient.keyboard(pane.id, sessionKey, generation, token, owner, text = clipText)
+                        }
+                    }
                     listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
                         VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = token != 0L) {
                             val owner = if (heldModifiers.isNotEmpty()) modifierBinding else keyboardBinding
