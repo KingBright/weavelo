@@ -316,6 +316,9 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
     };
     #[cfg(target_os = "linux")]
     {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Ok(Vec::new());
+        }
         let mut sources = vec![desktop];
         match crate::linux_kwin::list() {
             Ok(windows) => sources.extend(windows),

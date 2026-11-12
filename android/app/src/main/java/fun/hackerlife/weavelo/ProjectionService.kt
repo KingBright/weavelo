@@ -146,6 +146,8 @@ class ProjectionService : Service() {
                     .onFailure { PublisherClient.status(it.message ?: "Could not send screen", true, appTextOf(it) ?: if (it.message == null) AppText("Could not send screen") else null) }
                 sendTarget = null
             }
+            var surfaceAttachedAt = 0L
+            var nudgedStaticSurface = false
             while (running.get()) {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
@@ -156,29 +158,37 @@ class ProjectionService : Service() {
                 if (captureReconfiguration(appliedGeometry, geometry) != null) {
                     PublisherClient.controlSize = null
                     display.surface = null
-                    publisher?.finish();publisher?.close();publisher=null
-                    display.resize(size.first,size.second,geometry.density)
-                    PublisherClient.action(3, JSONObject().put("grant",captureGrant).put("width",size.first).put("height",size.second)
-                        .put("rotation",geometry.rotation).toString())
+                    publisher?.finish(); publisher?.close(); publisher = null
+                    display.resize(size.first, size.second, geometry.density)
+                    // Keep the capture SurfaceTexture continuously bound across idle periods
+                    // (zero encoders run while views is empty) so static phone screens
+                    // already hold a latched frame the instant another phone subscribes.
+                    val nextPublisher = GpuScreenPublisher(size.first, size.second)
+                    display.surface = nextPublisher.input
+                    publisher = nextPublisher
+                    surfaceAttachedAt = SystemClock.elapsedRealtime()
+                    nudgedStaticSurface = false
+                    PublisherClient.action(3, JSONObject().put("grant", captureGrant).put("width", size.first).put("height", size.second)
+                        .put("rotation", geometry.rotation).toString())
                     appliedGeometry = geometry
-                    if (captureGeometry == geometry && controlAllowed) PublisherClient.controlSize=size
+                    if (captureGeometry == geometry && controlAllowed) PublisherClient.controlSize = size
                     demand = JSONObject(PublisherClient.action(2))
                 }
-                val views=demand.optJSONArray("views") ?: org.json.JSONArray()
-                if (views.length()>0) {
-                    if (publisher == null) {
-                        publisher=GpuScreenPublisher(size.first,size.second)
-                        display.surface=publisher.input
+                val views = demand.optJSONArray("views") ?: org.json.JSONArray()
+                val activePublisher = publisher
+                if (activePublisher != null) {
+                    if (!activePublisher.update(views)) nextDemand = 0
+                    if (views.length() > 0 && !activePublisher.hasSourceFrame && !nudgedStaticSurface &&
+                        SystemClock.elapsedRealtime() - surfaceAttachedAt >= 220L) {
+                        nudgedStaticSurface = true
+                        runCatching { display.resize(size.first, size.second, geometry.density) }
                     }
-                    if (!publisher.update(views)) nextDemand=0
-                } else if (publisher != null) {
-                    display.surface=null;publisher.close();publisher=null
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")
-                if (wantsAudio && capture != null) startAudio(capture,captureGrant)
+                if (wantsAudio && capture != null) startAudio(capture, captureGrant)
                 if (!wantsAudio) stopAudio()
-                val waitMs=(nextDemand-SystemClock.elapsedRealtime()).coerceIn(1,50)
-                val gpu=publisher
+                val waitMs = (nextDemand - SystemClock.elapsedRealtime()).coerceIn(1, 50)
+                val gpu = publisher
                 if (gpu != null) gpu.awaitFrame(if (gpu.pendingFrames) 1 else waitMs) else Thread.sleep(waitMs)
             }
         } catch (e: Exception) {

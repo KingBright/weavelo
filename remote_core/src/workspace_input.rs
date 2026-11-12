@@ -19,12 +19,14 @@ pub(crate) struct InputState {
     next_request: u64,
     next_text: u64,
     next_owner: u64,
+    wakeup: std::sync::Arc<tokio::sync::Notify>,
 }
 #[derive(Clone)]
 struct Slot {
     enabled: bool,
     revision: u32,
     request: u64,
+    request_geometry_revision: u64,
     presented_geometry_revision: u64,
     lease: Option<Lease>,
     owner: u64,
@@ -61,6 +63,9 @@ impl Lease {
     }
 }
 impl InputState {
+    pub(crate) fn wakeup(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.wakeup.clone()
+    }
     pub(crate) fn source(&mut self, id: u32, revision: u32) {
         self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
         self.slots.insert(
@@ -69,23 +74,62 @@ impl InputState {
                 enabled: true,
                 revision,
                 request: 0,
+                request_geometry_revision: 0,
                 presented_geometry_revision: 0,
                 lease: None,
                 owner: self.next_owner,
             },
         );
+        self.wakeup.notify_one();
     }
-    pub(crate) fn presented_geometry(&mut self,id:u32,source_revision:u32,geometry_revision:u64) {
+    pub(crate) fn presented_geometry(&mut self,id:u32,source_revision:u32,geometry_revision:u64) -> bool {
         if let Some(slot)=self.slots.get_mut(&id).filter(|slot|slot.revision==source_revision) {
             if slot.presented_geometry_revision!=geometry_revision {
                 let regressed=geometry_revision<slot.presented_geometry_revision;
                 slot.presented_geometry_revision=geometry_revision;
                 if let Some(lease) = slot.lease.as_mut() { lease.focus_probe = None; }
-                // An outstanding grant is tied to the frame in its request.
-                slot.request=0;
-                if geometry_revision==0 || regressed {slot.lease=None;}
+                if geometry_revision==0 || regressed {
+                    slot.request=0;
+                    slot.request_geometry_revision=0;
+                    slot.lease=None;
+                    return false;
+                }
+                // Keep in-flight request metadata so same-epoch renewals survive
+                // high-rate (60fps) ROI zoom/pan updates while delayed epoch-changing
+                // grants remain fenced in grant(). Signal urgent wakeup if unleased
+                // or aging so first-frame paint (0 -> 1) binds immediately.
+                let urgent = slot.enabled
+                    && slot
+                        .lease
+                        .as_ref()
+                        .is_none_or(|lease| lease.received.elapsed().as_millis() >= 200);
+                if urgent {
+                    self.wakeup.notify_one();
+                }
+                return urgent;
             }
         }
+        false
+    }
+    pub(crate) fn needs_urgent_request(&self) -> bool {
+        self.slots.values().any(|slot| {
+            slot.enabled
+                && slot
+                    .lease
+                    .as_ref()
+                    .is_none_or(|lease| lease.received.elapsed().as_millis() >= 200)
+                && (slot.request == 0
+                    || slot.request_geometry_revision != slot.presented_geometry_revision)
+        })
+    }
+    pub(crate) fn has_unleased_enabled_slot(&self) -> bool {
+        self.slots.values().any(|slot| {
+            slot.enabled
+                && slot
+                    .lease
+                    .as_ref()
+                    .is_none_or(|lease| lease.received.elapsed().as_millis() > 750)
+        })
     }
     pub(crate) fn remove(&mut self, id: u32) {
         self.slots.remove(&id);
@@ -168,14 +212,19 @@ impl InputState {
         {
             return;
         }
-        slot.request = 0;
         if let Some(lease) = &mut slot.lease
             && lease.binding == binding
         {
+            slot.request = 0;
             lease.host_ms = host_ms;
             lease.received = Instant::now();
             return;
         }
+        if slot.request_geometry_revision != slot.presented_geometry_revision {
+            slot.request = 0;
+            return;
+        }
+        slot.request = 0;
         // Reconnect/source generation changes discard held intent, never replay it.
         slot.lease = Some(Lease {
             binding,
@@ -216,6 +265,7 @@ impl InputState {
                 }
                 self.next_request = self.next_request.checked_add(1)?;
                 slot.request = self.next_request;
+                slot.request_geometry_revision = slot.presented_geometry_revision;
                 Some(SessionCommand::RequestInputBinding {
                     connection_id: connection,
                     id: *id,

@@ -10,11 +10,11 @@ pub mod background_service;
 pub(crate) mod private_ipc;
 #[cfg(all(any(unix,windows),feature="gpui-restoration"))]
 mod directed_delivery;
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+#[cfg(all(feature = "gpui-restoration", any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 mod design_system;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod desktop;
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+#[cfg(all(feature = "gpui-restoration", any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 mod original_design;
 pub mod preferences;
 pub mod i18n;
@@ -4760,5 +4760,5 @@ mod build_identity;
 #[cfg(all(feature = "gpui-restoration", any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 mod desktop_update;
 
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+#[cfg(all(feature = "gpui-restoration", any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub mod product_components;

@@ -1306,6 +1306,7 @@ impl Actor {
         let mut input_tick = tokio::time::interval(Duration::from_millis(protocol::realtime_input::INPUT_REFRESH_INTERVAL_MS));
         input_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut input_requests_at = Instant::now() - Duration::from_secs(1);
+        let input_wakeup = self.input.lock().unwrap().wakeup();
         let mut clipboard_barriers: Vec<(u64, tokio::sync::oneshot::Sender<Result<(), String>>)> = Vec::new();
         let mut media = tokio::time::interval(Duration::from_millis(10));
         // A delayed heartbeat must not be followed immediately by a catch-up
@@ -1353,8 +1354,22 @@ impl Actor {
                     }
                     for key in expired { self.expire_request(key).await; }
                 }
+                _ = input_wakeup.notified() => {
+                    let requests = {
+                        let mut input = self.input.lock().unwrap();
+                        if input.needs_urgent_request() { input.requests(self.id) } else { Vec::new() }
+                    };
+                    if !requests.is_empty() {
+                        for request in requests { self.send(&request).await; }
+                        input_requests_at = Instant::now();
+                    }
+                }
                 _ = input_tick.tick() => {
-                    if input_requests_at.elapsed() >= Duration::from_millis(300) {
+                    let renew_interval = {
+                        let input = self.input.lock().unwrap();
+                        if input.has_unleased_enabled_slot() { Duration::from_millis(80) } else { Duration::from_millis(150) }
+                    };
+                    if input_requests_at.elapsed() >= renew_interval {
                         let requests=self.input.lock().unwrap().requests(self.id);
                         for request in requests { self.send(&request).await; }
                         input_requests_at=Instant::now();
@@ -1469,6 +1484,11 @@ impl Actor {
                                 }
                             }
                             if let SessionCommand::Subscribed {id,..} | SessionCommand::SourceSwitched {id,..} = &command {
+                                let immediate_requests = self.input.lock().unwrap().requests(self.id);
+                                if !immediate_requests.is_empty() {
+                                    for req in immediate_requests { self.send(&req).await; }
+                                    input_requests_at = Instant::now();
+                                }
                                 if let Some(view) = self.subscriptions.get(id) {
                                     static NEXT_ARTWORK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xa0000000);
                                     if let Ok(request_id) = NEXT_ARTWORK.try_update(std::sync::atomic::Ordering::Relaxed,std::sync::atomic::Ordering::Relaxed,|n|n.checked_add(1)) {
@@ -1480,6 +1500,13 @@ impl Actor {
                             let closed = matches!(command, SessionCommand::Closed { connection_id, .. } if connection_id == self.id);
                             if let SessionCommand::Activity { id, revision, video, .. } = &command {
                                 if let Some(view) = self.subscriptions.get(id) { view.host_stats.media_pause.acknowledge(self.target, *id, *revision, !video); }
+                                if *video {
+                                    let immediate_requests = self.input.lock().unwrap().requests(self.id);
+                                    if !immediate_requests.is_empty() {
+                                        for req in immediate_requests { self.send(&req).await; }
+                                        input_requests_at = Instant::now();
+                                    }
+                                }
                             }
                             let _ = self.control_tx.send(command);
                             if closed { self.close_confirmed.store(true, std::sync::atomic::Ordering::Release); return; }

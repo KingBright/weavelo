@@ -206,6 +206,8 @@ enum class MobileSymbol(path: String) {
     AudioMuted("M11 5L6 9H3v6h3l5 4z M16 9l6 6 M22 9l-6 6"),
     Notifications("M6 9a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4"),
     Rotate("M4 7a3 3 0 0 1 3-3h7a3 3 0 0 1 3 3v4a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M17 10h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2"),
+    FullscreenEnter("M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9 M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9 M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15 M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"),
+    FullscreenExit("M9 4v3.5A1.5 1.5 0 0 1 7.5 9H4 M15 4v3.5A1.5 1.5 0 0 0 16.5 9H20 M20 15h-3.5A1.5 1.5 0 0 0 15 16.5V20 M4 15h3.5A1.5 1.5 0 0 1 9 16.5V20"),
     Collapse("M6 15l6-6 6 6"),
     Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10");
 
@@ -475,8 +477,8 @@ fun PrecisionButton(
 }
 
 /**
- * Tactile icon action button: keeps an accessible 44-48dp outer touch target while
- * framing the icon inside a sculpted tonal well so multi-action bars never feel raw or cramped.
+ * Unclipped soft-tonal icon action button: avoids Material IconButton's circular clip
+ * (which previously sliced off rounded-square corners) and uses clean borderless tonal fills.
  */
 @Composable
 fun MobileAction(
@@ -490,47 +492,64 @@ fun MobileAction(
     onClick: () -> Unit
 ) {
     val p = WeaveloTokens.colors
+    val shape = RoundedCornerShape(12.dp)
     val wellBg = when {
-        destructive -> p.dangerSoft
-        selected -> p.brandSoft
-        tonalWell -> p.surfaceSunken
-        else -> Color.Transparent
-    }
-    val wellBorder = when {
-        destructive -> p.dangerBorder.copy(alpha = 0.65f)
-        selected -> p.brandBorder.copy(alpha = 0.7f)
-        tonalWell -> p.borderMuted
+        destructive -> if (p.isDark) p.danger.copy(alpha = 0.18f) else p.dangerSoft
+        selected -> if (p.isDark) p.brand.copy(alpha = 0.20f) else p.brandSoft
+        tonalWell -> if (p.isDark) Color.White.copy(alpha = 0.07f) else p.surfaceSunken.copy(alpha = 0.90f)
         else -> Color.Transparent
     }
     val iconTint = when {
-        !enabled -> p.textTertiary.copy(alpha = 0.38f)
+        !enabled -> p.textTertiary.copy(alpha = 0.36f)
         destructive -> p.dangerText
         selected -> p.brand
         else -> p.textPrimary
     }
-    IconButton(
-        onClick = onClick,
-        enabled = enabled,
+    Box(
         modifier = modifier
+            .defaultMinSize(minWidth = 38.dp, minHeight = 38.dp)
+            .padding(1.5.dp)
+            .clip(shape)
+            .background(wellBg)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(11.dp))
-                .background(wellBg)
-                .let { mod ->
-                    if (wellBorder != Color.Transparent) mod.border(1.dp, wellBorder, RoundedCornerShape(11.dp))
-                    else mod
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                symbol.image,
-                contentDescription = label,
-                tint = iconTint,
-                modifier = Modifier.size(19.dp)
-            )
-        }
+        Icon(
+            symbol.image,
+            contentDescription = label,
+            tint = iconTint,
+            modifier = Modifier.size(18.5.dp)
+        )
+    }
+}
+
+/**
+ * Minimalist video-player-style orientation toggle button (zero text, pure 4-corner fullscreen icon).
+ */
+@Composable
+internal fun StreamOrientationToggleButton(
+    isLandscape: Boolean,
+    alpha: Float = 1f,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(11.dp)
+    val clampedAlpha = alpha.coerceIn(0.28f, 1f)
+    Box(
+        modifier = modifier
+            .size(34.dp)
+            .clip(shape)
+            .background(Color(0x940B1018).copy(alpha = 0.58f * clampedAlpha))
+            .border(0.75.dp, Color.White.copy(alpha = 0.15f * clampedAlpha), shape)
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = (if (isLandscape) MobileSymbol.FullscreenExit else MobileSymbol.FullscreenEnter).image,
+            contentDescription = if (isLandscape) tr("Portrait view") else tr("Landscape view"),
+            tint = Color.White.copy(alpha = 0.90f * clampedAlpha),
+            modifier = Modifier.size(17.dp)
+        )
     }
 }
 

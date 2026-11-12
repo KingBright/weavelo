@@ -51,7 +51,8 @@ fun MobileViewportScreen(
     onDisconnect: () -> Unit
 ) {
     val p = WeaveloTokens.colors
-    StreamOrientation(active = true)
+    var landscapeOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    StreamOrientation(active = true, landscapeOverride = landscapeOverride)
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
     var lastControlMode by remember { mutableStateOf(TouchMode.DIRECT) }
     val isModifierBarVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
@@ -233,6 +234,7 @@ fun MobileViewportScreen(
 
     Column(Modifier.fillMaxSize().imePadding().background(Color(0xFF070A0F))) {
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val portraitViewport = maxHeight > maxWidth
             val viewportHeightPx = with(LocalDensity.current) { maxHeight.toPx().coerceAtLeast(1f) }
             val gestureOwner = inputSessionToken
             RemoteViewport(
@@ -436,6 +438,21 @@ fun MobileViewportScreen(
             NetworkStatusChip(sessionState, telemetry,
                 modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp))
 
+            if (!isModifierBarVisible) {
+                val orientationAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = false)
+                StreamOrientationToggleButton(
+                    isLandscape = !portraitViewport,
+                    alpha = orientationAlpha,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .safeDrawingPadding()
+                        .padding(8.dp),
+                    onClick = {
+                        landscapeOverride = if (!portraitViewport) false else true
+                    }
+                )
+            }
+
             if (!isModifierBarVisible && transform.scale > 1.05f) {
                 ZoomedCanvasChip(
                     scale = transform.scale,
@@ -528,7 +545,12 @@ fun MobileViewportScreen(
                                         maxLines = 1
                                     )
                                 }
-                                TouchIslandIconButton(text = tr("DISCONNECT"), active = false, isDestructive = true) {
+                                MobileAction(
+                                    symbol = MobileSymbol.Disconnect,
+                                    label = tr("Exit stream"),
+                                    destructive = true,
+                                    modifier = Modifier.size(38.dp)
+                                ) {
                                     virtualKeys.releaseAll()
                                     onDisconnect()
                                 }
@@ -560,24 +582,27 @@ fun MobileViewportScreen(
                                 )
                             }
                             LanguageSelector(modifier = Modifier.fillMaxWidth())
-                            HorizontalDivider(color = p.borderMuted)
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(15.dp))
+                                    .background(if (p.isDark) Color.White.copy(alpha = 0.055f) else p.surfaceSunken.copy(alpha = 0.85f))
+                                    .padding(horizontal = 4.dp, vertical = 3.dp),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(42.dp),
-                                    selected = touchMode == TouchMode.TRACKPAD, tonalWell = true) {
+                                    selected = touchMode == TouchMode.TRACKPAD) {
                                     lastControlMode = TouchMode.TRACKPAD; touchMode = TouchMode.TRACKPAD
                                     WeaveloClient.setTouchMode(touchMode)
                                 }
                                 MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(42.dp),
-                                    selected = touchMode == TouchMode.DIRECT, tonalWell = true) {
+                                    selected = touchMode == TouchMode.DIRECT) {
                                     lastControlMode = TouchMode.DIRECT; touchMode = TouchMode.DIRECT
                                     WeaveloClient.setTouchMode(touchMode)
                                 }
                                 MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(42.dp),
-                                    selected = touchMode == TouchMode.VIEW, tonalWell = true) {
+                                    selected = touchMode == TouchMode.VIEW) {
                                     if (touchMode == TouchMode.VIEW && inputEnabled) {
                                         touchMode = lastControlMode
                                         WeaveloClient.setTouchMode(touchMode)
@@ -586,7 +611,7 @@ fun MobileViewportScreen(
                                         touchMode = TouchMode.VIEW
                                     }
                                 }
-                                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(42.dp), tonalWell = true) {
+                                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(42.dp)) {
                                     controlsExpanded = false
                                     if (showKeyboard) {
                                         showKeyboard = false; textInputToken = null
@@ -595,7 +620,7 @@ fun MobileViewportScreen(
                                         showKeyboard = textInputToken != null
                                     }
                                 }
-                                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(42.dp), tonalWell = true) {
+                                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(42.dp)) {
                                     transform = transform.reset()
                                     if (inputEnabled && touchMode == TouchMode.VIEW) {
                                         touchMode = lastControlMode

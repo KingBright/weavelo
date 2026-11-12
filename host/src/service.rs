@@ -727,6 +727,20 @@ impl Connection {
     }
     fn input_binding(&mut self,connection:u32,id:u32,revision:u32,request:u64) -> Option<SessionCommand> {
         if connection!=self.id || request==0 {return None;}
+        #[cfg(target_os="windows")]
+        if let Some(sub) = self.subscriptions.get_mut(&id)
+            && sub.supports_input
+            && sub.source_revision == revision
+            && let Some(InputTarget::Windows { source, canvas, width: src_w, height: src_h }) = &mut sub.input_target
+            && let Ok(sel) = crate::windows_sources::resolve(*source)
+            && let Ok(bounds) = sel.current_bounds()
+            && (bounds.width, bounds.height) != (*src_w, *src_h)
+            && let Ok(fitted) = crate::windows_capture_plan::fit(bounds, sub.request.width, sub.request.height)
+        {
+            *canvas = fitted;
+            *src_w = bounds.width;
+            *src_h = bounds.height;
+        }
         let (current,target,generation)=self.input_signature(id)?;
         if current!=revision {return None;}
         let now=host_input_time_ms();

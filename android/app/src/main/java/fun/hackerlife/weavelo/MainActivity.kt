@@ -345,7 +345,7 @@ class MainActivity : ComponentActivity() {
                             workspaceDeviceId = ""; openMainDisplay = true; workspaceEndpoint = endpoint
                         },
                         onConnectWorkspace = { deviceId, endpoint ->
-                            openMainDisplay = deviceId.isNotBlank() && devices.firstOrNull { it.id == deviceId }?.canViewScreen == true
+                            openMainDisplay = deviceId.isNotBlank()
                             incomingSession = null; sendFileOnConnect = false; workspaceFilePath = null
                             workspaceDeviceId = deviceId; workspaceEndpoint = endpoint
                         },

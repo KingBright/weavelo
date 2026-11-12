@@ -7,8 +7,24 @@ import java.util.TreeMap
 
 /** One authorized raw capture texture, independent native encoders per view. */
 internal class GpuScreenPublisher(private val width: Int, private val height: Int, rotation: Int = 0) : AutoCloseable {
+    companion object {
+        private const val TRANSFER_MASK = 127 shl 22
+        private const val TRANSFER_ST2084 = 7 shl 22
+        private const val TRANSFER_HLG = 8 shl 22
+        private const val HAL_DATASPACE_V0_SRGB = 0x08110000
+
+        internal fun isHdrDataSpace(dataSpace: Int): Boolean {
+            val transfer = dataSpace and TRANSFER_MASK
+            return transfer == TRANSFER_ST2084 || transfer == TRANSFER_HLG
+        }
+
+        internal fun isExplicitSrgbDataSpace(dataSpace: Int): Boolean =
+            dataSpace == DataSpace.DATASPACE_SRGB || dataSpace == HAL_DATASPACE_V0_SRGB
+    }
+
     private val gpu=GpuVideoSurface(null,width,height,PublisherClient::nativeClockMicros,sourceRotation=rotation)
     val input get()=gpu.input
+    val hasSourceFrame: Boolean get()=gpu.sourceReady
     private val views=mutableMapOf<Long,View>()
     private val failed=mutableSetOf<Long>()
     private var nextPts=0L
@@ -39,6 +55,7 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
         var geometryRevision=0L
         var keyframe=-1L
         var lastSubmitUs=0L
+        var startupBurstRemaining=3
         private var selectionKey=""
         private var selection: SurfaceHevcEncoder.Plan?=null
         private var rejectedPlan: SurfaceHevcEncoder.Plan?=null
@@ -73,18 +90,19 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
         fun update(): Boolean {
             val g=demand.geometry
             if (g.sourceWidth!=width || g.sourceHeight!=height) return false
-            // Keep producer metadata. Do not relabel unknown or wide-gamut RGB
-            // as sRGB just because this is a screen texture.
             val dataSpace=gpu.sourceDataSpace
-            require(dataSpace==0 || dataSpace==DataSpace.DATASPACE_SRGB) { "Unsupported screen color space: $dataSpace" }
+            // Reject HDR PQ/HLG surfaces, while allowing all SDR screen color spaces
+            // including Display-P3 / V0_SRGB / BT.709 used by HyperOS, OriginOS, ColorOS, etc.
+            require(!isHdrDataSpace(dataSpace)) { "Unsupported HDR screen color space: $dataSpace" }
+            val explicitSrgb=isExplicitSrgbDataSpace(dataSpace)
             if (demand.qualityPending && acknowledgedRevision==demand.qualityRevision && !acknowledgedQuality) return false
-            val requested="${g.width}:${g.height}:${demand.fps}:${demand.bitrateKbps}:$dataSpace:${demand.qualityRevision}"
+            val requested="${g.width}:${g.height}:${demand.fps}:${demand.bitrateKbps}:$explicitSrgb:${demand.qualityRevision}"
             if (selectionKey!=requested) {
                 // The common planner deliberately stabilizes coded dimensions
                 // while the crop aspect changes. GPU scaling preserves that;
                 // receiver geometry restores the actual source aspect.
                 selection=SurfaceHevcEncoder.fitAtMost(g.width,g.height,g.width,g.height,demand.fps,demand.bitrateKbps)
-                    ?.copy(srgb=dataSpace==DataSpace.DATASPACE_SRGB)
+                    ?.copy(srgb=explicitSrgb)
                 selectionKey=requested
                 rejectedPlan=null
             }
@@ -92,7 +110,7 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
             // unsupported. It must still fit the crop and the network cap.
             fun oldPlan()=codec?.plan?.takeIf { it.width<=g.width && it.height<=g.height &&
                 it.width<=g.cropWidth && it.height<=g.cropHeight && it.fps<=demand.fps &&
-                it.bitrateKbps<=demand.bitrateKbps && it.srgb==(dataSpace==DataSpace.DATASPACE_SRGB) }
+                it.bitrateKbps<=demand.bitrateKbps && it.srgb==explicitSrgb }
             if (selection==null && demand.qualityPending) {
                 acknowledgeQuality(false)
                 return false
@@ -144,7 +162,10 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
             val awaitingQualityFrame=demand.qualityPending && acknowledgedRevision!=demand.qualityRevision &&
                 pending.values.none { it.qualityRevision==demand.qualityRevision }
             val redraw=geometryRevision!=g.revision || keyframe!=demand.keyframe || awaitingQualityFrame
-            if (pending.size<3 && now-lastSubmitUs>=1_000_000/minOf(demand.fps,plan.fps) && (redraw || captureUs!=gpu.sourceCaptureUs)) {
+            if (redraw) startupBurstRemaining=maxOf(startupBurstRemaining,3)
+            val frameIntervalUs=1_000_000L/minOf(demand.fps,plan.fps)
+            val hasFreshOrBurstFrame=redraw || captureUs!=gpu.sourceCaptureUs || startupBurstRemaining>0
+            if (pending.size<3 && now-lastSubmitUs>=frameIntervalUs && hasFreshOrBurstFrame) {
                 encoder.requestKeyframe(demand.keyframe)
                 val geometry=g.copy(width=plan.width,height=plan.height)
                 check(geometry.valid())
@@ -152,6 +173,7 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
                 pending[nextPts]=Stamp(demand.stream,demand.grant,geometry,gpu.sourceCaptureUs,now,
                     if (demand.qualityPending) demand.qualityRevision else 0)
                 gpu.drawSource(checkNotNull(output),geometry,nextPts)
+                if (startupBurstRemaining>0) startupBurstRemaining--
                 captureUs=gpu.sourceCaptureUs;geometryRevision=g.revision;keyframe=demand.keyframe;lastSubmitUs=now
             }
             return accepted
@@ -163,7 +185,7 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
         }
         private fun installEncoder(next: EncoderOutput) {
             codec=next.codec;output=next.surface
-            captureUs=0;geometryRevision=0;keyframe=-1;lastSubmitUs=0
+            captureUs=0;geometryRevision=0;keyframe=-1;lastSubmitUs=0;startupBurstRemaining=3
         }
         private fun closeOutput(target: EncoderOutput) {
             try { gpu.removeOutput(target.surface) } finally { target.codec.close() }
@@ -190,6 +212,7 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
             lastDataSpace=gpu.sourceDataSpace
             android.util.Log.i("WeaveloMedia","Screen GPU ingress ${width}x$height dataSpace=$lastDataSpace")
         }
+        if (wanted.isEmpty()) return true
         var accepted=true
         for ((stream,demand) in wanted) {
             if (stream in failed) continue

@@ -42,15 +42,15 @@ path = "src/main.rs"
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
-gpui-ce = { version = "0.3.3", features = ["runtime_shaders"] }
-rfd = "0.15"
-remote_client_bridge = { path = "../remote_client_bridge" }
-ely-gpui-component = { path = "../third_party/ely-gpui-component" }
+gpui-ce = { version = "0.3.3", features = ["runtime_shaders"], optional = true }
+rfd = { version = "0.15", optional = true }
+remote_client_bridge = { path = "../remote_client_bridge", optional = true }
+ely-gpui-component = { path = "../third_party/ely-gpui-component", optional = true }
 
 [features]
 default = ["gpui-restoration"]
 native-linux-video = ["gpui-native-video", "client/native-linux-video", "host/native-linux-video"]
-gpui-restoration = []
+gpui-restoration = ["dep:gpui-ce", "dep:rfd", "dep:remote_client_bridge", "dep:ely-gpui-component"]
 gpui-native-video = ["gpui-restoration", "gpui-ce/native-video"]
 native-windows-video = ["gpui-native-video", "client/native-windows-video"]
 

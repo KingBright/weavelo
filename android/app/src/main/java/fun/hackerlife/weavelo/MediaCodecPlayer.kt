@@ -55,9 +55,19 @@ internal class MediaCodecPlayer(
                 else MediaCodec.createDecoderByType(mimeType)
             candidate = codec
             val format = MediaFormat.createVideoFormat(mimeType, width, height).apply {
-                if (frameTarget != null && codec.codecInfo.getCapabilitiesForType(mimeType)
-                        .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback)) {
-                    setInteger(MediaFormat.KEY_MAX_WIDTH,width);setInteger(MediaFormat.KEY_MAX_HEIGHT,height)
+                val codecCaps = runCatching { codec.codecInfo.getCapabilitiesForType(mimeType) }.getOrNull()
+                if (frameTarget != null && codecCaps?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback) == true) {
+                    val vCaps = codecCaps.videoCapabilities
+                    val maxEdge = maxOf(width, height)
+                    val adaptiveW = maxEdge.coerceAtMost(minOf(4096, vCaps?.supportedWidths?.upper ?: width)).coerceAtLeast(width)
+                    val adaptiveH = maxEdge.coerceAtMost(minOf(4096, vCaps?.supportedHeights?.upper ?: height)).coerceAtLeast(height)
+                    if (vCaps != null && vCaps.isSizeSupported(adaptiveW, adaptiveH)) {
+                        setInteger(MediaFormat.KEY_MAX_WIDTH, adaptiveW)
+                        setInteger(MediaFormat.KEY_MAX_HEIGHT, adaptiveH)
+                    } else {
+                        setInteger(MediaFormat.KEY_MAX_WIDTH, width)
+                        setInteger(MediaFormat.KEY_MAX_HEIGHT, height)
+                    }
                 }
                 if (Build.VERSION.SDK_INT >= 30) {
                     runCatching { setInteger(MediaFormat.KEY_LOW_LATENCY, 1) }

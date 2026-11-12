@@ -67,7 +67,6 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val state = serviceState.takeIf { it.sessionKey == sessionKey }
         ?: WorkspaceState(sessionKey = sessionKey, status = "Connecting…")
     var landscapeOverride by rememberSaveable(sessionKey) { mutableStateOf<Boolean?>(null) }
-    var portraitHintDismissed by rememberSaveable(sessionKey) { mutableStateOf(false) }
     StreamOrientation(active = state.panes.isNotEmpty(), landscapeOverride = landscapeOverride)
     val imeOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     var imeWasOpen by remember(sessionKey) { mutableStateOf(false) }
@@ -236,9 +235,13 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             WorkspaceClient.sendFile(fileToSend, sessionKey)
         }
     }
-    LaunchedEffect(state.sessionKey, state.connected, state.connectionGeneration, state.incomingEnded) {
+    LaunchedEffect(state.sessionKey, state.connected, state.connectionGeneration, state.incomingEnded, state.panes.isEmpty(), state.sources.isEmpty(), foreground) {
         if (state.sessionKey == sessionKey && state.connected && !state.incomingEnded && state.sources.isEmpty()) {
             WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+            while (isActive && foreground && state.panes.isEmpty() && state.sources.isEmpty()) {
+                delay(2000)
+                WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+            }
         }
     }
 
@@ -440,11 +443,8 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                     sessionKey = state.sessionKey,
                                                     generation = state.connectionGeneration,
                                                     portraitViewport = portraitViewport,
-                                                    landscapeOverride = landscapeOverride,
-                                                    portraitHintDismissed = portraitHintDismissed,
-                                                    onDismissPortraitHint = { portraitHintDismissed = true },
                                                     onToggleLandscape = {
-                                                        landscapeOverride = if (landscapeOverride == true) null else true
+                                                        landscapeOverride = if (!portraitViewport) false else true
                                                     },
                                                     onPickSource = {
                                                         WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
@@ -579,7 +579,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             Text(when {
                                 state.incomingEnded -> tr("You can still exchange files.")
                                 loadingCatalog -> tr("Connecting and loading shared screens…")
-                                state.sources.isEmpty() -> tr("This device has not shared a screen yet. You can still exchange files.")
+                                state.sources.isEmpty() -> tr("This device has not shared a screen or camera yet. Turn on Sharing → Screen or Camera on the target device, and it will connect automatically.")
                                 else -> tr("Open a display or application window. File transfers stay independent.")
                             }, color = p.textSecondary, fontSize = 13.sp, lineHeight = 19.sp,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -1131,9 +1131,6 @@ private fun WorkspaceVideo(
     sessionKey: String,
     generation: Long,
     portraitViewport: Boolean,
-    landscapeOverride: Boolean?,
-    portraitHintDismissed: Boolean,
-    onDismissPortraitHint: () -> Unit,
     onToggleLandscape: () -> Unit,
     onPickSource: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -1605,7 +1602,7 @@ private fun WorkspaceVideo(
                                                 receivedPackets,submittedPackets,player.outputFrames)
                                             post { if (running.get() && surfaceToken == token) videoStatus = message }
                                         }
-                                        if (waiting && System.nanoTime() - lastRequest > 500_000_000L) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
+                                        if ((waiting || !reportedFirstFrame) && System.nanoTime() - lastRequest > 400_000_000L) { WorkspaceClient.keyframe(pane.id); lastRequest = System.nanoTime() }
                                         if (!didWork) {
                                             java.util.concurrent.locks.LockSupport.parkNanos(400_000L)
                                         }
@@ -1635,47 +1632,18 @@ private fun WorkspaceVideo(
             }
         )
 
-        // Portrait quick helper at 1.0x: 1-tap Fill Height (纵向铺满) or Rotate to Landscape
-        if (portraitViewport && landscapeOverride == null && !portraitHintDismissed && !imeVisible &&
-            !mobileTarget && pane.source.width > pane.source.height && transform.value.scale <= 1.05f) {
-            Surface(
+        // Minimalist video-player-style corner orientation toggle icon (zero text)
+        if (!imeVisible) {
+            val orientationAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = imeVisible)
+            StreamOrientationToggleButton(
+                isLandscape = !portraitViewport,
+                alpha = orientationAlpha,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .safeDrawingPadding()
-                    .padding(8.dp)
-                    .border(1.dp, p.border, RoundedCornerShape(22.dp)),
-                shape = RoundedCornerShape(22.dp),
-                color = p.surfaceGlass,
-                shadowElevation = 6.dp
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    PrecisionButton(
-                        text = tr("Fill height"),
-                        leadingSymbol = MobileSymbol.ExpandVertical,
-                        style = PrecisionButtonStyle.TONAL,
-                        compact = true,
-                        onClick = {
-                            val bw = baseMeasured.width.coerceAtLeast(1).toFloat()
-                            val bh = baseMeasured.height.coerceAtLeast(1).toFloat()
-                            val cw = containerMeasured.width.coerceAtLeast(baseMeasured.width).coerceAtLeast(1).toFloat()
-                            val ch = containerMeasured.height.coerceAtLeast(baseMeasured.height).coerceAtLeast(1).toFloat()
-                            transform.value = transform.value.fillHeight(bw, bh, cw, ch)
-                        }
-                    )
-                    PrecisionButton(
-                        text = tr("Landscape view"),
-                        leadingSymbol = MobileSymbol.Rotate,
-                        style = PrecisionButtonStyle.SUBTLE,
-                        compact = true,
-                        onClick = onToggleLandscape
-                    )
-                    MobileAction(MobileSymbol.Close, tr("Close"), modifier = Modifier.size(32.dp), onClick = onDismissPortraitHint)
-                }
-            }
+                    .padding(8.dp),
+                onClick = onToggleLandscape
+            )
         }
 
         // Zoomed floating pill (> 1.05x): 1-tap Pan Canvas toggle or Reset Zoom
@@ -1740,13 +1708,14 @@ private fun WorkspaceVideo(
             if (sideDrawerOpen) {
                 val paneTitle = localizedSourceTitle(pane.source)
                 val inputReady = pane.input && token != 0L
+                val slotBg = if (p.isDark) Color.White.copy(alpha = 0.055f) else p.surfaceSunken.copy(alpha = 0.85f)
                 Surface(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .safeDrawingPadding()
                         .padding(end = 42.dp, top = 8.dp, bottom = 8.dp)
-                        .widthIn(min = 232.dp, max = 286.dp)
-                        .border(1.dp, p.borderStrong, RoundedCornerShape(22.dp))
+                        .widthIn(min = 244.dp, max = 296.dp)
+                        .border(0.75.dp, p.borderStrong.copy(alpha = if (p.isDark) 0.7f else 0.55f), RoundedCornerShape(22.dp))
                         .pointerInput(pane.id, sessionKey, generation) {
                             awaitPointerEventScope {
                                 while (true) {
@@ -1758,13 +1727,13 @@ private fun WorkspaceVideo(
                         },
                     shape = RoundedCornerShape(22.dp),
                     color = p.surfaceGlass,
-                    shadowElevation = 12.dp
+                    shadowElevation = 14.dp
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Row 1: Compact device header + more session menu + exit stream
+                        // Row 1: Compact device header + quick centers + exit stream
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1819,22 +1788,21 @@ private fun WorkspaceVideo(
                             )
                         }
 
-                        // Row 2: Current source / window selector & stream settings (recessed precision slot)
+                        // Row 2: Current source / window selector & stream settings (soft borderless capsule)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(p.surfaceSunken)
-                                .border(1.dp, p.borderMuted, RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(slotBg)
                                 .padding(horizontal = 6.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(9.dp))
                                     .clickable(role = Role.Button) { sideDrawerOpen = false; onOpenSettings() }
-                                    .padding(horizontal = 4.dp, vertical = 5.dp),
+                                    .padding(horizontal = 5.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon))
@@ -1851,7 +1819,7 @@ private fun WorkspaceVideo(
                                 MobileAction(
                                     symbol = MobileSymbol.CameraSwitch,
                                     label = tr("Switch camera"),
-                                    modifier = Modifier.size(34.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     WorkspaceClient.switchCamera(pane.id, sessionKey, generation)
                                 }
@@ -1859,7 +1827,7 @@ private fun WorkspaceVideo(
                             MobileAction(
                                 symbol = MobileSymbol.Sources,
                                 label = tr("Choose screen or app window"),
-                                modifier = Modifier.size(34.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 sideDrawerOpen = false
                                 onPickSource()
@@ -1868,7 +1836,7 @@ private fun WorkspaceVideo(
                                 MobileAction(
                                     symbol = MobileSymbol.Close,
                                     label = trFormat("Close %s", paneTitle),
-                                    modifier = Modifier.size(34.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     WorkspaceClient.remove(pane.id)
                                 }
@@ -1879,8 +1847,8 @@ private fun WorkspaceVideo(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(p.surfaceSunken)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(slotBg)
                                     .padding(3.dp)
                                     .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -1890,11 +1858,8 @@ private fun WorkspaceVideo(
                                     Box(
                                         modifier = Modifier
                                             .heightIn(min = 28.dp)
-                                            .clip(RoundedCornerShape(8.dp))
+                                            .clip(RoundedCornerShape(9.dp))
                                             .background(if (active) p.surfaceRaised else Color.Transparent)
-                                            .let { mod ->
-                                                if (active) mod.border(1.dp, p.brandBorder, RoundedCornerShape(8.dp)) else mod
-                                            }
                                             .clickable(role = Role.Tab) { WorkspaceClient.layout(false, candidate.id) }
                                             .padding(horizontal = 9.dp, vertical = 4.dp),
                                         contentAlignment = Alignment.Center
@@ -1911,10 +1876,14 @@ private fun WorkspaceVideo(
                             }
                         }
 
-                        // Row 3: Thumb-friendly quick mode & view buttons
+                        // Row 3: Unified soft capsule action bar (5 clean, unclipped buttons)
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(15.dp))
+                                .background(slotBg)
+                                .padding(horizontal = 4.dp, vertical = 3.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (mobileTarget) {
@@ -1922,8 +1891,7 @@ private fun WorkspaceVideo(
                                     symbol = MobileSymbol.Back,
                                     label = tr("Remote Back"),
                                     enabled = inputReady && pane.accepted && canRemoteBack,
-                                    tonalWell = true,
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(42.dp)
                                 ) {
                                     WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)?.let {
                                         WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.BACK)
@@ -1933,8 +1901,7 @@ private fun WorkspaceVideo(
                                     symbol = MobileSymbol.Home,
                                     label = tr("Remote Home"),
                                     enabled = inputReady && pane.accepted && isPhoneScreen,
-                                    tonalWell = true,
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(42.dp)
                                 ) {
                                     WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)?.let {
                                         WorkspaceClient.navigation(pane.id, sessionKey, generation, token, it, WorkspaceNavigation.HOME)
@@ -1946,8 +1913,7 @@ private fun WorkspaceVideo(
                                     label = tr("Trackpad"),
                                     enabled = inputReady,
                                     selected = touchMode == TouchMode.TRACKPAD,
-                                    tonalWell = true,
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(42.dp)
                                 ) {
                                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                                     pointers.clear(); touching = false
@@ -1958,8 +1924,7 @@ private fun WorkspaceVideo(
                                     label = tr("Direct touch"),
                                     enabled = inputReady,
                                     selected = touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE,
-                                    tonalWell = true,
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(42.dp)
                                 ) {
                                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                                     pointers.clear(); touching = false
@@ -1971,8 +1936,7 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Pan,
                                 label = tr("Pan canvas"),
                                 selected = touchMode == TouchMode.VIEW,
-                                tonalWell = true,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(42.dp)
                             ) {
                                 WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
                                 pointers.clear(); touching = false
@@ -1987,8 +1951,7 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Keyboard,
                                 label = tr("Show keyboard"),
                                 enabled = inputReady,
-                                tonalWell = true,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(42.dp)
                             ) {
                                 focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
                                 sideDrawerOpen = false; sideMoreOpen = false
@@ -2000,18 +1963,9 @@ private fun WorkspaceVideo(
                                 }
                             }
                             MobileAction(
-                                symbol = MobileSymbol.Rotate,
-                                label = if (landscapeOverride == true) tr("Unlock rotation") else tr("Rotate to landscape"),
-                                selected = landscapeOverride == true,
-                                tonalWell = true,
-                                modifier = Modifier.size(40.dp),
-                                onClick = onToggleLandscape
-                            )
-                            MobileAction(
                                 symbol = MobileSymbol.Refresh,
                                 label = tr("Reset zoom"),
-                                tonalWell = true,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(42.dp)
                             ) {
                                 transform.value = transform.value.reset()
                                 if (pane.input && touchMode == TouchMode.VIEW) touchMode = lastControlMode

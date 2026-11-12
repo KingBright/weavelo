@@ -70,21 +70,31 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
     init {
         var input: Surface? = null
         try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, plan.width, plan.height).apply {
-                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, Math.multiplyExact(plan.bitrateKbps, 1000))
-                setInteger(MediaFormat.KEY_FRAME_RATE, plan.fps); setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-                setInteger(MediaFormat.KEY_PRIORITY, 0)
-                if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-                if (plan.srgb) {
-                    // Explicit Camera2 sRGB, or an observed sRGB projection buffer.
-                    // Platform transfer 2 is sRGB (also exposed by Media3 C.COLOR_TRANSFER_SRGB).
-                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
-                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, 2)
-                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+            fun buildFormat(withExplicitSrgb: Boolean) =
+                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, plan.width, plan.height).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                    setInteger(MediaFormat.KEY_BIT_RATE, Math.multiplyExact(plan.bitrateKbps, 1000))
+                    setInteger(MediaFormat.KEY_FRAME_RATE, plan.fps)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                    if (withExplicitSrgb) {
+                        setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                        setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+                        setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+                    }
                 }
+            if (plan.srgb) {
+                try {
+                    codec.configure(buildFormat(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                } catch (colorError: Exception) {
+                    android.util.Log.w("WeaveloMedia", "Encoder rejected explicit full-range sRGB tags; retrying default SDR color", colorError)
+                    runCatching { codec.reset() }
+                    codec.configure(buildFormat(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                }
+            } else {
+                codec.configure(buildFormat(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             input = codec.createInputSurface(); codec.start(); surface = input
         } catch (error: Exception) { input?.release(); codec.release(); throw error }
     }

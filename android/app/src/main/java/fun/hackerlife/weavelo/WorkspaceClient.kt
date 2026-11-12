@@ -429,7 +429,11 @@ object WorkspaceClient {
                 }
             }
         }
-        val (initW, initH) = if (source.isWindow) scaledEncodeSize(source.width, source.height, scalePercent) else 1280 to 720
+        val (initW, initH) = if (!source.isCamera && source.width >= 2 && source.height >= 2) {
+            scaledEncodeSize(source.width, source.height, scalePercent)
+        } else {
+            1280 to 720
+        }
         val pane = WorkspacePane(nextId, source, paneFps, paneKbps, width = initW, height = initH,
             windowScalePercent = scalePercent, windowLayoutPreset = layoutPreset)
         nextId += 256

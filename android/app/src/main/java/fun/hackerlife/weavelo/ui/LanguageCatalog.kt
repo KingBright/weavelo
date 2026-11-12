@@ -390,6 +390,9 @@ internal object LanguageCatalog {
         "Input was ignored while the app was in the background." to "应用处于后台时已忽略输入。",
         "Input was ignored while this stream was hidden." to "串流隐藏时已忽略输入。",
         "Control is not ready yet." to "控制尚未就绪。",
+        "Control is waiting for this device connection." to "正在同步当前设备的控制连接，请稍候…",
+        "The displayed source geometry changed" to "画面几何尺寸已更新，请重新点按",
+        "Waiting for this host to bind safe input to the current source" to "正在等待被控端绑定当前画面的安全输入连接",
         "Keyboard is unavailable" to "键盘不可用",
         "Keyboard shortcuts expired. Reopen the keyboard and select them again." to "键盘快捷键已失效。请重新打开键盘并重新选择。",
         "Remote navigation is unavailable for this source" to "此来源不支持远程导航",
@@ -580,6 +583,8 @@ internal object LanguageCatalog {
         "Pin" to "置顶",
         "Unpin" to "取消置顶",
         "Paste" to "粘贴",
+        "Portrait view" to "竖屏查看",
+        "This device has not shared a screen or camera yet. Turn on Sharing → Screen or Camera on the target device, and it will connect automatically." to "对方设备尚未开启画面共享。请在对方设备的「共享」页开启「屏幕或应用」或「摄像头」，开启后将自动拉流。",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

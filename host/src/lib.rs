@@ -1141,8 +1141,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     if !matches!(source,protocol::session::CaptureSource::Camera(_)) {video_encoder.viewport_settings(&initial,source)?;}
 
     #[cfg(target_os="linux")]
-    let native_encoder=if native_capture.is_some() || kwin_capture.is_some() || matches!(source,protocol::session::CaptureSource::Camera(_)) {
+    let native_encoder=if native_capture.is_some() || kwin_capture.is_some() {
         Some(tokio::task::spawn_blocking(crate::linux_raw_encode::vaapi::HardwareEncoder::probe).await??)
+    } else if matches!(source,protocol::session::CaptureSource::Camera(_)) {
+        tokio::task::spawn_blocking(crate::linux_raw_encode::vaapi::HardwareEncoder::probe).await?.ok()
     } else {None};
     #[cfg(target_os="linux")]
     let camera_capture=if matches!(source,protocol::session::CaptureSource::Camera(_)) {
@@ -1150,7 +1152,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     } else {None};
     #[cfg(target_os = "linux")]
     let mut video_capturer = if let Some(camera)=&camera_capture {
-        LinuxVideoCapturer::from_owned_mailbox(camera.native.mailbox.clone(),fps)?
+        LinuxVideoCapturer::from_owned_mailbox(camera.mailbox(),fps)?
     } else if let Some(capture)=&kwin_capture {
         if capture.matches_subscription_source(source) {
             LinuxVideoCapturer::from_owned_mailbox(capture.mailbox(),fps)?
@@ -1164,8 +1166,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     }}.with_resources(resources.clone());
     #[cfg(target_os = "linux")]
     let mut video_encoder = if let Some(camera)=&camera_capture {
-        LinuxVideoEncoder::from_hardware_frames(camera.native.generation,width,height,fps,bitrate_kbps,
-            native_encoder.ok_or("Camera hardware encoder is unavailable")?)?
+        match native_encoder {
+            Some(hw)=>LinuxVideoEncoder::from_hardware_frames(camera.generation(),width,height,fps,bitrate_kbps,hw)?,
+            None=>LinuxVideoEncoder::from_owned_frames(camera.generation(),width,height,fps,bitrate_kbps)?,
+        }
     } else if let Some(capture)=&kwin_capture {
         LinuxVideoEncoder::from_hardware_frames(
             capture.generation(),width,height,fps,bitrate_kbps,
