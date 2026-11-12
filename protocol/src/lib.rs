@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
 
-pub mod session;
 pub mod interaction;
-pub mod session_auth;
 pub mod realtime_input;
-pub mod touch;
 pub mod scroll;
+pub mod session;
+pub mod session_auth;
 pub mod shared_files;
 pub mod timing;
+pub mod touch;
 pub mod viewport;
 
 pub use scroll::{MomentumPhase, ScrollGesture, ScrollPhase};
@@ -1796,7 +1796,9 @@ mod tests {
                 id: 7,
                 request_id: 0x4000_002a,
                 source: CaptureSource::Display(77),
-                supports_input: false, max_touch_points: 0 },
+                supports_input: false,
+                max_touch_points: 0,
+            },
         )));
         assert!(
             matches!(reply,ControlMessage::Session(command) if matches!(*command,

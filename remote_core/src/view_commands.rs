@@ -1,10 +1,13 @@
 //! Process-local view binding. Never a protocol ID, resource or network runtime.
-use std::sync::{Arc, Weak};
 use protocol::session::{CaptureSource, CaptureSourceInfo};
+use std::sync::{Arc, Weak};
 
 /// A choice must come from the current catalog, with exactly one typed source ID.
 /// MainDisplay is an explicit ID here, never a fallback for a missing window.
-pub fn enumerated_source(catalog: &[CaptureSourceInfo], id: CaptureSource) -> Option<&CaptureSourceInfo> {
+pub fn enumerated_source(
+    catalog: &[CaptureSourceInfo],
+    id: CaptureSource,
+) -> Option<&CaptureSourceInfo> {
     let mut matches = catalog.iter().filter(|source| source.source == id);
     let source = matches.next()?;
     source.validate_camera().ok()?;
@@ -13,11 +16,16 @@ pub fn enumerated_source(catalog: &[CaptureSourceInfo], id: CaptureSource) -> Op
 
 /// Revalidate the menu's captured identity/metadata before a queued action runs.
 pub fn apply_enumerated_source<T, Scope: Copy + PartialEq, R>(
-    binding: &ViewConnectionBinding<T, Scope>, active: &Arc<T>, scope: Scope,
-    expected: &CaptureSourceInfo, catalog: &[CaptureSourceInfo],
+    binding: &ViewConnectionBinding<T, Scope>,
+    active: &Arc<T>,
+    scope: Scope,
+    expected: &CaptureSourceInfo,
+    catalog: &[CaptureSourceInfo],
     action: impl FnOnce(CaptureSource) -> R,
 ) -> Option<R> {
-    if enumerated_source(catalog, expected.source) != Some(expected) { return None; }
+    if enumerated_source(catalog, expected.source) != Some(expected) {
+        return None;
+    }
     binding.apply(active, scope, || action(expected.source))
 }
 
@@ -47,12 +55,14 @@ impl<T, Scope: Copy + PartialEq> ViewConnectionBinding<T, Scope> {
                 .upgrade()
                 .is_some_and(|previous| Arc::ptr_eq(&previous, active))
     }
-    pub fn same_connection(&self, other:&Self)->bool {
-        self.scope==other.scope && Weak::ptr_eq(&self.connection,&other.connection)
+    pub fn same_connection(&self, other: &Self) -> bool {
+        self.scope == other.scope && Weak::ptr_eq(&self.connection, &other.connection)
     }
     /// Access the captured connection only while its process-local scope survives.
-    pub fn scoped_connection(&self,scope:Scope)->Option<Arc<T>> {
-        (self.scope==scope).then(||self.connection.upgrade()).flatten()
+    pub fn scoped_connection(&self, scope: Scope) -> Option<Arc<T>> {
+        (self.scope == scope)
+            .then(|| self.connection.upgrade())
+            .flatten()
     }
     /// The adapter must keep its session lock across this check and mutation.
     /// A rejected binding does not call the supplied action.
@@ -66,76 +76,161 @@ mod tests {
     use super::*;
     use crate::session_tabs::SessionCommandState;
     fn source(id: CaptureSource, title: &str, pid: Option<i32>) -> CaptureSourceInfo {
-        CaptureSourceInfo { source: id, title: title.into(), application: String::new(),
-            process_id: pid, width: 640, height: 480, supports_input: false , camera: None, }
+        CaptureSourceInfo {
+            source: id,
+            title: title.into(),
+            application: String::new(),
+            process_id: pid,
+            width: 640,
+            height: 480,
+            supports_input: false,
+            camera: None,
+        }
     }
     #[test]
     fn missing_display_or_window_never_dispatches_a_fallback() {
-        let a = Arc::new("a"); let binding = ViewConnectionBinding::new(&a, ());
+        let a = Arc::new("a");
+        let binding = ViewConnectionBinding::new(&a, ());
         let display = source(CaptureSource::MainDisplay, "Desktop", None);
         let window = source(CaptureSource::Window(7), "Window", Some(8));
-        for (expected, catalog) in [(&display, vec![]), (&display, vec![window.clone()]),
-            (&window, vec![display.clone()])] {
-            assert!(apply_enumerated_source(&binding, &a, (), expected, &catalog,
-                |_| panic!("absent source must not be sent")).is_none());
+        for (expected, catalog) in [
+            (&display, vec![]),
+            (&display, vec![window.clone()]),
+            (&window, vec![display.clone()]),
+        ] {
+            assert!(
+                apply_enumerated_source(&binding, &a, (), expected, &catalog, |_| panic!(
+                    "absent source must not be sent"
+                ))
+                .is_none()
+            );
         }
     }
     #[test]
     fn real_catalog_supports_main_display_display_and_window_without_id_aliasing() {
-        let a = Arc::new("a"); let binding = ViewConnectionBinding::new(&a, ());
-        let catalog = vec![source(CaptureSource::MainDisplay, "Desktop", None),
+        let a = Arc::new("a");
+        let binding = ViewConnectionBinding::new(&a, ());
+        let catalog = vec![
+            source(CaptureSource::MainDisplay, "Desktop", None),
             source(CaptureSource::Display(7), "External", None),
-            source(CaptureSource::Window(7), "Window", Some(8))];
+            source(CaptureSource::Window(7), "Window", Some(8)),
+        ];
         let mut sent = Vec::new();
         for selected in &catalog {
-            assert_eq!(apply_enumerated_source(&binding, &a, (), selected, &catalog,
-                |id| sent.push(id)), Some(()));
+            assert_eq!(
+                apply_enumerated_source(&binding, &a, (), selected, &catalog, |id| sent.push(id)),
+                Some(())
+            );
         }
-        assert_eq!(sent, [CaptureSource::MainDisplay, CaptureSource::Display(7), CaptureSource::Window(7)]);
-        let mut duplicated = catalog.clone(); duplicated.push(catalog[0].clone());
+        assert_eq!(
+            sent,
+            [
+                CaptureSource::MainDisplay,
+                CaptureSource::Display(7),
+                CaptureSource::Window(7)
+            ]
+        );
+        let mut duplicated = catalog.clone();
+        duplicated.push(catalog[0].clone());
         assert!(enumerated_source(&duplicated, CaptureSource::MainDisplay).is_none());
     }
     #[test]
     fn queued_selection_rejects_removed_reused_or_changed_source() {
-        let a = Arc::new("a"); let binding = ViewConnectionBinding::new(&a, ());
+        let a = Arc::new("a");
+        let binding = ViewConnectionBinding::new(&a, ());
         let expected = source(CaptureSource::Window(7), "Window", Some(8));
-        let mut changed_pid = expected.clone(); changed_pid.process_id = Some(9);
-        let mut changed_title = expected.clone(); changed_title.title = "Another window".into();
-        let mut changed_geometry = expected.clone(); changed_geometry.width += 1;
-        for catalog in [vec![], vec![changed_pid], vec![changed_title], vec![changed_geometry]] {
-            assert!(apply_enumerated_source(&binding, &a, (), &expected, &catalog,
-                |_| panic!("stale catalog must not be sent")).is_none());
+        let mut changed_pid = expected.clone();
+        changed_pid.process_id = Some(9);
+        let mut changed_title = expected.clone();
+        changed_title.title = "Another window".into();
+        let mut changed_geometry = expected.clone();
+        changed_geometry.width += 1;
+        for catalog in [
+            vec![],
+            vec![changed_pid],
+            vec![changed_title],
+            vec![changed_geometry],
+        ] {
+            assert!(
+                apply_enumerated_source(&binding, &a, (), &expected, &catalog, |_| panic!(
+                    "stale catalog must not be sent"
+                ))
+                .is_none()
+            );
         }
     }
     #[test]
     fn cancel_or_disconnect_invalidates_queued_selection_even_after_selecting_back() {
-        let a = Arc::new("a"); let binding = ViewConnectionBinding::new(&a, ());
+        let a = Arc::new("a");
+        let binding = ViewConnectionBinding::new(&a, ());
         let expected = source(CaptureSource::MainDisplay, "Desktop", None);
-        let mut commands = SessionCommandState::default(); let old = commands.begin();
+        let mut commands = SessionCommandState::default();
+        let old = commands.begin();
         commands.begin(); // User cancels/disconnects, or selects another session.
         let mut sent = Vec::new();
         if commands.is_current(old) {
-            apply_enumerated_source(&binding, &a, (), &expected, &[expected.clone()], |id| sent.push(id));
+            apply_enumerated_source(&binding, &a, (), &expected, &[expected.clone()], |id| {
+                sent.push(id)
+            });
         }
         assert!(sent.is_empty());
         drop(a);
         let replacement = Arc::new("a");
-        assert!(apply_enumerated_source(&binding, &replacement, (), &expected, &[expected.clone()],
-            |_| panic!("disconnected allocation must not be reused")).is_none());
+        assert!(
+            apply_enumerated_source(
+                &binding,
+                &replacement,
+                (),
+                &expected,
+                &[expected.clone()],
+                |_| panic!("disconnected allocation must not be reused")
+            )
+            .is_none()
+        );
     }
     #[test]
     fn two_sessions_with_identical_source_ids_do_not_receive_each_others_selection() {
-        let a = Arc::new("a"); let b = Arc::new("b");
+        let a = Arc::new("a");
+        let b = Arc::new("b");
         let binding = ViewConnectionBinding::new(&a, Some([7; 32]));
         let expected = source(CaptureSource::MainDisplay, "Desktop", None);
-        let mut a_sent = Vec::new(); let mut b_sent = Vec::new();
-        assert!(apply_enumerated_source(&binding, &b, Some([7; 32]), &expected, &[expected.clone()],
-            |id| b_sent.push(id)).is_none());
-        assert_eq!(apply_enumerated_source(&binding, &a, Some([7; 32]), &expected, &[expected.clone()],
-            |id| a_sent.push(id)), Some(()));
-        assert!(apply_enumerated_source(&binding, &a, Some([8; 32]), &expected, &[expected.clone()],
-            |_| panic!("changed network must not receive selection")).is_none());
-        assert_eq!(a_sent, [CaptureSource::MainDisplay]); assert!(b_sent.is_empty());
+        let mut a_sent = Vec::new();
+        let mut b_sent = Vec::new();
+        assert!(
+            apply_enumerated_source(
+                &binding,
+                &b,
+                Some([7; 32]),
+                &expected,
+                &[expected.clone()],
+                |id| b_sent.push(id)
+            )
+            .is_none()
+        );
+        assert_eq!(
+            apply_enumerated_source(
+                &binding,
+                &a,
+                Some([7; 32]),
+                &expected,
+                &[expected.clone()],
+                |id| a_sent.push(id)
+            ),
+            Some(())
+        );
+        assert!(
+            apply_enumerated_source(
+                &binding,
+                &a,
+                Some([8; 32]),
+                &expected,
+                &[expected.clone()],
+                |_| panic!("changed network must not receive selection")
+            )
+            .is_none()
+        );
+        assert_eq!(a_sent, [CaptureSource::MainDisplay]);
+        assert!(b_sent.is_empty());
     }
     #[test]
     fn queued_source_work_rejects_another_allocation_even_with_same_device_and_source_ids() {

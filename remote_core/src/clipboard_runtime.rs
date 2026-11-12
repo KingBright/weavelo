@@ -72,26 +72,54 @@ pub async fn run_clipboard_sync<P>(
 where
     P: ClipboardProvider + Send + 'static,
 {
-    run_clipboard_sync_inner(provider, data_sender, inbound_rx, cancel_rx, config, None, Default::default()).await
+    run_clipboard_sync_inner(
+        provider,
+        data_sender,
+        inbound_rx,
+        cancel_rx,
+        config,
+        None,
+        Default::default(),
+    )
+    .await
 }
 
 pub async fn run_owned_clipboard_sync<P>(
-    provider: P, data_sender: ScheduledDataSender, inbound_rx: mpsc::Receiver<DataEnvelope>,
-    cancel_rx: broadcast::Receiver<()>, config: ClipboardSyncRunnerConfig,
+    provider: P,
+    data_sender: ScheduledDataSender,
+    inbound_rx: mpsc::Receiver<DataEnvelope>,
+    cancel_rx: broadcast::Receiver<()>,
+    config: ClipboardSyncRunnerConfig,
     gate: std::sync::Arc<std::sync::atomic::AtomicBool>,
     history: std::sync::Arc<tokio::sync::Mutex<crate::clipboard_sync::ClipboardSyncHistory>>,
 ) -> Result<(), ClipboardSyncRunnerError>
-where P: ClipboardProvider + Send + 'static {
-    run_clipboard_sync_inner(provider, data_sender, inbound_rx, cancel_rx, config, Some(gate), history).await
+where
+    P: ClipboardProvider + Send + 'static,
+{
+    run_clipboard_sync_inner(
+        provider,
+        data_sender,
+        inbound_rx,
+        cancel_rx,
+        config,
+        Some(gate),
+        history,
+    )
+    .await
 }
 
 async fn run_clipboard_sync_inner<P>(
-    provider: P, data_sender: ScheduledDataSender, mut inbound_rx: mpsc::Receiver<DataEnvelope>,
-    mut cancel_rx: broadcast::Receiver<()>, config: ClipboardSyncRunnerConfig,
+    provider: P,
+    data_sender: ScheduledDataSender,
+    mut inbound_rx: mpsc::Receiver<DataEnvelope>,
+    mut cancel_rx: broadcast::Receiver<()>,
+    config: ClipboardSyncRunnerConfig,
     gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     history: std::sync::Arc<tokio::sync::Mutex<crate::clipboard_sync::ClipboardSyncHistory>>,
 ) -> Result<(), ClipboardSyncRunnerError>
-where P: ClipboardProvider + Send + 'static {
+where
+    P: ClipboardProvider + Send + 'static,
+{
     let mut endpoint = ClipboardSyncEndpoint::new(provider, config.endpoint);
     endpoint.set_observation(config.observation.clone());
     let mut poll_interval = tokio::time::interval(config.poll_interval);

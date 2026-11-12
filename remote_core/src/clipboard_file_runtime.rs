@@ -9,7 +9,8 @@ use tokio::sync::{broadcast, mpsc};
 // Native clipboard operations are shared by the text/image and file planes.
 // A write admitted before revocation may finish, but later owners cannot begin
 // a native operation until it finishes. Reads are discarded after revocation.
-static CLIPBOARD_OWNER: std::sync::Mutex<Option<std::sync::Weak<std::sync::atomic::AtomicBool>>> = std::sync::Mutex::new(None);
+static CLIPBOARD_OWNER: std::sync::Mutex<Option<std::sync::Weak<std::sync::atomic::AtomicBool>>> =
+    std::sync::Mutex::new(None);
 static CLIPBOARD_OPERATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub fn claim_clipboard_owner(gate: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
@@ -24,10 +25,16 @@ pub fn claim_clipboard_owner(gate: &std::sync::Arc<std::sync::atomic::AtomicBool
 
 #[derive(Debug, Clone)]
 pub struct ClipboardOwnership(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
-impl PartialEq for ClipboardOwnership { fn eq(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.0, &other.0) } }
+impl PartialEq for ClipboardOwnership {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
 impl Eq for ClipboardOwnership {}
 impl ClipboardOwnership {
-    pub fn current(&self) -> bool { self.0.load(std::sync::atomic::Ordering::Acquire) }
+    pub fn current(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 #[derive(Debug, Clone)]
 pub struct ClipboardFileAdmission {
@@ -36,28 +43,78 @@ pub struct ClipboardFileAdmission {
     observation: Option<(std::sync::Arc<ClipboardObservation>, u64)>,
 }
 impl ClipboardFileAdmission {
-    pub fn new(ownership: ClipboardOwnership) -> Self { Self { ownership, status: Default::default(), observation: None } }
-    fn with_observation(mut self, tracker: std::sync::Arc<ClipboardObservation>, epoch: u64) -> Self { self.observation = Some((tracker, epoch)); self }
+    pub fn new(ownership: ClipboardOwnership) -> Self {
+        Self {
+            ownership,
+            status: Default::default(),
+            observation: None,
+        }
+    }
+    fn with_observation(
+        mut self,
+        tracker: std::sync::Arc<ClipboardObservation>,
+        epoch: u64,
+    ) -> Self {
+        self.observation = Some((tracker, epoch));
+        self
+    }
     pub fn accept(&self) -> bool {
         // Coordinate the admission point with observations from the other plane.
-        let observed = self.observation.as_ref().map(|(tracker, _)| tracker.0.lock().unwrap());
-        if !self.ownership.current() || observed.as_ref().zip(self.observation.as_ref()).is_some_and(|(current, (_, epoch))| current.1 != *epoch) { return false; }
-        self.status.compare_exchange(0, 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok()
+        let observed = self
+            .observation
+            .as_ref()
+            .map(|(tracker, _)| tracker.0.lock().unwrap());
+        if !self.ownership.current()
+            || observed
+                .as_ref()
+                .zip(self.observation.as_ref())
+                .is_some_and(|(current, (_, epoch))| current.1 != *epoch)
+        {
+            return false;
+        }
+        self.status
+            .compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
     }
-    pub fn reject(&self) { let _ = self.status.compare_exchange(0, 2, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire); }
-    fn status(&self) -> u8 { self.status.load(std::sync::atomic::Ordering::Acquire) }
+    pub fn reject(&self) {
+        let _ = self.status.compare_exchange(
+            0,
+            2,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+    fn status(&self) -> u8 {
+        self.status.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
-impl PartialEq for ClipboardFileAdmission { fn eq(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.status, &other.status) } }
+impl PartialEq for ClipboardFileAdmission {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.status, &other.status)
+    }
+}
 impl Eq for ClipboardFileAdmission {}
 pub type ClipboardOwnerSlot = std::sync::Arc<std::sync::Mutex<Option<ClipboardOwnership>>>;
 
 #[derive(Debug)]
 pub struct ClipboardOwnershipRevoked;
-impl fmt::Display for ClipboardOwnershipRevoked { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "clipboard ownership revoked") } }
+impl fmt::Display for ClipboardOwnershipRevoked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "clipboard ownership revoked")
+    }
+}
 impl Error for ClipboardOwnershipRevoked {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClipboardContentKind { TextImage, Files }
+enum ClipboardContentKind {
+    TextImage,
+    Files,
+}
 
 /// Process-local observation shared by the two native clipboard planes.
 #[derive(Debug, Default)]
@@ -65,13 +122,19 @@ pub struct ClipboardObservation(std::sync::Mutex<(Option<ClipboardContentKind>, 
 impl ClipboardObservation {
     fn observe(&self, kind: ClipboardContentKind) -> u64 {
         let mut current = self.0.lock().unwrap();
-        if current.0 != Some(kind) { current.0 = Some(kind); current.1 = current.1.saturating_add(1); }
+        if current.0 != Some(kind) {
+            current.0 = Some(kind);
+            current.1 = current.1.saturating_add(1);
+        }
         current.1
     }
-    pub fn epoch(&self) -> u64 { self.0.lock().unwrap().1 }
+    pub fn epoch(&self) -> u64 {
+        self.0.lock().unwrap().1
+    }
 }
 pub fn process_clipboard_observation() -> std::sync::Arc<ClipboardObservation> {
-    static TRACKER: std::sync::OnceLock<std::sync::Arc<ClipboardObservation>> = std::sync::OnceLock::new();
+    static TRACKER: std::sync::OnceLock<std::sync::Arc<ClipboardObservation>> =
+        std::sync::OnceLock::new();
     TRACKER.get_or_init(Default::default).clone()
 }
 
@@ -91,29 +154,56 @@ pub struct OwnedClipboardProvider<P> {
 }
 impl<P> OwnedClipboardProvider<P> {
     pub fn new(provider: P, gate: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
-        Self { provider, gate, observation: None, observed_epoch: None }
+        Self {
+            provider,
+            gate,
+            observation: None,
+            observed_epoch: None,
+        }
     }
     pub fn with_observation(mut self, observation: std::sync::Arc<ClipboardObservation>) -> Self {
-        self.observation = Some(observation); self
+        self.observation = Some(observation);
+        self
     }
     fn observe(&mut self, kind: ClipboardContentKind) {
-        self.observed_epoch = self.observation.as_ref().map(|tracker| tracker.observe(kind));
+        self.observed_epoch = self
+            .observation
+            .as_ref()
+            .map(|tracker| tracker.observe(kind));
     }
-    fn current(&self) -> bool { self.gate.load(std::sync::atomic::Ordering::Acquire) }
+    fn current(&self) -> bool {
+        self.gate.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 #[async_trait::async_trait]
-impl<P: crate::traits::ClipboardProvider + Send> crate::traits::ClipboardProvider for OwnedClipboardProvider<P> {
-    fn platform(&self) -> crate::traits::PlatformKind { self.provider.platform() }
-    fn capabilities(&self) -> crate::traits::ClipboardBackendCapabilities { self.provider.capabilities() }
-    fn clipboard_revision(&self) -> Option<u64> { self.provider.clipboard_revision() }
-    fn clipboard_observation_epoch(&self) -> Option<u64> { self.observed_epoch }
-    async fn read_clipboard(&mut self, policy: crate::clipboard_plane::ClipboardSyncPolicy)
-        -> Result<Option<protocol::ClipboardBundle>, Box<dyn Error + Send + Sync>> {
+impl<P: crate::traits::ClipboardProvider + Send> crate::traits::ClipboardProvider
+    for OwnedClipboardProvider<P>
+{
+    fn platform(&self) -> crate::traits::PlatformKind {
+        self.provider.platform()
+    }
+    fn capabilities(&self) -> crate::traits::ClipboardBackendCapabilities {
+        self.provider.capabilities()
+    }
+    fn clipboard_revision(&self) -> Option<u64> {
+        self.provider.clipboard_revision()
+    }
+    fn clipboard_observation_epoch(&self) -> Option<u64> {
+        self.observed_epoch
+    }
+    async fn read_clipboard(
+        &mut self,
+        policy: crate::clipboard_plane::ClipboardSyncPolicy,
+    ) -> Result<Option<protocol::ClipboardBundle>, Box<dyn Error + Send + Sync>> {
         let _operation = CLIPBOARD_OPERATION.lock().await;
-        if !self.current() { return Err(Box::new(ClipboardOwnershipRevoked)); }
+        if !self.current() {
+            return Err(Box::new(ClipboardOwnershipRevoked));
+        }
         let result = self.provider.read_clipboard(policy).await?;
-        if !self.current() { return Err(Box::new(ClipboardOwnershipRevoked)); }
+        if !self.current() {
+            return Err(Box::new(ClipboardOwnershipRevoked));
+        }
         if result.as_ref().is_some_and(observable_text_image) {
             self.observe(ClipboardContentKind::TextImage);
             Ok(result)
@@ -122,34 +212,65 @@ impl<P: crate::traits::ClipboardProvider + Send> crate::traits::ClipboardProvide
             Ok(None)
         }
     }
-    async fn write_clipboard(&mut self, bundle: &protocol::ClipboardBundle, policy: crate::clipboard_plane::ClipboardSyncPolicy)
-        -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn write_clipboard(
+        &mut self,
+        bundle: &protocol::ClipboardBundle,
+        policy: crate::clipboard_plane::ClipboardSyncPolicy,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let _operation = CLIPBOARD_OPERATION.lock().await;
-        if !self.current() { return Err(Box::new(ClipboardOwnershipRevoked)); }
+        if !self.current() {
+            return Err(Box::new(ClipboardOwnershipRevoked));
+        }
         self.provider.write_clipboard(bundle, policy).await?;
-        if observable_text_image(bundle) { self.observe(ClipboardContentKind::TextImage); }
-        else { self.observed_epoch = None; }
+        if observable_text_image(bundle) {
+            self.observe(ClipboardContentKind::TextImage);
+        } else {
+            self.observed_epoch = None;
+        }
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
-impl<P: ClipboardFileReferenceProvider + Send> ClipboardFileReferenceProvider for OwnedClipboardProvider<P> {
-    fn clipboard_observation_epoch(&self) -> Option<u64> { self.observed_epoch }
-    fn platform(&self) -> crate::traits::PlatformKind { self.provider.platform() }
-    async fn read_clipboard_file_references(&mut self) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
+impl<P: ClipboardFileReferenceProvider + Send> ClipboardFileReferenceProvider
+    for OwnedClipboardProvider<P>
+{
+    fn clipboard_observation_epoch(&self) -> Option<u64> {
+        self.observed_epoch
+    }
+    fn platform(&self) -> crate::traits::PlatformKind {
+        self.provider.platform()
+    }
+    async fn read_clipboard_file_references(
+        &mut self,
+    ) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
         let _operation = CLIPBOARD_OPERATION.lock().await;
-        if !self.current() { return Ok(Vec::new()); }
+        if !self.current() {
+            return Ok(Vec::new());
+        }
         let result = self.provider.read_clipboard_file_references().await?;
-        if !self.current() { return Ok(Vec::new()); }
-        if !result.is_empty() { self.observe(ClipboardContentKind::Files); }
+        if !self.current() {
+            return Ok(Vec::new());
+        }
+        if !result.is_empty() {
+            self.observe(ClipboardContentKind::Files);
+        }
         Ok(result)
     }
-    async fn write_clipboard_file_references(&mut self, references: &[ClipboardFileReference]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn write_clipboard_file_references(
+        &mut self,
+        references: &[ClipboardFileReference],
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let _operation = CLIPBOARD_OPERATION.lock().await;
-        if !self.current() { return Err(Box::new(ClipboardOwnershipRevoked)); }
-        self.provider.write_clipboard_file_references(references).await?;
-        if !references.is_empty() { self.observe(ClipboardContentKind::Files); }
+        if !self.current() {
+            return Err(Box::new(ClipboardOwnershipRevoked));
+        }
+        self.provider
+            .write_clipboard_file_references(references)
+            .await?;
+        if !references.is_empty() {
+            self.observe(ClipboardContentKind::Files);
+        }
         Ok(())
     }
 }
@@ -386,12 +507,23 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl ClipboardFileReferenceProvider for DelayedFiles {
-        async fn read_clipboard_file_references(&mut self) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
-            if self.delay_read { self.entered.notify_one(); self.release.acquire().await.unwrap().forget(); }
+        async fn read_clipboard_file_references(
+            &mut self,
+        ) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
+            if self.delay_read {
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+            }
             Ok(self.shared.lock().unwrap().clone())
         }
-        async fn write_clipboard_file_references(&mut self, refs: &[ClipboardFileReference]) -> Result<(), Box<dyn Error + Send + Sync>> {
-            if self.delay_write { self.entered.notify_one(); self.release.acquire().await.unwrap().forget(); }
+        async fn write_clipboard_file_references(
+            &mut self,
+            refs: &[ClipboardFileReference],
+        ) -> Result<(), Box<dyn Error + Send + Sync>> {
+            if self.delay_write {
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+            }
             *self.shared.lock().unwrap() = refs.to_vec();
             Ok(())
         }
@@ -399,13 +531,24 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_discards_stale_reads_and_serializes_admitted_writes() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new("/from-a")]));
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new(
+            "/from-a",
+        )]));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let first = Arc::new(AtomicBool::new(false));
         claim_clipboard_owner(&first);
-        let slow = DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: true, delay_write: false };
+        let slow = DelayedFiles {
+            shared: shared.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
+            delay_read: true,
+            delay_write: false,
+        };
         let mut old = OwnedClipboardProvider::new(slow, first.clone());
         let read = tokio::spawn(async move { old.read_clipboard_file_references().await.unwrap() });
         entered.notified().await;
@@ -413,52 +556,168 @@ mod tests {
         claim_clipboard_owner(&second);
         assert!(!first.load(Ordering::Acquire));
         release.add_permits(1);
-        assert!(read.await.unwrap().is_empty(), "a read completing after focus loss must be discarded");
-        let mut current = OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: false, delay_write: true }, second.clone());
-        let write = tokio::spawn(async move { current.write_clipboard_file_references(&[ClipboardFileReference::new("/received-from-b")]).await.unwrap(); });
+        assert!(
+            read.await.unwrap().is_empty(),
+            "a read completing after focus loss must be discarded"
+        );
+        let mut current = OwnedClipboardProvider::new(
+            DelayedFiles {
+                shared: shared.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+                delay_read: false,
+                delay_write: true,
+            },
+            second.clone(),
+        );
+        let write = tokio::spawn(async move {
+            current
+                .write_clipboard_file_references(&[ClipboardFileReference::new("/received-from-b")])
+                .await
+                .unwrap();
+        });
         entered.notified().await;
         let third = Arc::new(AtomicBool::new(false));
         claim_clipboard_owner(&third);
-        let mut next = OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: false, delay_write: false }, third.clone());
-        let read_next = tokio::spawn(async move { next.read_clipboard_file_references().await.unwrap() });
+        let mut next = OwnedClipboardProvider::new(
+            DelayedFiles {
+                shared: shared.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+                delay_read: false,
+                delay_write: false,
+            },
+            third.clone(),
+        );
+        let read_next =
+            tokio::spawn(async move { next.read_clipboard_file_references().await.unwrap() });
         tokio::task::yield_now().await;
-        assert!(!read_next.is_finished(), "new native operations wait for an admitted old write");
+        assert!(
+            !read_next.is_finished(),
+            "new native operations wait for an admitted old write"
+        );
         release.add_permits(1);
         write.await.unwrap();
-        assert_eq!(read_next.await.unwrap(), vec![ClipboardFileReference::new("/received-from-b")], "the new session can copy the previous session's local clipboard");
-        let mut stale = OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: false, delay_write: false }, second);
-        assert!(stale.write_clipboard_file_references(&[ClipboardFileReference::new("/stale")]).await.unwrap_err().is::<ClipboardOwnershipRevoked>());
-        assert_eq!(*shared.lock().unwrap(), vec![ClipboardFileReference::new("/received-from-b")]);
+        assert_eq!(
+            read_next.await.unwrap(),
+            vec![ClipboardFileReference::new("/received-from-b")],
+            "the new session can copy the previous session's local clipboard"
+        );
+        let mut stale = OwnedClipboardProvider::new(
+            DelayedFiles {
+                shared: shared.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+                delay_read: false,
+                delay_write: false,
+            },
+            second,
+        );
+        assert!(
+            stale
+                .write_clipboard_file_references(&[ClipboardFileReference::new("/stale")])
+                .await
+                .unwrap_err()
+                .is::<ClipboardOwnershipRevoked>()
+        );
+        assert_eq!(
+            *shared.lock().unwrap(),
+            vec![ClipboardFileReference::new("/received-from-b")]
+        );
         let (commands, mut sent) = mpsc::channel(4);
         let (events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let saved = std::sync::Arc::new(std::sync::Mutex::new(ClipboardFileSyncState::default()));
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: false, delay_write: false }, third.clone()),
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(third.clone()), state: Some(saved.clone()), poll_interval: Duration::from_millis(10), ..Default::default() },
+            OwnedClipboardProvider::new(
+                DelayedFiles {
+                    shared: shared.clone(),
+                    entered: entered.clone(),
+                    release: release.clone(),
+                    delay_read: false,
+                    delay_write: false,
+                },
+                third.clone(),
+            ),
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(third.clone()),
+                state: Some(saved.clone()),
+                poll_interval: Duration::from_millis(10),
+                ..Default::default()
+            },
         ));
-        events.send(FileTransferEvent::IncomingClipboardReady { group_id: 10, ownership: None, paths: vec![PathBuf::from("/incoming")] }).unwrap();
+        events
+            .send(FileTransferEvent::IncomingClipboardReady {
+                group_id: 10,
+                ownership: None,
+                paths: vec![PathBuf::from("/incoming")],
+            })
+            .unwrap();
         timeout(Duration::from_secs(1), async {
-            while *shared.lock().unwrap() != vec![ClipboardFileReference::new("/incoming")] { tokio::task::yield_now().await; }
-        }).await.unwrap();
-        assert!(timeout(Duration::from_millis(40), sent.recv()).await.is_err(), "the applied file must not echo to its source");
+            while *shared.lock().unwrap() != vec![ClipboardFileReference::new("/incoming")] {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            timeout(Duration::from_millis(40), sent.recv())
+                .await
+                .is_err(),
+            "the applied file must not echo to its source"
+        );
         let fourth = Arc::new(AtomicBool::new(false));
         claim_clipboard_owner(&fourth);
-        events.send(FileTransferEvent::IncomingClipboardReady { group_id: 11, ownership: None, paths: vec![PathBuf::from("/late")] }).unwrap();
+        events
+            .send(FileTransferEvent::IncomingClipboardReady {
+                group_id: 11,
+                ownership: None,
+                paths: vec![PathBuf::from("/late")],
+            })
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(*shared.lock().unwrap(), vec![ClipboardFileReference::new("/incoming")], "late completion from the old owner must not replace the clipboard");
+        assert_eq!(
+            *shared.lock().unwrap(),
+            vec![ClipboardFileReference::new("/incoming")],
+            "late completion from the old owner must not replace the clipboard"
+        );
         let _ = cancel.send(());
         bridge.await.unwrap().unwrap();
         let (commands, mut sent) = mpsc::channel(4);
         let (_events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: false, delay_write: false }, fourth.clone()),
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(fourth.clone()), state: Some(saved), poll_interval: Duration::from_millis(10), ..Default::default() },
+            OwnedClipboardProvider::new(
+                DelayedFiles {
+                    shared: shared.clone(),
+                    entered: entered.clone(),
+                    release: release.clone(),
+                    delay_read: false,
+                    delay_write: false,
+                },
+                fourth.clone(),
+            ),
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(fourth.clone()),
+                state: Some(saved),
+                poll_interval: Duration::from_millis(10),
+                ..Default::default()
+            },
         ));
-        assert!(timeout(Duration::from_millis(40), sent.recv()).await.is_err(), "returning to the source must not replay its own received file");
+        assert!(
+            timeout(Duration::from_millis(40), sent.recv())
+                .await
+                .is_err(),
+            "returning to the source must not replay its own received file"
+        );
         let _ = cancel.send(());
         bridge.await.unwrap().unwrap();
         let fifth = Arc::new(AtomicBool::new(false));
@@ -467,20 +726,47 @@ mod tests {
         let (_events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            OwnedClipboardProvider::new(DelayedFiles { shared, entered, release, delay_read: false, delay_write: false }, fifth.clone()),
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(fifth), poll_interval: Duration::from_millis(10), ..Default::default() },
+            OwnedClipboardProvider::new(
+                DelayedFiles {
+                    shared,
+                    entered,
+                    release,
+                    delay_read: false,
+                    delay_write: false,
+                },
+                fifth.clone(),
+            ),
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(fifth),
+                poll_interval: Duration::from_millis(10),
+                ..Default::default()
+            },
         ));
-        assert!(matches!(timeout(Duration::from_secs(1), sent.recv()).await.unwrap(), Some(FileTransferCommand::SendOwnedClipboardFiles { .. })), "a different selected host must receive the copied file");
+        assert!(
+            matches!(
+                timeout(Duration::from_secs(1), sent.recv()).await.unwrap(),
+                Some(FileTransferCommand::SendOwnedClipboardFiles { .. })
+            ),
+            "a different selected host must receive the copied file"
+        );
         let _ = cancel.send(());
         bridge.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn revoked_queued_send_and_old_generation_completion_are_ignored() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         let old = Arc::new(AtomicBool::new(true));
-        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new("/old")]));
+        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new(
+            "/old",
+        )]));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let (commands, mut receiver) = mpsc::channel(1);
@@ -488,16 +774,35 @@ mod tests {
         let (_events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: true, delay_write: false }, old.clone()),
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(old.clone()), poll_interval: Duration::from_millis(1), ..Default::default() },
+            OwnedClipboardProvider::new(
+                DelayedFiles {
+                    shared: shared.clone(),
+                    entered: entered.clone(),
+                    release: release.clone(),
+                    delay_read: true,
+                    delay_write: false,
+                },
+                old.clone(),
+            ),
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(old.clone()),
+                poll_interval: Duration::from_millis(1),
+                ..Default::default()
+            },
         ));
         entered.notified().await;
         release.add_permits(1);
         // The full channel keeps the send pending until ownership is revoked.
         tokio::task::yield_now().await;
         old.store(false, Ordering::Release);
-        assert!(matches!(receiver.recv().await, Some(FileTransferCommand::Drain)));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(FileTransferCommand::Drain)
+        ));
         tokio::task::yield_now().await;
         assert!(receiver.try_recv().is_err());
         cancel.send(()).unwrap();
@@ -511,47 +816,105 @@ mod tests {
         let (forward, mut forwarded) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            OwnedClipboardProvider::new(DelayedFiles { shared: shared.clone(), entered, release, delay_read: false, delay_write: false }, current.clone()),
-            commands, incoming, Some(forward), cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(current), poll_interval: Duration::from_secs(60), ..Default::default() },
+            OwnedClipboardProvider::new(
+                DelayedFiles {
+                    shared: shared.clone(),
+                    entered,
+                    release,
+                    delay_read: false,
+                    delay_write: false,
+                },
+                current.clone(),
+            ),
+            commands,
+            incoming,
+            Some(forward),
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(current),
+                poll_interval: Duration::from_secs(60),
+                ..Default::default()
+            },
         ));
-        events.send(FileTransferEvent::IncomingClipboardReady { group_id: 1, paths: vec![PathBuf::from("/stale")], ownership: Some(ClipboardOwnership(old)) }).unwrap();
+        events
+            .send(FileTransferEvent::IncomingClipboardReady {
+                group_id: 1,
+                paths: vec![PathBuf::from("/stale")],
+                ownership: Some(ClipboardOwnership(old)),
+            })
+            .unwrap();
         // FIFO barrier: the second forwarded event follows processing the first.
         events.send(FileTransferEvent::Drained).unwrap();
         forwarded.recv().await.unwrap();
         forwarded.recv().await.unwrap();
-        assert_eq!(*shared.lock().unwrap(), vec![ClipboardFileReference::new("/old")]);
+        assert_eq!(
+            *shared.lock().unwrap(),
+            vec![ClipboardFileReference::new("/old")]
+        );
         cancel.send(()).unwrap();
         bridge.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn dropped_queued_send_is_retried_by_next_owner() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         let state = Arc::new(std::sync::Mutex::new(ClipboardFileSyncState::default()));
         let old = Arc::new(AtomicBool::new(true));
         let (commands, mut receiver) = mpsc::channel(1);
         let (_events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            MemoryClipboardFileReferenceProvider::with_references(vec![ClipboardFileReference::new("/copy")]),
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(old.clone()), state: Some(state.clone()), poll_interval: Duration::from_millis(1), ..Default::default() },
+            MemoryClipboardFileReferenceProvider::with_references(vec![
+                ClipboardFileReference::new("/copy"),
+            ]),
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(old.clone()),
+                state: Some(state.clone()),
+                poll_interval: Duration::from_millis(1),
+                ..Default::default()
+            },
         ));
-        let command = timeout(Duration::from_secs(1), receiver.recv()).await.unwrap().unwrap();
+        let command = timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
         old.store(false, Ordering::Release);
-        assert!(matches!(command, FileTransferCommand::SendOwnedClipboardFiles { admission, .. } if !admission.ownership.current()));
+        assert!(
+            matches!(command, FileTransferCommand::SendOwnedClipboardFiles { admission, .. } if !admission.ownership.current())
+        );
         cancel.send(()).unwrap();
         bridge.await.unwrap().unwrap();
         let (commands, mut receiver) = mpsc::channel(1);
         let (_events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            MemoryClipboardFileReferenceProvider::with_references(vec![ClipboardFileReference::new("/copy")]),
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(Arc::new(AtomicBool::new(true))), state: Some(state), poll_interval: Duration::from_millis(1), ..Default::default() },
+            MemoryClipboardFileReferenceProvider::with_references(vec![
+                ClipboardFileReference::new("/copy"),
+            ]),
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(Arc::new(AtomicBool::new(true))),
+                state: Some(state),
+                poll_interval: Duration::from_millis(1),
+                ..Default::default()
+            },
         ));
-        assert!(matches!(timeout(Duration::from_secs(1), receiver.recv()).await.unwrap(), Some(FileTransferCommand::SendOwnedClipboardFiles { .. })));
+        assert!(matches!(
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap(),
+            Some(FileTransferCommand::SendOwnedClipboardFiles { .. })
+        ));
         cancel.send(()).unwrap();
         bridge.await.unwrap().unwrap();
     }
@@ -559,29 +922,106 @@ mod tests {
     #[tokio::test]
     async fn file_content_can_return_after_opposite_direction_content() {
         use std::sync::{Arc, atomic::AtomicBool};
-        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new("/X")]));
+        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new(
+            "/X",
+        )]));
         let state = Arc::new(std::sync::Mutex::new(ClipboardFileSyncState::default()));
         let gate = Arc::new(AtomicBool::new(true));
         let (commands, mut receiver) = mpsc::channel(4);
         let (events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            DelayedFiles { shared: shared.clone(), entered: Arc::new(tokio::sync::Notify::new()), release: Arc::new(tokio::sync::Semaphore::new(0)), delay_read: false, delay_write: false },
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(gate.clone()), state: Some(state.clone()), poll_interval: Duration::from_millis(2), ..Default::default() },
+            DelayedFiles {
+                shared: shared.clone(),
+                entered: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Semaphore::new(0)),
+                delay_read: false,
+                delay_write: false,
+            },
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(gate.clone()),
+                state: Some(state.clone()),
+                poll_interval: Duration::from_millis(2),
+                ..Default::default()
+            },
         ));
-        let next_admission = |command| match command { FileTransferCommand::SendOwnedClipboardFiles { admission, .. } => admission, _ => panic!("expected clipboard send") };
-        assert!(next_admission(timeout(Duration::from_secs(1), receiver.recv()).await.unwrap().unwrap()).accept());
-        timeout(Duration::from_secs(1), async { while state.lock().unwrap().last_sent_refs_crc32.is_none() { tokio::task::yield_now().await; } }).await.unwrap();
-        events.send(FileTransferEvent::IncomingClipboardReady { group_id: 1, paths: vec![PathBuf::from("/Y")], ownership: Some(ClipboardOwnership(gate.clone())) }).unwrap();
+        let next_admission = |command| match command {
+            FileTransferCommand::SendOwnedClipboardFiles { admission, .. } => admission,
+            _ => panic!("expected clipboard send"),
+        };
+        assert!(
+            next_admission(
+                timeout(Duration::from_secs(1), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .accept()
+        );
+        timeout(Duration::from_secs(1), async {
+            while state.lock().unwrap().last_sent_refs_crc32.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        events
+            .send(FileTransferEvent::IncomingClipboardReady {
+                group_id: 1,
+                paths: vec![PathBuf::from("/Y")],
+                ownership: Some(ClipboardOwnership(gate.clone())),
+            })
+            .unwrap();
         let y_crc = file_references_crc32(&[ClipboardFileReference::new("/Y")]);
-        timeout(Duration::from_secs(1), async { while state.lock().unwrap().last_applied_refs_crc32 != Some(y_crc) { tokio::task::yield_now().await; } }).await.unwrap();
+        timeout(Duration::from_secs(1), async {
+            while state.lock().unwrap().last_applied_refs_crc32 != Some(y_crc) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         *shared.lock().unwrap() = vec![ClipboardFileReference::new("/X")];
-        assert!(next_admission(timeout(Duration::from_secs(1), receiver.recv()).await.unwrap().unwrap()).accept(), "sent X must be reusable after received Y");
-        timeout(Duration::from_secs(1), async { while state.lock().unwrap().last_sent_refs_crc32.is_none() { tokio::task::yield_now().await; } }).await.unwrap();
-        events.send(FileTransferEvent::IncomingClipboardReady { group_id: 2, paths: vec![PathBuf::from("/Y")], ownership: Some(ClipboardOwnership(gate)) }).unwrap();
-        timeout(Duration::from_secs(1), async { while *shared.lock().unwrap() != vec![ClipboardFileReference::new("/Y")] { tokio::task::yield_now().await; } }).await.unwrap();
-        assert!(timeout(Duration::from_millis(25), receiver.recv()).await.is_err(), "received Y must not echo");
+        assert!(
+            next_admission(
+                timeout(Duration::from_secs(1), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .accept(),
+            "sent X must be reusable after received Y"
+        );
+        timeout(Duration::from_secs(1), async {
+            while state.lock().unwrap().last_sent_refs_crc32.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        events
+            .send(FileTransferEvent::IncomingClipboardReady {
+                group_id: 2,
+                paths: vec![PathBuf::from("/Y")],
+                ownership: Some(ClipboardOwnership(gate)),
+            })
+            .unwrap();
+        timeout(Duration::from_secs(1), async {
+            while *shared.lock().unwrap() != vec![ClipboardFileReference::new("/Y")] {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            timeout(Duration::from_millis(25), receiver.recv())
+                .await
+                .is_err(),
+            "received Y must not echo"
+        );
         cancel.send(()).unwrap();
         bridge.await.unwrap().unwrap();
     }
@@ -589,7 +1029,9 @@ mod tests {
     #[tokio::test]
     async fn incoming_file_cancels_a_queued_older_admission() {
         use std::sync::{Arc, atomic::AtomicBool};
-        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new("/old")]));
+        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new(
+            "/old",
+        )]));
         let state = Arc::new(std::sync::Mutex::new(ClipboardFileSyncState::default()));
         let gate = Arc::new(AtomicBool::new(true));
         let entered = Arc::new(tokio::sync::Notify::new());
@@ -599,21 +1041,58 @@ mod tests {
         let (forward, mut forwarded) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            DelayedFiles { shared: shared.clone(), entered: entered.clone(), release: release.clone(), delay_read: false, delay_write: true },
-            commands, incoming, Some(forward), cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(gate.clone()), state: Some(state.clone()), poll_interval: Duration::from_millis(2), ..Default::default() },
+            DelayedFiles {
+                shared: shared.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+                delay_read: false,
+                delay_write: true,
+            },
+            commands,
+            incoming,
+            Some(forward),
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(gate.clone()),
+                state: Some(state.clone()),
+                poll_interval: Duration::from_millis(2),
+                ..Default::default()
+            },
         ));
-        let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } = timeout(Duration::from_secs(1), receiver.recv()).await.unwrap().unwrap() else { panic!() };
-        events.send(FileTransferEvent::IncomingClipboardReady { group_id: 1, paths: vec![PathBuf::from("/new")], ownership: Some(ClipboardOwnership(gate)) }).unwrap();
+        let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } =
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!()
+        };
+        events
+            .send(FileTransferEvent::IncomingClipboardReady {
+                group_id: 1,
+                paths: vec![PathBuf::from("/new")],
+                ownership: Some(ClipboardOwnership(gate)),
+            })
+            .unwrap();
         entered.notified().await;
-        assert!(!admission.accept(), "an older send must not be admitted while the newer clipboard write is in progress");
+        assert!(
+            !admission.accept(),
+            "an older send must not be admitted while the newer clipboard write is in progress"
+        );
         release.add_permits(1);
         events.send(FileTransferEvent::Drained).unwrap();
         forwarded.recv().await.unwrap();
         forwarded.recv().await.unwrap();
-        assert_eq!(*shared.lock().unwrap(), vec![ClipboardFileReference::new("/new")]);
+        assert_eq!(
+            *shared.lock().unwrap(),
+            vec![ClipboardFileReference::new("/new")]
+        );
         assert_eq!(state.lock().unwrap().last_sent_refs_crc32, None);
-        assert!(timeout(Duration::from_millis(25), receiver.recv()).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(25), receiver.recv())
+                .await
+                .is_err()
+        );
         cancel.send(()).unwrap();
         bridge.await.unwrap().unwrap();
     }
@@ -621,93 +1100,237 @@ mod tests {
     #[tokio::test]
     async fn file_copy_after_non_file_clipboard_is_resent_and_old_pending_is_cancelled() {
         use std::sync::{Arc, atomic::AtomicBool};
-        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new("/X")]));
+        let shared = Arc::new(std::sync::Mutex::new(vec![ClipboardFileReference::new(
+            "/X",
+        )]));
         let state = Arc::new(std::sync::Mutex::new(ClipboardFileSyncState::default()));
         let gate = Arc::new(AtomicBool::new(true));
         let (commands, mut receiver) = mpsc::channel(4);
         let (_events, incoming) = mpsc::unbounded_channel();
         let (cancel, cancel_rx) = broadcast::channel(1);
         let bridge = tokio::spawn(run_clipboard_file_sync(
-            DelayedFiles { shared: shared.clone(), entered: Arc::new(tokio::sync::Notify::new()), release: Arc::new(tokio::sync::Semaphore::new(0)), delay_read: false, delay_write: false },
-            commands, incoming, None, cancel_rx,
-            ClipboardFileSyncConfig { enabled: Some(gate), state: Some(state.clone()), poll_interval: Duration::from_millis(2), ..Default::default() },
+            DelayedFiles {
+                shared: shared.clone(),
+                entered: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Semaphore::new(0)),
+                delay_read: false,
+                delay_write: false,
+            },
+            commands,
+            incoming,
+            None,
+            cancel_rx,
+            ClipboardFileSyncConfig {
+                enabled: Some(gate),
+                state: Some(state.clone()),
+                poll_interval: Duration::from_millis(2),
+                ..Default::default()
+            },
         ));
-        let receive_admission = |command| match command { FileTransferCommand::SendOwnedClipboardFiles { admission, .. } => admission, _ => panic!("expected clipboard send") };
-        assert!(receive_admission(timeout(Duration::from_secs(1), receiver.recv()).await.unwrap().unwrap()).accept());
-        timeout(Duration::from_secs(1), async { while state.lock().unwrap().last_sent_refs_crc32.is_none() { tokio::task::yield_now().await; } }).await.unwrap();
+        let receive_admission = |command| match command {
+            FileTransferCommand::SendOwnedClipboardFiles { admission, .. } => admission,
+            _ => panic!("expected clipboard send"),
+        };
+        assert!(
+            receive_admission(
+                timeout(Duration::from_secs(1), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            )
+            .accept()
+        );
+        timeout(Duration::from_secs(1), async {
+            while state.lock().unwrap().last_sent_refs_crc32.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         shared.lock().unwrap().clear(); // Text or image clipboard: no file references.
-        timeout(Duration::from_secs(1), async { while state.lock().unwrap().last_sent_refs_crc32.is_some() { tokio::task::yield_now().await; } }).await.unwrap();
+        timeout(Duration::from_secs(1), async {
+            while state.lock().unwrap().last_sent_refs_crc32.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         *shared.lock().unwrap() = vec![ClipboardFileReference::new("/X")];
-        let stale = receive_admission(timeout(Duration::from_secs(1), receiver.recv()).await.unwrap().unwrap());
+        let stale = receive_admission(
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
         shared.lock().unwrap().clear();
-        timeout(Duration::from_secs(1), async { while state.lock().unwrap().pending.is_some() { tokio::task::yield_now().await; } }).await.unwrap();
-        assert!(!stale.accept(), "a pending old file copy must not survive the non-file clipboard");
+        timeout(Duration::from_secs(1), async {
+            while state.lock().unwrap().pending.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !stale.accept(),
+            "a pending old file copy must not survive the non-file clipboard"
+        );
         *shared.lock().unwrap() = vec![ClipboardFileReference::new("/X")];
-        assert!(matches!(timeout(Duration::from_secs(1), receiver.recv()).await.unwrap(), Some(FileTransferCommand::SendOwnedClipboardFiles { .. })));
+        assert!(matches!(
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap(),
+            Some(FileTransferCommand::SendOwnedClipboardFiles { .. })
+        ));
         cancel.send(()).unwrap();
         bridge.await.unwrap().unwrap();
     }
 
     #[tokio::test]
     async fn interleaved_planes_invalidate_old_content_even_when_a_poll_misses_the_switch() {
-        use std::sync::{Arc, atomic::AtomicBool};
         use crate::clipboard_sync::{ClipboardSyncConfig, ClipboardSyncEndpoint};
         use crate::traits::ClipboardProvider;
         use protocol::ClipboardBundle;
+        use std::sync::{Arc, atomic::AtomicBool};
         #[derive(Clone)]
-        enum Native { Text(&'static str), File(&'static str) }
+        enum Native {
+            Text(&'static str),
+            File(&'static str),
+        }
         #[derive(Clone)]
-        struct Mixed(Arc<std::sync::Mutex<Native>>, Arc<std::sync::atomic::AtomicUsize>);
+        struct Mixed(
+            Arc<std::sync::Mutex<Native>>,
+            Arc<std::sync::atomic::AtomicUsize>,
+        );
         #[async_trait::async_trait]
         impl ClipboardProvider for Mixed {
-            fn capabilities(&self) -> crate::traits::ClipboardBackendCapabilities { Default::default() }
-            async fn read_clipboard(&mut self, _: crate::clipboard_plane::ClipboardSyncPolicy) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
-                Ok(match &*self.0.lock().unwrap() { Native::Text(text) => Some(ClipboardBundle::text(1, *text)), Native::File(_) => None })
+            fn capabilities(&self) -> crate::traits::ClipboardBackendCapabilities {
+                Default::default()
             }
-            async fn write_clipboard(&mut self, _: &ClipboardBundle, _: crate::clipboard_plane::ClipboardSyncPolicy) -> Result<(), Box<dyn Error + Send + Sync>> { Ok(()) }
+            async fn read_clipboard(
+                &mut self,
+                _: crate::clipboard_plane::ClipboardSyncPolicy,
+            ) -> Result<Option<ClipboardBundle>, Box<dyn Error + Send + Sync>> {
+                Ok(match &*self.0.lock().unwrap() {
+                    Native::Text(text) => Some(ClipboardBundle::text(1, *text)),
+                    Native::File(_) => None,
+                })
+            }
+            async fn write_clipboard(
+                &mut self,
+                _: &ClipboardBundle,
+                _: crate::clipboard_plane::ClipboardSyncPolicy,
+            ) -> Result<(), Box<dyn Error + Send + Sync>> {
+                Ok(())
+            }
         }
         #[async_trait::async_trait]
         impl ClipboardFileReferenceProvider for Mixed {
-            async fn read_clipboard_file_references(&mut self) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
+            async fn read_clipboard_file_references(
+                &mut self,
+            ) -> Result<Vec<ClipboardFileReference>, Box<dyn Error + Send + Sync>> {
                 self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(match &*self.0.lock().unwrap() { Native::File(path) => vec![ClipboardFileReference::new(*path)], Native::Text(_) => vec![] })
+                Ok(match &*self.0.lock().unwrap() {
+                    Native::File(path) => vec![ClipboardFileReference::new(*path)],
+                    Native::Text(_) => vec![],
+                })
             }
-            async fn write_clipboard_file_references(&mut self, _: &[ClipboardFileReference]) -> Result<(), Box<dyn Error + Send + Sync>> { Ok(()) }
+            async fn write_clipboard_file_references(
+                &mut self,
+                _: &[ClipboardFileReference],
+            ) -> Result<(), Box<dyn Error + Send + Sync>> {
+                Ok(())
+            }
         }
         for start_with_file in [true, false] {
-            let shared = Arc::new(std::sync::Mutex::new(if start_with_file { Native::File("/X") } else { Native::Text("X") }));
+            let shared = Arc::new(std::sync::Mutex::new(if start_with_file {
+                Native::File("/X")
+            } else {
+                Native::Text("X")
+            }));
             let file_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observation = Arc::new(ClipboardObservation::default());
             let gate = Arc::new(AtomicBool::new(true));
-            let mut text = ClipboardSyncEndpoint::new(OwnedClipboardProvider::new(Mixed(shared.clone(), file_reads.clone()), gate.clone()).with_observation(observation.clone()), ClipboardSyncConfig::default());
+            let mut text = ClipboardSyncEndpoint::new(
+                OwnedClipboardProvider::new(
+                    Mixed(shared.clone(), file_reads.clone()),
+                    gate.clone(),
+                )
+                .with_observation(observation.clone()),
+                ClipboardSyncConfig::default(),
+            );
             text.set_observation(Some(observation.clone()));
-            if !start_with_file { assert!(text.poll_outgoing(1).await.unwrap().is_some()); *shared.lock().unwrap() = Native::File("/Y"); }
+            if !start_with_file {
+                assert!(text.poll_outgoing(1).await.unwrap().is_some());
+                *shared.lock().unwrap() = Native::File("/Y");
+            }
             let (commands, mut receiver) = mpsc::channel(4);
             let (_events, incoming) = mpsc::unbounded_channel();
             let (cancel, cancel_rx) = broadcast::channel(1);
             let bridge = tokio::spawn(run_clipboard_file_sync(
-                OwnedClipboardProvider::new(Mixed(shared.clone(), file_reads.clone()), gate.clone()).with_observation(observation.clone()),
-                commands, incoming, None, cancel_rx,
-                ClipboardFileSyncConfig { enabled: Some(gate), observation: Some(observation.clone()), poll_interval: Duration::from_millis(500), ..Default::default() },
+                OwnedClipboardProvider::new(
+                    Mixed(shared.clone(), file_reads.clone()),
+                    gate.clone(),
+                )
+                .with_observation(observation.clone()),
+                commands,
+                incoming,
+                None,
+                cancel_rx,
+                ClipboardFileSyncConfig {
+                    enabled: Some(gate),
+                    observation: Some(observation.clone()),
+                    poll_interval: Duration::from_millis(500),
+                    ..Default::default()
+                },
             ));
-            let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } = timeout(Duration::from_secs(2), receiver.recv()).await.unwrap().unwrap() else { panic!() };
+            let FileTransferCommand::SendOwnedClipboardFiles { admission, .. } =
+                timeout(Duration::from_secs(2), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            else {
+                panic!()
+            };
             assert!(admission.accept());
             if start_with_file {
                 let file_epoch = observation.epoch();
-                for _ in 0..3 { assert!(text.poll_outgoing(0).await.unwrap().is_none()); }
-                assert_eq!(observation.epoch(), file_epoch, "auxiliary non-text reads must not alternate the content type");
+                for _ in 0..3 {
+                    assert!(text.poll_outgoing(0).await.unwrap().is_none());
+                }
+                assert_eq!(
+                    observation.epoch(),
+                    file_epoch,
+                    "auxiliary non-text reads must not alternate the content type"
+                );
                 let before_text = file_reads.load(std::sync::atomic::Ordering::SeqCst);
                 *shared.lock().unwrap() = Native::Text("Y");
                 assert!(text.poll_outgoing(1).await.unwrap().is_some());
                 *shared.lock().unwrap() = Native::File("/X");
-                assert_eq!(file_reads.load(std::sync::atomic::Ordering::SeqCst), before_text, "the file plane must not observe the intermediate text");
-                let Some(FileTransferCommand::SendOwnedClipboardFiles { admission: pending, .. }) = timeout(Duration::from_secs(2), receiver.recv()).await.unwrap() else { panic!("file X must send again even though this plane missed text Y") };
+                assert_eq!(
+                    file_reads.load(std::sync::atomic::Ordering::SeqCst),
+                    before_text,
+                    "the file plane must not observe the intermediate text"
+                );
+                let Some(FileTransferCommand::SendOwnedClipboardFiles {
+                    admission: pending, ..
+                }) = timeout(Duration::from_secs(2), receiver.recv())
+                    .await
+                    .unwrap()
+                else {
+                    panic!("file X must send again even though this plane missed text Y")
+                };
                 *shared.lock().unwrap() = Native::Text("Z");
                 assert!(text.poll_outgoing(2).await.unwrap().is_some());
-                assert!(!pending.accept(), "a queued older file copy cannot be admitted after text is observed");
+                assert!(
+                    !pending.accept(),
+                    "a queued older file copy cannot be admitted after text is observed"
+                );
             } else {
                 *shared.lock().unwrap() = Native::Text("X");
-                assert!(text.poll_outgoing(2).await.unwrap().is_some(), "text X must send again even though this plane missed file Y");
+                assert!(
+                    text.poll_outgoing(2).await.unwrap().is_some(),
+                    "text X must send again even though this plane missed file Y"
+                );
             }
             cancel.send(()).unwrap();
             bridge.await.unwrap().unwrap();
@@ -716,21 +1339,55 @@ mod tests {
 
     #[tokio::test]
     async fn successful_native_writes_change_observation_but_revoked_writes_do_not() {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
         use crate::traits::ClipboardProvider;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         let observation = Arc::new(ClipboardObservation::default());
         let gate = Arc::new(AtomicBool::new(true));
-        let mut text = OwnedClipboardProvider::new(crate::clipboard_provider::MemoryClipboardProvider::new(), gate.clone()).with_observation(observation.clone());
-        let mut files = OwnedClipboardProvider::new(MemoryClipboardFileReferenceProvider::new(), gate.clone()).with_observation(observation.clone());
-        text.write_clipboard(&protocol::ClipboardBundle::text(1, "X"), crate::clipboard_plane::ClipboardSyncPolicy::default()).await.unwrap();
+        let mut text = OwnedClipboardProvider::new(
+            crate::clipboard_provider::MemoryClipboardProvider::new(),
+            gate.clone(),
+        )
+        .with_observation(observation.clone());
+        let mut files =
+            OwnedClipboardProvider::new(MemoryClipboardFileReferenceProvider::new(), gate.clone())
+                .with_observation(observation.clone());
+        text.write_clipboard(
+            &protocol::ClipboardBundle::text(1, "X"),
+            crate::clipboard_plane::ClipboardSyncPolicy::default(),
+        )
+        .await
+        .unwrap();
         let text_epoch = observation.epoch();
-        files.write_clipboard_file_references(&[ClipboardFileReference::new("/Y")]).await.unwrap();
+        files
+            .write_clipboard_file_references(&[ClipboardFileReference::new("/Y")])
+            .await
+            .unwrap();
         let file_epoch = observation.epoch();
         assert!(file_epoch > text_epoch);
-        text.write_clipboard(&protocol::ClipboardBundle::text(3, ""), crate::clipboard_plane::ClipboardSyncPolicy::default()).await.unwrap();
-        assert_eq!(observation.epoch(), file_epoch, "empty text is not a valid content observation");
+        text.write_clipboard(
+            &protocol::ClipboardBundle::text(3, ""),
+            crate::clipboard_plane::ClipboardSyncPolicy::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            observation.epoch(),
+            file_epoch,
+            "empty text is not a valid content observation"
+        );
         gate.store(false, Ordering::Release);
-        assert!(text.write_clipboard(&protocol::ClipboardBundle::text(2, "X"), crate::clipboard_plane::ClipboardSyncPolicy::default()).await.unwrap_err().is::<ClipboardOwnershipRevoked>());
+        assert!(
+            text.write_clipboard(
+                &protocol::ClipboardBundle::text(2, "X"),
+                crate::clipboard_plane::ClipboardSyncPolicy::default()
+            )
+            .await
+            .unwrap_err()
+            .is::<ClipboardOwnershipRevoked>()
+        );
         assert_eq!(observation.epoch(), file_epoch);
     }
 

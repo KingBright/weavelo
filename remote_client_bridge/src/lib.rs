@@ -1,18 +1,20 @@
-pub mod publisher_bridge;
-mod publisher_media;
-mod outgoing_quality;
-mod publisher_viewport;
-mod publisher_input;
 mod delivery_claim_json;
+mod outgoing_quality;
+pub mod publisher_bridge;
+mod publisher_input;
+mod publisher_media;
+mod publisher_viewport;
 pub mod touch_mapper;
 pub mod workspace_bridge;
 mod workspace_touch;
 
 #[cfg(feature = "android")]
 pub mod jni_bridge;
-mod startup_diagnostics;
 mod network_diagnostics;
-use network_diagnostics::{NetworkDiagnostics, NetworkFailure, NetworkTasks, P2pPhase, Startup, cancellable_startup};
+mod startup_diagnostics;
+use network_diagnostics::{
+    NetworkDiagnostics, NetworkFailure, NetworkTasks, P2pPhase, Startup, cancellable_startup,
+};
 mod pairing_export;
 
 #[cfg(feature = "wasm")]
@@ -22,11 +24,12 @@ use protocol::session::{CaptureSource, SessionCommand, SubscriptionRequest};
 use protocol::{ControlMessage, TouchAction};
 use remote_core::client_session::{AudioIngressEvent, SharedHostStats};
 use remote_core::discovery::{
-    DEFAULT_PEER_TTL, DiscoveryAnnouncement, DiscoveryCapabilities,
-    DiscoveryPeerSnapshot, DiscoveryRouteOverride, DiscoveryRuntimeConfig, DiscoveryScope,
-    run_discovery_runtime,
+    DEFAULT_PEER_TTL, DiscoveryAnnouncement, DiscoveryCapabilities, DiscoveryPeerSnapshot,
+    DiscoveryRouteOverride, DiscoveryRuntimeConfig, DiscoveryScope, run_discovery_runtime,
 };
-use remote_core::mesh::{AppPrivateMeshConfigStore, MeshConfig, MeshStoreError, default_app_private_mesh_dir};
+use remote_core::mesh::{
+    AppPrivateMeshConfigStore, MeshConfig, MeshStoreError, default_app_private_mesh_dir,
+};
 #[cfg(test)]
 use remote_core::net::UdpMultiplexer;
 use remote_core::p2p::{
@@ -55,7 +58,8 @@ const DEFAULT_RELAY_URL: &str = "wss://weavelo.hackerlife.fun:8443/v1/relay";
 static BRIDGE_DEVICE_GROUP_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static PUBLISHING_PORT: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);
-static PUBLISHER_CAPABILITIES: Mutex<Option<watch::Receiver<DiscoveryCapabilities>>> = Mutex::new(None);
+static PUBLISHER_CAPABILITIES: Mutex<Option<watch::Receiver<DiscoveryCapabilities>>> =
+    Mutex::new(None);
 
 fn inbound_capabilities(port: u16, capture_authorized: bool) -> DiscoveryCapabilities {
     DiscoveryCapabilities {
@@ -69,7 +73,10 @@ fn inbound_capabilities(port: u16, capture_authorized: bool) -> DiscoveryCapabil
 }
 
 fn publisher_capabilities() -> watch::Receiver<DiscoveryCapabilities> {
-    PUBLISHER_CAPABILITIES.lock().unwrap().clone()
+    PUBLISHER_CAPABILITIES
+        .lock()
+        .unwrap()
+        .clone()
         .unwrap_or_else(|| watch::channel(inbound_capabilities(0, false)).1)
 }
 
@@ -78,7 +85,10 @@ pub fn configure_device_group_dir(path: impl Into<PathBuf>) -> Result<(), PathBu
 }
 
 #[cfg(any(feature = "android", test))]
-fn initialize_phone_identity(store: &AppPrivateMeshConfigStore, model: &str) -> Result<MeshConfig, MeshStoreError> {
+fn initialize_phone_identity(
+    store: &AppPrivateMeshConfigStore,
+    model: &str,
+) -> Result<MeshConfig, MeshStoreError> {
     let model = remote_core::device_name::valid_name(model)
         .ok_or_else(|| MeshStoreError::InvalidMetadata("invalid phone model name".into()))?;
     let identity = store.load_or_generate(model.clone())?;
@@ -134,13 +144,13 @@ impl Default for BridgeTelemetry {
         Self {
             fps: 0.0,
             latency_ms: 0.0,
-            capture_receive_estimate_ms:None,
-            network_rtt_ms:None,
-            raw_total_rtt_ms:None,
-            clock_state:"unavailable".into(),
-            clock_uncertainty_ms:None,
-            clock_fit_ci95_ms:None,
-            clock_asymmetry_allowance_ms:None,
+            capture_receive_estimate_ms: None,
+            network_rtt_ms: None,
+            raw_total_rtt_ms: None,
+            clock_state: "unavailable".into(),
+            clock_uncertainty_ms: None,
+            clock_fit_ci95_ms: None,
+            clock_asymmetry_allowance_ms: None,
             jitter_ms: 0.0,
             packet_loss_percent: 0.0,
             video_bitrate_kbps: 0,
@@ -264,8 +274,11 @@ fn pairing_change_outcome(
         }
         Err(MeshStoreError::CommittedDurabilityUnconfirmed) => {
             reconcile_needed.store(true, Relaxed);
-            let config = read_saved().map_err(|err| err.to_string())?
-                .ok_or_else(|| "Saved device-group state is missing; do not repeat the change".to_owned())?;
+            let config = read_saved()
+                .map_err(|err| err.to_string())?
+                .ok_or_else(|| {
+                    "Saved device-group state is missing; do not repeat the change".to_owned()
+                })?;
             Ok((config, true, true))
         }
         Err(MeshStoreError::TransactionOutcomeUnknown) => {
@@ -276,9 +289,14 @@ fn pairing_change_outcome(
     }
 }
 
-fn finish_pairing_reconcile(reload_queued: bool, reconcile_needed: &AtomicBool) -> Result<(), String> {
+fn finish_pairing_reconcile(
+    reload_queued: bool,
+    reconcile_needed: &AtomicBool,
+) -> Result<(), String> {
     reconcile_needed.store(!reload_queued, Relaxed);
-    if reload_queued { Ok(()) } else {
+    if reload_queued {
+        Ok(())
+    } else {
         Err("Device-group change is saved, but network refresh is unavailable. Restart Weavelo; do not repeat the change.".into())
     }
 }
@@ -423,9 +441,16 @@ impl RemoteBridgeClient {
     // Called under lifecycle; issuing a token neither renews nor revokes input.
     fn manual_token(&self, binding: protocol::realtime_input::InputBinding) -> u64 {
         let mut current = self.manual_token_binding.lock().unwrap();
-        if let Some((old, token)) = *current && old == binding { return token; }
-        let token = self.manual_token_sequence.fetch_update(Relaxed, Relaxed, |v| v.checked_add(1))
-            .expect("manual input token exhausted") + 1;
+        if let Some((old, token)) = *current
+            && old == binding
+        {
+            return token;
+        }
+        let token = self
+            .manual_token_sequence
+            .fetch_update(Relaxed, Relaxed, |v| v.checked_add(1))
+            .expect("manual input token exhausted")
+            + 1;
         *current = Some((binding, token));
         token
     }
@@ -435,37 +460,77 @@ impl RemoteBridgeClient {
         }
     }
     pub fn input_intent_token(&self) -> u64 {
-        let Ok(_lifecycle) = self.lifecycle.try_lock() else { return 0; };
-        let Ok(live) = self.live.try_lock() else { return 0; };
-        live.as_ref().filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())
+        let Ok(_lifecycle) = self.lifecycle.try_lock() else {
+            return 0;
+        };
+        let Ok(live) = self.live.try_lock() else {
+            return 0;
+        };
+        live.as_ref()
+            .filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())
             .and_then(|live| live.connection.input_binding(live.session_id, 0))
             .map_or(0, |binding| self.manual_token(binding))
     }
     // Called under lifecycle + live locks, before any gesture tail or health
     // renewal. DirectTouch Down has no core held button yet, so its local
     // tracker needs the same deadline and exact epoch independently.
-    fn expire_manual_input(&self, live: &LiveSession, binding: protocol::realtime_input::InputBinding, now: Instant) -> bool {
+    fn expire_manual_input(
+        &self,
+        live: &LiveSession,
+        binding: protocol::realtime_input::InputBinding,
+        now: Instant,
+    ) -> bool {
         let mut intent = self.manual_input_intent.lock().unwrap();
         // A failed nonblocking UI call may have dropped a gesture's Cancel.
         // Consume that invalidation before another heartbeat can renew it.
-        let revoked = intent.is_some_and(|(_, _, token)| self.manual_input_revoked.compare_exchange(token, 0, Relaxed, Relaxed).is_ok());
-        if revoked || intent.is_some_and(|(old, last, _)| old != binding || now.saturating_duration_since(last).as_millis() >= protocol::realtime_input::HOLD_TIMEOUT_MS as u128) {
+        let revoked = intent.is_some_and(|(_, _, token)| {
+            self.manual_input_revoked
+                .compare_exchange(token, 0, Relaxed, Relaxed)
+                .is_ok()
+        });
+        if revoked
+            || intent.is_some_and(|(old, last, _)| {
+                old != binding
+                    || now.saturating_duration_since(last).as_millis()
+                        >= protocol::realtime_input::HOLD_TIMEOUT_MS as u128
+            })
+        {
             self.touch_tracker.lock().unwrap().cancel_all();
             *self.virtual_keys.lock().unwrap() = touch_mapper::VirtualKeyboard::default();
-            if let Some((old, _, _)) = intent.take() { live.connection.try_bound_input(old, None); }
+            if let Some((old, _, _)) = intent.take() {
+                live.connection.try_bound_input(old, None);
+            }
             self.manual_input_owner.store(0, Relaxed);
             return true;
         }
         false
     }
     pub fn refresh_input_intent(&self, token: u64) -> bool {
-        let Ok(_lifecycle) = self.lifecycle.try_lock() else { self.revoke_manual_token(token); return false; };
-        let Ok(live) = self.live.try_lock() else { self.revoke_manual_token(token); return false; };
-        let Some(live) = live.as_ref().filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready()) else { self.revoke_manual_token(token); return false; };
-        let Some(binding) = live.connection.input_binding(live.session_id, 0) else { return false; };
-        if token == 0 || token != self.manual_token(binding) { return false; }
+        let Ok(_lifecycle) = self.lifecycle.try_lock() else {
+            self.revoke_manual_token(token);
+            return false;
+        };
+        let Ok(live) = self.live.try_lock() else {
+            self.revoke_manual_token(token);
+            return false;
+        };
+        let Some(live) = live
+            .as_ref()
+            .filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())
+        else {
+            self.revoke_manual_token(token);
+            return false;
+        };
+        let Some(binding) = live.connection.input_binding(live.session_id, 0) else {
+            return false;
+        };
+        if token == 0 || token != self.manual_token(binding) {
+            return false;
+        }
         let now = Instant::now();
-        if self.expire_manual_input(live, binding, now) { return false; }
+        if self.expire_manual_input(live, binding, now) {
+            return false;
+        }
         if !live.connection.refresh_bound_input(binding) {
             self.touch_tracker.lock().unwrap().cancel_all();
             *self.virtual_keys.lock().unwrap() = touch_mapper::VirtualKeyboard::default();
@@ -474,40 +539,79 @@ impl RemoteBridgeClient {
             live.connection.try_bound_input(binding, None);
             return false;
         }
-        if let Some((_, last, _)) = self.manual_input_intent.lock().unwrap().as_mut() { *last = now; }
+        if let Some((_, last, _)) = self.manual_input_intent.lock().unwrap().as_mut() {
+            *last = now;
+        }
         true
     }
 
     pub fn handle_touch_input(
-        &self, action: TouchAction, pointer_id: u32, norm_x: f32, norm_y: f32, pressure: f32,
+        &self,
+        action: TouchAction,
+        pointer_id: u32,
+        norm_x: f32,
+        norm_y: f32,
+        pressure: f32,
     ) {
         self.touch_input(None, action, pointer_id, norm_x, norm_y, pressure);
     }
     pub fn handle_bound_touch_input(
-        &self, token: u64, action: TouchAction, pointer_id: u32, norm_x: f32, norm_y: f32, pressure: f32,
+        &self,
+        token: u64,
+        action: TouchAction,
+        pointer_id: u32,
+        norm_x: f32,
+        norm_y: f32,
+        pressure: f32,
     ) {
-        if token != 0 { self.touch_input(Some(token), action, pointer_id, norm_x, norm_y, pressure); }
+        if token != 0 {
+            self.touch_input(Some(token), action, pointer_id, norm_x, norm_y, pressure);
+        }
     }
     fn touch_input(
-        &self, token: Option<u64>, action: TouchAction, pointer_id: u32, norm_x: f32, norm_y: f32, pressure: f32,
+        &self,
+        token: Option<u64>,
+        action: TouchAction,
+        pointer_id: u32,
+        norm_x: f32,
+        norm_y: f32,
+        pressure: f32,
     ) {
         let owner = token.unwrap_or_else(|| self.manual_input_owner.load(Relaxed));
-        let Ok(_lifecycle) = self.lifecycle.try_lock() else { self.revoke_manual_token(owner); return; };
-        let Ok(live) = self.live.try_lock() else { self.revoke_manual_token(owner); return; };
-        let Some(live) = live.as_ref().filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready()) else {
-            if token.is_some() { self.revoke_manual_token(owner); return; }
+        let Ok(_lifecycle) = self.lifecycle.try_lock() else {
+            self.revoke_manual_token(owner);
+            return;
+        };
+        let Ok(live) = self.live.try_lock() else {
+            self.revoke_manual_token(owner);
+            return;
+        };
+        let Some(live) = live
+            .as_ref()
+            .filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())
+        else {
+            if token.is_some() {
+                self.revoke_manual_token(owner);
+                return;
+            }
             self.touch_tracker.lock().unwrap().cancel_all();
             *self.manual_input_intent.lock().unwrap() = None;
             self.manual_input_owner.store(0, Relaxed);
             return;
         };
-        let Some(binding) = live.connection.input_binding(live.session_id, 0) else { return; };
-        if token.is_some_and(|token| token != self.manual_token(binding)) { return; }
+        let Some(binding) = live.connection.input_binding(live.session_id, 0) else {
+            return;
+        };
+        if token.is_some_and(|token| token != self.manual_token(binding)) {
+            return;
+        }
         let now = Instant::now();
         self.expire_manual_input(live, binding, now);
         {
             let mut intent = self.manual_input_intent.lock().unwrap();
-            if !matches!(action, TouchAction::Down) && intent.is_none() { return; }
+            if !matches!(action, TouchAction::Down) && intent.is_none() {
+                return;
+            }
             let token = self.manual_token(binding);
             *intent = Some((binding, now, token));
             self.manual_input_owner.store(token, Relaxed);
@@ -515,7 +619,10 @@ impl RemoteBridgeClient {
         let (events, bounds) = {
             let mut tracker = self.touch_tracker.lock().unwrap();
             let bounds = tracker.bounds.clone();
-            (tracker.process_touch(action, pointer_id, norm_x, norm_y, pressure, now), bounds)
+            (
+                tracker.process_touch(action, pointer_id, norm_x, norm_y, pressure, now),
+                bounds,
+            )
         };
         for event in events {
             match &event {
@@ -540,50 +647,95 @@ impl RemoteBridgeClient {
     }
 
     pub fn text_input_owner(&self) -> Option<String> {
-        let _lifecycle=self.lifecycle.try_lock().ok()?;
-        let live=self.live.try_lock().ok()?;
-        let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready())?;
-        serde_json::to_string(&live.connection.text_input_owner(live.session_id,0)?).ok()
+        let _lifecycle = self.lifecycle.try_lock().ok()?;
+        let live = self.live.try_lock().ok()?;
+        let live = live
+            .as_ref()
+            .filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())?;
+        serde_json::to_string(&live.connection.text_input_owner(live.session_id, 0)?).ok()
     }
-    pub fn commit_text(&self,owner:&str,text:&str) -> Result<(),String> {
-        let owner=serde_json::from_str(owner).map_err(|_|"invalid text input owner")?;
-        let _lifecycle=self.lifecycle.try_lock().map_err(|_|"connection is busy")?;
-        let live=self.live.try_lock().map_err(|_|"connection is busy")?;
-        let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready()).ok_or("input is unavailable")?;
-        if live.connection.text_input_owner(live.session_id,0)!=Some(owner) {return Err("text input source changed".into());}
-        live.connection.try_commit_text_for_owner(owner,text,Duration::ZERO)
+    pub fn commit_text(&self, owner: &str, text: &str) -> Result<(), String> {
+        let owner = serde_json::from_str(owner).map_err(|_| "invalid text input owner")?;
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| "connection is busy")?;
+        let live = self.live.try_lock().map_err(|_| "connection is busy")?;
+        let live = live
+            .as_ref()
+            .filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())
+            .ok_or("input is unavailable")?;
+        if live.connection.text_input_owner(live.session_id, 0) != Some(owner) {
+            return Err("text input source changed".into());
+        }
+        live.connection
+            .try_commit_text_for_owner(owner, text, Duration::ZERO)
     }
-    pub fn text_key(&self,owner:&str,key:&str,pressed:bool) -> Result<(),String> {
-        let owner=serde_json::from_str(owner).map_err(|_|"invalid text input owner")?;
-        let _lifecycle=self.lifecycle.try_lock().map_err(|_|"connection is busy")?;
-        let live=self.live.try_lock().map_err(|_|"connection is busy")?;
-        let live=live.as_ref().filter(|live|!self.desired_media_paused.load(Relaxed)&&live.input_ready()).ok_or("input is unavailable")?;
-        if live.connection.text_input_owner(live.session_id,0)!=Some(owner) {return Err("text input source changed".into());}
-        let binding=live.connection.text_input_binding(owner).ok_or("input is unavailable")?;
-        for event in self.virtual_keys.lock().unwrap().event_for_grant(binding,key,pressed) {
-            if !live.connection.try_bound_input(binding,Some(event)) {return Err("input queue is full".into());}
+    pub fn text_key(&self, owner: &str, key: &str, pressed: bool) -> Result<(), String> {
+        let owner = serde_json::from_str(owner).map_err(|_| "invalid text input owner")?;
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| "connection is busy")?;
+        let live = self.live.try_lock().map_err(|_| "connection is busy")?;
+        let live = live
+            .as_ref()
+            .filter(|live| !self.desired_media_paused.load(Relaxed) && live.input_ready())
+            .ok_or("input is unavailable")?;
+        if live.connection.text_input_owner(live.session_id, 0) != Some(owner) {
+            return Err("text input source changed".into());
+        }
+        let binding = live
+            .connection
+            .text_input_binding(owner)
+            .ok_or("input is unavailable")?;
+        for event in self
+            .virtual_keys
+            .lock()
+            .unwrap()
+            .event_for_grant(binding, key, pressed)
+        {
+            if !live.connection.try_bound_input(binding, Some(event)) {
+                return Err("input queue is full".into());
+            }
         }
         Ok(())
     }
-    pub fn send_bound_virtual_key(&self,token:u64,key_name:&str,pressed:bool) {
-        self.virtual_key(Some(token),key_name,pressed)
+    pub fn send_bound_virtual_key(&self, token: u64, key_name: &str, pressed: bool) {
+        self.virtual_key(Some(token), key_name, pressed)
     }
-    pub fn send_virtual_key(&self, key_name: &str, pressed: bool) {self.virtual_key(None,key_name,pressed)}
-    fn virtual_key(&self, token:Option<u64>, key_name:&str, pressed:bool) {
-        let Ok(_lifecycle) = self.lifecycle.try_lock() else { self.revoke_manual_token(self.manual_input_owner.load(Relaxed)); return; };
-        if pressed && self.desired_media_paused.load(Relaxed) { return; }
-        let Ok(live) = self.live.try_lock() else { self.revoke_manual_token(self.manual_input_owner.load(Relaxed)); return; };
+    pub fn send_virtual_key(&self, key_name: &str, pressed: bool) {
+        self.virtual_key(None, key_name, pressed)
+    }
+    fn virtual_key(&self, token: Option<u64>, key_name: &str, pressed: bool) {
+        let Ok(_lifecycle) = self.lifecycle.try_lock() else {
+            self.revoke_manual_token(self.manual_input_owner.load(Relaxed));
+            return;
+        };
+        if pressed && self.desired_media_paused.load(Relaxed) {
+            return;
+        }
+        let Ok(live) = self.live.try_lock() else {
+            self.revoke_manual_token(self.manual_input_owner.load(Relaxed));
+            return;
+        };
         if let Some(live) = live.as_ref().filter(|live| live.input_ready()) {
-            let Some(binding) = live.connection.input_binding(live.session_id, 0) else { return; };
-            if token.is_some_and(|token|token==0||token!=self.manual_token(binding)) {return;}
+            let Some(binding) = live.connection.input_binding(live.session_id, 0) else {
+                return;
+            };
+            if token.is_some_and(|token| token == 0 || token != self.manual_token(binding)) {
+                return;
+            }
             let now = Instant::now();
             self.expire_manual_input(live, binding, now);
             {
                 let mut intent = self.manual_input_intent.lock().unwrap();
-                if !pressed && intent.is_none() { return; }
+                if !pressed && intent.is_none() {
+                    return;
+                }
                 let token = self.manual_token(binding);
-            *intent = Some((binding, now, token));
-            self.manual_input_owner.store(token, Relaxed);
+                *intent = Some((binding, now, token));
+                self.manual_input_owner.store(token, Relaxed);
             }
             for event in self.virtual_keys.lock().unwrap().event(key_name, pressed) {
                 live.connection.try_bound_input(binding, Some(event));
@@ -643,7 +795,8 @@ impl RemoteBridgeClient {
         let store = AppPrivateMeshConfigStore::new(bridge_device_group_dir());
         let (config, changed, durability_warning) = pairing_change_outcome(
             store.join(&payload.invite_code, "Weavelo Android"),
-            &self.pairing_reconcile_needed, || store.load(),
+            &self.pairing_reconcile_needed,
+            || store.load(),
         )?;
         if !changed {
             return Ok((format!("Already in network {}", config.network_name), false));
@@ -656,12 +809,19 @@ impl RemoteBridgeClient {
         );
         self.devices_tx.send_replace(Vec::new());
         self.network_enabled.store(true, Relaxed);
-        finish_pairing_reconcile(self.request_discovery_reload(), &self.pairing_reconcile_needed)?;
+        finish_pairing_reconcile(
+            self.request_discovery_reload(),
+            &self.pairing_reconcile_needed,
+        )?;
         Ok((
             format!(
                 "Joined network {}. Discovering members...{}",
                 config.network_name,
-                if durability_warning { " Storage durability confirmation reported an error." } else { "" }
+                if durability_warning {
+                    " Storage durability confirmation reported an error."
+                } else {
+                    ""
+                }
             ),
             true,
         ))
@@ -681,7 +841,8 @@ impl RemoteBridgeClient {
         self.network_diagnostics.request_reload();
         let queued = self.network_reload_tx.send(()).is_ok();
         if !queued {
-            self.network_diagnostics.failed(NetworkFailure::SupervisorUnavailable);
+            self.network_diagnostics
+                .failed(NetworkFailure::SupervisorUnavailable);
         }
         queued
     }
@@ -822,7 +983,7 @@ impl RemoteBridgeClient {
         self.touch_tracker.lock().unwrap().cancel_all();
         *self.virtual_keys.lock().unwrap() = touch_mapper::VirtualKeyboard::default();
         *self.manual_input_intent.lock().unwrap() = None;
-            self.manual_input_owner.store(0, Relaxed);
+        self.manual_input_owner.store(0, Relaxed);
         if let Some(live) = self.live.lock().unwrap().as_ref() {
             let revision = live.activity_revision.fetch_add(1, Relaxed) + 1;
             let _ = self
@@ -919,17 +1080,19 @@ impl RemoteBridgeClient {
             self.telemetry_tx.send_replace(BridgeTelemetry::default());
             return;
         }
-        let clock=self.host_stats.clock_estimate();
+        let clock = self.host_stats.clock_estimate();
         let _ = self.telemetry_tx.send(BridgeTelemetry {
             fps: snap.fps,
             latency_ms: snap.decode_latency_ms,
             capture_receive_estimate_ms: self.host_stats.estimated_e2e_latency_ms(),
-            network_rtt_ms: clock.map(|c|c.latest_sample.network_rtt_us as f64/1000.0),
-            raw_total_rtt_ms: clock.map(|c|c.latest_sample.raw_total_rtt_us as f64/1000.0),
-            clock_state: clock.map(|c|format!("{:?}",c.state).to_lowercase()).unwrap_or_else(||"unavailable".into()),
-            clock_uncertainty_ms: clock.and_then(|c|c.uncertainty_us()).map(|us|us/1000.0),
-            clock_fit_ci95_ms: clock.and_then(|c|c.fit_ci95_us).map(|us|us/1000.0),
-            clock_asymmetry_allowance_ms: clock.map(|c|c.asymmetry_bound_us/1000.0),
+            network_rtt_ms: clock.map(|c| c.latest_sample.network_rtt_us as f64 / 1000.0),
+            raw_total_rtt_ms: clock.map(|c| c.latest_sample.raw_total_rtt_us as f64 / 1000.0),
+            clock_state: clock
+                .map(|c| format!("{:?}", c.state).to_lowercase())
+                .unwrap_or_else(|| "unavailable".into()),
+            clock_uncertainty_ms: clock.and_then(|c| c.uncertainty_us()).map(|us| us / 1000.0),
+            clock_fit_ci95_ms: clock.and_then(|c| c.fit_ci95_us).map(|us| us / 1000.0),
+            clock_asymmetry_allowance_ms: clock.map(|c| c.asymmetry_bound_us / 1000.0),
             jitter_ms: snap.jitter,
             packet_loss_percent: snap.packet_loss_rate,
             video_bitrate_kbps: snap.bitrate_kbps,
@@ -1001,7 +1164,9 @@ async fn start_live_session(
                 } if id == session_id => {
                     event_input.store(supports_input, Relaxed);
                 }
-                SessionCommand::TextRejected {binding,reason,..} if binding.subscription_id==session_id => {
+                SessionCommand::TextRejected {
+                    binding, reason, ..
+                } if binding.subscription_id == session_id => {
                     event_error_tx.send_replace(reason);
                 }
                 SessionCommand::Error { request_id, reason } if request_id == session_id => {
@@ -1043,15 +1208,19 @@ async fn start_live_session(
                 keyframe,
                 pts_us: timing.capture_ts_us as i64,
             };
-            if waiting_for_keyframe && !keyframe {continue;}
+            if waiting_for_keyframe && !keyframe {
+                continue;
+            }
             let (result, discarded) = {
                 let mut queue = nalu_queue.lock().unwrap();
                 queue.push(nalu, keyframe, source_epoch)
             };
             drop(discarded);
             if result.needs_keyframe && !waiting_for_keyframe {
-                let _ = recovery_connection.sender.send_control(
-                    &ControlMessage::RequestKeyframe { session_id }, target).await;
+                let _ = recovery_connection
+                    .sender
+                    .send_control(&ControlMessage::RequestKeyframe { session_id }, target)
+                    .await;
             }
             waiting_for_keyframe = result.needs_keyframe;
             if result.accepted {
@@ -1105,17 +1274,19 @@ async fn start_live_session(
             if snap.updated_at.is_none() {
                 continue;
             }
-            let clock=host_stats.clock_estimate();
+            let clock = host_stats.clock_estimate();
             let _ = telemetry_tx.send(BridgeTelemetry {
                 fps: snap.fps,
                 latency_ms: snap.decode_latency_ms,
-            capture_receive_estimate_ms: host_stats.estimated_e2e_latency_ms(),
-            network_rtt_ms: clock.map(|c|c.latest_sample.network_rtt_us as f64/1000.0),
-            raw_total_rtt_ms: clock.map(|c|c.latest_sample.raw_total_rtt_us as f64/1000.0),
-            clock_state: clock.map(|c|format!("{:?}",c.state).to_lowercase()).unwrap_or_else(||"unavailable".into()),
-            clock_uncertainty_ms: clock.and_then(|c|c.uncertainty_us()).map(|us|us/1000.0),
-            clock_fit_ci95_ms: clock.and_then(|c|c.fit_ci95_us).map(|us|us/1000.0),
-            clock_asymmetry_allowance_ms: clock.map(|c|c.asymmetry_bound_us/1000.0),
+                capture_receive_estimate_ms: host_stats.estimated_e2e_latency_ms(),
+                network_rtt_ms: clock.map(|c| c.latest_sample.network_rtt_us as f64 / 1000.0),
+                raw_total_rtt_ms: clock.map(|c| c.latest_sample.raw_total_rtt_us as f64 / 1000.0),
+                clock_state: clock
+                    .map(|c| format!("{:?}", c.state).to_lowercase())
+                    .unwrap_or_else(|| "unavailable".into()),
+                clock_uncertainty_ms: clock.and_then(|c| c.uncertainty_us()).map(|us| us / 1000.0),
+                clock_fit_ci95_ms: clock.and_then(|c| c.fit_ci95_us).map(|us| us / 1000.0),
+                clock_asymmetry_allowance_ms: clock.map(|c| c.asymmetry_bound_us / 1000.0),
                 jitter_ms: snap.jitter,
                 packet_loss_percent: snap.packet_loss_rate,
                 video_bitrate_kbps: snap.bitrate_kbps,
@@ -1141,7 +1312,9 @@ async fn start_live_session(
 }
 
 fn hevc_keyframe(data: &[u8]) -> bool {
-    let Ok((_,data))=protocol::viewport::split_frame(data) else{return false;};
+    let Ok((_, data)) = protocol::viewport::split_frame(data) else {
+        return false;
+    };
     // The last three bytes of either Annex B prefix are 00 00 01.
     // Require the complete two-byte HEVC header and an IRAP VCL type.
     data.windows(5).any(|window| {
@@ -1164,7 +1337,9 @@ async fn run_bridge_network_supervisor(
     loop {
         if !enabled.load(Relaxed) {
             diagnostics.paused();
-            if reload_rx.recv().await.is_none() { break; }
+            if reload_rx.recv().await.is_none() {
+                break;
+            }
             continue;
         }
         // Only the most recent persisted configuration needs a runtime.
@@ -1176,7 +1351,14 @@ async fn run_bridge_network_supervisor(
         let network_cancel_rx = cancel_tx.subscribe();
         let network_diagnostics = diagnostics.clone();
         let mut network_task = tokio::spawn(async move {
-            run_bridge_network(network_devices_tx, network_cancel_tx, network_cancel_rx, network_diagnostics, requested).await
+            run_bridge_network(
+                network_devices_tx,
+                network_cancel_tx,
+                network_cancel_rx,
+                network_diagnostics,
+                requested,
+            )
+            .await
         });
         tokio::select! {
             biased;
@@ -1222,14 +1404,22 @@ async fn run_bridge_network(
     let store = AppPrivateMeshConfigStore::new(bridge_device_group_dir());
     let identity = match store.load_or_generate("Weavelo Android") {
         Ok(identity) => identity,
-        Err(error) => { diagnostics.failed(NetworkFailure::ProfileUnavailable); return Err(error.into()); }
+        Err(error) => {
+            diagnostics.failed(NetworkFailure::ProfileUnavailable);
+            return Err(error.into());
+        }
     };
     diagnostics.begin(&identity, requested);
     let live_capabilities = publisher_capabilities();
     let announcement = DiscoveryAnnouncement {
-        network_name: identity.network_name.clone(), device_id: identity.node_id.clone(),
-        display_name: identity.display_name.clone(), control_port: PUBLISHING_PORT.load(Relaxed),
-        virtual_ip: None, capabilities: *live_capabilities.borrow(), scope: DiscoveryScope::Lan, ttl: DEFAULT_PEER_TTL,
+        network_name: identity.network_name.clone(),
+        device_id: identity.node_id.clone(),
+        display_name: identity.display_name.clone(),
+        control_port: PUBLISHING_PORT.load(Relaxed),
+        virtual_ip: None,
+        capabilities: *live_capabilities.borrow(),
+        scope: DiscoveryScope::Lan,
+        ttl: DEFAULT_PEER_TTL,
     };
     let (mut discovery_config, discovery_target) = bridge_discovery_config(announcement.clone());
     discovery_config.accept_any_network = false;
@@ -1238,33 +1428,65 @@ async fn run_bridge_network(
 
     if !cfg!(test) {
         // P2P DNS is independent of LAN and relay startup, bounded and cancellable.
-        let p2p_identity = identity.clone(); let p2p_announcement = announcement.clone();
-        let p2p_capabilities = live_capabilities.clone(); let p2p_cancel = cancel_tx.subscribe();
+        let p2p_identity = identity.clone();
+        let p2p_announcement = announcement.clone();
+        let p2p_capabilities = live_capabilities.clone();
+        let p2p_cancel = cancel_tx.subscribe();
         let p2p_diagnostics = diagnostics.clone();
         tasks.push(tokio::spawn(async move {
-            run_bridge_p2p(p2p_identity, p2p_announcement, p2p_capabilities,
-                discovery_target, p2p_cancel, p2p_diagnostics).await;
+            run_bridge_p2p(
+                p2p_identity,
+                p2p_announcement,
+                p2p_capabilities,
+                discovery_target,
+                p2p_cancel,
+                p2p_diagnostics,
+            )
+            .await;
         }));
         let host_target = (announcement.control_port != 0)
             .then(|| SocketAddr::from(([127, 0, 0, 1], announcement.control_port)));
-        match cancellable_startup(bind_bridge_relay(&identity, host_target, discovery_target),
-            &mut cancel_rx, NETWORK_STARTUP_TIMEOUT).await {
-            Startup::Cancelled => { tasks.stop().await; return Ok(()); }
+        match cancellable_startup(
+            bind_bridge_relay(&identity, host_target, discovery_target),
+            &mut cancel_rx,
+            NETWORK_STARTUP_TIMEOUT,
+        )
+        .await
+        {
+            Startup::Cancelled => {
+                tasks.stop().await;
+                return Ok(());
+            }
             Startup::Complete(Ok(bindings)) => {
                 let control_endpoint = bindings.control.local_addr()?;
                 let discovery_endpoint = bindings.discovery.local_addr()?;
-                discovery_config.relay_routes.push((discovery_endpoint, bindings.router.routes()));
+                discovery_config
+                    .relay_routes
+                    .push((discovery_endpoint, bindings.router.routes()));
                 discovery_config.announce_targets.push(discovery_endpoint);
-                discovery_config.route_overrides.push(DiscoveryRouteOverride {
-                    source: discovery_endpoint, endpoint: control_endpoint, scope: DiscoveryScope::Relay,
-                });
-                diagnostics.attach_relays(bindings.control.diagnostics(), bindings.discovery.diagnostics());
+                discovery_config
+                    .route_overrides
+                    .push(DiscoveryRouteOverride {
+                        source: discovery_endpoint,
+                        endpoint: control_endpoint,
+                        scope: DiscoveryScope::Relay,
+                    });
+                diagnostics.attach_relays(
+                    bindings.control.diagnostics(),
+                    bindings.discovery.diagnostics(),
+                );
                 let router_cancel = cancel_tx.subscribe();
                 let control_cancel = cancel_tx.subscribe();
                 let discovery_cancel = cancel_tx.subscribe();
-                tasks.push(tokio::spawn(async move { let _ = bindings.router.run(control_endpoint, router_cancel).await; }));
-                tasks.push(tokio::spawn(async move { let _ = bindings.control.run(control_cancel).await; }));
-                tasks.push(tokio::spawn(async move { let _ = bindings.discovery.run(discovery_cancel).await; }));
+                tasks.push(tokio::spawn(async move {
+                    let _ = bindings.router.run(control_endpoint, router_cancel).await;
+                }));
+                tasks.push(tokio::spawn(async move {
+                    let _ = bindings.control.run(control_cancel).await;
+                }));
+                tasks.push(tokio::spawn(async move {
+                    let _ = bindings.discovery.run(discovery_cancel).await;
+                }));
             }
             Startup::TimedOut | Startup::Complete(Err(_)) => {
                 // Preserve independent LAN/P2P discovery when local relay binding fails.
@@ -1276,11 +1498,16 @@ async fn run_bridge_network(
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let (snapshot_tx, mut snapshot_rx) = watch::channel(DiscoveryPeerSnapshot::default());
     let discovery_cancel = cancel_tx.subscribe();
-    tasks.push(tokio::spawn(async move { let _ = run_discovery_runtime(discovery_config, events_tx, snapshot_tx, discovery_cancel).await; }));
+    tasks.push(tokio::spawn(async move {
+        let _ =
+            run_discovery_runtime(discovery_config, events_tx, snapshot_tx, discovery_cancel).await;
+    }));
     let event_diagnostics = diagnostics.clone();
     tasks.push(tokio::spawn(async move {
         while let Some(event) = events_rx.recv().await {
-            if matches!(event, remote_core::discovery::DiscoveryEvent::Error(_)) { event_diagnostics.discovery_error(); }
+            if matches!(event, remote_core::discovery::DiscoveryEvent::Error(_)) {
+                event_diagnostics.discovery_error();
+            }
         }
     }));
     diagnostics.discovering();
@@ -1314,37 +1541,70 @@ async fn run_bridge_network(
 }
 
 async fn bind_bridge_p2p(
-    identity: &MeshConfig, announcement: &DiscoveryAnnouncement,
-    live_capabilities: watch::Receiver<DiscoveryCapabilities>, discovery_target: SocketAddr,
+    identity: &MeshConfig,
+    announcement: &DiscoveryAnnouncement,
+    live_capabilities: watch::Receiver<DiscoveryCapabilities>,
+    discovery_target: SocketAddr,
 ) -> Result<BoundP2pTunnel, BridgeNetworkError> {
-    let rendezvous_name = std::env::var("WEAVELO_P2P_RENDEZVOUS").unwrap_or_else(|_| DEFAULT_P2P_RENDEZVOUS.to_string());
+    let rendezvous_name = std::env::var("WEAVELO_P2P_RENDEZVOUS")
+        .unwrap_or_else(|_| DEFAULT_P2P_RENDEZVOUS.to_string());
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
     let rendezvous_addrs = resolve_p2p_rendezvous_addrs(&rendezvous_name, bind_addr).await?;
-    let group_id = derive_p2p_group_id(&identity.network_name, identity.network_secret.expose_secret())?;
-    let mut config = P2pTunnelConfig::new(bind_addr, rendezvous_addrs[0], group_id,
-        identity.node_id.clone(), announcement.encode()?)?
-        .with_rendezvous_addrs(rendezvous_addrs).with_live_capabilities(live_capabilities)
-        .with_routing_key(remote_core::routed_relay::derive_routing_key(identity.network_secret.expose_secret().as_bytes()))
-        .with_discovery_target_addr(discovery_target);
+    let group_id = derive_p2p_group_id(
+        &identity.network_name,
+        identity.network_secret.expose_secret(),
+    )?;
+    let mut config = P2pTunnelConfig::new(
+        bind_addr,
+        rendezvous_addrs[0],
+        group_id,
+        identity.node_id.clone(),
+        announcement.encode()?,
+    )?
+    .with_rendezvous_addrs(rendezvous_addrs)
+    .with_live_capabilities(live_capabilities)
+    .with_routing_key(remote_core::routed_relay::derive_routing_key(
+        identity.network_secret.expose_secret().as_bytes(),
+    ))
+    .with_discovery_target_addr(discovery_target);
     config.local_target_addr = (announcement.control_port != 0)
         .then(|| SocketAddr::from(([127, 0, 0, 1], announcement.control_port)));
     Ok(BoundP2pTunnel::bind(config).await?)
 }
 
 async fn run_bridge_p2p(
-    identity: MeshConfig, announcement: DiscoveryAnnouncement,
-    live_capabilities: watch::Receiver<DiscoveryCapabilities>, discovery_target: SocketAddr,
-    mut cancel: broadcast::Receiver<()>, diagnostics: Arc<NetworkDiagnostics>,
+    identity: MeshConfig,
+    announcement: DiscoveryAnnouncement,
+    live_capabilities: watch::Receiver<DiscoveryCapabilities>,
+    discovery_target: SocketAddr,
+    mut cancel: broadcast::Receiver<()>,
+    diagnostics: Arc<NetworkDiagnostics>,
 ) {
     loop {
         diagnostics.p2p(P2pPhase::Resolving, None);
-        match cancellable_startup(bind_bridge_p2p(&identity, &announcement,
-            live_capabilities.clone(), discovery_target), &mut cancel, NETWORK_STARTUP_TIMEOUT).await {
+        match cancellable_startup(
+            bind_bridge_p2p(
+                &identity,
+                &announcement,
+                live_capabilities.clone(),
+                discovery_target,
+            ),
+            &mut cancel,
+            NETWORK_STARTUP_TIMEOUT,
+        )
+        .await
+        {
             Startup::Cancelled => return,
-            Startup::TimedOut => diagnostics.p2p(P2pPhase::RetryWait, Some(NetworkFailure::StartupTimeout)),
-            Startup::Complete(Err(_)) => diagnostics.p2p(P2pPhase::RetryWait, Some(NetworkFailure::P2pUnavailable)),
+            Startup::TimedOut => {
+                diagnostics.p2p(P2pPhase::RetryWait, Some(NetworkFailure::StartupTimeout))
+            }
+            Startup::Complete(Err(_)) => {
+                diagnostics.p2p(P2pPhase::RetryWait, Some(NetworkFailure::P2pUnavailable))
+            }
             Startup::Complete(Ok(tunnel)) => {
-                if cancel.try_recv().is_ok() { return; }
+                if cancel.try_recv().is_ok() {
+                    return;
+                }
                 diagnostics.p2p(P2pPhase::Running, None);
                 let (snapshot_tx, _snapshot_rx) = watch::channel(Default::default());
                 let _ = tunnel.run(cancel.resubscribe(), snapshot_tx).await;
@@ -1363,20 +1623,57 @@ struct BridgeRelayBindings {
     control: BoundWebSocketRelayTunnel,
     discovery: BoundWebSocketRelayTunnel,
 }
-async fn bind_bridge_relay(identity: &MeshConfig, host_target: Option<SocketAddr>, discovery_target: SocketAddr) -> Result<BridgeRelayBindings, BridgeNetworkError> {
-    let relay_url = std::env::var("WEAVELO_RELAY_SERVER_ADDR").unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string());
-    let control_group = derive_relay_group_id(&identity.network_name, identity.network_secret.expose_secret(), "control-device-v1")?;
-    let discovery_group = derive_relay_group_id(&identity.network_name, identity.network_secret.expose_secret(), "discovery")?;
-    let router = remote_core::routed_relay::RoutedRelay::bind(identity.node_id.clone(),
-        remote_core::routed_relay::derive_routing_key(identity.network_secret.expose_secret().as_bytes()), host_target).await?;
+async fn bind_bridge_relay(
+    identity: &MeshConfig,
+    host_target: Option<SocketAddr>,
+    discovery_target: SocketAddr,
+) -> Result<BridgeRelayBindings, BridgeNetworkError> {
+    let relay_url = std::env::var("WEAVELO_RELAY_SERVER_ADDR")
+        .unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string());
+    let control_group = derive_relay_group_id(
+        &identity.network_name,
+        identity.network_secret.expose_secret(),
+        "control-device-v1",
+    )?;
+    let discovery_group = derive_relay_group_id(
+        &identity.network_name,
+        identity.network_secret.expose_secret(),
+        "discovery",
+    )?;
+    let router = remote_core::routed_relay::RoutedRelay::bind(
+        identity.node_id.clone(),
+        remote_core::routed_relay::derive_routing_key(
+            identity.network_secret.expose_secret().as_bytes(),
+        ),
+        host_target,
+    )
+    .await?;
     let router_target = router.local_addr()?;
-    let control = BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
-        SocketAddr::from(([127, 0, 0, 1], 0)), relay_url.clone(), control_group, identity.node_id.clone())?
-        .with_local_target_addr(router_target)).await?;
-    let discovery = BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
-        SocketAddr::from(([127, 0, 0, 1], 0)), relay_url, discovery_group, identity.node_id.clone())?
-        .with_local_target_addr(discovery_target)).await?;
-    Ok(BridgeRelayBindings { router, control, discovery })
+    let control = BoundWebSocketRelayTunnel::bind(
+        WebSocketRelayTunnelConfig::new(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            relay_url.clone(),
+            control_group,
+            identity.node_id.clone(),
+        )?
+        .with_local_target_addr(router_target),
+    )
+    .await?;
+    let discovery = BoundWebSocketRelayTunnel::bind(
+        WebSocketRelayTunnelConfig::new(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            relay_url,
+            discovery_group,
+            identity.node_id.clone(),
+        )?
+        .with_local_target_addr(discovery_target),
+    )
+    .await?;
+    Ok(BridgeRelayBindings {
+        router,
+        control,
+        discovery,
+    })
 }
 
 fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscoveredDevice> {
@@ -1426,15 +1723,29 @@ mod tests {
 
     #[test]
     fn phone_model_name_preserves_membership_and_custom_labels() {
-        let directory = std::env::temp_dir().join(format!("weavelo-phone-model-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "weavelo-phone-model-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let store = AppPrivateMeshConfigStore::new(&directory);
         let before = store.load_or_generate("Weavelo Android").unwrap();
         let mut expected = before.clone();
         expected.display_name = "nubia NX741J".into();
-        assert_eq!(initialize_phone_identity(&store, "nubia NX741J").unwrap(), expected);
-        let custom = store.rename_display_name("nubia NX741J", "My phone").unwrap();
-        assert_eq!(initialize_phone_identity(&store, "Redmi 2409BRN2CC").unwrap(), custom);
+        assert_eq!(
+            initialize_phone_identity(&store, "nubia NX741J").unwrap(),
+            expected
+        );
+        let custom = store
+            .rename_display_name("nubia NX741J", "My phone")
+            .unwrap();
+        assert_eq!(
+            initialize_phone_identity(&store, "Redmi 2409BRN2CC").unwrap(),
+            custom
+        );
         assert!(initialize_phone_identity(&store, "invalid\nmodel").is_err());
         assert_eq!(store.load().unwrap().unwrap(), custom);
         std::fs::remove_dir_all(directory).unwrap();
@@ -1474,7 +1785,10 @@ mod tests {
         assert!(!files.can_stream);
         let capture = inbound_capabilities(5001, true);
         assert!(capture.can_stream && capture.file_transfer);
-        assert_eq!(inbound_capabilities(0, true), inbound_capabilities(0, false));
+        assert_eq!(
+            inbound_capabilities(0, true),
+            inbound_capabilities(0, false)
+        );
         assert!(!inbound_capabilities(0, false).file_transfer);
     }
 
@@ -1517,9 +1831,22 @@ mod tests {
         assert_eq!(telemetry.fps, 0.0);
         assert_eq!(telemetry.latency_ms, 0.0);
         assert_eq!(telemetry.video_bitrate_kbps, 0);
-        let json=serde_json::to_value(&telemetry).unwrap();
-        for field in ["capture_receive_estimate_ms","network_rtt_ms","raw_total_rtt_ms","clock_uncertainty_ms","clock_fit_ci95_ms","clock_asymmetry_allowance_ms"]{assert!(json[field].is_null(),"{field} must remain unknown, not zero");}
-        let roundtrip:BridgeTelemetry=serde_json::from_value(json).unwrap();assert_eq!(roundtrip.clock_state,"unavailable");
+        let json = serde_json::to_value(&telemetry).unwrap();
+        for field in [
+            "capture_receive_estimate_ms",
+            "network_rtt_ms",
+            "raw_total_rtt_ms",
+            "clock_uncertainty_ms",
+            "clock_fit_ci95_ms",
+            "clock_asymmetry_allowance_ms",
+        ] {
+            assert!(
+                json[field].is_null(),
+                "{field} must remain unknown, not zero"
+            );
+        }
+        let roundtrip: BridgeTelemetry = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtrip.clock_state, "unavailable");
     }
 
     #[test]
@@ -1584,8 +1911,14 @@ mod tests {
         };
         cache.apply_announcement(announcement, "192.168.1.20:38117".parse().unwrap(), 1);
         let devices = devices_from_snapshot(&cache.snapshot());
-        assert_eq!(devices[0].device_badge, protocol::appearance::DeviceBadgePreset::MacStudio);
-        assert_eq!(serde_json::to_value(&devices[0]).unwrap()["device_badge"], "mac_studio");
+        assert_eq!(
+            devices[0].device_badge,
+            protocol::appearance::DeviceBadgePreset::MacStudio
+        );
+        assert_eq!(
+            serde_json::to_value(&devices[0]).unwrap()["device_badge"],
+            "mac_studio"
+        );
     }
 
     #[test]
@@ -1683,8 +2016,14 @@ mod tests {
         test_host_with_files(client, false)
     }
 
-    fn test_host_with_files(client: &RemoteBridgeClient, files: bool) ->
-        (remote_core::net::UdpSender, mpsc::UnboundedReceiver<(ControlMessage, SocketAddr)>, SocketAddr) {
+    fn test_host_with_files(
+        client: &RemoteBridgeClient,
+        files: bool,
+    ) -> (
+        remote_core::net::UdpSender,
+        mpsc::UnboundedReceiver<(ControlMessage, SocketAddr)>,
+        SocketAddr,
+    ) {
         let host = client
             .runtime()
             .block_on(UdpMultiplexer::bind("127.0.0.1:0"))
@@ -1695,22 +2034,46 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         client.runtime().spawn(async move {
             let mut close_seen = std::collections::HashSet::new();
-            let key=remote_core::session_crypto::load_session_psk();
-            let mut handshakes=remote_core::session_auth::ServerHandshake::default();
-            while let Ok(packet)=receiver.recv().await {
-                let (message,peer)=match packet {
-                    remote_core::net::MultiplexedPacket::Control(message,peer)=>(message,peer),
-                    remote_core::net::MultiplexedPacket::ClockProbe(probe,host_recv_us,peer)=>{
-                        let response=protocol::session_auth::ClockReply{probe,host_recv_us,host_send_us:remote_core::timing::quanta_now_us()};
-                        reply.send_control(&ControlMessage::ClockReply(response),peer).await.unwrap();continue;
+            let key = remote_core::session_crypto::load_session_psk();
+            let mut handshakes = remote_core::session_auth::ServerHandshake::default();
+            while let Ok(packet) = receiver.recv().await {
+                let (message, peer) = match packet {
+                    remote_core::net::MultiplexedPacket::Control(message, peer) => (message, peer),
+                    remote_core::net::MultiplexedPacket::ClockProbe(probe, host_recv_us, peer) => {
+                        let response = protocol::session_auth::ClockReply {
+                            probe,
+                            host_recv_us,
+                            host_send_us: remote_core::timing::quanta_now_us(),
+                        };
+                        reply
+                            .send_control(&ControlMessage::ClockReply(response), peer)
+                            .await
+                            .unwrap();
+                        continue;
                     }
-                    _=>continue,
+                    _ => continue,
                 };
-                if let ControlMessage::SessionHandshake(message)=&message {
-                    if let Some(key)=&key {
-                        let response=handshakes.receive(key,message,peer,remote_core::session_auth::AuthTime::now(),true).unwrap();
-                        if let Some(established)=response.established {reply.install_peer_crypto(peer,established.crypto);}
-                        reply.send_control(&ControlMessage::SessionHandshake(Box::new(response.message)),peer).await.unwrap();
+                if let ControlMessage::SessionHandshake(message) = &message {
+                    if let Some(key) = &key {
+                        let response = handshakes
+                            .receive(
+                                key,
+                                message,
+                                peer,
+                                remote_core::session_auth::AuthTime::now(),
+                                true,
+                            )
+                            .unwrap();
+                        if let Some(established) = response.established {
+                            reply.install_peer_crypto(peer, established.crypto);
+                        }
+                        reply
+                            .send_control(
+                                &ControlMessage::SessionHandshake(Box::new(response.message)),
+                                peer,
+                            )
+                            .await
+                            .unwrap();
                     }
                     continue;
                 }
@@ -1727,14 +2090,21 @@ mod tests {
                             clipboard: false,
                             window_capture: true,
                         }),
-                        SessionCommand::DeliveryClaim { request_id, .. } => Some(SessionCommand::DeliveryReceipt {
-                            request_id, revision:0, state:protocol::session::DeliveryState::Claimed, reason:String::new(),
-                        }),
+                        SessionCommand::DeliveryClaim { request_id, .. } => {
+                            Some(SessionCommand::DeliveryReceipt {
+                                request_id,
+                                revision: 0,
+                                state: protocol::session::DeliveryState::Claimed,
+                                reason: String::new(),
+                            })
+                        }
                         SessionCommand::Subscribe(ref request) => {
                             Some(SessionCommand::Subscribed {
                                 id: request.id,
                                 audio_owner: Some(request.id),
-                                supports_input: true, max_touch_points: 0 })
+                                supports_input: true,
+                                max_touch_points: 0,
+                            })
                         }
                         SessionCommand::SetActivity {
                             id,
@@ -1910,7 +2280,15 @@ mod tests {
                     timestamp: 1,
                     ssrc: session_id,
                 },
-                payload: vec![0, 0, 0, 1, if keyframe { 38 } else { 2 }, 1, sequence_number as u8],
+                payload: vec![
+                    0,
+                    0,
+                    0,
+                    1,
+                    if keyframe { 38 } else { 2 },
+                    1,
+                    sequence_number as u8,
+                ],
             };
             client
                 .runtime()
@@ -1942,7 +2320,9 @@ mod tests {
                 while client.nalu_queue.lock().unwrap().len() != 8 {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
-            }).await.expect("the native consumer queue fills before overflow");
+            })
+            .await
+            .expect("the native consumer queue fills before overflow");
         });
         while receiver.try_recv().is_ok() {}
         send_video(9, false);
@@ -1961,7 +2341,9 @@ mod tests {
             .await
             .expect("overflow requests a recovery keyframe")
         });
-        let retained = client.poll_video_nalu().expect("overflow retains the pending keyframe");
+        let retained = client
+            .poll_video_nalu()
+            .expect("overflow retains the pending keyframe");
         assert!(retained.keyframe);
         assert_eq!(retained.data.last(), Some(&1));
         assert!(client.poll_video_nalu().is_none());
@@ -2135,14 +2517,28 @@ mod tests {
                     // within the same deadline, keeping the exact epoch check.
                     if let Ok(Some((ControlMessage::Session(command), target))) =
                         tokio::time::timeout(Duration::from_millis(1), rx.recv()).await
-                        && let SessionCommand::RequestInputBinding { connection_id, id, source_revision, request, .. } = *command
+                        && let SessionCommand::RequestInputBinding {
+                            connection_id,
+                            id,
+                            source_revision,
+                            request,
+                            ..
+                        } = *command
                         && connection_id == binding.connection_id
                         && id == binding.subscription_id
                         && source_revision == binding.source_revision
                     {
-                        sender.send_control(&ControlMessage::Session(Box::new(SessionCommand::InputBinding {
-                            binding, request, host_time_ms: remote_core::session_crypto::now_unix_ms(),
-                        })), target).await.unwrap();
+                        sender
+                            .send_control(
+                                &ControlMessage::Session(Box::new(SessionCommand::InputBinding {
+                                    binding,
+                                    request,
+                                    host_time_ms: remote_core::session_crypto::now_unix_ms(),
+                                })),
+                                target,
+                            )
+                            .await
+                            .unwrap();
                     }
                 }
             })
@@ -2154,20 +2550,36 @@ mod tests {
 
     #[test]
     fn claimed_workspace_retains_actual_file_capabilities_after_handshake_event_is_consumed() {
-        const CHILD:&str="WEAVELO_CLAIM_CAPABILITIES_FIXTURE_CHILD";
+        const CHILD: &str = "WEAVELO_CLAIM_CAPABILITIES_FIXTURE_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output=std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact","tests::claimed_workspace_retains_actual_file_capabilities_after_handshake_event_is_consumed","--nocapture"])
                 .env(CHILD,"1").output().unwrap();
-            assert!(output.status.success(),"isolated capability fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "isolated capability fixture failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return;
         }
-        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
-        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-claimed-capabilities-fixture");
-        let client=RemoteBridgeClient::new();
-        let (_sender,mut receiver,address)=test_host_with_files(&client,true);
-        let directory=std::env::temp_dir().join(format!("weavelo-claimed-capabilities-{}-{}",std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        assert!(
+            remote_core::session_crypto::load_session_psk().is_none(),
+            "Fixture must not inherit a user key"
+        );
+        remote_core::session_crypto::use_paired_session_secret(
+            "weavelo-synthetic-claimed-capabilities-fixture",
+        );
+        let client = RemoteBridgeClient::new();
+        let (_sender, mut receiver, address) = test_host_with_files(&client, true);
+        let directory = std::env::temp_dir().join(format!(
+            "weavelo-claimed-capabilities-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         client.runtime().block_on(async {
             let claim=protocol::session::DeliveryClaimProof {request_id:17,target_device_id:"fixture-target".into(),
                 ticket:[9;32],sources:vec![CaptureSource::MainDisplay]};
@@ -2185,26 +2597,50 @@ mod tests {
             assert_eq!(capabilities,serde_json::json!({"connection_id":connection_id,"max_subscriptions":8,"files":true,"clipboard":false}));
             drop(workspace);
         });
-        if directory.exists(){std::fs::remove_dir_all(directory).unwrap();}
+        if directory.exists() {
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
     fn workspace_keyboard_liveness_keeps_a_visible_shortcut_owned() {
-        const CHILD:&str="WEAVELO_WORKSPACE_KEYBOARD_FIXTURE_CHILD";
+        const CHILD: &str = "WEAVELO_WORKSPACE_KEYBOARD_FIXTURE_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let output=std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","tests::workspace_keyboard_liveness_keeps_a_visible_shortcut_owned","--nocapture"])
-                .env(CHILD,"1").output().unwrap();
-            assert!(output.status.success(),"isolated touch fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::workspace_keyboard_liveness_keeps_a_visible_shortcut_owned",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated touch fixture failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return;
         }
-        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
-        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-workspace-keyboard-fixture");
+        assert!(
+            remote_core::session_crypto::load_session_psk().is_none(),
+            "Fixture must not inherit a user key"
+        );
+        remote_core::session_crypto::use_paired_session_secret(
+            "weavelo-synthetic-workspace-keyboard-fixture",
+        );
         use protocol::realtime_input::{InputBinding, InputPayload};
         let client = RemoteBridgeClient::new();
         let (sender, mut rx, address) = test_host(&client);
-        let directory = std::env::temp_dir().join(format!("rp-workspace-keyboard-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "rp-workspace-keyboard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir(&directory).unwrap();
         client.runtime().block_on(async {
             let workspace = workspace_bridge::MobileWorkspace::connect(address, directory.clone()).await.unwrap();
@@ -2267,21 +2703,43 @@ mod tests {
 
     #[test]
     fn workspace_touch_uses_shared_grant_and_releases_cancelled_drag() {
-        const CHILD:&str="WEAVELO_WORKSPACE_TOUCH_FIXTURE_CHILD";
+        const CHILD: &str = "WEAVELO_WORKSPACE_TOUCH_FIXTURE_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let output=std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","tests::workspace_touch_uses_shared_grant_and_releases_cancelled_drag","--nocapture"])
-                .env(CHILD,"1").output().unwrap();
-            assert!(output.status.success(),"isolated touch fixture failed: {}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::workspace_touch_uses_shared_grant_and_releases_cancelled_drag",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated touch fixture failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return;
         }
-        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user key");
-        remote_core::session_crypto::use_paired_session_secret("weavelo-synthetic-workspace-touch-fixture");
+        assert!(
+            remote_core::session_crypto::load_session_psk().is_none(),
+            "Fixture must not inherit a user key"
+        );
+        remote_core::session_crypto::use_paired_session_secret(
+            "weavelo-synthetic-workspace-touch-fixture",
+        );
         use protocol::realtime_input::{InputBinding, InputPayload};
         let client = RemoteBridgeClient::new();
         let (sender, mut rx, address) = test_host(&client);
-        let directory = std::env::temp_dir().join(format!("rp-workspace-touch-{}-{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "rp-workspace-touch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir(&directory).unwrap();
         client.runtime().block_on(async {
             let workspace = workspace_bridge::MobileWorkspace::connect(address, directory.clone()).await.unwrap();
@@ -2572,20 +3030,45 @@ mod tests {
         let (sender, mut rx, address) = test_host(&client);
         client.connect("scope".into(), address.to_string());
         grant_manual(&client, &sender, &mut rx, 1);
-        *client.live.lock().unwrap().as_ref().unwrap().video_activity.lock().unwrap() = Some(Instant::now());
+        *client
+            .live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .video_activity
+            .lock()
+            .unwrap() = Some(Instant::now());
         let mut old = client.input_intent_token();
         assert_eq!(client.manual_input_owner.load(Relaxed), 0);
         {
             let _busy = client.lifecycle.lock().unwrap();
             assert!(!client.refresh_input_intent(old));
         }
-        assert_eq!(client.manual_input_revoked.load(Relaxed), 0, "idle failure must not poison a future gesture");
+        assert_eq!(
+            client.manual_input_revoked.load(Relaxed),
+            0,
+            "idle failure must not poison a future gesture"
+        );
         client.handle_touch_input(TouchAction::Down, 1, 0.1, 0.1, 1.0);
-        assert!(client.refresh_input_intent(old), "a fresh Down after idle contention stays healthy");
+        assert!(
+            client.refresh_input_intent(old),
+            "a fresh Down after idle contention stays healthy"
+        );
         for reconnect in [false, true] {
-            if reconnect { client.connect("scope".into(), address.to_string()); }
+            if reconnect {
+                client.connect("scope".into(), address.to_string());
+            }
             grant_manual(&client, &sender, &mut rx, 2);
-            *client.live.lock().unwrap().as_ref().unwrap().video_activity.lock().unwrap() = Some(Instant::now());
+            *client
+                .live
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .video_activity
+                .lock()
+                .unwrap() = Some(Instant::now());
             client.handle_touch_input(TouchAction::Down, 1, 0.1, 0.1, 1.0);
             let current = client.input_intent_token();
             assert_ne!(current, old);
@@ -2599,7 +3082,16 @@ mod tests {
             }
             assert!(client.refresh_input_intent(current));
             assert!(client.touch_tracker.lock().unwrap().has_active_pointers());
-            assert_eq!(client.manual_input_intent.lock().unwrap().as_ref().unwrap().2, current);
+            assert_eq!(
+                client
+                    .manual_input_intent
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .2,
+                current
+            );
             old = current;
         }
         client.disconnect();
@@ -2611,13 +3103,29 @@ mod tests {
         let (sender, mut rx, address) = test_host(&client);
         client.connect("touch-expiry".into(), address.to_string());
         grant_manual(&client, &sender, &mut rx, 1);
-        *client.live.lock().unwrap().as_ref().unwrap().video_activity.lock().unwrap() = Some(Instant::now());
+        *client
+            .live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .video_activity
+            .lock()
+            .unwrap() = Some(Instant::now());
         for heartbeat_first in [false, true] {
             client.handle_touch_input(TouchAction::Down, 1, 0.1, 0.1, 1.0);
             assert!(client.touch_tracker.lock().unwrap().has_active_pointers());
             // Simulate a stalled frontend without delaying unrelated actor IO.
-            client.manual_input_intent.lock().unwrap().as_mut().unwrap().1 = Instant::now() - Duration::from_millis(400);
-            if heartbeat_first { assert!(!client.refresh_input_intent(client.input_intent_token())); }
+            client
+                .manual_input_intent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .1 = Instant::now() - Duration::from_millis(400);
+            if heartbeat_first {
+                assert!(!client.refresh_input_intent(client.input_intent_token()));
+            }
             client.handle_touch_input(TouchAction::Up, 1, 0.1, 0.1, 0.0);
             assert!(!client.touch_tracker.lock().unwrap().has_active_pointers());
             assert!(client.manual_input_intent.lock().unwrap().is_none());
@@ -2628,7 +3136,10 @@ mod tests {
             let _busy = client.lifecycle.lock().unwrap();
             client.handle_touch_input(TouchAction::Cancel, 1, 0.0, 0.0, 0.0);
         }
-        assert!(!client.refresh_input_intent(token), "a dropped Cancel must invalidate the old gesture");
+        assert!(
+            !client.refresh_input_intent(token),
+            "a dropped Cancel must invalidate the old gesture"
+        );
         assert!(!client.touch_tracker.lock().unwrap().has_active_pointers());
         client.handle_touch_input(TouchAction::Down, 1, 0.1, 0.1, 1.0);
         grant_manual(&client, &sender, &mut rx, 2);
@@ -2639,7 +3150,12 @@ mod tests {
         client.runtime().block_on(async {
             let until = tokio::time::Instant::now() + Duration::from_millis(120);
             while let Ok(packet) = tokio::time::timeout_at(until, next_input(&mut rx, true)).await {
-                assert!(!matches!(packet.payload, protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseDown(_) | protocol::InputEvent::MouseUp(_))));
+                assert!(!matches!(
+                    packet.payload,
+                    protocol::realtime_input::InputPayload::Event(
+                        protocol::InputEvent::MouseDown(_) | protocol::InputEvent::MouseUp(_)
+                    )
+                ));
             }
         });
         client.disconnect();
@@ -2673,16 +3189,28 @@ mod tests {
             }
         };
         assert_eq!(drag.binding, binding);
-        let intent=client.input_intent_token();assert_ne!(intent,0);
-        assert!(!client.refresh_input_intent(intent^1),"wrong session cannot renew a gesture");
+        let intent = client.input_intent_token();
+        assert_ne!(intent, 0);
+        assert!(
+            !client.refresh_input_intent(intent ^ 1),
+            "wrong session cannot renew a gesture"
+        );
         for index in 0..5 {
             std::thread::sleep(Duration::from_millis(90));
-            assert!(client.refresh_input_intent(intent),"a healthy manual viewport must preserve long drag");
-            if index==2 {grant_manual(&client,&sender,&mut rx,1);}
+            assert!(
+                client.refresh_input_intent(intent),
+                "a healthy manual viewport must preserve long drag"
+            );
+            if index == 2 {
+                grant_manual(&client, &sender, &mut rx, 1);
+            }
         }
         std::thread::sleep(Duration::from_millis(330));
-        grant_manual(&client,&sender,&mut rx,1);
-        assert!(!client.refresh_input_intent(intent),"late UI wake must clear its old drag");
+        grant_manual(&client, &sender, &mut rx, 1);
+        assert!(
+            !client.refresh_input_intent(intent),
+            "late UI wake must clear its old drag"
+        );
         assert!(!client.touch_tracker.lock().unwrap().has_active_pointers());
         client.set_media_paused(true);
         assert!(

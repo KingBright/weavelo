@@ -43,7 +43,9 @@ pub(crate) fn encode_control(command: &SessionCommand) -> Value {
 
 pub(crate) fn decode_control(json: &str) -> Result<SessionCommand, String> {
     let mut value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    if let Some(id) = value.get_mut("RequestCameraSwitch").and_then(|r| r.get_mut("delivery_request_id"))
+    if let Some(id) = value
+        .get_mut("RequestCameraSwitch")
+        .and_then(|r| r.get_mut("delivery_request_id"))
         && !id.is_null()
     {
         *id = exact_request_id(id)?.into();
@@ -58,7 +60,14 @@ mod tests {
 
     #[test]
     fn unsigned_ids_survive_the_android_json_roundtrip_without_precision_loss() {
-        for id in [1, (1 << 53) + 1, i64::MAX as u64, i64::MAX as u64 + 1, 16_885_485_083_476_720_000, u64::MAX] {
+        for id in [
+            1,
+            (1 << 53) + 1,
+            i64::MAX as u64,
+            i64::MAX as u64 + 1,
+            16_885_485_083_476_720_000,
+            u64::MAX,
+        ] {
             let claim = DeliveryClaimProof {
                 request_id: id,
                 ticket: [173; 32],
@@ -67,20 +76,34 @@ mod tests {
             };
             let wire = serde_json::to_string(&claim).unwrap();
             let encoded = encode(claim);
-            assert_eq!(encoded["request_id"].as_str(), Some(id.to_string().as_str()));
+            assert_eq!(
+                encoded["request_id"].as_str(),
+                Some(id.to_string().as_str())
+            );
             let transported: Value = serde_json::from_str(&encoded.to_string()).unwrap();
-            assert_eq!(serde_json::to_string(&decode(&transported).unwrap()).unwrap(), wire);
+            assert_eq!(
+                serde_json::to_string(&decode(&transported).unwrap()).unwrap(),
+                wire
+            );
         }
     }
 
     #[test]
     fn rounded_or_noncanonical_request_ids_are_rejected() {
         let valid = encode(DeliveryClaimProof {
-            request_id: 1, ticket: [1; 32], target_device_id: "owned-phone".into(),
+            request_id: 1,
+            ticket: [1; 32],
+            target_device_id: "owned-phone".into(),
             sources: vec![CaptureSource::MainDisplay],
         });
-        for invalid in [serde_json::json!(1.688548508347672e19), serde_json::json!(1),
-            serde_json::json!("18446744073709551616"), serde_json::json!("+1"), serde_json::json!("01"), Value::Null] {
+        for invalid in [
+            serde_json::json!(1.688548508347672e19),
+            serde_json::json!(1),
+            serde_json::json!("18446744073709551616"),
+            serde_json::json!("+1"),
+            serde_json::json!("01"),
+            Value::Null,
+        ] {
             let mut value = valid.clone();
             value["request_id"] = invalid;
             assert!(decode(&value).is_err());
@@ -91,13 +114,23 @@ mod tests {
     fn camera_switch_keeps_unsigned_delivery_ids_exact_across_android_json() {
         for id in [(1 << 53) + 1, i64::MAX as u64 + 1, u64::MAX] {
             let request = protocol::session::CameraSwitchRequest {
-                id: 1, request_id: 2, source_revision: 3,
-                from: CaptureSource::Camera(4), target: CaptureSource::Camera(5),
+                id: 1,
+                request_id: 2,
+                source_revision: 3,
+                from: CaptureSource::Camera(4),
+                target: CaptureSource::Camera(5),
                 delivery_request_id: Some(id),
             };
-            let reply = encode_control(&SessionCommand::CameraSwitchResult { request: request.clone(), ready: Ok(()) });
-            assert_eq!(reply["CameraSwitchResult"]["request"]["delivery_request_id"], id.to_string());
-            let mut command = serde_json::to_value(SessionCommand::RequestCameraSwitch(request.clone())).unwrap();
+            let reply = encode_control(&SessionCommand::CameraSwitchResult {
+                request: request.clone(),
+                ready: Ok(()),
+            });
+            assert_eq!(
+                reply["CameraSwitchResult"]["request"]["delivery_request_id"],
+                id.to_string()
+            );
+            let mut command =
+                serde_json::to_value(SessionCommand::RequestCameraSwitch(request.clone())).unwrap();
             command["RequestCameraSwitch"]["delivery_request_id"] = id.to_string().into();
             assert!(matches!(decode_control(&command.to_string()).unwrap(),
                 SessionCommand::RequestCameraSwitch(decoded) if decoded == request));

@@ -189,8 +189,11 @@ impl RelayTunnelDiagnostics {
     pub(crate) fn retry(&self, failure: RelayFailure) {
         self.update(|s| {
             s.value.last_disconnect = Some(RelayDisconnect {
-                failure, stage: s.value.stage, os_error: s.value.last_os_error,
-                attempt: s.value.attempts, age_ms: 0,
+                failure,
+                stage: s.value.stage,
+                os_error: s.value.last_os_error,
+                attempt: s.value.attempts,
+                age_ms: 0,
             });
             s.last_disconnect_at = Some(Instant::now());
             s.value.state = RelayConnectionState::RetryWait;
@@ -208,7 +211,10 @@ impl RelayTunnelDiagnostics {
 }
 
 pub(crate) fn io_failure(error: &std::io::Error) -> RelayFailure {
-    if let Some(error) = error.get_ref().and_then(|e|e.downcast_ref::<tokio_tungstenite::tungstenite::Error>()) {
+    if let Some(error) = error
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<tokio_tungstenite::tungstenite::Error>())
+    {
         return websocket_failure(error);
     }
     use std::io::ErrorKind;
@@ -230,7 +236,9 @@ pub(crate) fn websocket_failure(error: &tokio_tungstenite::tungstenite::Error) -
     match error {
         Error::Tls(_) => RelayFailure::Tls,
         Error::Io(error) => io_failure(error),
-        Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake) => RelayFailure::ProtocolReset,
+        Error::Protocol(
+            tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+        ) => RelayFailure::ProtocolReset,
         Error::Protocol(_) | Error::Http(_) | Error::HttpFormat(_) => RelayFailure::Protocol,
         Error::Capacity(_) => RelayFailure::Capacity,
         Error::WriteBufferFull(_) => RelayFailure::Backpressure,

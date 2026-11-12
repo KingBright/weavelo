@@ -102,7 +102,12 @@ impl DiscoveryDiagnostics {
             _ => {}
         }
     }
-    pub(crate) fn send_failure(&self, relay: bool, target: std::net::SocketAddr, error: &std::io::Error) {
+    pub(crate) fn send_failure(
+        &self,
+        relay: bool,
+        target: std::net::SocketAddr,
+        error: &std::io::Error,
+    ) {
         let observation = DiscoverySendFailure {
             relay,
             error_kind: format!("{:?}", error.kind()),
@@ -112,7 +117,11 @@ impl DiscoveryDiagnostics {
             target_loopback: target.ip().is_loopback(),
         };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if relay { state.relay.send_errors += 1; } else { state.udp.send_errors += 1; }
+        if relay {
+            state.relay.send_errors += 1;
+        } else {
+            state.udp.send_errors += 1;
+        }
         state.last_error = Some(DiscoveryFailure::Send);
         state.last_send_failure = Some(observation);
     }

@@ -44,10 +44,17 @@ struct Lease {
     focus_probe: Option<(u64, Instant)>,
 }
 impl Lease {
-    fn expire_frontend(&mut self,now:Instant)->bool {
-        if self.frontend_intent.is_some_and(|at|now.saturating_duration_since(at).as_millis()>=protocol::realtime_input::HOLD_TIMEOUT_MS as u128) {
-            self.held=HeldState::default();self.frontend_intent=None;self.frontend_expired=true;return true;
-        }false
+    fn expire_frontend(&mut self, now: Instant) -> bool {
+        if self.frontend_intent.is_some_and(|at| {
+            now.saturating_duration_since(at).as_millis()
+                >= protocol::realtime_input::HOLD_TIMEOUT_MS as u128
+        }) {
+            self.held = HeldState::default();
+            self.frontend_intent = None;
+            self.frontend_expired = true;
+            return true;
+        }
+        false
     }
 
     fn packet(&mut self, payload: InputPayload) -> Option<RealtimeInput> {
@@ -67,7 +74,10 @@ impl InputState {
         self.wakeup.clone()
     }
     pub(crate) fn source(&mut self, id: u32, revision: u32) {
-        self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
+        self.next_owner = self
+            .next_owner
+            .checked_add(1)
+            .expect("input owner exhausted");
         self.slots.insert(
             id,
             Slot {
@@ -82,16 +92,27 @@ impl InputState {
         );
         self.wakeup.notify_one();
     }
-    pub(crate) fn presented_geometry(&mut self,id:u32,source_revision:u32,geometry_revision:u64) -> bool {
-        if let Some(slot)=self.slots.get_mut(&id).filter(|slot|slot.revision==source_revision) {
-            if slot.presented_geometry_revision!=geometry_revision {
-                let regressed=geometry_revision<slot.presented_geometry_revision;
-                slot.presented_geometry_revision=geometry_revision;
-                if let Some(lease) = slot.lease.as_mut() { lease.focus_probe = None; }
-                if geometry_revision==0 || regressed {
-                    slot.request=0;
-                    slot.request_geometry_revision=0;
-                    slot.lease=None;
+    pub(crate) fn presented_geometry(
+        &mut self,
+        id: u32,
+        source_revision: u32,
+        geometry_revision: u64,
+    ) -> bool {
+        if let Some(slot) = self
+            .slots
+            .get_mut(&id)
+            .filter(|slot| slot.revision == source_revision)
+        {
+            if slot.presented_geometry_revision != geometry_revision {
+                let regressed = geometry_revision < slot.presented_geometry_revision;
+                slot.presented_geometry_revision = geometry_revision;
+                if let Some(lease) = slot.lease.as_mut() {
+                    lease.focus_probe = None;
+                }
+                if geometry_revision == 0 || regressed {
+                    slot.request = 0;
+                    slot.request_geometry_revision = 0;
+                    slot.lease = None;
                     return false;
                 }
                 // Keep in-flight request metadata so same-epoch renewals survive
@@ -135,8 +156,13 @@ impl InputState {
         self.slots.remove(&id);
     }
     pub(crate) fn invalidate_text_owner(&mut self, id: u32) {
-        self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
-        if let Some(slot) = self.slots.get_mut(&id) { slot.owner = self.next_owner; }
+        self.next_owner = self
+            .next_owner
+            .checked_add(1)
+            .expect("input owner exhausted");
+        if let Some(slot) = self.slots.get_mut(&id) {
+            slot.owner = self.next_owner;
+        }
     }
     pub(crate) fn ready(&self, id: u32, revision: u32) -> bool {
         self.slots.get(&id).is_some_and(|slot| {
@@ -149,32 +175,62 @@ impl InputState {
         })
     }
     pub(crate) fn binding(&self, id: u32, revision: u32) -> Option<InputBinding> {
-        self.ready(id, revision).then(|| self.slots[&id].lease.as_ref().unwrap().binding)
+        self.ready(id, revision)
+            .then(|| self.slots[&id].lease.as_ref().unwrap().binding)
     }
     pub(crate) fn focus_probe(&mut self, binding: InputBinding, sequence: u64) {
-        if let Some(lease) = self.slots.get_mut(&binding.subscription_id).and_then(|slot| slot.lease.as_mut()).filter(|lease| lease.binding == binding) {
+        if let Some(lease) = self
+            .slots
+            .get_mut(&binding.subscription_id)
+            .and_then(|slot| slot.lease.as_mut())
+            .filter(|lease| lease.binding == binding)
+        {
             lease.focus_probe = Some((sequence, Instant::now()));
         }
     }
     pub(crate) fn accept_focus_probe(&mut self, binding: InputBinding, sequence: u64) -> bool {
-        if self.binding(binding.subscription_id, binding.source_revision) != Some(binding) { return false; }
-        let Some(lease) = self.slots.get_mut(&binding.subscription_id).and_then(|slot| slot.lease.as_mut()) else { return false; };
-        if !lease.focus_probe.is_some_and(|(expected, at)| expected == sequence && at.elapsed().as_millis() <= 600) { return false; }
+        if self.binding(binding.subscription_id, binding.source_revision) != Some(binding) {
+            return false;
+        }
+        let Some(lease) = self
+            .slots
+            .get_mut(&binding.subscription_id)
+            .and_then(|slot| slot.lease.as_mut())
+        else {
+            return false;
+        };
+        if !lease
+            .focus_probe
+            .is_some_and(|(expected, at)| expected == sequence && at.elapsed().as_millis() <= 600)
+        {
+            return false;
+        }
         lease.focus_probe = None;
         true
     }
     pub(crate) fn text_owner(&self, id: u32, revision: u32) -> Option<TextInputOwner> {
         let binding = self.binding(id, revision)?;
-        Some(TextInputOwner { connection_id: binding.connection_id, subscription_id: id,
-            source_revision: revision, generation: self.slots[&id].owner })
+        Some(TextInputOwner {
+            connection_id: binding.connection_id,
+            subscription_id: id,
+            source_revision: revision,
+            generation: self.slots[&id].owner,
+        })
     }
     pub(crate) fn text_binding(&self, owner: TextInputOwner) -> Option<InputBinding> {
         (self.text_owner(owner.subscription_id, owner.source_revision) == Some(owner))
-            .then(|| self.binding(owner.subscription_id, owner.source_revision)).flatten()
+            .then(|| self.binding(owner.subscription_id, owner.source_revision))
+            .flatten()
     }
-    pub(crate) fn text_for_owner(&mut self, owner: TextInputOwner, text: &str, age: std::time::Duration)
-        -> Result<Vec<protocol::interaction::TextCommit>, String> {
-        let binding = self.text_binding(owner).ok_or("text input source changed")?;
+    pub(crate) fn text_for_owner(
+        &mut self,
+        owner: TextInputOwner,
+        text: &str,
+        age: std::time::Duration,
+    ) -> Result<Vec<protocol::interaction::TextCommit>, String> {
+        let binding = self
+            .text_binding(owner)
+            .ok_or("text input source changed")?;
         self.text_aged(binding, text, age)
     }
     pub(crate) fn seal_bound(
@@ -191,7 +247,9 @@ impl InputState {
                 source_revision: binding.source_revision,
                 event,
             },
-            None => SessionCommand::ReleaseInput { id: binding.subscription_id },
+            None => SessionCommand::ReleaseInput {
+                id: binding.subscription_id,
+            },
         })
     }
     pub(crate) fn grant(
@@ -233,26 +291,57 @@ impl InputState {
             sequence: 0,
             held: HeldState::default(),
             release: None,
-            frontend_intent:None,
-            frontend_expired:false,
-            focus_probe:None,
+            frontend_intent: None,
+            frontend_expired: false,
+            focus_probe: None,
         });
     }
     #[cfg(test)]
-    pub(crate) fn text(&mut self, binding: InputBinding, text: &str) -> Result<Vec<protocol::interaction::TextCommit>, String> {
-        self.text_aged(binding,text,std::time::Duration::ZERO)
+    pub(crate) fn text(
+        &mut self,
+        binding: InputBinding,
+        text: &str,
+    ) -> Result<Vec<protocol::interaction::TextCommit>, String> {
+        self.text_aged(binding, text, std::time::Duration::ZERO)
     }
-    pub(crate) fn text_aged(&mut self,binding:InputBinding,text:&str,age:std::time::Duration)->Result<Vec<protocol::interaction::TextCommit>,String> {
-        if age.as_millis()>protocol::realtime_input::MAX_INPUT_AGE_MS as u128 {return Err("text input expired in the local UI queue".into());}
-        if text.len()>crate::committed_text::MAX_TEXT_EVENTS*protocol::interaction::MAX_COMMITTED_TEXT_BYTES {return Err("text input is too large".into());}
-        let chunks=protocol::interaction::text_chunks(text)?.map(|s|protocol::interaction::CommittedText::new(s.to_owned())).collect::<Result<Vec<_>,_>>()?;
-        if self.binding(binding.subscription_id,binding.source_revision)!=Some(binding) {return Err("text input ownership changed".into());}
-        let lease=self.slots[&binding.subscription_id].lease.as_ref().unwrap();
-        let created_host_ms=lease.host_ms.saturating_add(lease.received.elapsed().as_millis() as u64).saturating_sub(age.as_millis() as u64);
-        let mut requests=Vec::with_capacity(chunks.len());
+    pub(crate) fn text_aged(
+        &mut self,
+        binding: InputBinding,
+        text: &str,
+        age: std::time::Duration,
+    ) -> Result<Vec<protocol::interaction::TextCommit>, String> {
+        if age.as_millis() > protocol::realtime_input::MAX_INPUT_AGE_MS as u128 {
+            return Err("text input expired in the local UI queue".into());
+        }
+        if text.len()
+            > crate::committed_text::MAX_TEXT_EVENTS
+                * protocol::interaction::MAX_COMMITTED_TEXT_BYTES
+        {
+            return Err("text input is too large".into());
+        }
+        let chunks = protocol::interaction::text_chunks(text)?
+            .map(|s| protocol::interaction::CommittedText::new(s.to_owned()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if self.binding(binding.subscription_id, binding.source_revision) != Some(binding) {
+            return Err("text input ownership changed".into());
+        }
+        let lease = self.slots[&binding.subscription_id].lease.as_ref().unwrap();
+        let created_host_ms = lease
+            .host_ms
+            .saturating_add(lease.received.elapsed().as_millis() as u64)
+            .saturating_sub(age.as_millis() as u64);
+        let mut requests = Vec::with_capacity(chunks.len());
         for text in chunks {
-            self.next_text=self.next_text.checked_add(1).ok_or("text input sequence exhausted")?;
-            requests.push(protocol::interaction::TextCommit {binding,request_id:self.next_text,created_host_ms,text});
+            self.next_text = self
+                .next_text
+                .checked_add(1)
+                .ok_or("text input sequence exhausted")?;
+            requests.push(protocol::interaction::TextCommit {
+                binding,
+                request_id: self.next_text,
+                created_host_ms,
+                text,
+            });
         }
         Ok(requests)
     }
@@ -278,16 +367,40 @@ impl InputState {
     }
     /// Only a healthy input frontend can extend its current held assertion.
     /// Grants/transport snapshots never call this and cannot revive expired keys.
-    pub(crate) fn refresh_bound(&mut self,binding:InputBinding)->bool {
-        self.refresh_bound_with_age(binding,std::time::Duration::ZERO)
+    pub(crate) fn refresh_bound(&mut self, binding: InputBinding) -> bool {
+        self.refresh_bound_with_age(binding, std::time::Duration::ZERO)
     }
-    pub(crate) fn refresh_bound_with_age(&mut self,binding:InputBinding,age:std::time::Duration)->bool {
-        if age>std::time::Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS)
-            || self.binding(binding.subscription_id,binding.source_revision)!=Some(binding){return false;}
-        let now=Instant::now();let Some(produced)=now.checked_sub(age) else{return false;};
-        let lease=self.slots.get_mut(&binding.subscription_id).unwrap().lease.as_mut().unwrap();
-        if lease.expire_frontend(now)||lease.frontend_expired{return false;}
-        if !lease.held.snapshot().is_empty(){lease.frontend_intent=Some(lease.frontend_intent.map_or(produced,|previous|previous.max(produced)));}
+    pub(crate) fn refresh_bound_with_age(
+        &mut self,
+        binding: InputBinding,
+        age: std::time::Duration,
+    ) -> bool {
+        if age > std::time::Duration::from_millis(protocol::realtime_input::MAX_INPUT_AGE_MS)
+            || self.binding(binding.subscription_id, binding.source_revision) != Some(binding)
+        {
+            return false;
+        }
+        let now = Instant::now();
+        let Some(produced) = now.checked_sub(age) else {
+            return false;
+        };
+        let lease = self
+            .slots
+            .get_mut(&binding.subscription_id)
+            .unwrap()
+            .lease
+            .as_mut()
+            .unwrap();
+        if lease.expire_frontend(now) || lease.frontend_expired {
+            return false;
+        }
+        if !lease.held.snapshot().is_empty() {
+            lease.frontend_intent = Some(
+                lease
+                    .frontend_intent
+                    .map_or(produced, |previous| previous.max(produced)),
+            );
+        }
         true
     }
     pub(crate) fn snapshots(&mut self) -> Vec<RealtimeInput> {
@@ -301,11 +414,18 @@ impl InputState {
                     return None;
                 }
                 lease.expire_frontend(Instant::now());
-                let held=lease.held.snapshot();
-                let age=if held.is_empty(){0}else{lease.frontend_intent.map_or(0,|at|at.elapsed().as_millis() as u64)};
-                let mut packet=lease.packet(InputPayload::Held(held))?;
+                let held = lease.held.snapshot();
+                let age = if held.is_empty() {
+                    0
+                } else {
+                    lease
+                        .frontend_intent
+                        .map_or(0, |at| at.elapsed().as_millis() as u64)
+                };
+                let mut packet = lease.packet(InputPayload::Held(held))?;
                 // The actor must not stamp cached UI intent with a newer time.
-                packet.created_host_ms=packet.created_host_ms.saturating_sub(age);Some(packet)
+                packet.created_host_ms = packet.created_host_ms.saturating_sub(age);
+                Some(packet)
             })
             .collect()
     }
@@ -325,8 +445,13 @@ impl InputState {
                 event,
             } => (id, Some(source_revision), Some(event), false),
             SessionCommand::ReleaseInput { id } => {
-                self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
-                if let Some(slot) = self.slots.get_mut(&id) { slot.owner = self.next_owner; }
+                self.next_owner = self
+                    .next_owner
+                    .checked_add(1)
+                    .expect("input owner exhausted");
+                if let Some(slot) = self.slots.get_mut(&id) {
+                    slot.owner = self.next_owner;
+                }
                 (id, None, None, true)
             }
             SessionCommand::SwitchSource {
@@ -350,7 +475,10 @@ impl InputState {
                 if let Some(slot) = self.slots.get_mut(&id) {
                     slot.enabled = video;
                     if !video {
-                        self.next_owner = self.next_owner.checked_add(1).expect("input owner exhausted");
+                        self.next_owner = self
+                            .next_owner
+                            .checked_add(1)
+                            .expect("input owner exhausted");
                         slot.owner = self.next_owner;
                         slot.lease = None;
                         slot.request = 0;
@@ -382,10 +510,11 @@ impl InputState {
             return Err("input binding expired".into());
         }
         lease.expire_frontend(Instant::now());
-        let was_empty=lease.held.snapshot().is_empty();
+        let was_empty = lease.held.snapshot().is_empty();
         let payload = if release {
             lease.held = HeldState::default();
-            lease.frontend_intent=None;lease.frontend_expired=false;
+            lease.frontend_intent = None;
+            lease.frontend_expired = false;
             InputPayload::Release
         } else {
             let seq = lease
@@ -419,8 +548,13 @@ impl InputState {
                     .ok_or("duplicate or unowned input transition")?,
             )
         };
-        if !release && was_empty && !lease.held.snapshot().is_empty(){lease.frontend_intent=Some(Instant::now());lease.frontend_expired=false;}
-        if lease.held.snapshot().is_empty(){lease.frontend_intent=None;}
+        if !release && was_empty && !lease.held.snapshot().is_empty() {
+            lease.frontend_intent = Some(Instant::now());
+            lease.frontend_expired = false;
+        }
+        if lease.held.snapshot().is_empty() {
+            lease.frontend_intent = None;
+        }
         let packet = lease.packet(payload).ok_or("input sequence exhausted")?;
         if release {
             lease.release = Some(packet.sequence);
@@ -449,85 +583,208 @@ mod tests {
     use super::*;
     #[test]
     fn editor_probe_requires_exact_live_sequence_and_painted_geometry() {
-        let mut state=InputState::default(); state.source(7,0); state.presented_geometry(7,0,1); grant(&mut state,1);
-        let binding=state.binding(7,0).unwrap();
-        state.focus_probe(binding,9);
-        assert!(!state.accept_focus_probe(binding,8));
-        assert!(!state.accept_focus_probe(InputBinding {epoch:[8;16],..binding},9));
-        assert!(state.accept_focus_probe(binding,9));
-        assert!(!state.accept_focus_probe(binding,9));
-        state.focus_probe(binding,10);
-        state.presented_geometry(7,0,2);
-        assert!(!state.accept_focus_probe(binding,10));
-        state.focus_probe(binding,11);
-        grant(&mut state,2);
-        assert!(!state.accept_focus_probe(binding,11));
-        let current=state.binding(7,0).unwrap();
-        state.focus_probe(current,12);
-        state.slots.get_mut(&7).unwrap().lease.as_mut().unwrap().focus_probe=Some((12,Instant::now()-std::time::Duration::from_millis(601)));
-        assert!(!state.accept_focus_probe(current,12));
+        let mut state = InputState::default();
+        state.source(7, 0);
+        state.presented_geometry(7, 0, 1);
+        grant(&mut state, 1);
+        let binding = state.binding(7, 0).unwrap();
+        state.focus_probe(binding, 9);
+        assert!(!state.accept_focus_probe(binding, 8));
+        assert!(!state.accept_focus_probe(
+            InputBinding {
+                epoch: [8; 16],
+                ..binding
+            },
+            9
+        ));
+        assert!(state.accept_focus_probe(binding, 9));
+        assert!(!state.accept_focus_probe(binding, 9));
+        state.focus_probe(binding, 10);
+        state.presented_geometry(7, 0, 2);
+        assert!(!state.accept_focus_probe(binding, 10));
+        state.focus_probe(binding, 11);
+        grant(&mut state, 2);
+        assert!(!state.accept_focus_probe(binding, 11));
+        let current = state.binding(7, 0).unwrap();
+        state.focus_probe(current, 12);
+        state
+            .slots
+            .get_mut(&7)
+            .unwrap()
+            .lease
+            .as_mut()
+            .unwrap()
+            .focus_probe = Some((12, Instant::now() - std::time::Duration::from_millis(601)));
+        assert!(!state.accept_focus_probe(current, 12));
     }
     #[test]
     fn composition_survives_lease_renewal_but_keeps_the_commit_age() {
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
-        let owner=state.text_owner(7,0).unwrap();let old=state.binding(7,0).unwrap();
-        grant(&mut state,2);
-        assert_eq!(state.text_owner(7,0),Some(owner));
-        assert!(state.text_aged(old,"old wire grant",std::time::Duration::ZERO).is_err());
-        let commits=state.text_for_owner(owner,"你好🙂",std::time::Duration::from_millis(160)).unwrap();
-        assert_eq!(commits[0].binding.epoch,[2;16]);
-        let lease=state.slots[&7].lease.as_ref().unwrap();
-        let now=lease.host_ms+lease.received.elapsed().as_millis() as u64;
-        assert!(now.saturating_sub(commits[0].created_host_ms)>=160);
-        assert!(state.text_for_owner(owner,"expired",std::time::Duration::from_millis(251)).is_err());
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        let owner = state.text_owner(7, 0).unwrap();
+        let old = state.binding(7, 0).unwrap();
+        grant(&mut state, 2);
+        assert_eq!(state.text_owner(7, 0), Some(owner));
+        assert!(
+            state
+                .text_aged(old, "old wire grant", std::time::Duration::ZERO)
+                .is_err()
+        );
+        let commits = state
+            .text_for_owner(owner, "你好🙂", std::time::Duration::from_millis(160))
+            .unwrap();
+        assert_eq!(commits[0].binding.epoch, [2; 16]);
+        let lease = state.slots[&7].lease.as_ref().unwrap();
+        let now = lease.host_ms + lease.received.elapsed().as_millis() as u64;
+        assert!(now.saturating_sub(commits[0].created_host_ms) >= 160);
+        assert!(
+            state
+                .text_for_owner(owner, "expired", std::time::Duration::from_millis(251))
+                .is_err()
+        );
     }
     #[test]
     fn presented_revisions_fence_delayed_grants_and_keep_roi_lease() {
-        let mut state=InputState::default();state.source(7,0);
-        state.presented_geometry(7,0,1);grant(&mut state,1);
-        let lease=state.binding(7,0).unwrap();
-        let SessionCommand::RequestInputBinding{request,..}=state.requests(1).remove(0) else {panic!()};
-        state.presented_geometry(7,0,2);
-        state.grant(1,InputBinding{epoch:[2;16],..lease},request,100);
-        assert_eq!(state.binding(7,0),Some(lease),"ROI change keeps the current lease");
-        state.presented_geometry(7,0,1);
-        assert!(state.binding(7,0).is_none(),"an older painted frame cannot reuse a newer lease");
-        state.presented_geometry(7,1,9);
-        let SessionCommand::RequestInputBinding{presented_geometry_revision,..}=state.requests(1).remove(0) else {panic!()};
-        assert_eq!(presented_geometry_revision,1,"a foreign source revision cannot update presentation");
-        state.source(7,1);
-        let SessionCommand::RequestInputBinding{presented_geometry_revision,..}=state.requests(1).remove(0) else {panic!()};
-        assert_eq!(presented_geometry_revision,0,"source replacement forgets the prior frame");
+        let mut state = InputState::default();
+        state.source(7, 0);
+        state.presented_geometry(7, 0, 1);
+        grant(&mut state, 1);
+        let lease = state.binding(7, 0).unwrap();
+        let SessionCommand::RequestInputBinding { request, .. } = state.requests(1).remove(0)
+        else {
+            panic!()
+        };
+        state.presented_geometry(7, 0, 2);
+        state.grant(
+            1,
+            InputBinding {
+                epoch: [2; 16],
+                ..lease
+            },
+            request,
+            100,
+        );
+        assert_eq!(
+            state.binding(7, 0),
+            Some(lease),
+            "ROI change keeps the current lease"
+        );
+        state.presented_geometry(7, 0, 1);
+        assert!(
+            state.binding(7, 0).is_none(),
+            "an older painted frame cannot reuse a newer lease"
+        );
+        state.presented_geometry(7, 1, 9);
+        let SessionCommand::RequestInputBinding {
+            presented_geometry_revision,
+            ..
+        } = state.requests(1).remove(0)
+        else {
+            panic!()
+        };
+        assert_eq!(
+            presented_geometry_revision, 1,
+            "a foreign source revision cannot update presentation"
+        );
+        state.source(7, 1);
+        let SessionCommand::RequestInputBinding {
+            presented_geometry_revision,
+            ..
+        } = state.requests(1).remove(0)
+        else {
+            panic!()
+        };
+        assert_eq!(
+            presented_geometry_revision, 0,
+            "source replacement forgets the prior frame"
+        );
     }
     #[test]
     fn composition_never_adopts_replaced_suspended_released_or_foreign_owners() {
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
-        let initial=state.text_owner(7,0).unwrap();
-        let mut foreign=initial;foreign.connection_id+=1;
-        assert!(state.text_for_owner(foreign,"wrong peer",std::time::Duration::ZERO).is_err());
-        state.source(7,0);grant(&mut state,2);
-        assert!(state.text_for_owner(initial,"reused source ID",std::time::Duration::ZERO).is_err());
-        let owner=state.text_owner(7,0).unwrap();
-        state.seal(SessionCommand::SetActivity{id:7,revision:1,video:false,audio:false}).unwrap();
-        state.seal(SessionCommand::SetActivity{id:7,revision:2,video:true,audio:true}).unwrap();grant(&mut state,3);
-        assert!(state.text_for_owner(owner,"resumed",std::time::Duration::ZERO).is_err());
-        let owner=state.text_owner(7,0).unwrap();
-        state.seal(SessionCommand::ReleaseInput{id:7}).unwrap();
-        assert!(state.text_for_owner(owner,"released",std::time::Duration::ZERO).is_err());
-        let owner=state.text_owner(7,0).unwrap();state.invalidate_text_owner(7);
-        assert!(state.text_for_owner(owner,"permission revoked",std::time::Duration::ZERO).is_err());
-        state.remove(7);assert!(state.text_owner(7,0).is_none());
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        let initial = state.text_owner(7, 0).unwrap();
+        let mut foreign = initial;
+        foreign.connection_id += 1;
+        assert!(
+            state
+                .text_for_owner(foreign, "wrong peer", std::time::Duration::ZERO)
+                .is_err()
+        );
+        state.source(7, 0);
+        grant(&mut state, 2);
+        assert!(
+            state
+                .text_for_owner(initial, "reused source ID", std::time::Duration::ZERO)
+                .is_err()
+        );
+        let owner = state.text_owner(7, 0).unwrap();
+        state
+            .seal(SessionCommand::SetActivity {
+                id: 7,
+                revision: 1,
+                video: false,
+                audio: false,
+            })
+            .unwrap();
+        state
+            .seal(SessionCommand::SetActivity {
+                id: 7,
+                revision: 2,
+                video: true,
+                audio: true,
+            })
+            .unwrap();
+        grant(&mut state, 3);
+        assert!(
+            state
+                .text_for_owner(owner, "resumed", std::time::Duration::ZERO)
+                .is_err()
+        );
+        let owner = state.text_owner(7, 0).unwrap();
+        state.seal(SessionCommand::ReleaseInput { id: 7 }).unwrap();
+        assert!(
+            state
+                .text_for_owner(owner, "released", std::time::Duration::ZERO)
+                .is_err()
+        );
+        let owner = state.text_owner(7, 0).unwrap();
+        state.invalidate_text_owner(7);
+        assert!(
+            state
+                .text_for_owner(owner, "permission revoked", std::time::Duration::ZERO)
+                .is_err()
+        );
+        state.remove(7);
+        assert!(state.text_owner(7, 0).is_none());
     }
     #[test]
     fn queued_text_preserves_its_original_age_and_source_epoch() {
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
-        let binding=state.binding(7,0).unwrap();
-        let requests=state.text_aged(binding,"中文🙂",std::time::Duration::from_millis(160)).unwrap();
-        let lease=state.slots[&7].lease.as_ref().unwrap();
-        let now=lease.host_ms.saturating_add(lease.received.elapsed().as_millis() as u64);
-        assert!(now.saturating_sub(requests[0].created_host_ms)>=160);
-        assert!(state.text_aged(binding,"stale",std::time::Duration::from_millis(251)).is_err());
-        grant(&mut state,2);assert!(state.text_aged(binding,"wrong source",std::time::Duration::ZERO).is_err());
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        let binding = state.binding(7, 0).unwrap();
+        let requests = state
+            .text_aged(binding, "中文🙂", std::time::Duration::from_millis(160))
+            .unwrap();
+        let lease = state.slots[&7].lease.as_ref().unwrap();
+        let now = lease
+            .host_ms
+            .saturating_add(lease.received.elapsed().as_millis() as u64);
+        assert!(now.saturating_sub(requests[0].created_host_ms) >= 160);
+        assert!(
+            state
+                .text_aged(binding, "stale", std::time::Duration::from_millis(251))
+                .is_err()
+        );
+        grant(&mut state, 2);
+        assert!(
+            state
+                .text_aged(binding, "wrong source", std::time::Duration::ZERO)
+                .is_err()
+        );
     }
     fn grant(state: &mut InputState, epoch: u8) {
         let SessionCommand::RequestInputBinding { request, .. } = state.requests(1).remove(0)
@@ -549,22 +806,51 @@ mod tests {
     #[test]
     fn exact_grant_rejects_changed_epoch_without_mutating_new_holds() {
         let mut state = InputState::default();
-        state.source(7, 0); grant(&mut state, 1);
+        state.source(7, 0);
+        grant(&mut state, 1);
         let old = state.binding(7, 0).unwrap();
-        state.seal_bound(old, Some(protocol::InputEvent::MouseDown(0))).unwrap();
+        state
+            .seal_bound(old, Some(protocol::InputEvent::MouseDown(0)))
+            .unwrap();
         grant(&mut state, 2);
         let current = state.binding(7, 0).unwrap();
         assert_ne!(old, current);
-        assert!(state.seal_bound(old, Some(protocol::InputEvent::MouseUp(0))).is_err());
-        assert!(state.seal_bound(old, Some(protocol::InputEvent::MouseDown(0))).is_err());
+        assert!(
+            state
+                .seal_bound(old, Some(protocol::InputEvent::MouseUp(0)))
+                .is_err()
+        );
+        assert!(
+            state
+                .seal_bound(old, Some(protocol::InputEvent::MouseDown(0)))
+                .is_err()
+        );
         assert!(state.seal_bound(old, None).is_err());
-        assert!(matches!(state.snapshots().remove(0).payload, InputPayload::Held(held) if held.is_empty()));
-        assert!(state.seal_bound(current, Some(protocol::InputEvent::Touch {
-            action: protocol::TouchAction::Down, pointer_id: 0,
-            normalized_x: 0.5, normalized_y: 0.5, pressure: 1.0,
-        })).is_err(), "raw touch must still fail closed");
-        state.seal_bound(current, Some(protocol::InputEvent::MouseDown(0))).unwrap();
-        let SessionCommand::RealtimeInput(release) = state.seal_bound(current, None).unwrap() else { panic!() };
+        assert!(
+            matches!(state.snapshots().remove(0).payload, InputPayload::Held(held) if held.is_empty())
+        );
+        assert!(
+            state
+                .seal_bound(
+                    current,
+                    Some(protocol::InputEvent::Touch {
+                        action: protocol::TouchAction::Down,
+                        pointer_id: 0,
+                        normalized_x: 0.5,
+                        normalized_y: 0.5,
+                        pressure: 1.0,
+                    })
+                )
+                .is_err(),
+            "raw touch must still fail closed"
+        );
+        state
+            .seal_bound(current, Some(protocol::InputEvent::MouseDown(0)))
+            .unwrap();
+        let SessionCommand::RealtimeInput(release) = state.seal_bound(current, None).unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(release.binding, current);
         assert!(matches!(release.payload, InputPayload::Release));
     }
@@ -750,47 +1036,120 @@ mod tests {
     }
     #[test]
     fn network_grants_cannot_keep_a_frozen_frontends_cached_hold_alive() {
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
-        state.seal(SessionCommand::Input{id:7,event:protocol::InputEvent::MouseDown(0)}).unwrap();
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        state
+            .seal(SessionCommand::Input {
+                id: 7,
+                event: protocol::InputEvent::MouseDown(0),
+            })
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(330));
-        grant(&mut state,1); // Network actor/grant is healthy; frontend did nothing.
-        assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()),"a transport grant must not renew stale UI hold intent");
+        grant(&mut state, 1); // Network actor/grant is healthy; frontend did nothing.
+        assert!(
+            matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()),
+            "a transport grant must not renew stale UI hold intent"
+        );
     }
 
     #[test]
-    fn healthy_frontend_keeps_long_hold_but_late_refresh_and_old_epoch_cannot_revive_it(){
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);let binding=state.binding(7,0).unwrap();
-        state.seal_bound(binding,Some(protocol::InputEvent::MouseDown(0))).unwrap();
+    fn healthy_frontend_keeps_long_hold_but_late_refresh_and_old_epoch_cannot_revive_it() {
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        let binding = state.binding(7, 0).unwrap();
+        state
+            .seal_bound(binding, Some(protocol::InputEvent::MouseDown(0)))
+            .unwrap();
         for _ in 0..5 {
-            std::thread::sleep(std::time::Duration::from_millis(100));grant(&mut state,1);
-            assert!(state.refresh_bound(binding));assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if !held.is_empty()));
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            grant(&mut state, 1);
+            assert!(state.refresh_bound(binding));
+            assert!(
+                matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if !held.is_empty())
+            );
         }
-        std::thread::sleep(std::time::Duration::from_millis(330));grant(&mut state,1);
-        assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()));
-        assert!(!state.refresh_bound(binding));assert!(!state.refresh_bound(binding));
-        assert!(state.seal_bound(binding,Some(protocol::InputEvent::MouseUp(0))).is_err());
-        state.seal_bound(binding,Some(protocol::InputEvent::MouseDown(0))).unwrap();assert!(state.refresh_bound(binding));
-        grant(&mut state,2);assert!(!state.refresh_bound(binding));assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()));
+        std::thread::sleep(std::time::Duration::from_millis(330));
+        grant(&mut state, 1);
+        assert!(
+            matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty())
+        );
+        assert!(!state.refresh_bound(binding));
+        assert!(!state.refresh_bound(binding));
+        assert!(
+            state
+                .seal_bound(binding, Some(protocol::InputEvent::MouseUp(0)))
+                .is_err()
+        );
+        state
+            .seal_bound(binding, Some(protocol::InputEvent::MouseDown(0)))
+            .unwrap();
+        assert!(state.refresh_bound(binding));
+        grant(&mut state, 2);
+        assert!(!state.refresh_bound(binding));
+        assert!(
+            matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty())
+        );
     }
     #[test]
     fn delayed_keyboard_liveness_retains_age_and_cannot_revive_expired_holds() {
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
-        let binding=state.binding(7,0).unwrap();
-        state.seal_bound(binding,Some(protocol::InputEvent::ModifiersChanged(2))).unwrap();
-        state.slots.get_mut(&7).unwrap().lease.as_mut().unwrap().frontend_intent=Some(Instant::now()-std::time::Duration::from_millis(250));
-        assert!(state.refresh_bound_with_age(binding,std::time::Duration::from_millis(240)));
-        assert!(state.slots.get(&7).unwrap().lease.as_ref().unwrap().frontend_intent.unwrap().elapsed().as_millis()>=240);
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        let binding = state.binding(7, 0).unwrap();
+        state
+            .seal_bound(binding, Some(protocol::InputEvent::ModifiersChanged(2)))
+            .unwrap();
+        state
+            .slots
+            .get_mut(&7)
+            .unwrap()
+            .lease
+            .as_mut()
+            .unwrap()
+            .frontend_intent = Some(Instant::now() - std::time::Duration::from_millis(250));
+        assert!(state.refresh_bound_with_age(binding, std::time::Duration::from_millis(240)));
+        assert!(
+            state
+                .slots
+                .get(&7)
+                .unwrap()
+                .lease
+                .as_ref()
+                .unwrap()
+                .frontend_intent
+                .unwrap()
+                .elapsed()
+                .as_millis()
+                >= 240
+        );
         std::thread::sleep(std::time::Duration::from_millis(70));
-        assert!(!state.refresh_bound_with_age(binding,std::time::Duration::ZERO));
-        assert!(matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty()));
+        assert!(!state.refresh_bound_with_age(binding, std::time::Duration::ZERO));
+        assert!(
+            matches!(&state.snapshots()[0].payload,InputPayload::Held(held) if held.is_empty())
+        );
     }
 
     #[test]
-    fn transport_snapshot_does_not_refresh_the_frontends_timestamp(){
-        let mut state=InputState::default();state.source(7,0);grant(&mut state,1);
-        let SessionCommand::RealtimeInput(down)=state.seal(SessionCommand::Input{id:7,event:protocol::InputEvent::MouseDown(0)}).unwrap()else{panic!()};
-        std::thread::sleep(std::time::Duration::from_millis(100));let snapshot=state.snapshots().remove(0);
-        assert!(snapshot.created_host_ms<=down.created_host_ms+2,"network snapshot made frontend intent younger");
+    fn transport_snapshot_does_not_refresh_the_frontends_timestamp() {
+        let mut state = InputState::default();
+        state.source(7, 0);
+        grant(&mut state, 1);
+        let SessionCommand::RealtimeInput(down) = state
+            .seal(SessionCommand::Input {
+                id: 7,
+                event: protocol::InputEvent::MouseDown(0),
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let snapshot = state.snapshots().remove(0);
+        assert!(
+            snapshot.created_host_ms <= down.created_host_ms + 2,
+            "network snapshot made frontend intent younger"
+        );
     }
-
 }

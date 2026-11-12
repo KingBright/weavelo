@@ -127,7 +127,11 @@ impl HeldState {
             InputEvent::MouseUp(b) if *b <= 2 => {
                 self.transition(Press::Button(*b), false, sequence)
             }
-            InputEvent::MouseDown(_) | InputEvent::MouseUp(_) | InputEvent::Touch { .. } | InputEvent::Text(_) | InputEvent::TouchFrame(_) => false,
+            InputEvent::MouseDown(_)
+            | InputEvent::MouseUp(_)
+            | InputEvent::Touch { .. }
+            | InputEvent::Text(_)
+            | InputEvent::TouchFrame(_) => false,
             InputEvent::ModifiersChanged(mask) => {
                 // Caps Lock is a toggle, not a releasable momentary press.
                 for bit in [1, 2, 4, 8] {
@@ -195,13 +199,21 @@ impl HeldState {
         if modifiers_changed {
             output.push(InputEvent::ModifiersChanged(self.modifiers()));
         }
-        if !contacts.is_empty() { output.push(InputEvent::TouchFrame(contacts)); }
+        if !contacts.is_empty() {
+            output.push(InputEvent::TouchFrame(contacts));
+        }
         output
     }
 
-    fn touch_frame(&mut self, contacts: &[crate::touch::Contact], sequence: u64) -> Option<InputEvent> {
+    fn touch_frame(
+        &mut self,
+        contacts: &[crate::touch::Contact],
+        sequence: u64,
+    ) -> Option<InputEvent> {
         use crate::TouchAction;
-        if !crate::touch::valid_frame(contacts) { return None; }
+        if !crate::touch::valid_frame(contacts) {
+            return None;
+        }
         // Validate the whole sample before replacing owned state. A bad point
         // must never leave an earlier point from the same sample pressed.
         let mut next = self.clone();
@@ -214,12 +226,17 @@ impl HeldState {
                 TouchAction::Move => next.0.contains_key(&press),
                 TouchAction::Up | TouchAction::Cancel => next.transition(press, false, sequence),
             };
-            if !admitted { continue; }
+            if !admitted {
+                continue;
+            }
             match contact.action {
-                TouchAction::Down | TouchAction::Move => { next.1.insert(contact.pointer_id, contact); }
+                TouchAction::Down | TouchAction::Move => {
+                    next.1.insert(contact.pointer_id, contact);
+                }
                 TouchAction::Up | TouchAction::Cancel => {
                     if let Some(previous) = next.1.remove(&contact.pointer_id)
-                        && contact.action == TouchAction::Cancel {
+                        && contact.action == TouchAction::Cancel
+                    {
                         contact.normalized_x = previous.normalized_x;
                         contact.normalized_y = previous.normalized_y;
                     }
@@ -228,7 +245,9 @@ impl HeldState {
             }
             output.push(contact);
         }
-        if next.1.len() > crate::touch::MAX_CONTACTS || output.is_empty() { return None; }
+        if next.1.len() > crate::touch::MAX_CONTACTS || output.is_empty() {
+            return None;
+        }
         *self = next;
         Some(InputEvent::TouchFrame(output))
     }
@@ -279,10 +298,16 @@ impl InputLease {
     }
     /// Local monotonic limit used while the host awaits another peer's capture
     /// teardown. The wire clock cannot extend this deadline.
-    pub fn deadline(&self)->std::time::Instant {
-        if self.revocation.is_revoked(){return std::time::Instant::now();}
-        let valid=self.last_valid+std::time::Duration::from_millis(HOLD_TIMEOUT_MS);
-        if self.held.0.is_empty(){valid}else{valid.min(self.last_held+std::time::Duration::from_millis(HOLD_TIMEOUT_MS))}
+    pub fn deadline(&self) -> std::time::Instant {
+        if self.revocation.is_revoked() {
+            return std::time::Instant::now();
+        }
+        let valid = self.last_valid + std::time::Duration::from_millis(HOLD_TIMEOUT_MS);
+        if self.held.0.is_empty() {
+            valid
+        } else {
+            valid.min(self.last_held + std::time::Duration::from_millis(HOLD_TIMEOUT_MS))
+        }
     }
     pub fn expired(&self, now_ms: u64) -> bool {
         self.revocation.is_revoked()
@@ -293,12 +318,24 @@ impl InputLease {
                     || self.last_held.elapsed().as_millis() >= HOLD_TIMEOUT_MS as u128))
     }
     /// Text has its own ordered receipts, independent of lossy pointer sequences.
-    pub fn accept_text(&mut self, binding: InputBinding, created_host_ms: u64, now_ms: u64) -> bool {
-        if binding != self.binding || self.expired(now_ms) || created_host_ms > now_ms
-            || now_ms - created_host_ms > MAX_INPUT_AGE_MS { return false; }
+    pub fn accept_text(
+        &mut self,
+        binding: InputBinding,
+        created_host_ms: u64,
+        now_ms: u64,
+    ) -> bool {
+        if binding != self.binding
+            || self.expired(now_ms)
+            || created_host_ms > now_ms
+            || now_ms - created_host_ms > MAX_INPUT_AGE_MS
+        {
+            return false;
+        }
         if created_host_ms > self.last_valid_ms {
             self.last_valid_ms = created_host_ms;
-            self.last_valid = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(now_ms-created_host_ms)).unwrap_or(self.last_valid);
+            self.last_valid = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(now_ms - created_host_ms))
+                .unwrap_or(self.last_valid);
         }
         true
     }
@@ -317,13 +354,22 @@ impl InputLease {
         }
         // Committed text requires its ordered receipt channel; a fabricated
         // realtime text event must not renew the input lease either.
-        if matches!(&packet.payload,InputPayload::Event(InputEvent::Text(_))) {return None;}
+        if matches!(&packet.payload, InputPayload::Event(InputEvent::Text(_))) {
+            return None;
+        }
         if let InputPayload::Event(InputEvent::TouchFrame(contacts)) = &packet.payload
-            && !crate::touch::valid_frame(contacts) { return None; }
+            && !crate::touch::valid_frame(contacts)
+        {
+            return None;
+        }
         // An explicit chord must not become a different (possibly bare) key
         // when its modifier-down was lost/reordered. Consume the sequence but
         // reject before changing held state. Legacy KeyDown has no such field.
-        if let InputPayload::Event(InputEvent::Key { pressed: true, modifiers, .. }) = &packet.payload
+        if let InputPayload::Event(InputEvent::Key {
+            pressed: true,
+            modifiers,
+            ..
+        }) = &packet.payload
             && *modifiers != self.held.modifiers()
         {
             return None;
@@ -340,7 +386,10 @@ impl InputLease {
             InputPayload::Release => self.held.release_missing(&[]),
         };
         let received = std::time::Instant::now();
-        let created = received.checked_sub(std::time::Duration::from_millis(now_ms - packet.created_host_ms))
+        let created = received
+            .checked_sub(std::time::Duration::from_millis(
+                now_ms - packet.created_host_ms,
+            ))
             .unwrap_or(self.last_valid);
         self.last_valid_ms = packet.created_host_ms;
         self.last_valid = created;
@@ -348,7 +397,8 @@ impl InputLease {
         // snapshots refresh existing presses: motion, new unrelated events,
         // grants and transport heartbeats cannot keep an old press alive.
         // Account for packet age rather than granting a new timeout at receipt.
-        if !self.held.0.is_empty() && (!had_held || matches!(packet.payload, InputPayload::Held(_))) {
+        if !self.held.0.is_empty() && (!had_held || matches!(packet.payload, InputPayload::Held(_)))
+        {
             self.last_held_ms = packet.created_host_ms;
             self.last_held = created;
         }
@@ -380,21 +430,52 @@ mod tests {
         assert!(held.event(InputEvent::KeyUp(0x38), 6).is_none());
     }
     fn touch(id: u32, action: crate::TouchAction, x: f32) -> crate::touch::Contact {
-        crate::touch::Contact { pointer_id: id, action, normalized_x: x, normalized_y: 0.4, pressure: 1.0 }
+        crate::touch::Contact {
+            pointer_id: id,
+            action,
+            normalized_x: x,
+            normalized_y: 0.4,
+            pressure: 1.0,
+        }
     }
     #[test]
     fn native_contacts_preserve_other_fingers_and_release_at_the_last_position() {
         use crate::TouchAction::*;
         let mut state = HeldState::default();
-        assert!(state.event(InputEvent::TouchFrame(vec![touch(1, Down, 0.1), touch(9, Down, 0.9)]), 1).is_some());
-        assert_eq!(state.snapshot(), vec![(Press::Touch(1), 1), (Press::Touch(9), 1)]);
-        assert!(state.event(InputEvent::TouchFrame(vec![touch(1, Move, 0.3), touch(9, Up, 0.8)]), 2).is_some());
+        assert!(
+            state
+                .event(
+                    InputEvent::TouchFrame(vec![touch(1, Down, 0.1), touch(9, Down, 0.9)]),
+                    1
+                )
+                .is_some()
+        );
+        assert_eq!(
+            state.snapshot(),
+            vec![(Press::Touch(1), 1), (Press::Touch(9), 1)]
+        );
+        assert!(
+            state
+                .event(
+                    InputEvent::TouchFrame(vec![touch(1, Move, 0.3), touch(9, Up, 0.8)]),
+                    2
+                )
+                .is_some()
+        );
         assert_eq!(state.snapshot(), vec![(Press::Touch(1), 1)]);
-        assert!(state.event(InputEvent::TouchFrame(vec![touch(9, Move, 0.7)]), 3).is_none());
+        assert!(
+            state
+                .event(InputEvent::TouchFrame(vec![touch(9, Move, 0.7)]), 3)
+                .is_none()
+        );
         let released = state.release_missing(&[]);
-        assert_eq!(released, vec![InputEvent::TouchFrame(vec![crate::touch::Contact {
-            pressure: 0.0, ..touch(1, Cancel, 0.3)
-        }])]);
+        assert_eq!(
+            released,
+            vec![InputEvent::TouchFrame(vec![crate::touch::Contact {
+                pressure: 0.0,
+                ..touch(1, Cancel, 0.3)
+            }])]
+        );
         assert!(state.release_missing(&[(Press::Touch(1), 1)]).is_empty());
         assert!(state.snapshot().is_empty());
     }
@@ -402,15 +483,46 @@ mod tests {
     fn malformed_touch_sample_is_atomic_and_old_holds_cannot_create_contacts() {
         use crate::TouchAction::*;
         let mut state = HeldState::default();
-        assert!(state.event(InputEvent::TouchFrame(vec![touch(1, Down, 0.1), touch(2, Down, f32::NAN)]), 1).is_none());
+        assert!(
+            state
+                .event(
+                    InputEvent::TouchFrame(vec![touch(1, Down, 0.1), touch(2, Down, f32::NAN)]),
+                    1
+                )
+                .is_none()
+        );
         assert!(state.snapshot().is_empty());
         let mut lease = InputLease::new(binding(1), 1000);
-        assert!(lease.accept(&packet(1,InputPayload::Held(vec![(Press::Touch(1),1)])),1000).unwrap().is_empty());
-        assert!(lease.accept(&packet(2,InputPayload::Event(InputEvent::TouchFrame(vec![touch(1, Move, 0.3)]))),1000).unwrap().is_empty());
-        let frame=packet(3,InputPayload::Event(InputEvent::TouchFrame(vec![touch(1, Down, 0.3)])));
-        assert_eq!(lease.accept(&frame,1000).unwrap().len(),1);
-        assert!(lease.accept(&frame,1000).is_none());
-        let released=lease.accept(&packet(4,InputPayload::Held(vec![])),1000).unwrap();
+        assert!(
+            lease
+                .accept(
+                    &packet(1, InputPayload::Held(vec![(Press::Touch(1), 1)])),
+                    1000
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            lease
+                .accept(
+                    &packet(
+                        2,
+                        InputPayload::Event(InputEvent::TouchFrame(vec![touch(1, Move, 0.3)]))
+                    ),
+                    1000
+                )
+                .unwrap()
+                .is_empty()
+        );
+        let frame = packet(
+            3,
+            InputPayload::Event(InputEvent::TouchFrame(vec![touch(1, Down, 0.3)])),
+        );
+        assert_eq!(lease.accept(&frame, 1000).unwrap().len(), 1);
+        assert!(lease.accept(&frame, 1000).is_none());
+        let released = lease
+            .accept(&packet(4, InputPayload::Held(vec![])), 1000)
+            .unwrap();
         assert!(matches!(released.as_slice(),[InputEvent::TouchFrame(c)] if c[0].action==Cancel));
     }
     fn binding(epoch: u8) -> InputBinding {
@@ -486,14 +598,25 @@ mod tests {
     #[test]
     fn revoked_native_owner_requires_a_new_empty_protocol_lease() {
         let mut old = InputLease::new(binding(1), 1000);
-        old.accept(&packet(1, InputPayload::Event(InputEvent::ModifiersChanged(2))), 1000).unwrap();
+        old.accept(
+            &packet(1, InputPayload::Event(InputEvent::ModifiersChanged(2))),
+            1000,
+        )
+        .unwrap();
         let native_owner = old.revocation();
         native_owner.revoke();
         native_owner.revoke();
         assert!(old.expired(1000));
         for (sequence, payload) in [
             (2, InputPayload::Held(vec![(Press::Modifier(2), 1)])),
-            (3, InputPayload::Event(InputEvent::Key { key_code: 8, pressed: true, modifiers: 2 })),
+            (
+                3,
+                InputPayload::Event(InputEvent::Key {
+                    key_code: 8,
+                    pressed: true,
+                    modifiers: 2,
+                }),
+            ),
             (4, InputPayload::Release),
         ] {
             assert!(old.accept(&packet(sequence, payload), 1000).is_none());
@@ -505,7 +628,14 @@ mod tests {
         assert_eq!(fresh.held_modifiers(), 0);
         native_owner.revoke(); // Late old cleanup cannot revoke the replacement.
         assert!(!fresh.expired(1000));
-        let mut press = packet(2, InputPayload::Event(InputEvent::Key { key_code: 8, pressed: true, modifiers: 0 }));
+        let mut press = packet(
+            2,
+            InputPayload::Event(InputEvent::Key {
+                key_code: 8,
+                pressed: true,
+                modifiers: 0,
+            }),
+        );
         press.binding = binding(2);
         assert_eq!(fresh.accept(&press, 1000).unwrap().len(), 1);
     }
@@ -579,8 +709,18 @@ mod tests {
     #[test]
     fn continuous_hold_only_matching_fresh_snapshots_extend_pressed_state() {
         let mut lease = InputLease::new(binding(1), 1000);
-        lease.accept(&packet(1, InputPayload::Event(InputEvent::KeyDown(0))), 1000).unwrap();
-        lease.accept(&packet(2, InputPayload::Event(InputEvent::MouseDown(0))), 1000).unwrap();
+        lease
+            .accept(
+                &packet(1, InputPayload::Event(InputEvent::KeyDown(0))),
+                1000,
+            )
+            .unwrap();
+        lease
+            .accept(
+                &packet(2, InputPayload::Event(InputEvent::MouseDown(0))),
+                1000,
+            )
+            .unwrap();
         let held = vec![(Press::Key(0), 1), (Press::Button(0), 2)];
         for (seq, now) in [(3, 1100), (4, 1200), (6, 1400)] {
             let mut refresh = packet(seq, InputPayload::Held(held.clone()));
@@ -593,12 +733,18 @@ mod tests {
         duplicate.created_host_ms = 1600;
         assert!(lease.accept(&duplicate, 1600).is_none());
         let mut old_epoch = packet(7, InputPayload::Held(held.clone()));
-        old_epoch.binding.epoch = [99; 16]; old_epoch.created_host_ms = 1600;
+        old_epoch.binding.epoch = [99; 16];
+        old_epoch.created_host_ms = 1600;
         assert!(lease.accept(&old_epoch, 1600).is_none());
-        assert!(lease.accept(&packet(8, InputPayload::Held(held.clone())), 1600).is_none());
+        assert!(
+            lease
+                .accept(&packet(8, InputPayload::Held(held.clone())), 1600)
+                .is_none()
+        );
         assert!(!lease.expired(1699));
         assert!(lease.expired(1700));
-        let mut late = packet(9, InputPayload::Held(held)); late.created_host_ms = 1700;
+        let mut late = packet(9, InputPayload::Held(held));
+        late.created_host_ms = 1700;
         assert!(lease.accept(&late, 1700).is_none());
         let mut fresh = InputLease::new(binding(2), 1700);
         late.binding = binding(2);
@@ -609,13 +755,26 @@ mod tests {
     #[test]
     fn continuous_hold_motion_does_not_renew_and_delayed_snapshot_keeps_its_age() {
         let mut lease = InputLease::new(binding(1), 1000);
-        lease.accept(&packet(1, InputPayload::Event(InputEvent::MouseDown(0))), 1000).unwrap();
-        let mut motion = packet(2, InputPayload::Event(InputEvent::MouseMove { dx: 1, dy: 0 }));
+        lease
+            .accept(
+                &packet(1, InputPayload::Event(InputEvent::MouseDown(0))),
+                1000,
+            )
+            .unwrap();
+        let mut motion = packet(
+            2,
+            InputPayload::Event(InputEvent::MouseMove { dx: 1, dy: 0 }),
+        );
         motion.created_host_ms = 1200;
         assert!(lease.accept(&motion, 1200).is_some());
         assert!(lease.expired(1300));
         let mut lease = InputLease::new(binding(1), 1000);
-        lease.accept(&packet(1, InputPayload::Event(InputEvent::MouseDown(0))), 1000).unwrap();
+        lease
+            .accept(
+                &packet(1, InputPayload::Event(InputEvent::MouseDown(0))),
+                1000,
+            )
+            .unwrap();
         let mut refresh = packet(2, InputPayload::Held(vec![(Press::Button(0), 1)]));
         refresh.created_host_ms = 1050;
         assert!(lease.accept(&refresh, 1250).unwrap().is_empty());
@@ -633,31 +792,91 @@ mod tests {
     fn modifier_intent_lost_or_reordered_down_never_becomes_bare_character() {
         let mut lease = InputLease::new(binding(1), 1000);
         let chord = InputPayload::Event(InputEvent::Key {
-            key_code: 0x08, pressed: true, modifiers: 2,
+            key_code: 0x08,
+            pressed: true,
+            modifiers: 2,
         });
         assert!(lease.accept(&packet(2, chord.clone()), 1000).is_none());
-        assert!(lease.accept(&packet(1, InputPayload::Event(InputEvent::ModifiersChanged(2))), 1000).is_none());
-        assert_eq!(lease.accept(&packet(3, InputPayload::Event(InputEvent::ModifiersChanged(2))), 1000),
-            Some(vec![InputEvent::ModifiersChanged(2)]));
+        assert!(
+            lease
+                .accept(
+                    &packet(1, InputPayload::Event(InputEvent::ModifiersChanged(2))),
+                    1000
+                )
+                .is_none()
+        );
+        assert_eq!(
+            lease.accept(
+                &packet(3, InputPayload::Event(InputEvent::ModifiersChanged(2))),
+                1000
+            ),
+            Some(vec![InputEvent::ModifiersChanged(2)])
+        );
         assert!(lease.accept(&packet(2, chord.clone()), 1000).is_none());
         // Rejected C never entered held state: a fresh deliberate C can succeed.
-        assert_eq!(lease.accept(&packet(4, chord), 1000), Some(vec![InputEvent::Key {
-            key_code: 0x08, pressed: true, modifiers: 2,
-        }]));
+        assert_eq!(
+            lease.accept(&packet(4, chord), 1000),
+            Some(vec![InputEvent::Key {
+                key_code: 0x08,
+                pressed: true,
+                modifiers: 2,
+            }])
+        );
     }
 
     #[test]
     fn modifier_intent_extra_held_modifier_drops_explicit_plain_key_but_legacy_keydown_remains() {
         let mut lease = InputLease::new(binding(1), 1000);
-        lease.accept(&packet(1, InputPayload::Event(InputEvent::ModifiersChanged(2))), 1000).unwrap();
-        assert!(lease.accept(&packet(2, InputPayload::Event(InputEvent::Key {
-            key_code: 0x08, pressed: true, modifiers: 0,
-        })), 1000).is_none());
-        assert_eq!(lease.accept(&packet(3, InputPayload::Event(InputEvent::KeyDown(0x08))), 1000),
-            Some(vec![InputEvent::Key { key_code: 0x08, pressed: true, modifiers: 2 }]));
-        assert_eq!(lease.accept(&packet(4, InputPayload::Event(InputEvent::Key {
-            key_code: 0x08, pressed: false, modifiers: 15,
-        })), 1000), Some(vec![InputEvent::Key { key_code: 0x08, pressed: false, modifiers: 2 }]));
+        lease
+            .accept(
+                &packet(1, InputPayload::Event(InputEvent::ModifiersChanged(2))),
+                1000,
+            )
+            .unwrap();
+        assert!(
+            lease
+                .accept(
+                    &packet(
+                        2,
+                        InputPayload::Event(InputEvent::Key {
+                            key_code: 0x08,
+                            pressed: true,
+                            modifiers: 0,
+                        })
+                    ),
+                    1000
+                )
+                .is_none()
+        );
+        assert_eq!(
+            lease.accept(
+                &packet(3, InputPayload::Event(InputEvent::KeyDown(0x08))),
+                1000
+            ),
+            Some(vec![InputEvent::Key {
+                key_code: 0x08,
+                pressed: true,
+                modifiers: 2
+            }])
+        );
+        assert_eq!(
+            lease.accept(
+                &packet(
+                    4,
+                    InputPayload::Event(InputEvent::Key {
+                        key_code: 0x08,
+                        pressed: false,
+                        modifiers: 15,
+                    })
+                ),
+                1000
+            ),
+            Some(vec![InputEvent::Key {
+                key_code: 0x08,
+                pressed: false,
+                modifiers: 2
+            }])
+        );
     }
 
     #[test]

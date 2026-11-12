@@ -1,3 +1,4 @@
+use crate::discovery_status::{DiscoveryDiagnostics, DiscoveryFailure, DiscoveryStamp};
 use std::error::Error;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
@@ -5,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, watch};
-use crate::discovery_status::{DiscoveryDiagnostics, DiscoveryFailure, DiscoveryStamp};
 
 pub const DISCOVERY_MAGIC: &[u8; 8] = b"RPDISC1\0";
 pub const DEFAULT_DISCOVERY_PORT: u16 = 38117;
@@ -122,7 +122,9 @@ impl DiscoveryAnnouncement {
         &self,
         live: Option<&watch::Receiver<DiscoveryCapabilities>>,
     ) -> Result<Vec<u8>, DiscoveryError> {
-        let Some(live) = live else { return self.encode(); };
+        let Some(live) = live else {
+            return self.encode();
+        };
         let mut current = self.clone();
         current.capabilities = *live.borrow();
         // The last tick of a viewer-only runtime cannot claim an inbound service.
@@ -304,7 +306,9 @@ impl DiscoveryPeerSnapshot {
         self.peers.is_empty()
     }
 
-    pub fn observation(&self) -> Option<DiscoveryStamp> { self.observation }
+    pub fn observation(&self) -> Option<DiscoveryStamp> {
+        self.observation
+    }
 
     pub fn observed(mut self, diagnostics: &DiscoveryDiagnostics) -> Self {
         self.observation = Some(diagnostics.next_stamp());
@@ -477,8 +481,17 @@ pub async fn run_discovery_runtime_observed(
     diagnostics: Arc<DiscoveryDiagnostics>,
 ) -> Result<(), DiscoveryError> {
     let _stopped = crate::discovery_status::StopObservation(Some(diagnostics.clone()));
-    let result = run_discovery_runtime_inner(config, events_tx, snapshot_tx, cancel_rx, Some(diagnostics.clone())).await;
-    if result.is_err() { diagnostics.failure(DiscoveryFailure::Startup); }
+    let result = run_discovery_runtime_inner(
+        config,
+        events_tx,
+        snapshot_tx,
+        cancel_rx,
+        Some(diagnostics.clone()),
+    )
+    .await;
+    if result.is_err() {
+        diagnostics.failure(DiscoveryFailure::Startup);
+    }
     result
 }
 
@@ -488,7 +501,9 @@ fn publish_discovery_snapshot(
     diagnostics: Option<&DiscoveryDiagnostics>,
 ) -> DiscoveryPeerSnapshot {
     let mut snapshot = cache.snapshot();
-    if let Some(diagnostics) = diagnostics { snapshot = snapshot.observed(diagnostics); }
+    if let Some(diagnostics) = diagnostics {
+        snapshot = snapshot.observed(diagnostics);
+    }
     sender.send_replace(snapshot.clone());
     snapshot
 }
@@ -501,7 +516,9 @@ async fn run_discovery_runtime_inner(
     diagnostics: Option<Arc<DiscoveryDiagnostics>>,
 ) -> Result<(), DiscoveryError> {
     config.announcement.validate()?;
-    config.announcement.encode_with_capabilities(config.live_capabilities.as_ref())?;
+    config
+        .announcement
+        .encode_with_capabilities(config.live_capabilities.as_ref())?;
     let socket = Arc::new(bind_discovery_socket(config.bind_addr)?);
     if config
         .announce_targets
@@ -524,9 +541,15 @@ async fn run_discovery_runtime_inner(
     let relay_routes = config.relay_routes.clone();
     let expected_network = config.announcement.network_name.clone();
     let own_device = config.announcement.device_id.clone();
-    if let Some(diagnostics) = &diagnostics { diagnostics.running(true); }
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.running(true);
+    }
     // Publish the initial empty snapshot before receiver/pruner tasks can publish.
-    publish_discovery_snapshot(&cache.lock().expect("discovery cache lock"), &snapshot_tx, diagnostics.as_deref());
+    publish_discovery_snapshot(
+        &cache.lock().expect("discovery cache lock"),
+        &snapshot_tx,
+        diagnostics.as_deref(),
+    );
 
     let send_socket = socket.clone();
     let send_announcement = config.announcement.clone();
@@ -545,9 +568,13 @@ async fn run_discovery_runtime_inner(
         .unwrap_or(config.bind_addr.port());
     let sender_events_tx = events_tx.clone();
     let sender_diagnostics = diagnostics.clone();
-    let relay_targets: Vec<_> = config.route_overrides.iter()
-        .filter(|route| route.scope == DiscoveryScope::Relay).map(|route| route.source)
-        .chain(config.relay_routes.iter().map(|(source, _)| *source)).collect();
+    let relay_targets: Vec<_> = config
+        .route_overrides
+        .iter()
+        .filter(|route| route.scope == DiscoveryScope::Relay)
+        .map(|route| route.source)
+        .chain(config.relay_routes.iter().map(|(source, _)| *source))
+        .collect();
     let sender_relay_targets = relay_targets.clone();
     let mut send_cancel_rx = cancel_rx.resubscribe();
     let sender_task = tokio::spawn(async move {
@@ -726,11 +753,7 @@ async fn run_discovery_runtime_inner(
 }
 
 pub fn discovery_port_from_env() -> Result<u16, DiscoveryError> {
-    parse_discovery_port(
-        std::env::var(WEAVELO_DISCOVERY_PORT_ENV)
-            .ok()
-            .as_deref(),
-    )
+    parse_discovery_port(std::env::var(WEAVELO_DISCOVERY_PORT_ENV).ok().as_deref())
 }
 
 pub fn parse_discovery_port(value: Option<&str>) -> Result<u16, DiscoveryError> {
@@ -747,7 +770,9 @@ pub fn parse_discovery_port(value: Option<&str>) -> Result<u16, DiscoveryError> 
     Ok(port)
 }
 
-fn bind_interface_broadcast_socket(local_ip: std::net::Ipv4Addr) -> Result<UdpSocket, DiscoveryError> {
+fn bind_interface_broadcast_socket(
+    local_ip: std::net::Ipv4Addr,
+) -> Result<UdpSocket, DiscoveryError> {
     let socket = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,
@@ -1051,7 +1076,10 @@ mod tests {
             announcement.capabilities.device_badge = preset;
             let encoded = announcement.encode().unwrap();
             assert_eq!(encoded.len(), original.len());
-            assert_eq!(DiscoveryAnnouncement::decode(&encoded).unwrap(), announcement);
+            assert_eq!(
+                DiscoveryAnnouncement::decode(&encoded).unwrap(),
+                announcement
+            );
         }
 
         let mut unknown = original;
@@ -1059,7 +1087,10 @@ mod tests {
         let invalid_category = (capabilities & !DEVICE_BADGE_MASK) | (6 << DEVICE_BADGE_SHIFT);
         unknown[12..16].copy_from_slice(&invalid_category.to_be_bytes());
         assert_eq!(
-            DiscoveryAnnouncement::decode(&unknown).unwrap().capabilities.device_badge,
+            DiscoveryAnnouncement::decode(&unknown)
+                .unwrap()
+                .capabilities
+                .device_badge,
             DeviceBadgePreset::Computer
         );
     }
@@ -1333,24 +1364,47 @@ mod tests {
         let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
         let (snapshots, rx) = watch::channel(DiscoveryPeerSnapshot::default());
         let (cancel, cancel_rx) = broadcast::channel(1);
-        let task = tokio::spawn(run_discovery_runtime_observed(config, events, snapshots, cancel_rx, diagnostics.clone()));
+        let task = tokio::spawn(run_discovery_runtime_observed(
+            config,
+            events,
+            snapshots,
+            cancel_rx,
+            diagnostics.clone(),
+        ));
         let mut buffer = [0; 2048];
-        let (_, target) = tokio::time::timeout(Duration::from_secs(2), udp.recv_from(&mut buffer)).await.unwrap().unwrap();
-        udp.send_to(b"not-a-discovery-packet", target).await.unwrap();
-        let other_network = DiscoveryAnnouncement { network_name: "synthetic-other".into(), ..local.clone() };
-        udp.send_to(&other_network.encode().unwrap(), target).await.unwrap();
+        let (_, target) = tokio::time::timeout(Duration::from_secs(2), udp.recv_from(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        udp.send_to(b"not-a-discovery-packet", target)
+            .await
+            .unwrap();
+        let other_network = DiscoveryAnnouncement {
+            network_name: "synthetic-other".into(),
+            ..local.clone()
+        };
+        udp.send_to(&other_network.encode().unwrap(), target)
+            .await
+            .unwrap();
         udp.send_to(&local.encode().unwrap(), target).await.unwrap();
-        let peer = DiscoveryAnnouncement { device_id: "synthetic-peer".into(), ..local };
+        let peer = DiscoveryAnnouncement {
+            device_id: "synthetic-peer".into(),
+            ..local
+        };
         let packet = peer.encode().unwrap();
         udp.send_to(&packet, target).await.unwrap();
         relay.send_to(&packet, target).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let state = diagnostics.snapshot();
-                if state.udp.accepted == 1 && state.relay.accepted == 1 { break; }
+                if state.udp.accepted == 1 && state.relay.accepted == 1 {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let state = diagnostics.snapshot();
         assert_eq!(state.udp.received, 4);
         assert_eq!(state.udp.decoded, 3);
@@ -1385,7 +1439,10 @@ mod tests {
         assert!(observed.target_broadcast);
         assert!(!observed.relay && !observed.target_ipv6 && !observed.target_loopback);
 
-        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "synthetic-secret-error-text");
+        let error = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "synthetic-secret-error-text",
+        );
         diagnostics.send_failure(true, "[::1]:45678".parse().unwrap(), &error);
         let snapshot = diagnostics.snapshot();
         assert_eq!(snapshot.udp.send_errors, 1);
@@ -1395,16 +1452,23 @@ mod tests {
         assert!(!observed.target_broadcast);
         assert_eq!(observed.raw_os_error, None);
         let json = serde_json::to_string(&snapshot).unwrap();
-        for private in ["255.255.255.255", "::1", "45678", "synthetic-secret-error-text"] {
+        for private in [
+            "255.255.255.255",
+            "::1",
+            "45678",
+            "synthetic-secret-error-text",
+        ] {
             assert!(!json.contains(private));
         }
     }
 
     #[test]
     fn older_discovery_snapshot_without_send_details_remains_readable() {
-        let mut old = serde_json::to_value(crate::discovery_status::DiscoverySnapshot::default()).unwrap();
+        let mut old =
+            serde_json::to_value(crate::discovery_status::DiscoverySnapshot::default()).unwrap();
         old.as_object_mut().unwrap().remove("last_send_failure");
-        let restored: crate::discovery_status::DiscoverySnapshot = serde_json::from_value(old).unwrap();
+        let restored: crate::discovery_status::DiscoverySnapshot =
+            serde_json::from_value(old).unwrap();
         assert!(restored.last_send_failure.is_none());
         assert_eq!(restored.udp.send_errors, 0);
     }
@@ -1419,15 +1483,28 @@ mod tests {
         let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
         let (snapshots, _rx) = watch::channel(DiscoveryPeerSnapshot::default());
         let (cancel, cancel_rx) = broadcast::channel(1);
-        let task = tokio::spawn(run_discovery_runtime_observed(config, events, snapshots, cancel_rx, diagnostics.clone()));
+        let task = tokio::spawn(run_discovery_runtime_observed(
+            config,
+            events,
+            snapshots,
+            cancel_rx,
+            diagnostics.clone(),
+        ));
         tokio::time::timeout(Duration::from_secs(2), async {
             while diagnostics.snapshot().udp.send_errors == 0 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let observed = diagnostics.snapshot().last_send_failure.unwrap();
-        let errno = observed.raw_os_error.expect("native UDP error must retain its errno");
-        assert_eq!(observed.error_kind, format!("{:?}", std::io::Error::from_raw_os_error(errno).kind()));
+        let errno = observed
+            .raw_os_error
+            .expect("native UDP error must retain its errno");
+        assert_eq!(
+            observed.error_kind,
+            format!("{:?}", std::io::Error::from_raw_os_error(errno).kind())
+        );
         assert!(observed.target_ipv6 && observed.target_loopback);
         assert!(!observed.relay);
         cancel.send(()).unwrap();
@@ -1529,7 +1606,12 @@ mod tests {
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
         let (snapshot_tx, _snapshot_rx) = watch::channel(DiscoveryPeerSnapshot::default());
         let (cancel, cancel_rx) = broadcast::channel(1);
-        let task = tokio::spawn(run_discovery_runtime(config, events_tx, snapshot_tx, cancel_rx));
+        let task = tokio::spawn(run_discovery_runtime(
+            config,
+            events_tx,
+            snapshot_tx,
+            cancel_rx,
+        ));
         let mut sender = None;
         for capture in [false, true, false] {
             caps.can_stream = capture;
@@ -1538,16 +1620,22 @@ mod tests {
                 let mut buf = [0; DISCOVERY_RECV_BUFFER_LEN];
                 loop {
                     let (len, address) = peer.recv_from(&mut buf).await.unwrap();
-                    if let Some(previous) = sender { assert_eq!(address, previous); }
+                    if let Some(previous) = sender {
+                        assert_eq!(address, previous);
+                    }
                     sender = Some(address);
                     let received = DiscoveryAnnouncement::decode(&buf[..len]).unwrap();
                     assert_eq!(received.device_id, original.device_id);
                     assert_eq!(received.network_name, original.network_name);
                     assert_eq!(received.control_port, original.control_port);
                     assert!(received.capabilities.file_transfer);
-                    if received.capabilities.can_stream == capture { break; }
+                    if received.capabilities.can_stream == capture {
+                        break;
+                    }
                 }
-            }).await.expect("capability change reaches the same announce socket");
+            })
+            .await
+            .expect("capability change reaches the same announce socket");
         }
         cancel.send(()).unwrap();
         task.await.unwrap().unwrap();
@@ -1557,7 +1645,10 @@ mod tests {
     fn viewer_only_endpoint_cannot_gain_inbound_capabilities_from_a_later_runtime() {
         let announcement = DiscoveryAnnouncement {
             control_port: 0,
-            capabilities: DiscoveryCapabilities { can_view: true, ..Default::default() },
+            capabilities: DiscoveryCapabilities {
+                can_view: true,
+                ..Default::default()
+            },
             ..sample_announcement()
         };
         let (_tx, rx) = watch::channel(DiscoveryCapabilities::all_interactive());

@@ -8,6 +8,7 @@ internal object LanguageCatalog {
         "Network details" to "网络详情",
         "Unknown" to "未知",
         "Network RTT" to "网络往返延迟",
+        "Frame rate" to "帧率",
         "Packet loss rate" to "丢包率",
         "Video bitrate" to "视频码率",
         "Outgoing screen quality" to "屏幕推送画质",

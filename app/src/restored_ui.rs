@@ -1,41 +1,41 @@
-#[path="restored_network_status.rs"]
-mod network_status;
-#[path="restored_management.rs"]
+#[path = "restored_management.rs"]
 mod management;
-#[path="restored_streams.rs"]
-mod stream_windows;
-#[path="restored_stream_controls.rs"]
+#[path = "restored_network_status.rs"]
+mod network_status;
+#[path = "restored_stream_controls.rs"]
 mod stream_controls;
+#[path = "restored_streams.rs"]
+mod stream_windows;
 use stream_controls::{DeviceFiles, StreamPanel};
-#[path="restored_sending.rs"]
+#[path = "restored_sending.rs"]
 mod sending;
 use sending::{SendActivity, SendingContext};
-#[path="restored_menu.rs"]
-mod native_menu;
-#[path="restored_window_icon.rs"]
-mod window_icon;
-#[path="restored_window_fit.rs"]
-mod window_fit;
-#[path="restored_device_badge.rs"]
+#[path = "restored_device_badge.rs"]
 mod device_badges;
+#[path = "restored_menu.rs"]
+mod native_menu;
+#[path = "restored_window_fit.rs"]
+mod window_fit;
+#[path = "restored_window_icon.rs"]
+mod window_icon;
 #[cfg(target_os = "macos")]
 pub fn run_macos_dock_tile() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     window_icon::macos_dock::run()
 }
 #[cfg(test)]
-#[path="restored_source_browser_tests.rs"]
+#[path = "restored_source_browser_tests.rs"]
 mod source_browser_tests;
 #[cfg(test)]
-#[path="restored_stream_lifetime_tests.rs"]
+#[path = "restored_stream_lifetime_tests.rs"]
 mod stream_lifetime_tests;
 use management::{ManagementRoot, WindowPurpose, reopen_restored_window, show_management_window};
-#[path="restored_text_input.rs"]
+#[path = "restored_text_input.rs"]
 mod remote_text_input;
-#[path="restored_acceptance.rs"]
+#[path = "restored_acceptance.rs"]
 mod sequence_acceptance;
-#[path="restored_source_selection.rs"]
+#[path = "restored_source_selection.rs"]
 mod source_selection;
-#[path="restored_viewport.rs"]
+#[path = "restored_viewport.rs"]
 mod viewer_viewport;
 #[cfg(target_os = "macos")]
 use client::decoded_video_frame_surface_with_fit;
@@ -43,14 +43,17 @@ use client::decoded_video_frame_surface_with_fit;
 // This preview is feature gated until preservation and platform performance acceptance.
 use crate::design_system::{
     theme_accent_amber, theme_accent_brand, theme_accent_cyan, theme_accent_emerald,
-    theme_accent_indigo, theme_accent_rose, theme_border_fine, theme_brand_soft,
-    theme_glass_card, theme_glass_floating, weavelo_themes,
+    theme_accent_indigo, theme_accent_rose, theme_border_fine, theme_brand_soft, theme_glass_card,
+    theme_glass_floating, weavelo_themes,
 };
+use crate::desktop::device_list::{DeviceListAction, DeviceListEffect, DeviceListState};
 use crate::desktop::instance::Instance;
-use crate::desktop::device_list::{
-    DeviceListAction, DeviceListEffect, DeviceListState,
-};
 use crate::desktop::original_owner::{FrameSlot, OriginalOwner, SourceViewBinding};
+use crate::product_components::{
+    assets::UiAsset,
+    component::{self, Button, IconName, button, icon, tooltip},
+    theme::{ActionVariantKind, ActiveTheme, Theme},
+};
 use crate::telemetry_display::{NetworkQuality, UiHostStats};
 use crate::{
     AppDevice, HostStats, MacDecodedVideoFrame, MeshPairingControl, MeshPairingMessageKind,
@@ -66,8 +69,8 @@ use remote_core::{
     role::RoleKind,
     session_tabs::{SessionCommandState, SessionTabsAction, SessionTabsEffect},
     stream_settings::{
-        StreamSettingsAction, StreamSettingsState, StreamSettingsValues,
-        WindowClarityScale, WindowLayoutPreset, WindowStreamOverride,
+        StreamSettingsAction, StreamSettingsState, StreamSettingsValues, WindowClarityScale,
+        WindowLayoutPreset, WindowStreamOverride,
     },
 };
 use std::collections::BTreeSet;
@@ -75,17 +78,14 @@ use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crate::product_components::{
-    assets::UiAsset,
-    component::{self, Button, IconName, button, icon, tooltip},
-    theme::{ActionVariantKind, ActiveTheme, Theme},
-};
 
 pub async fn run_restored_gui(
     mut config: UnifiedRuntimeConfig,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     start_owned_gui_trace();
-    let Some(mut instance) = Instance::acquire_for_renderer(&config.mesh_dir,crate::gui_backend::ORIGINAL_RENDERER)? else {
+    let Some(mut instance) =
+        Instance::acquire_for_renderer(&config.mesh_dir, crate::gui_backend::ORIGINAL_RENDERER)?
+    else {
         return Ok(());
     };
     let activation = Arc::new(AtomicBool::new(false));
@@ -99,22 +99,29 @@ pub async fn run_restored_gui(
     // Use the unified runtime configuration; paired-device authentication and OS consent remain mandatory.
     let profile = config.mesh_dir.clone();
     let runtime = Arc::new(start_unified_runtime(config).await?);
-    let _service = crate::background_service::Service::start_for_gui(&profile, runtime.clone(), &instance)?;
+    let _service =
+        crate::background_service::Service::start_for_gui(&profile, runtime.clone(), &instance)?;
     run_original_dashboard(runtime, Some(instance), activation, None)
 }
 
 /// A manually launched window attaches to the existing background owner.
 /// Session media/native presentation remains entirely in this GUI process.
 #[cfg(any(unix, windows))]
-pub async fn run_attached_gui(config: UnifiedRuntimeConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn run_attached_gui(
+    config: UnifiedRuntimeConfig,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let service = crate::background_service::Client::connect(&config.mesh_dir)?;
     if service.owner_mode() == crate::background_service::OwnerMode::Standalone {
         return Instance::activate_existing(&config.mesh_dir).map_err(Into::into);
     }
-    let Some(mut instance) = Instance::acquire_frontend(&config.mesh_dir)? else { return Ok(()); };
+    let Some(mut instance) = Instance::acquire_frontend(&config.mesh_dir)? else {
+        return Ok(());
+    };
     let activation = Arc::new(AtomicBool::new(false));
     let signal = activation.clone();
-    instance.attach_callback(move || { signal.store(true, Ordering::Release); })?;
+    instance.attach_callback(move || {
+        signal.store(true, Ordering::Release);
+    })?;
     let runtime = Arc::new(service.frontend_runtime().await?);
     run_original_dashboard(runtime, Some(instance), activation, Some(service))
 }
@@ -122,41 +129,53 @@ pub async fn run_attached_gui(config: UnifiedRuntimeConfig) -> Result<(), Box<dy
 /// Bounded integration entry for the same production dashboard and renderer.
 /// Callers supply one service owner and an isolated profile, never another UI.
 pub fn run_restored_workspace_runtime(
-    runtime: Arc<UnifiedRuntimeHandle>, profile: &std::path::Path,
+    runtime: Arc<UnifiedRuntimeHandle>,
+    profile: &std::path::Path,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let Some(mut instance) = Instance::acquire_for_renderer(profile, crate::gui_backend::ORIGINAL_RENDERER)? else {
+    let Some(mut instance) =
+        Instance::acquire_for_renderer(profile, crate::gui_backend::ORIGINAL_RENDERER)?
+    else {
         return Err("Workspace renderer already owns this profile".into());
     };
     let activation = Arc::new(AtomicBool::new(false));
     let signal = activation.clone();
-    instance.attach_callback(move || { signal.store(true, Ordering::Release); })?;
+    instance.attach_callback(move || {
+        signal.store(true, Ordering::Release);
+    })?;
     run_original_dashboard(runtime, Some(instance), activation, None)
 }
 
 fn run_original_dashboard(
-    runtime: Arc<UnifiedRuntimeHandle>, instance: Option<Instance>, activation: Arc<AtomicBool>,
+    runtime: Arc<UnifiedRuntimeHandle>,
+    instance: Option<Instance>,
+    activation: Arc<AtomicBool>,
     background: Option<crate::background_service::Client>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let exit_group=Arc::new(FrontendExitGroup::default());
+    let exit_group = Arc::new(FrontendExitGroup::default());
     let startup_error = Arc::new(Mutex::new(None));
     let init_error = startup_error.clone();
     crate::desktop::foreground_runtime::run(move || {
         let application = Application::new().with_assets(UiAsset);
         application.on_reopen(show_management_window);
         application.run(move |cx: &mut App| {
-                apply_product_window_appearance();
-                if let Err(error) = component::init(cx) {
-                    *init_error.lock().expect("GUI startup error lock") = Some(error.to_string());
-                    cx.quit();
-                    return;
-                }
-                crate::product_components::theme::install(
-                    cx.window_appearance(),
-                    weavelo_themes(), cx);
-                open_restored_window(runtime, instance, activation, None, background, exit_group, cx).expect("failed to open Weavelo window");
-            })
+            apply_product_window_appearance();
+            if let Err(error) = component::init(cx) {
+                *init_error.lock().expect("GUI startup error lock") = Some(error.to_string());
+                cx.quit();
+                return;
+            }
+            crate::product_components::theme::install(cx.window_appearance(), weavelo_themes(), cx);
+            open_restored_window(
+                runtime, instance, activation, None, background, exit_group, cx,
+            )
+            .expect("failed to open Weavelo window");
+        })
     })?;
-    if let Some(error) = startup_error.lock().map_err(|_| "GUI startup error lock poisoned")?.take() {
+    if let Some(error) = startup_error
+        .lock()
+        .map_err(|_| "GUI startup error lock poisoned")?
+        .take()
+    {
         return Err(format!("Ely initialization failed: {error}").into());
     }
     Ok(())
@@ -189,29 +208,50 @@ fn open_restored_window(
     exit_group: Arc<FrontendExitGroup>,
     cx: &mut App,
 ) -> Option<WindowHandle<RestoredDashboard>> {
-    let purpose=if instance.is_some() {WindowPurpose::Management} else {WindowPurpose::Stream};
-    open_restored_window_for(purpose,runtime,instance,activation,device,background,exit_group,cx)
+    let purpose = if instance.is_some() {
+        WindowPurpose::Management
+    } else {
+        WindowPurpose::Stream
+    };
+    open_restored_window_for(
+        purpose, runtime, instance, activation, device, background, exit_group, cx,
+    )
 }
 
 fn open_restored_window_for(
-    purpose:WindowPurpose,
-    runtime:Arc<UnifiedRuntimeHandle>,
-    instance:Option<Instance>,
-    activation:Arc<AtomicBool>,
-    device:Option<String>,
-    background:Option<crate::background_service::Client>,
-    exit_group:Arc<FrontendExitGroup>,
-    cx:&mut App,
+    purpose: WindowPurpose,
+    runtime: Arc<UnifiedRuntimeHandle>,
+    instance: Option<Instance>,
+    activation: Arc<AtomicBool>,
+    device: Option<String>,
+    background: Option<crate::background_service::Client>,
+    exit_group: Arc<FrontendExitGroup>,
+    cx: &mut App,
 ) -> Option<WindowHandle<RestoredDashboard>> {
-    if exit_group.stopping.load(Ordering::Acquire) {return None;}
+    if exit_group.stopping.load(Ordering::Acquire) {
+        return None;
+    }
     let primary = instance.is_some();
-    let options = restored_window_options(cx,purpose);
+    let options = restored_window_options(cx, purpose);
     cx.open_window(options, move |window, cx| {
-        let view = cx.new(|cx| RestoredDashboard::new(runtime, instance, activation, background, exit_group, window, cx));
-        if primary { cx.set_global(ManagementRoot(view.clone())); }
+        let view = cx.new(|cx| {
+            RestoredDashboard::new(
+                runtime, instance, activation, background, exit_group, window, cx,
+            )
+        });
+        if primary {
+            cx.set_global(ManagementRoot(view.clone()));
+        }
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |_window, cx| {
-            if weak.update(cx, |this, _| this.exit_group.stopping.load(Ordering::Acquire)).unwrap_or(false) { return false; }
+            if weak
+                .update(cx, |this, _| {
+                    this.exit_group.stopping.load(Ordering::Acquire)
+                })
+                .unwrap_or(false)
+            {
+                return false;
+            }
             if primary {
                 // The management presentation does not own the GUI service,
                 // transfers or any stream. ManagementRoot keeps its coordinator.
@@ -236,22 +276,31 @@ fn open_restored_window_for(
             }
         });
         if let Some(device) = device {
-            view.update(cx, |this,cx|this.start_source_browser(device,cx));
+            view.update(cx, |this, cx| this.start_source_browser(device, cx));
         }
         let weak = view.downgrade();
         let mut frame_updates = view.read(cx).owner.subscribe_updates();
-        let command_ready = view.read(cx).directed_receive.as_ref().map(|adapter| adapter.command_ready.clone());
-        let viewport_ready=view.read(cx).viewport.lock().unwrap().ready.clone();
+        let command_ready = view
+            .read(cx)
+            .directed_receive
+            .as_ref()
+            .map(|adapter| adapter.command_ready.clone());
+        let viewport_ready = view.read(cx).viewport.lock().unwrap().ready.clone();
         cx.spawn(async move |cx| {
             loop {
                 let Ok(interval) = weak.update(cx, |view, cx| {
                     if view.activation.swap(false, Ordering::AcqRel) {
                         cx.activate(true);
                         let handle = view.window_handle;
-                        if handle.update(cx, |_, window, _| window.activate_window()).is_err()
-                            && view.purpose == WindowPurpose::Management {
+                        if handle
+                            .update(cx, |_, window, _| window.activate_window())
+                            .is_err()
+                            && view.purpose == WindowPurpose::Management
+                        {
                             let retained = cx.entity();
-                            cx.defer(move |cx| { reopen_restored_window(retained, cx); });
+                            cx.defer(move |cx| {
+                                reopen_restored_window(retained, cx);
+                            });
                         }
                     }
                     if view.purpose == WindowPurpose::Stream
@@ -271,33 +320,54 @@ fn open_restored_window_for(
                     }
                     #[cfg(any(unix, windows))]
                     view.poll_directed_receive(cx);
-                    if view.delivery_closed.as_ref().is_some_and(|closed|closed.load(Ordering::Acquire)) {
+                    if view
+                        .delivery_closed
+                        .as_ref()
+                        .is_some_and(|closed| closed.load(Ordering::Acquire))
+                    {
                         view.native_window_artwork.close();
-                        let handle=view.window_handle;
-                        let pips=view.pip_windows.clone();
+                        let handle = view.window_handle;
+                        let pips = view.pip_windows.clone();
                         cx.defer(move |cx| {
-                            for pip in pips {let _=pip.update(cx,|_,window,_|window.remove_window());}
-                            let _=handle.update(cx,|_,window,_|window.remove_window());
+                            for pip in pips {
+                                let _ = pip.update(cx, |_, window, _| window.remove_window());
+                            }
+                            let _ = handle.update(cx, |_, window, _| window.remove_window());
                         });
                         return Duration::from_secs(1);
                     }
                     owned_gui_stage(1);
-                    let primary=view.window_handle.update(cx, |_,window,_|window.is_window_visible());
-                    view.window_visible=primary.as_ref().ok().copied().flatten();
-                    view.pip_visible=false;
-                    view.pip_windows.retain(|handle| match handle.update(cx,|_,window,_|window.is_window_visible()) {
-                        Ok(visible)=>{view.pip_visible|=visible.unwrap_or(true);true},Err(_)=>false,
+                    let primary = view
+                        .window_handle
+                        .update(cx, |_, window, _| window.is_window_visible());
+                    view.window_visible = primary.as_ref().ok().copied().flatten();
+                    view.pip_visible = false;
+                    view.pip_windows.retain(|handle| {
+                        match handle.update(cx, |_, window, _| window.is_window_visible()) {
+                            Ok(visible) => {
+                                view.pip_visible |= visible.unwrap_or(true);
+                                true
+                            }
+                            Err(_) => false,
+                        }
                     });
                     view.sync_media_pause();
                     view.poll_viewport();
                     view.owner.poll();
-                    if view.purpose == WindowPurpose::Management { view.poll_device_files(); }
+                    if view.purpose == WindowPurpose::Management {
+                        view.poll_device_files();
+                    }
                     view.poll_source_browser(cx);
                     // PiP's producer survives its primary presentation. Native
                     // frames still pass through the same latest-frame mailbox.
-                    if primary.is_err() {view.drain_latest_frame();}
-                    refresh_pairing_state(view.mesh_pairing.as_ref(),
-                        &mut view.mesh_pairing_snapshot, &mut view.device_name_editor);
+                    if primary.is_err() {
+                        view.drain_latest_frame();
+                    }
+                    refresh_pairing_state(
+                        view.mesh_pairing.as_ref(),
+                        &mut view.mesh_pairing_snapshot,
+                        &mut view.device_name_editor,
+                    );
                     owned_gui_stage(2);
                     if view.acceptance_tick(cx) {
                         return Duration::from_secs(1);
@@ -336,18 +406,31 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
         WindowPurpose::Sending => (size(px(560.), px(340.)), size(px(420.), px(260.))),
         WindowPurpose::Stream => (size(px(1280.), px(800.)), size(px(120.), px(120.))),
     };
-    let window_bounds = cx.primary_display().map(|display| {
-        let work = display.visible_bounds();
-        let window_size = size(
-            preferred.width.min((work.size.width-px(32.)).max(px(1.))),
-            preferred.height.min((work.size.height-px(48.)).max(px(1.))),
-        );
-        Bounds::centered_at(work.center(), window_size)
-    }).unwrap_or_else(|| bounds(point(px(80.), px(60.)), preferred));
+    let window_bounds = cx
+        .primary_display()
+        .map(|display| {
+            let work = display.visible_bounds();
+            let window_size = size(
+                preferred.width.min((work.size.width - px(32.)).max(px(1.))),
+                preferred
+                    .height
+                    .min((work.size.height - px(48.)).max(px(1.))),
+            );
+            Bounds::centered_at(work.center(), window_size)
+        })
+        .unwrap_or_else(|| bounds(point(px(80.), px(60.)), preferred));
+    let stream_custom_titlebar = cfg!(target_os = "macos") && purpose == WindowPurpose::Stream;
     WindowOptions {
-            app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
+        app_id: Some(
+            remote_core::desktop_identity::identity()
+                .application_id
+                .clone(),
+        ),
         window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-        window_min_size: Some(size(minimum.width.min(window_bounds.size.width), minimum.height.min(window_bounds.size.height))),
+        window_min_size: Some(size(
+            minimum.width.min(window_bounds.size.width),
+            minimum.height.min(window_bounds.size.height),
+        )),
         titlebar: Some(TitlebarOptions {
             title: Some(
                 if std::env::var_os("WEAVELO_RESTORED_TEST_OUTPUT").is_some() {
@@ -357,7 +440,8 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
                 }
                 .into(),
             ),
-            ..Default::default()
+            appears_transparent: stream_custom_titlebar,
+            traffic_light_position: stream_custom_titlebar.then(|| point(px(12.0), px(10.0))),
         }),
         ..Default::default()
     }
@@ -438,8 +522,8 @@ struct StreamActivity {
     can_stop_sending: bool,
     can_stop_receiving: bool,
     sends: Vec<SendActivity>,
-    devices:std::collections::BTreeMap<String,crate::desktop::device_list::DeviceActivity>,
-    unattributed_sharing:usize,
+    devices: std::collections::BTreeMap<String, crate::desktop::device_list::DeviceActivity>,
+    unattributed_sharing: usize,
 }
 
 /// Only the existing views in this GUI process; no persistent registry or IPC authority.
@@ -448,7 +532,8 @@ struct FrontendExitGroup {
     stopping: AtomicBool,
     upgrade_operations: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(any(unix, windows))]
-    directed_send: Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
+    directed_send:
+        Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
     send_labels: Mutex<std::collections::BTreeMap<String, String>>,
     gui_generation: Mutex<Option<String>>,
     owners: Mutex<Vec<std::sync::Weak<OriginalOwner>>>,
@@ -461,49 +546,73 @@ impl FrontendExitGroup {
         self.owners().iter().all(|owner| owner.can_change_network())
     }
     fn owners(&self) -> Vec<Arc<OriginalOwner>> {
-        let mut owners=self.owners.lock().unwrap();
-        owners.retain(|owner|owner.strong_count()>0);
+        let mut owners = self.owners.lock().unwrap();
+        owners.retain(|owner| owner.strong_count() > 0);
         owners.iter().filter_map(std::sync::Weak::upgrade).collect()
     }
     fn exit_owners(&self) -> Vec<Arc<OriginalOwner>> {
         {
-            let mut retained=self.pending.lock().unwrap();
+            let mut retained = self.pending.lock().unwrap();
             for owner in self.owners() {
-                if !retained.iter().any(|old|Arc::ptr_eq(old,&owner)) { retained.push(owner); }
+                if !retained.iter().any(|old| Arc::ptr_eq(old, &owner)) {
+                    retained.push(owner);
+                }
             }
             retained.clone()
         }
     }
     fn prepare_gui_exit(&self) -> Result<(), String> {
-        for owner in self.exit_owners() { owner.prepare_gui_exit()?; }
+        for owner in self.exit_owners() {
+            owner.prepare_gui_exit()?;
+        }
         Ok(())
     }
     async fn close_for_gui_exit(&self) -> Result<bool, String> {
-        let mut tasks=tokio::task::JoinSet::new();
-        for owner in self.exit_owners() { tasks.spawn(async move {owner.close_all_for_gui_exit().await}); }
-        let mut confirmed=true;
-        while let Some(result)=tasks.join_next().await {
+        let mut tasks = tokio::task::JoinSet::new();
+        for owner in self.exit_owners() {
+            tasks.spawn(async move { owner.close_all_for_gui_exit().await });
+        }
+        let mut confirmed = true;
+        while let Some(result) = tasks.join_next().await {
             confirmed &= result.map_err(|_| "A frontend cleanup worker failed".to_string())??;
         }
         self.pending.lock().unwrap().clear();
         Ok(confirmed)
     }
     async fn close_verified(&self) -> Result<(), String> {
-        let owners=self.exit_owners();
-        let mut tasks=tokio::task::JoinSet::new();
-        for owner in owners { tasks.spawn(async move { owner.close_all_verified().await }); }
-        let mut failure=None;
-        while let Some(result)=tasks.join_next().await {
+        let owners = self.exit_owners();
+        let mut tasks = tokio::task::JoinSet::new();
+        for owner in owners {
+            tasks.spawn(async move { owner.close_all_verified().await });
+        }
+        let mut failure = None;
+        while let Some(result) = tasks.join_next().await {
             match result {
-                Ok(Ok(()))=>{}, Ok(Err(error))=>{if failure.is_none(){failure=Some(error);}},
-                Err(_)=>{if failure.is_none(){failure=Some("A frontend cleanup worker failed".into());}},
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    if failure.is_none() {
+                        failure = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if failure.is_none() {
+                        failure = Some("A frontend cleanup worker failed".into());
+                    }
+                }
             }
         }
-        match failure { Some(error)=>Err(error),None=>{self.pending.lock().unwrap().clear();Ok(())} }
+        match failure {
+            Some(error) => Err(error),
+            None => {
+                self.pending.lock().unwrap().clear();
+                Ok(())
+            }
+        }
     }
 }
 
-type SourceArtwork = Arc<std::collections::HashMap<protocol::session::CaptureSource, Arc<gpui::RenderImage>>>;
+type SourceArtwork =
+    Arc<std::collections::HashMap<protocol::session::CaptureSource, Arc<gpui::RenderImage>>>;
 
 fn render_artwork(bitmap: &remote_core::application_icons::IconBitmap) -> Arc<gpui::RenderImage> {
     let mut bgra = bitmap.rgba.to_vec();
@@ -518,22 +627,34 @@ fn render_artwork(bitmap: &remote_core::application_icons::IconBitmap) -> Arc<gp
 #[derive(Default)]
 struct ApplicationArtwork {
     assets: remote_core::application_icons::SourceIconAssets,
-    images: std::collections::HashMap<[u8;32],Arc<gpui::RenderImage>>,
+    images: std::collections::HashMap<[u8; 32], Arc<gpui::RenderImage>>,
     sources: SourceArtwork,
 }
 impl ApplicationArtwork {
-    fn update(&mut self, assets: remote_core::application_icons::SourceIconAssets) -> SourceArtwork {
-        if !Arc::ptr_eq(&self.assets,&assets) {
-            let mut images=std::collections::HashMap::new();
-            let sources=assets.iter().map(|(source,bitmap)| {
-                let image = images.entry(bitmap.id).or_insert_with(|| {
-                    self.images.get(&bitmap.id).cloned().unwrap_or_else(|| render_artwork(bitmap))
-                }).clone();
-                (*source,image)
-            }).collect();
-            self.images=images;
-            self.sources=Arc::new(sources);
-            self.assets=assets;
+    fn update(
+        &mut self,
+        assets: remote_core::application_icons::SourceIconAssets,
+    ) -> SourceArtwork {
+        if !Arc::ptr_eq(&self.assets, &assets) {
+            let mut images = std::collections::HashMap::new();
+            let sources = assets
+                .iter()
+                .map(|(source, bitmap)| {
+                    let image = images
+                        .entry(bitmap.id)
+                        .or_insert_with(|| {
+                            self.images
+                                .get(&bitmap.id)
+                                .cloned()
+                                .unwrap_or_else(|| render_artwork(bitmap))
+                        })
+                        .clone();
+                    (*source, image)
+                })
+                .collect();
+            self.images = images;
+            self.sources = Arc::new(sources);
+            self.assets = assets;
         }
         self.sources.clone()
     }
@@ -558,7 +679,8 @@ struct RestoredDashboard {
     #[cfg(any(unix, windows))]
     directed_receive: Option<crate::desktop::directed_receive::Adapter>,
     #[cfg(any(unix, windows))]
-    directed_send: Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
+    directed_send:
+        Arc<Mutex<std::collections::BTreeMap<String, crate::desktop::directed_send::SendHandle>>>,
     delivery_closed: Option<Arc<AtomicBool>>,
     activation: Arc<AtomicBool>,
     bound_source: Option<(u32, Instant)>,
@@ -576,8 +698,8 @@ struct RestoredDashboard {
     test_source_started: bool,
     test_source_request: Option<Result<sequence_acceptance::SourceRequest, String>>,
     test_selected_source: Option<protocol::session::CaptureSourceInfo>,
-    test_sequence:Option<Result<sequence_acceptance::Sequence,String>>,
-    test_media_cycle:Option<Result<sequence_acceptance::MediaCycle,String>>,
+    test_sequence: Option<Result<sequence_acceptance::Sequence, String>>,
+    test_media_cycle: Option<Result<sequence_acceptance::MediaCycle, String>>,
     current_frame: Option<Arc<MacDecodedVideoFrame>>,
     presentation_frame: FrameSlot,
     host_stats: Option<Arc<SharedHostStats>>,
@@ -596,7 +718,7 @@ struct RestoredDashboard {
     ime_anchor: Option<Point<Pixels>>,
     root_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
-    viewport:Arc<Mutex<viewer_viewport::State>>,
+    viewport: Arc<Mutex<viewer_viewport::State>>,
     input_session_id: Option<u32>,
     status: String,
 
@@ -609,15 +731,15 @@ struct RestoredDashboard {
     local_share_state: crate::desktop::local_share::State,
     #[cfg(target_os = "linux")]
     local_share_owner: crate::desktop::local_share::linux::Owner,
-    #[cfg(target_os="linux")]
+    #[cfg(target_os = "linux")]
     local_share_polling: bool,
     local_permissions: Option<Result<crate::sharing_permissions::Status, String>>,
     checking_permissions: bool,
     update_check: Option<Result<crate::desktop_update::Release, String>>,
     checking_update: bool,
-    #[cfg(target_os="macos")]
+    #[cfg(target_os = "macos")]
     installing_update: bool,
-    #[cfg(target_os="macos")]
+    #[cfg(target_os = "macos")]
     update_install_result: Option<Result<String, String>>,
     session_commands: SessionCommandState,
     source_commands: SessionCommandState,
@@ -651,54 +773,92 @@ struct RestoredDashboard {
 impl RestoredDashboard {
     #[cfg(any(unix, windows))]
     fn stream_activity(&self) -> StreamActivity {
-        let mut devices=std::collections::BTreeMap::<String,crate::desktop::device_list::DeviceActivity>::new();
-        for (device,_,reason) in self.exit_group.receive_failures.lock().unwrap().current(remote_core::shared_files::current_share_scope()) {
-            devices.entry(device.clone()).or_default().error=Some(reason.clone());
+        let mut devices =
+            std::collections::BTreeMap::<String, crate::desktop::device_list::DeviceActivity>::new(
+            );
+        for (device, _, reason) in self
+            .exit_group
+            .receive_failures
+            .lock()
+            .unwrap()
+            .current(remote_core::shared_files::current_share_scope())
+        {
+            devices.entry(device.clone()).or_default().error = Some(reason.clone());
         }
         for owner in self.exit_group.owners() {
-            for (device,current) in owner.device_activity() {
-                let activity=devices.entry(device).or_default();
-                activity.receiving+=current.receiving;
-                activity.connecting|=current.connecting;
-                if current.error.is_some() {activity.error=current.error;}
-                if let Some((done,total))=current.transfer {
-                    let progress=activity.transfer.get_or_insert((0,0));
-                    progress.0=progress.0.saturating_add(done);progress.1=progress.1.saturating_add(total);
+            for (device, current) in owner.device_activity() {
+                let activity = devices.entry(device).or_default();
+                activity.receiving += current.receiving;
+                activity.connecting |= current.connecting;
+                if current.error.is_some() {
+                    activity.error = current.error;
+                }
+                if let Some((done, total)) = current.transfer {
+                    let progress = activity.transfer.get_or_insert((0, 0));
+                    progress.0 = progress.0.saturating_add(done);
+                    progress.1 = progress.1.saturating_add(total);
                 }
             }
         }
-        let mut unattributed_sharing=0;
-        if let Some(background)=&self.background {
-            for (device,streams) in background.outgoing_peers() {
-                if let Some(device)=device {devices.entry(device).or_default().sharing+=streams;}
-                else {unattributed_sharing+=streams;}
+        let mut unattributed_sharing = 0;
+        if let Some(background) = &self.background {
+            for (device, streams) in background.outgoing_peers() {
+                if let Some(device) = device {
+                    devices.entry(device).or_default().sharing += streams;
+                } else {
+                    unattributed_sharing += streams;
+                }
             }
         }
-        let sends=self.send_activity();
-        for send in sends.iter().filter(|send|send.finished && send.error.is_some()) {
-            if !sends.iter().any(|active|active.target==send.target&&!active.finished) {
-                devices.entry(send.target.clone()).or_default().error=send.error.clone();
+        let sends = self.send_activity();
+        for send in sends
+            .iter()
+            .filter(|send| send.finished && send.error.is_some())
+        {
+            if !sends
+                .iter()
+                .any(|active| active.target == send.target && !active.finished)
+            {
+                devices.entry(send.target.clone()).or_default().error = send.error.clone();
             }
         }
-        for send in sends.iter().filter(|send|!send.finished) {
-            let activity=devices.entry(send.target.clone()).or_default();
-            activity.can_stop_sending=true;
-            if activity.sharing==0 {activity.connecting=true;}
+        for send in sends.iter().filter(|send| !send.finished) {
+            let activity = devices.entry(send.target.clone()).or_default();
+            activity.can_stop_sending = true;
+            if activity.sharing == 0 {
+                activity.connecting = true;
+            }
         }
         StreamActivity {
-            sharing:self.background.as_ref().map_or(0,|background|background.outgoing_streams()),
-            receiving:devices.values().map(|activity|activity.receiving).sum(),
-            can_stop_sending:sends.iter().any(|send|!send.finished),
-            can_stop_receiving:self.directed_receive.as_ref().is_some_and(|adapter|!adapter.leases.is_empty()),
-            sends,devices,unattributed_sharing,
+            sharing: self
+                .background
+                .as_ref()
+                .map_or(0, |background| background.outgoing_streams()),
+            receiving: devices.values().map(|activity| activity.receiving).sum(),
+            can_stop_sending: sends.iter().any(|send| !send.finished),
+            can_stop_receiving: self
+                .directed_receive
+                .as_ref()
+                .is_some_and(|adapter| !adapter.leases.is_empty()),
+            sends,
+            devices,
+            unattributed_sharing,
         }
     }
     #[cfg(any(unix, windows))]
     fn sending_snapshot(&self) -> Vec<serde_json::Value> {
-        self.directed_send.lock().unwrap().values().filter(|sender|!sender.is_finished()).map(|sender|serde_json::json!({
-            "request_id":sender.request_id,"target":sender.target,"sources":sender.sources,
-            "finished":sender.is_finished(),"status":sender.poll(),
-        })).collect()
+        self.directed_send
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|sender| !sender.is_finished())
+            .map(|sender| {
+                serde_json::json!({
+                    "request_id":sender.request_id,"target":sender.target,"sources":sender.sources,
+                    "finished":sender.is_finished(),"status":sender.poll(),
+                })
+            })
+            .collect()
     }
     #[cfg(any(unix, windows))]
     fn last_delivery_snapshot(&self) -> Vec<serde_json::Value> {
@@ -719,21 +879,36 @@ impl RestoredDashboard {
         cx: &mut Context<Self>,
     ) -> Self {
         Self::observe_window(window, cx);
-        let purpose = if instance.is_some() { WindowPurpose::Management } else { WindowPurpose::Stream };
-        if purpose!=WindowPurpose::Management {window_icon::apply(window,cx);}
+        let purpose = if instance.is_some() {
+            WindowPurpose::Management
+        } else {
+            WindowPurpose::Stream
+        };
+        if purpose != WindowPurpose::Management {
+            window_icon::apply(window, cx);
+        }
         let owner = OriginalOwner::new(runtime.owner.clone());
-        exit_group.owners.lock().unwrap().push(Arc::downgrade(&owner));
+        exit_group
+            .owners
+            .lock()
+            .unwrap()
+            .push(Arc::downgrade(&owner));
         let mesh_pairing = runtime.mesh_pairing.clone();
         let mesh_pairing_snapshot = mesh_pairing.as_ref().map(MeshPairingControl::snapshot);
         let device_name_editor = remote_core::device_name::NameEditor::new(
-            mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()).unwrap_or_default());
+            mesh_pairing_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.display_name.clone())
+                .unwrap_or_default(),
+        );
         let prefs = crate::preferences::UserPreferences::load_or_default();
-        let device_badge_editor = device_badges::Editor::new(if purpose == WindowPurpose::Management {
-            device_badges::Editor::detect_hardware(cx);
-            prefs.ui.device_badge.clone()
-        } else {
-            Default::default()
-        });
+        let device_badge_editor =
+            device_badges::Editor::new(if purpose == WindowPurpose::Management {
+                device_badges::Editor::detect_hardware(cx);
+                prefs.ui.device_badge.clone()
+            } else {
+                Default::default()
+            });
         owner.set_clipboard_sync_enabled(prefs.side_services.clipboard_sync);
         let viewer_media_status = runtime.viewer_media_status.clone();
         let scale_mode = if prefs.ui.scale_mode == "fill" {
@@ -748,8 +923,14 @@ impl RestoredDashboard {
         #[cfg(any(unix, windows))]
         let directed_receive = instance.as_ref().and_then(|instance| {
             match crate::desktop::directed_receive::Adapter::start(instance.state_directory()) {
-                Ok(mut adapter) => {adapter.active_operations=exit_group.upgrade_operations.clone();Some(adapter)},
-                Err(error) => { eprintln!("GUI receive adapter unavailable: {error}"); None }
+                Ok(mut adapter) => {
+                    adapter.active_operations = exit_group.upgrade_operations.clone();
+                    Some(adapter)
+                }
+                Err(error) => {
+                    eprintln!("GUI receive adapter unavailable: {error}");
+                    None
+                }
             }
         });
         #[cfg(any(unix, windows))]
@@ -779,19 +960,24 @@ impl RestoredDashboard {
             activation,
             bound_source: None,
             quitting: false,
-            full_exit_pending: false, exit_group, background,
+            full_exit_pending: false,
+            exit_group,
+            background,
             window_handle: window.window_handle(),
             pip_windows: Vec::new(),
             pip_visible: false,
-            window_fit: window_fit::WindowFit::new([f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)]),
+            window_fit: window_fit::WindowFit::new([
+                f32::from(window.viewport_size().width),
+                f32::from(window.viewport_size().height),
+            ]),
             started: Instant::now(),
             render_calls: 0,
             test_connect_started: false,
             test_source_started: false,
             test_source_request: sequence_acceptance::SourceRequest::from_env(),
             test_selected_source: None,
-            test_sequence:sequence_acceptance::Sequence::from_env(),
-            test_media_cycle:sequence_acceptance::MediaCycle::from_env(),
+            test_sequence: sequence_acceptance::Sequence::from_env(),
+            test_media_cycle: sequence_acceptance::MediaCycle::from_env(),
             artwork_cache: Default::default(),
             current_frame: None,
             presentation_frame: Arc::new(Mutex::new(None)),
@@ -811,7 +997,7 @@ impl RestoredDashboard {
             ime_anchor: None,
             root_focus,
             video_surface_bounds: Arc::new(Mutex::new(None)),
-            viewport:Default::default(),
+            viewport: Default::default(),
             input_session_id: None,
             status: "Ready".into(),
             drawer_open: purpose == WindowPurpose::Management,
@@ -823,15 +1009,15 @@ impl RestoredDashboard {
             local_share_state: crate::desktop::local_share::State::default(),
             #[cfg(target_os = "linux")]
             local_share_owner,
-            #[cfg(target_os="linux")]
+            #[cfg(target_os = "linux")]
             local_share_polling: false,
             local_permissions: None,
             checking_permissions: false,
             update_check: None,
             checking_update: false,
-            #[cfg(target_os="macos")]
+            #[cfg(target_os = "macos")]
             installing_update: false,
-            #[cfg(target_os="macos")]
+            #[cfg(target_os = "macos")]
             update_install_result: None,
             session_commands: SessionCommandState::default(),
             source_commands: SessionCommandState::default(),
@@ -840,12 +1026,16 @@ impl RestoredDashboard {
             input_locked: true,
             capture_supports_input: false,
             stream_settings: StreamSettingsState::new(StreamSettingsValues {
-                width: prefs.stream.width, height: prefs.stream.height,
-                fps: prefs.stream.fps, bitrate_kbps: prefs.stream.bitrate_kbps,
+                width: prefs.stream.width,
+                height: prefs.stream.height,
+                fps: prefs.stream.fps,
+                bitrate_kbps: prefs.stream.bitrate_kbps,
             }),
             window_stream_override: WindowStreamOverride::from_baseline(StreamSettingsValues {
-                width: prefs.stream.width, height: prefs.stream.height,
-                fps: prefs.stream.fps, bitrate_kbps: prefs.stream.bitrate_kbps,
+                width: prefs.stream.width,
+                height: prefs.stream.height,
+                fps: prefs.stream.fps,
+                bitrate_kbps: prefs.stream.bitrate_kbps,
             }),
             window_override_bound: None,
             window_last_applied_cap: None,
@@ -878,7 +1068,9 @@ impl RestoredDashboard {
         {
             return;
         }
-        let Some(identity) = self.bound_source else { return; };
+        let Some(identity) = self.bound_source else {
+            return;
+        };
         if self
             .last_remote_focus
             .is_some_and(|(prev, at)| prev == identity && at.elapsed() < Duration::from_millis(80))
@@ -920,22 +1112,33 @@ impl RestoredDashboard {
                 this.request_remote_source_focus();
             }
             cx.notify();
-        }).detach();
+        })
+        .detach();
         let input_geometry = |window: &Window| {
-            (window.bounds(), window.viewport_size(), window.scale_factor(),
-                window.is_fullscreen(), window.is_maximized())
+            (
+                window.bounds(),
+                window.viewport_size(),
+                window.scale_factor(),
+                window.is_fullscreen(),
+                window.is_maximized(),
+            )
         };
         let mut last_input_geometry = input_geometry(window);
         cx.observe_window_bounds(window, move |this, window, _| {
-            if this.purpose == WindowPurpose::Stream { window_fit::observe(window, &mut this.window_fit); }
+            if this.purpose == WindowPurpose::Stream {
+                window_fit::observe(window, &mut this.window_fit);
+            }
             // GPUI also refreshes bounds on activation. Release held input only if geometry changed.
             let geometry = input_geometry(window);
-            if geometry == last_input_geometry { return; }
+            if geometry == last_input_geometry {
+                return;
+            }
             last_input_geometry = geometry;
             this.reset_pointer_scroll();
             this.owner.release_input();
             this.pointer_input = PointerInputTracker::default();
-        }).detach();
+        })
+        .detach();
     }
 
     fn check_toolbar_auto_hide(&mut self, cx: &mut Context<Self>) {
@@ -955,7 +1158,9 @@ impl RestoredDashboard {
     }
 
     fn persist_preferences(&self) {
-        if self.purpose != WindowPurpose::Management { return; }
+        if self.purpose != WindowPurpose::Management {
+            return;
+        }
         if let Err(err) = crate::preferences::UserPreferences::update(|prefs| {
             prefs.stream.width = self.stream_settings.values().resolution().0;
             prefs.stream.height = self.stream_settings.values().resolution().1;
@@ -977,7 +1182,10 @@ impl RestoredDashboard {
             role: snapshot.role,
             route: snapshot.route,
             devices: snapshot.devices,
-            source_icons: self.artwork_cache.borrow_mut().update(snapshot.source_icons),
+            source_icons: self
+                .artwork_cache
+                .borrow_mut()
+                .update(snapshot.source_icons),
             source_appearances: snapshot.source_appearances,
             capture_sources: snapshot.sources,
             source_binding: snapshot.source_binding,
@@ -1040,7 +1248,10 @@ impl RestoredDashboard {
         }
         // Submission, GPU completion, and actual display are distinct. Do not manufacture
         // render_done from decoder timestamps; the paint hook below records eligibility only.
-        self.viewport.lock().unwrap().target(self.bound_source,self.owner.viewport_target());
+        self.viewport
+            .lock()
+            .unwrap()
+            .target(self.bound_source, self.owner.viewport_target());
     }
 
     fn host_stats_snapshot(&self, role: &RoleState) -> Option<UiHostStats> {
@@ -1069,32 +1280,65 @@ impl RestoredDashboard {
     }
 
     #[cfg(any(unix, windows))]
-    fn open_received_window(&mut self, request: &str, device: &str,
-        capture: protocol::session::CaptureSource, duration: Duration,
-        mut claim: Option<protocol::session::DeliveryClaimProof>, cx: &mut Context<Self>)
-        -> Result<(crate::desktop::directed_receive::ReceiveWindow, WindowHandle<RestoredDashboard>), String>
-    {
-        let handle=open_restored_window(self.runtime.clone(),None,Arc::new(AtomicBool::new(false)),
-            None,self.background.clone(),self.exit_group.clone(),cx).ok_or("Could not open the receiving window")?;
-        let owner=handle.read(cx).map_err(|error|error.to_string())?.owner.clone();
-        let watchdog=match owner.begin_directed_receive(request,device,capture,duration) {
-            Ok(watchdog)=>watchdog, Err(error)=>{let _=handle.update(cx,|_,window,_|window.remove_window());return Err(error.to_string());}
+    fn open_received_window(
+        &mut self,
+        request: &str,
+        device: &str,
+        capture: protocol::session::CaptureSource,
+        duration: Duration,
+        mut claim: Option<protocol::session::DeliveryClaimProof>,
+        cx: &mut Context<Self>,
+    ) -> Result<
+        (
+            crate::desktop::directed_receive::ReceiveWindow,
+            WindowHandle<RestoredDashboard>,
+        ),
+        String,
+    > {
+        let handle = open_restored_window(
+            self.runtime.clone(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            None,
+            self.background.clone(),
+            self.exit_group.clone(),
+            cx,
+        )
+        .ok_or("Could not open the receiving window")?;
+        let owner = handle
+            .read(cx)
+            .map_err(|error| error.to_string())?
+            .owner
+            .clone();
+        let watchdog = match owner.begin_directed_receive(request, device, capture, duration) {
+            Ok(watchdog) => watchdog,
+            Err(error) => {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                return Err(error.to_string());
+            }
         };
-        if let Some(proof)=&mut claim {proof.sources=vec![capture];}
-        owner.set_receive_claim(request,claim);
-        let close=Arc::new(AtomicBool::new(false));
-        let member=crate::desktop::directed_receive::ReceiveWindow {
-            request_id:request.to_owned(),close:close.clone(),source:capture,owner:Arc::downgrade(&owner),watchdog,
-        };
-        if let Err(error)=handle.update(cx,|this,_,cx| {
-            this.stream_device=Some(device.to_owned());
-            this.stream_source=Some(capture);
-            this.delivery_closed=Some(close);
-            this.start_stream_connection(device.to_owned(),Some(request.to_owned()),cx)
-        }) {
-            let _=handle.update(cx,|_,window,_|window.remove_window());return Err(error.to_string());
+        if let Some(proof) = &mut claim {
+            proof.sources = vec![capture];
         }
-        Ok((member,handle))
+        owner.set_receive_claim(request, claim);
+        let close = Arc::new(AtomicBool::new(false));
+        let member = crate::desktop::directed_receive::ReceiveWindow {
+            request_id: request.to_owned(),
+            close: close.clone(),
+            source: capture,
+            owner: Arc::downgrade(&owner),
+            watchdog,
+        };
+        if let Err(error) = handle.update(cx, |this, _, cx| {
+            this.stream_device = Some(device.to_owned());
+            this.stream_source = Some(capture);
+            this.delivery_closed = Some(close);
+            this.start_stream_connection(device.to_owned(), Some(request.to_owned()), cx)
+        }) {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+            return Err(error.to_string());
+        }
+        Ok((member, handle))
     }
 
     #[cfg(any(unix, windows))]
@@ -1102,96 +1346,196 @@ impl RestoredDashboard {
         if self.purpose == WindowPurpose::Management {
             // The retained coordinator keeps every sender alive, even when its
             // source picker or management presentation has been closed.
-            for sender in self.directed_send.lock().unwrap().values() { sender.poll(); }
+            for sender in self.directed_send.lock().unwrap().values() {
+                sender.poll();
+            }
         }
         self.poll_sending_context();
-        use crate::desktop::directed_receive::{Request, Lease};
+        use crate::desktop::directed_receive::{Lease, Request};
         if let Some(adapter) = self.directed_receive.as_mut() {
             adapter.leases.retain(|_, lease| {
-                if lease.current() {return true;}
+                if lease.current() {
+                    return true;
+                }
                 for member in &lease.windows {
-                    if let Some(reason)=member.owner.upgrade().and_then(|owner|owner.directed_receive_error(&lease.request_id)) {
+                    if let Some(reason) = member
+                        .owner
+                        .upgrade()
+                        .and_then(|owner| owner.directed_receive_error(&lease.request_id))
+                    {
                         self.exit_group.receive_failures.lock().unwrap().remember(
-                            remote_core::shared_files::current_share_scope(),lease.source.clone(),member.source,reason);
+                            remote_core::shared_files::current_share_scope(),
+                            lease.source.clone(),
+                            member.source,
+                            reason,
+                        );
                     }
                 }
                 false
             });
         }
         loop {
-            let Some(command) = self.directed_receive.as_mut().and_then(|a| a.commands.try_recv().ok()) else { break; };
-            if command.reply.is_closed() { continue; }
-            if self.exit_group.stopping.load(Ordering::Acquire) && !matches!(&command.request, Request::Status | Request::Menu | Request::NetworkDiagnostics) {
-                let _=command.reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested; observe original outcome"}).into());continue;
+            let Some(command) = self
+                .directed_receive
+                .as_mut()
+                .and_then(|a| a.commands.try_recv().ok())
+            else {
+                break;
+            };
+            if command.reply.is_closed() {
+                continue;
+            }
+            if self.exit_group.stopping.load(Ordering::Acquire)
+                && !matches!(
+                    &command.request,
+                    Request::Status | Request::Menu | Request::NetworkDiagnostics
+                )
+            {
+                let _=command.reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested; observe original outcome"}).into());
+                continue;
             }
             let adapter = self.directed_receive.as_mut().unwrap();
             if let Err(error) = adapter.admit(&command.request, crate::unix_now_ms()) {
-                let _ = command.reply.send(serde_json::json!({"ok":false,"error":error}).into()); continue;
+                let _ = command
+                    .reply
+                    .send(serde_json::json!({"ok":false,"error":error}).into());
+                continue;
             }
             let generation = adapter.generation.clone();
-            if let Request::MenuAction {call,..}=command.request {
-                let result=self.dispatch_menu_action(call,cx);
-                let body=match result {
-                    Ok(())=>serde_json::json!({"ok":true}),
-                    Err(error)=>{self.status=error.clone();serde_json::json!({"ok":false,"error":error})},
+            if let Request::MenuAction { call, .. } = command.request {
+                let result = self.dispatch_menu_action(call, cx);
+                let body = match result {
+                    Ok(()) => serde_json::json!({"ok":true}),
+                    Err(error) => {
+                        self.status = error.clone();
+                        serde_json::json!({"ok":false,"error":error})
+                    }
                 };
-                let _=command.reply.send(body.into());continue;
+                let _ = command.reply.send(body.into());
+                continue;
             }
-            if matches!(&command.request, Request::UpgradeQuit {..} | Request::CloseGui {..}) {
-                let idle_only = matches!(&command.request, Request::UpgradeQuit {..});
-                self.begin_gui_quit(Some(command),idle_only,cx);continue;
+            if matches!(
+                &command.request,
+                Request::UpgradeQuit { .. } | Request::CloseGui { .. }
+            ) {
+                let idle_only = matches!(&command.request, Request::UpgradeQuit { .. });
+                self.begin_gui_quit(Some(command), idle_only, cx);
+                continue;
             }
-            if let Request::File {generation,request_id,action,..}=command.request {
-                let profile=self._instance.as_ref().map(|i|i.state_directory().to_path_buf());
-                let owner=self.owner.clone();
-                let operation=crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
+            if let Request::File {
+                generation,
+                request_id,
+                action,
+                ..
+            } = command.request
+            {
+                let profile = self
+                    ._instance
+                    .as_ref()
+                    .map(|i| i.state_directory().to_path_buf());
+                let owner = self.owner.clone();
+                let operation =
+                    crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
                 tokio::task::spawn_blocking(move || {
-                    if command.reply.is_closed() {return;}
-                    let result=profile.ok_or_else(||"Original GUI profile is unavailable".to_string())
-                        .and_then(|profile|crate::desktop::file_cli::dispatch(owner,&profile,&generation,&request_id,action,operation).map_err(|e|e.to_string()));
-                    let body=result.unwrap_or_else(|error|serde_json::json!({"ok":false,"error":error}));
-                    let _=command.reply.send(body.into());
+                    if command.reply.is_closed() {
+                        return;
+                    }
+                    let result = profile
+                        .ok_or_else(|| "Original GUI profile is unavailable".to_string())
+                        .and_then(|profile| {
+                            crate::desktop::file_cli::dispatch(
+                                owner,
+                                &profile,
+                                &generation,
+                                &request_id,
+                                action,
+                                operation,
+                            )
+                            .map_err(|e| e.to_string())
+                        });
+                    let body = result
+                        .unwrap_or_else(|error| serde_json::json!({"ok":false,"error":error}));
+                    let _ = command.reply.send(body.into());
                 });
                 continue;
             }
-            if let Request::ComputerUse {call,..}=command.request {
-                let dispatcher=adapter.computer_use.clone();
-                let owners=self.exit_group.owners();
-                let operation=crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
+            if let Request::ComputerUse { call, .. } = command.request {
+                let dispatcher = adapter.computer_use.clone();
+                let owners = self.exit_group.owners();
+                let operation =
+                    crate::desktop::upgrade_quit::Operation::begin(&adapter.active_operations);
                 tokio::task::spawn_blocking(move || {
-                    let _operation=operation;
+                    let _operation = operation;
                     if !command.reply.is_closed() {
-                        let result=dispatcher.dispatch_owners(&owners,call,command.peer_pid,|| command.reply.is_closed());
-                        let _=command.reply.send(crate::desktop::directed_receive::Reply::observation(result));
+                        let result =
+                            dispatcher.dispatch_owners(&owners, call, command.peer_pid, || {
+                                command.reply.is_closed()
+                            });
+                        let _ = command
+                            .reply
+                            .send(crate::desktop::directed_receive::Reply::observation(result));
                     }
                 });
                 continue;
             }
-            if let Request::Send {request_id,target_device_id,sources,..}=command.request {
-                let result=self.send_screen_request(target_device_id,sources,request_id.clone());
-                let response=match result {
-                    Ok(())=>crate::desktop::directed_receive::Reply::sending(serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),self.directed_send.lock().unwrap().get(&request_id).unwrap().cancellation()),
-                    Err(error)=>serde_json::json!({"ok":false,"error":error}).into(),
+            if let Request::Send {
+                request_id,
+                target_device_id,
+                sources,
+                ..
+            } = command.request
+            {
+                let result =
+                    self.send_screen_request(target_device_id, sources, request_id.clone());
+                let response = match result {
+                    Ok(()) => crate::desktop::directed_receive::Reply::sending(
+                        serde_json::json!({"ok":true,"state":"contacting","generation":generation,"request_id":request_id}),
+                        self.directed_send
+                            .lock()
+                            .unwrap()
+                            .get(&request_id)
+                            .unwrap()
+                            .cancellation(),
+                    ),
+                    Err(error) => serde_json::json!({"ok":false,"error":error}).into(),
                 };
-                let _=command.reply.send(response);continue;
+                let _ = command.reply.send(response);
+                continue;
             }
-            if let Request::StopSend {request_id,..}=command.request {
-                let current=self.directed_send.lock().unwrap().get(&request_id).is_some_and(|sender|!sender.is_finished());
-                if current {self.stop_sending_requests(&[request_id.clone()],cx);}
-                let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());continue;
+            if let Request::StopSend { request_id, .. } = command.request {
+                let current = self
+                    .directed_send
+                    .lock()
+                    .unwrap()
+                    .get(&request_id)
+                    .is_some_and(|sender| !sender.is_finished());
+                if current {
+                    self.stop_sending_requests(&[request_id.clone()], cx);
+                }
+                let _=command.reply.send(serde_json::json!({"ok":current,"state":if current {"stop_requested"}else{"ended"},"generation":generation,"request_id":request_id}).into());
+                continue;
             }
             let mut newly_accepted = None;
             let coordinator = cx.entity_id();
             let response = match command.request {
-                Request::UpgradeQuit {..} | Request::CloseGui {..} | Request::ComputerUse {..} | Request::File {..} | Request::Send {..} | Request::StopSend {..} | Request::MenuAction {..} => unreachable!(),
-                Request::Menu => serde_json::to_value(self.native_menu_snapshot(&generation,cx)).unwrap(),
+                Request::UpgradeQuit { .. }
+                | Request::CloseGui { .. }
+                | Request::ComputerUse { .. }
+                | Request::File { .. }
+                | Request::Send { .. }
+                | Request::StopSend { .. }
+                | Request::MenuAction { .. } => unreachable!(),
+                Request::Menu => {
+                    serde_json::to_value(self.native_menu_snapshot(&generation, cx)).unwrap()
+                }
                 Request::NetworkDiagnostics => serde_json::json!({
                     "ok":true, "generation":generation, "pid":std::process::id(),
                     "executable_sha256":adapter.executable_sha256,
                     "build_identity":crate::build_identity::compiled(),
                     "network":self.owner.network_snapshot(),
                 }),
-                Request::Status => serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,"gui_close":crate::desktop::upgrade_quit::GUI_CLOSE_CAPABILITY,
+                Request::Status => {
+                    serde_json::json!({"ok":true,"generation":generation,"pid":std::process::id(),"upgrade_quit":crate::desktop::upgrade_quit::CAPABILITY,"gui_close":crate::desktop::upgrade_quit::GUI_CLOSE_CAPABILITY,
                     "computer_use":{"protocol":1,"observe":adapter.computer_use.configured(),"input":adapter.computer_use.configured(),"max_bytes":16*1024*1024},
                     "renderer":crate::gui_backend::ORIGINAL_RENDERER,"executable_sha256":adapter.executable_sha256,
                     "leases":adapter.leases.values().map(|lease|lease.snapshot()).collect::<Vec<_>>(),
@@ -1214,41 +1558,88 @@ impl RestoredDashboard {
                     }).ok()).collect::<Vec<_>>(),
                     "viewers":self.exit_group.owners().into_iter().map(|owner|serde_json::json!({
                         "primary":Arc::ptr_eq(&owner,&self.owner),"sessions":owner.diagnostic_snapshot()
-                    })).collect::<Vec<_>>()}),
-                Request::Receive { request_id, source_device_id, sources, lease_ms, claim, .. } => {
+                    })).collect::<Vec<_>>()})
+                }
+                Request::Receive {
+                    request_id,
+                    source_device_id,
+                    sources,
+                    lease_ms,
+                    claim,
+                    ..
+                } => {
                     if adapter.leases.contains_key(&request_id) {
                         serde_json::json!({"ok":false,"error":"This directed delivery is already open"})
-                    } else if !self.owner.snapshot().devices.iter().any(|d| d.device_id == source_device_id && d.is_streamable()) {
+                    } else if !self
+                        .owner
+                        .snapshot()
+                        .devices
+                        .iter()
+                        .any(|d| d.device_id == source_device_id && d.is_streamable())
+                    {
                         serde_json::json!({"ok":false,"error":"Source is not a currently available paired streaming device"})
                     } else {
                         let duration = Duration::from_millis(lease_ms);
                         let expires = Instant::now() + duration;
-                        let mut members = Vec::new(); let mut handles = Vec::new(); let mut error = None;
+                        let mut members = Vec::new();
+                        let mut handles = Vec::new();
+                        let mut error = None;
                         for capture in sources {
-                            if command.reply.is_closed() { error=Some("Receive request ended".to_owned()); break; }
-                            match self.open_received_window(&request_id, &source_device_id, capture,
-                                expires.saturating_duration_since(Instant::now()), claim.clone(), cx) {
-                                Ok((member, handle)) => {members.push(member); handles.push(handle);}
-                                Err(reason) => {error=Some(reason);break;}
+                            if command.reply.is_closed() {
+                                error = Some("Receive request ended".to_owned());
+                                break;
+                            }
+                            match self.open_received_window(
+                                &request_id,
+                                &source_device_id,
+                                capture,
+                                expires.saturating_duration_since(Instant::now()),
+                                claim.clone(),
+                                cx,
+                            ) {
+                                Ok((member, handle)) => {
+                                    members.push(member);
+                                    handles.push(handle);
+                                }
+                                Err(reason) => {
+                                    error = Some(reason);
+                                    break;
+                                }
                             }
                         }
                         if let Some(error) = error {
                             drop(members);
-                            for handle in handles { let _=handle.update(cx,|_,window,_|window.remove_window()); }
+                            for handle in handles {
+                                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                            }
                             serde_json::json!({"ok":false,"error":error})
                         } else {
-                            self.directed_receive.as_mut().unwrap().leases.insert(request_id.clone(), Lease {
-                                request_id:request_id.clone(),source:source_device_id, expires,
-                                windows:members, revision:1,
-                                _upgrade_operation:crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations),
-                            });
+                            self.directed_receive.as_mut().unwrap().leases.insert(
+                                request_id.clone(),
+                                Lease {
+                                    request_id: request_id.clone(),
+                                    source: source_device_id,
+                                    expires,
+                                    windows: members,
+                                    revision: 1,
+                                    _upgrade_operation:
+                                        crate::desktop::upgrade_quit::Operation::begin(
+                                            &self.exit_group.upgrade_operations,
+                                        ),
+                                },
+                            );
                             newly_accepted = Some(request_id.clone());
                             serde_json::json!({"ok":true,"state":"accepted","generation":generation,"request_id":request_id,"lease_ms":lease_ms})
                         }
                     }
                 }
-                Request::Renew { request_id,revision,lease_ms,.. } => {
-                    let accepted=adapter.leases.get_mut(&request_id).is_some_and(|lease| {
+                Request::Renew {
+                    request_id,
+                    revision,
+                    lease_ms,
+                    ..
+                } => {
+                    let accepted = adapter.leases.get_mut(&request_id).is_some_and(|lease| {
                         lease.renew(revision, Duration::from_millis(lease_ms))
                     });
                     serde_json::json!({"ok":accepted,"state":if accepted{"accepted"}else{"ended"},"generation":generation,"request_id":request_id})
@@ -1256,19 +1647,40 @@ impl RestoredDashboard {
                 Request::Stop { request_id, .. } => {
                     if adapter.leases.remove(&request_id).is_some() {
                         serde_json::json!({"ok":true,"state":"stopped","generation":generation,"request_id":request_id})
-                    } else { serde_json::json!({"ok":false,"error":"Receive lease is no longer current"}) }
+                    } else {
+                        serde_json::json!({"ok":false,"error":"Receive lease is no longer current"})
+                    }
                 }
             };
-            let response = if let Some(request) = newly_accepted.as_ref() { crate::desktop::directed_receive::Reply::accepted(response, self.directed_receive.as_ref().and_then(|adapter|adapter.leases.get(request)).map(|lease|lease.owners()).unwrap_or_default()) } else { response.into() };
-            if command.reply.send(response).is_err() && let Some(request) = newly_accepted {
+            let response = if let Some(request) = newly_accepted.as_ref() {
+                crate::desktop::directed_receive::Reply::accepted(
+                    response,
+                    self.directed_receive
+                        .as_ref()
+                        .and_then(|adapter| adapter.leases.get(request))
+                        .map(|lease| lease.owners())
+                        .unwrap_or_default(),
+                )
+            } else {
+                response.into()
+            };
+            if command.reply.send(response).is_err()
+                && let Some(request) = newly_accepted
+            {
                 // A lost acknowledgement never leaves a newly accepted lease running.
-                self.directed_receive.as_mut().unwrap().leases.remove(&request);
+                self.directed_receive
+                    .as_mut()
+                    .unwrap()
+                    .leases
+                    .remove(&request);
             }
         }
     }
 
     fn refresh_interval(&self) -> Duration {
-        if let Some(wait)=self.viewport.lock().unwrap().retry_in(Instant::now()){return wait;}
+        if let Some(wait) = self.viewport.lock().unwrap().retry_in(Instant::now()) {
+            return wait;
+        }
         if self.manual_media_paused || !self.window_active {
             return Duration::from_millis(150);
         }
@@ -1277,26 +1689,43 @@ impl RestoredDashboard {
 
     fn save_device_name(&mut self, use_default: bool, cx: &mut Context<Self>) {
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().values().any(|send| !send.is_finished()) {
-            self.pairing_image_status("Finish the file transfer before changing this device name.",
-                MeshPairingMessageKind::Warning);
+        if self
+            .directed_send
+            .lock()
+            .unwrap()
+            .values()
+            .any(|send| !send.is_finished())
+        {
+            self.pairing_image_status(
+                "Finish the file transfer before changing this device name.",
+                MeshPairingMessageKind::Warning,
+            );
             cx.notify();
             return;
         }
         if !self.exit_group.can_change_network() {
-            self.pairing_image_status("Disconnect current sessions before changing this device name.",
-                MeshPairingMessageKind::Warning);
+            self.pairing_image_status(
+                "Disconnect current sessions before changing this device name.",
+                MeshPairingMessageKind::Warning,
+            );
             cx.notify();
             return;
         }
         if use_default {
-            self.device_name_editor.use_default(&remote_core::device_name::host_name());
+            self.device_name_editor
+                .use_default(&remote_core::device_name::host_name());
         }
-        let Some(name) = self.device_name_editor.pending_name() else { cx.notify(); return; };
-        let Some(control) = &self.mesh_pairing else { return; };
+        let Some(name) = self.device_name_editor.pending_name() else {
+            cx.notify();
+            return;
+        };
+        let Some(control) = &self.mesh_pairing else {
+            return;
+        };
         let snapshot = control.rename_device(self.device_name_editor.expected(), &name);
         if snapshot.message_kind == MeshPairingMessageKind::Success {
-            self.device_name_editor.accept(snapshot.display_name.clone());
+            self.device_name_editor
+                .accept(snapshot.display_name.clone());
         }
         self.mesh_pairing_snapshot = Some(snapshot);
         cx.notify();
@@ -1305,7 +1734,8 @@ impl RestoredDashboard {
     fn cancel_device_name_edit(&mut self, cx: &mut Context<Self>) {
         if let Some(control) = &self.mesh_pairing {
             let snapshot = control.snapshot();
-            self.device_name_editor.accept(snapshot.display_name.clone());
+            self.device_name_editor
+                .accept(snapshot.display_name.clone());
             self.mesh_pairing_snapshot = Some(snapshot);
         }
         cx.notify();
@@ -1324,7 +1754,16 @@ impl RestoredDashboard {
     fn create_mesh_group(&mut self) {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().values().any(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
+        if self
+            .directed_send
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| !s.is_finished())
+        {
+            self.status = "Stop sending before changing the device network".into();
+            return;
+        }
         if !self.exit_group.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
@@ -1338,14 +1777,26 @@ impl RestoredDashboard {
     }
 
     fn join_mesh_group_from_clipboard(&mut self, cx: &mut Context<Self>) {
-        let invite_code = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+        let invite_code = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
         self.join_mesh_group_from_payload(&invite_code);
     }
 
     fn join_mesh_group_from_payload(&mut self, invite_code: &str) {
         self.pairing_image_import.cancel();
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().values().any(|s|!s.is_finished()){self.status="Stop sending before changing the device network".into();return;}
+        if self
+            .directed_send
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| !s.is_finished())
+        {
+            self.status = "Stop sending before changing the device network".into();
+            return;
+        }
         if !self.exit_group.can_change_network() {
             self.status = "Disconnect current sessions before changing the device network.".into();
             return;
@@ -1370,43 +1821,90 @@ impl RestoredDashboard {
 
     fn scan_pairing_image(&mut self, cx: &mut Context<Self>) {
         #[cfg(any(unix, windows))]
-        if self.directed_send.lock().unwrap().values().any(|s| !s.is_finished()) {
-            self.pairing_image_status("Stop sending before changing the device network.", MeshPairingMessageKind::Warning);
+        if self
+            .directed_send
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| !s.is_finished())
+        {
+            self.pairing_image_status(
+                "Stop sending before changing the device network.",
+                MeshPairingMessageKind::Warning,
+            );
             return;
         }
         if !self.exit_group.can_change_network() {
-            self.pairing_image_status("Disconnect current sessions before changing the device network.", MeshPairingMessageKind::Warning);
+            self.pairing_image_status(
+                "Disconnect current sessions before changing the device network.",
+                MeshPairingMessageKind::Warning,
+            );
             return;
         }
-        let Some(control) = self.mesh_pairing.clone() else { return; };
-        let Some(ticket) = self.pairing_image_import.begin() else { return; };
+        let Some(control) = self.mesh_pairing.clone() else {
+            return;
+        };
+        let Some(ticket) = self.pairing_image_import.begin() else {
+            return;
+        };
         let original_invite = control.snapshot().invite_code;
         self.owner.release_input();
-        self.pairing_image_status("Choose a local invitation QR image.", MeshPairingMessageKind::Neutral);
+        self.pairing_image_status(
+            "Choose a local invitation QR image.",
+            MeshPairingMessageKind::Neutral,
+        );
         let task = tokio::spawn(async move {
-            let Some(file) = rfd::AsyncFileDialog::new().set_title(crate::i18n::tr("Scan Weavelo invitation image"))
-                .add_filter(crate::i18n::tr("Invitation QR image"), &["png", "jpg", "jpeg", "webp"]).pick_file().await
-            else { return None; };
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_title(crate::i18n::tr("Scan Weavelo invitation image"))
+                .add_filter(
+                    crate::i18n::tr("Invitation QR image"),
+                    &["png", "jpg", "jpeg", "webp"],
+                )
+                .pick_file()
+                .await
+            else {
+                return None;
+            };
             let path = file.path().to_path_buf();
-            Some(tokio::task::spawn_blocking(move || remote_core::pairing_image::decode_pairing_image_file(&path))
-                .await.unwrap_or(Err(remote_core::pairing_image::PairingImageError::Read)))
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    remote_core::pairing_image::decode_pairing_image_file(&path)
+                })
+                .await
+                .unwrap_or(Err(remote_core::pairing_image::PairingImageError::Read)),
+            )
         });
         cx.spawn(async move |view, cx| {
-            let result = task.await.unwrap_or(Some(Err(remote_core::pairing_image::PairingImageError::Read)));
+            let result = task.await.unwrap_or(Some(Err(
+                remote_core::pairing_image::PairingImageError::Read,
+            )));
             let _ = view.update(cx, |this, cx| {
-                if !this.pairing_image_import.finish(ticket) { cx.notify(); return; }
+                if !this.pairing_image_import.finish(ticket) {
+                    cx.notify();
+                    return;
+                }
                 if control.snapshot().invite_code != original_invite {
-                    this.pairing_image_status("The device group changed. Scan the image again.", MeshPairingMessageKind::Warning);
+                    this.pairing_image_status(
+                        "The device group changed. Scan the image again.",
+                        MeshPairingMessageKind::Warning,
+                    );
                 } else {
                     match result {
-                        None => this.pairing_image_status("Image scan cancelled.", MeshPairingMessageKind::Neutral),
-                        Some(Err(error)) => this.pairing_image_status(error.to_string(), MeshPairingMessageKind::Error),
-                        Some(Ok(payload)) => this.join_mesh_group_from_payload(&payload.invite_code),
+                        None => this.pairing_image_status(
+                            "Image scan cancelled.",
+                            MeshPairingMessageKind::Neutral,
+                        ),
+                        Some(Err(error)) => this
+                            .pairing_image_status(error.to_string(), MeshPairingMessageKind::Error),
+                        Some(Ok(payload)) => {
+                            this.join_mesh_group_from_payload(&payload.invite_code)
+                        }
                     }
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1416,7 +1914,11 @@ impl RestoredDashboard {
         let host_stats = self.host_stats.clone();
 
         let window_options = WindowOptions {
-            app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
+            app_id: Some(
+                remote_core::desktop_identity::identity()
+                    .application_id
+                    .clone(),
+            ),
             window_bounds: Some(WindowBounds::Windowed(bounds(
                 point(px(200.0), px(120.0)),
                 size(px(854.0), px(480.0)),
@@ -1434,7 +1936,8 @@ impl RestoredDashboard {
                     )
                     .into(),
                 ),
-                ..Default::default()
+                appears_transparent: cfg!(target_os = "macos"),
+                traffic_light_position: cfg!(target_os = "macos").then(|| point(px(12.0), px(8.0))),
             }),
             ..Default::default()
         };
@@ -1443,27 +1946,33 @@ impl RestoredDashboard {
         let owner = self.owner.clone();
         let primary = cx.entity();
         let result = cx.open_window(window_options, move |window, cx| {
-            window_icon::apply(window,cx);
+            window_icon::apply(window, cx);
             crate::product_components::theme::sync_appearance(window.appearance(), cx);
             let view = cx.new(|cx| {
                 cx.observe_window_appearance(window, |_this: &mut PopoutStreamView, window, cx| {
                     crate::product_components::theme::sync_appearance(window.appearance(), cx);
                     cx.notify();
-                }).detach();
+                })
+                .detach();
                 cx.observe_window_bounds(window, |this: &mut PopoutStreamView, window, _| {
                     window_fit::observe(window, &mut this.window_fit);
-                }).detach();
+                })
+                .detach();
                 PopoutStreamView {
-                owner,
-                _primary: primary,
-                native_window_title: String::new(),
-                native_window_artwork: Default::default(),
-                presentation_frame,
-                host_stats,
-                scale_mode,
-                telemetry_hud_collapsed: true,
-                window_fit: window_fit::WindowFit::new([f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)]),
-            }});
+                    owner,
+                    _primary: primary,
+                    native_window_title: String::new(),
+                    native_window_artwork: Default::default(),
+                    presentation_frame,
+                    host_stats,
+                    scale_mode,
+                    telemetry_hud_collapsed: true,
+                    window_fit: window_fit::WindowFit::new([
+                        f32::from(window.viewport_size().width),
+                        f32::from(window.viewport_size().height),
+                    ]),
+                }
+            });
             cx.spawn({
                 let view = view.downgrade();
                 async move |cx| {
@@ -1490,33 +1999,62 @@ impl RestoredDashboard {
             view
         });
         self.status = match result {
-            Ok(handle) => {self.pip_windows.push(handle.into());"PiP window opened".to_string()},
+            Ok(handle) => {
+                self.pip_windows.push(handle.into());
+                "PiP window opened".to_string()
+            }
             Err(err) => format!("PiP failed: {err}"),
         };
     }
 
     fn request_capture_sources(&mut self, cx: &mut Context<Self>) {
-        let Some(binding) = self.owner.source_view_binding() else { return; };
+        let Some(binding) = self.owner.source_view_binding() else {
+            return;
+        };
         self.request_bound_capture_sources(binding, cx);
     }
     fn invalidate_source_commands(&mut self) {
-        if !self.source_selection.as_ref().is_some_and(source_selection::Selection::local_delivery_is_current) {
-            self.source_selection=None;
+        if !self
+            .source_selection
+            .as_ref()
+            .is_some_and(source_selection::Selection::local_delivery_is_current)
+        {
+            self.source_selection = None;
         }
-        self.source_commands.begin(); self.discovery_commands.begin();
+        self.source_commands.begin();
+        self.discovery_commands.begin();
     }
-    fn request_bound_capture_sources(&mut self, binding: SourceViewBinding, cx: &mut Context<Self>) {
-        if !self.owner.source_binding_is_current(&binding) { return; }
+    fn request_bound_capture_sources(
+        &mut self,
+        binding: SourceViewBinding,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owner.source_binding_is_current(&binding) {
+            return;
+        }
         let ticket = self.discovery_commands.begin();
         let owner = self.owner.clone();
         cx.spawn(async move |view, cx| {
-            if !view.update(cx, |this, _| this.discovery_commands.is_current(ticket)
-                && this.owner.source_binding_is_current(&binding)).unwrap_or(false) { return; }
+            if !view
+                .update(cx, |this, _| {
+                    this.discovery_commands.is_current(ticket)
+                        && this.owner.source_binding_is_current(&binding)
+                })
+                .unwrap_or(false)
+            {
+                return;
+            }
             if let Err(err) = owner.request_bound_capture_sources(&binding).await {
                 let _ = view.update(cx, |this, cx| {
-                    if !this.discovery_commands.is_current(ticket) || !owner.source_binding_is_current(&binding) { return; }
+                    if !this.discovery_commands.is_current(ticket)
+                        || !owner.source_binding_is_current(&binding)
+                    {
+                        return;
+                    }
                     this.status = format!("Source discovery failed: {err}");
-                    if let Some(selection)=this.source_selection.as_mut() {selection.fail_remote_query(this.status.clone());}
+                    if let Some(selection) = this.source_selection.as_mut() {
+                        selection.fail_remote_query(this.status.clone());
+                    }
                     cx.notify();
                 });
             }
@@ -1531,7 +2069,10 @@ impl RestoredDashboard {
         label: String,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(binding) = binding.filter(|binding| self.owner.source_binding_is_current(binding)) else { return false; };
+        let Some(binding) = binding.filter(|binding| self.owner.source_binding_is_current(binding))
+        else {
+            return false;
+        };
         let catalog = self.owner.snapshot().sources;
         if remote_core::view_commands::enumerated_source(&catalog, source.source) != Some(&source) {
             return false;
@@ -1545,22 +2086,42 @@ impl RestoredDashboard {
         let owner = self.owner.clone();
         let source_for_init = source.clone();
         cx.spawn(async move |view, cx| {
-            let Some(values) = view.update(cx, |this, _| {
-                (this.source_commands.is_current(ticket) && this.owner.source_binding_is_current(&binding))
+            let Some(values) = view
+                .update(cx, |this, _| {
+                    (this.source_commands.is_current(ticket)
+                        && this.owner.source_binding_is_current(&binding))
                     .then(|| {
-                        if matches!(source_for_init.source, protocol::session::CaptureSource::Window(_)) {
+                        if matches!(
+                            source_for_init.source,
+                            protocol::session::CaptureSource::Window(_)
+                        ) {
                             this.effective_initial_window_values(&source_for_init)
                         } else {
                             this.stream_settings.values()
                         }
                     })
-            }).unwrap_or(None) else { return; };
+                })
+                .unwrap_or(None)
+            else {
+                return;
+            };
             if let Err(err) = owner
-                .switch_bound_enumerated_source(&binding, &source, values.width, values.height, values.fps, values.bitrate_kbps)
+                .switch_bound_enumerated_source(
+                    &binding,
+                    &source,
+                    values.width,
+                    values.height,
+                    values.fps,
+                    values.bitrate_kbps,
+                )
                 .await
             {
                 let _ = view.update(cx, |this, cx| {
-                    if !this.source_commands.is_current(ticket) || !owner.source_binding_is_current(&binding) { return; }
+                    if !this.source_commands.is_current(ticket)
+                        || !owner.source_binding_is_current(&binding)
+                    {
+                        return;
+                    }
                     this.status = format!("Switch to {label} failed: {err}");
                     cx.notify();
                 });
@@ -1598,7 +2159,9 @@ impl RestoredDashboard {
     }
 
     fn queue_pointer_move(&mut self, position: Point<Pixels>, from_press: bool) -> bool {
-        let Some(event) = self.pointer_event_at(position) else { return false; };
+        let Some(event) = self.pointer_event_at(position) else {
+            return false;
+        };
         if from_press && self.owner.retry_viewing_input() {
             self.pointer_input = PointerInputTracker::default();
         }
@@ -1617,16 +2180,31 @@ impl RestoredDashboard {
         let Some(frame) = self.current_frame.as_ref() else {
             return None;
         };
-        if let Some(current)=frame.frame_geometry {
-            let painted=self.viewport.lock().unwrap().painted()?;
-            if current.source_revision!=painted.geometry.source_revision
-                || [current.source_width,current.source_height]!=[painted.geometry.source_width,painted.geometry.source_height]
-                || !self.owner.viewport_target_is_current(&painted.target){return None;}
-            let point=[f64::from(f32::from(position.x-painted.bounds.origin.x)),f64::from(f32::from(position.y-painted.bounds.origin.y))];
-            let [x,y]=painted.view.input_point(point,painted.geometry)?;
-            return Some(protocol::InputEvent::MouseMoveAbsolute{x,y});
+        if let Some(current) = frame.frame_geometry {
+            let painted = self.viewport.lock().unwrap().painted()?;
+            if current.source_revision != painted.geometry.source_revision
+                || [current.source_width, current.source_height]
+                    != [
+                        painted.geometry.source_width,
+                        painted.geometry.source_height,
+                    ]
+                || !self.owner.viewport_target_is_current(&painted.target)
+            {
+                return None;
+            }
+            let point = [
+                f64::from(f32::from(position.x - painted.bounds.origin.x)),
+                f64::from(f32::from(position.y - painted.bounds.origin.y)),
+            ];
+            let [x, y] = painted.view.input_point(point, painted.geometry)?;
+            return Some(protocol::InputEvent::MouseMoveAbsolute { x, y });
         }
-        if frame.frame_geometry.is_some_and(|g|!self.owner.accepts_frame_source_revision(g.source_revision)) {return None;}
+        if frame
+            .frame_geometry
+            .is_some_and(|g| !self.owner.accepts_frame_source_revision(g.source_revision))
+        {
+            return None;
+        }
         let Some(bounds) = *self
             .video_surface_bounds
             .lock()
@@ -1634,7 +2212,7 @@ impl RestoredDashboard {
         else {
             return None;
         };
-        #[cfg(feature="gpui-native-video")]
+        #[cfg(feature = "gpui-native-video")]
         if let Some(geometry) = native_frame_geometry(frame) {
             use gpui::native_video::{VideoFit, VideoRect};
             let viewport = VideoRect {
@@ -1647,19 +2225,30 @@ impl RestoredDashboard {
                 ViewportScaleMode::AspectFit => VideoFit::Contain,
                 ViewportScaleMode::Fill => VideoFit::Cover,
             };
-            return frame_source_pointer(frame,native_pointer_event(geometry,viewport,fit,[f32::from(position.x),f32::from(position.y)]));
+            return frame_source_pointer(
+                frame,
+                native_pointer_event(
+                    geometry,
+                    viewport,
+                    fit,
+                    [f32::from(position.x), f32::from(position.y)],
+                ),
+            );
         }
-        frame_source_pointer(frame,absolute_pointer_event(
-            (f32::from(position.x), f32::from(position.y)),
-            (
-                f32::from(bounds.origin.x),
-                f32::from(bounds.origin.y),
-                f32::from(bounds.size.width),
-                f32::from(bounds.size.height),
+        frame_source_pointer(
+            frame,
+            absolute_pointer_event(
+                (f32::from(position.x), f32::from(position.y)),
+                (
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height),
+                ),
+                (frame.width(), frame.height()),
+                self.scale_mode,
             ),
-            (frame.width(), frame.height()),
-            self.scale_mode,
-        ))
+        )
     }
 
     fn pointer_diagnostics(&self, position: Point<Pixels>) -> serde_json::Value {
@@ -1705,15 +2294,17 @@ impl RestoredDashboard {
     }
 
     fn reset_pointer_scroll(&mut self) {
-        if let Some((target,event)) = self.pointer_input.cancel_scroll() {
-            self.owner.queue_viewport_input(&target,event);
+        if let Some((target, event)) = self.pointer_input.cancel_scroll() {
+            self.owner.queue_viewport_input(&target, event);
         }
         self.pointer_input.reset_pointer();
     }
 
     fn release_pointer_input(&mut self) {
         self.reset_pointer_scroll();
-        for event in self.pointer_input.release_events() { self.owner.queue_viewing_input(event); }
+        for event in self.pointer_input.release_events() {
+            self.owner.queue_viewing_input(event);
+        }
     }
 
     fn queue_pointer_scroll(&mut self, event: &ScrollWheelEvent) {
@@ -1726,10 +2317,18 @@ impl RestoredDashboard {
         }
         let delta = event.delta.pixel_delta(px(40.0));
         let gesture = protocol_scroll_gesture(event);
-        let Some(target) = self.scroll_target() else { self.reset_pointer_scroll(); return; };
-        if !self.pointer_input.accepts_scroll(gesture, &target) { self.reset_pointer_scroll(); return; }
+        let Some(target) = self.scroll_target() else {
+            self.reset_pointer_scroll();
+            return;
+        };
+        if !self.pointer_input.accepts_scroll(gesture, &target) {
+            self.reset_pointer_scroll();
+            return;
+        }
         if gesture.phase == protocol::ScrollPhase::Began
-            || (gesture == protocol::ScrollGesture::default() && self.pointer_input.scroll_binding.is_some()) {
+            || (gesture == protocol::ScrollGesture::default()
+                && self.pointer_input.scroll_binding.is_some())
+        {
             self.reset_pointer_scroll();
         }
         let event_position = event.position;
@@ -1737,14 +2336,28 @@ impl RestoredDashboard {
             .pointer_input
             .scrolled((f32::from(delta.x), f32::from(delta.y)), gesture)
         {
-            if let protocol::InputEvent::MouseScroll { delta_x, delta_y, gesture } = &event
-                && gesture.can_take_control(*delta_x, *delta_y) {
-                let Some(pointer) = self.pointer_event_at(event_position) else { self.reset_pointer_scroll(); return; };
-                if !self.queue_scroll_pointer(&target,pointer) { self.reset_pointer_scroll(); return; }
+            if let protocol::InputEvent::MouseScroll {
+                delta_x,
+                delta_y,
+                gesture,
+            } = &event
+                && gesture.can_take_control(*delta_x, *delta_y)
+            {
+                let Some(pointer) = self.pointer_event_at(event_position) else {
+                    self.reset_pointer_scroll();
+                    return;
+                };
+                if !self.queue_scroll_pointer(&target, pointer) {
+                    self.reset_pointer_scroll();
+                    return;
+                }
             }
-            let accepted = self.queue_scroll_pointer(&target,event);
-            if accepted { self.pointer_input.scroll_queued(gesture, target); }
-            else { self.reset_pointer_scroll(); }
+            let accepted = self.queue_scroll_pointer(&target, event);
+            if accepted {
+                self.pointer_input.scroll_queued(gesture, target);
+            } else {
+                self.reset_pointer_scroll();
+            }
         }
     }
 
@@ -1757,9 +2370,10 @@ impl RestoredDashboard {
             return;
         }
         if self.text_mode && pressed {
-            let modifiers=protocol_modifiers(keystroke.modifiers);
-            self.owner.queue_viewing_input(protocol::InputEvent::ModifiersChanged(modifiers));
-            self.pointer_input.modifiers=modifiers;
+            let modifiers = protocol_modifiers(keystroke.modifiers);
+            self.owner
+                .queue_viewing_input(protocol::InputEvent::ModifiersChanged(modifiers));
+            self.pointer_input.modifiers = modifiers;
         }
         let Some(event) = protocol_key_event(keystroke, pressed) else {
             return;
@@ -1769,7 +2383,9 @@ impl RestoredDashboard {
         };
         let key_code = *key_code;
         // Text/IME key-downs stay local; do not send an unmatched remote release.
-        if !pressed && !self.pointer_input.pressed_keys.contains(&key_code) { return; }
+        if !pressed && !self.pointer_input.pressed_keys.contains(&key_code) {
+            return;
+        }
         if self.owner.queue_viewing_input(event) {
             self.pointer_input.key_changed(key_code, pressed);
         }
@@ -1784,7 +2400,9 @@ impl RestoredDashboard {
             return;
         }
         let mut modifiers = protocol_modifiers(event.modifiers);
-        if self.text_mode {modifiers &= self.pointer_input.modifiers;}
+        if self.text_mode {
+            modifiers &= self.pointer_input.modifiers;
+        }
         if event.capslock.on {
             modifiers |= protocol::input_modifiers::CAPS_LOCK;
         }
@@ -1798,7 +2416,8 @@ impl RestoredDashboard {
 
     fn sync_media_pause(&mut self) {
         let paused = self.manual_media_paused;
-        let visible = !self.pause_when_inactive || self.window_visible.unwrap_or(true) || self.pip_visible;
+        let visible =
+            !self.pause_when_inactive || self.window_visible.unwrap_or(true) || self.pip_visible;
         self.owner.set_view_demand(visible, self.window_active);
         if paused || self.drawer_open {
             self.release_pointer_input();
@@ -1813,18 +2432,21 @@ impl RestoredDashboard {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .child(crate::i18n::tr("Custom frame rate (FPS) and video bitrate (kbps)")),
-            )
+            .child(div().text_size(px(11.0)).child(crate::i18n::tr(
+                "Custom frame rate (FPS) and video bitrate (kbps)",
+            )))
             .child(
                 component::text_input("custom_fps")
                     .content(form.fps_text.to_owned())
                     .on_change({
                         let view = cx.weak_entity();
                         move |text, _, cx| {
-                            let _ = view.update(cx, |this, cx| this.dispatch_stream_settings_action(StreamSettingsAction::EditFps(text.to_string()), cx));
+                            let _ = view.update(cx, |this, cx| {
+                                this.dispatch_stream_settings_action(
+                                    StreamSettingsAction::EditFps(text.to_string()),
+                                    cx,
+                                )
+                            });
                         }
                     }),
             )
@@ -1834,8 +2456,12 @@ impl RestoredDashboard {
                     .on_change({
                         let view = cx.weak_entity();
                         move |text, _, cx| {
-                            let _ =
-                                view.update(cx, |this, cx| this.dispatch_stream_settings_action(StreamSettingsAction::EditBitrate(text.to_string()), cx));
+                            let _ = view.update(cx, |this, cx| {
+                                this.dispatch_stream_settings_action(
+                                    StreamSettingsAction::EditBitrate(text.to_string()),
+                                    cx,
+                                )
+                            });
                         }
                     }),
             )
@@ -1846,17 +2472,19 @@ impl RestoredDashboard {
                         this.dispatch_stream_settings_action(StreamSettingsAction::ApplyCustom, cx);
                     })),
             )
-            .when(self.purpose == WindowPurpose::Stream, |controls| controls.child(
-                command_button("toggle_media_pause", ActionVariantKind::Neutral, cx)
-                    .child(if self.manual_media_paused {
-                        crate::i18n::tr("Resume media")
-                    } else {
-                        crate::i18n::tr("Pause media · keep connected")
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_stream_paused(!this.manual_media_paused,cx);
-                    })),
-            ))
+            .when(self.purpose == WindowPurpose::Stream, |controls| {
+                controls.child(
+                    command_button("toggle_media_pause", ActionVariantKind::Neutral, cx)
+                        .child(if self.manual_media_paused {
+                            crate::i18n::tr("Resume media")
+                        } else {
+                            crate::i18n::tr("Pause media · keep connected")
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_stream_paused(!this.manual_media_paused, cx);
+                        })),
+                )
+            })
             .child(
                 command_button("pause_in_background", ActionVariantKind::Neutral, cx)
                     .child(if self.pause_when_inactive {
@@ -1871,13 +2499,15 @@ impl RestoredDashboard {
                         cx.notify();
                     })),
             )
-            .when(self.purpose == WindowPurpose::Stream, |controls| controls.child(div().text_size(px(11.0)).child(if pending {
-                crate::i18n::tr("Waiting for host confirmation…")
-            } else if paused {
-                crate::i18n::tr("Media paused · connection retained")
-            } else {
-                crate::i18n::tr("Media enabled")
-            })));
+            .when(self.purpose == WindowPurpose::Stream, |controls| {
+                controls.child(div().text_size(px(11.0)).child(if pending {
+                    crate::i18n::tr("Waiting for host confirmation…")
+                } else if paused {
+                    crate::i18n::tr("Media paused · connection retained")
+                } else {
+                    crate::i18n::tr("Media enabled")
+                }))
+            });
         if let Some(error) = form.error {
             controls = controls.child(div().text_size(px(11.0)).child(crate::i18n::message(error)));
         }
@@ -1900,10 +2530,20 @@ impl RestoredDashboard {
         }
         // The bounded media fixture must exercise the real stream window. Its
         // management coordinator no longer contains a video presentation.
-        if self.purpose==WindowPurpose::Management && std::env::var_os("WEAVELO_RESTORED_TEST_DEVICE").is_some() {
+        if self.purpose == WindowPurpose::Management
+            && std::env::var_os("WEAVELO_RESTORED_TEST_DEVICE").is_some()
+        {
             if !self.test_connect_started {
-                self.test_connect_started=open_restored_window(self.runtime.clone(),None,Default::default(),None,
-                    self.background.clone(),self.exit_group.clone(),cx).is_some();
+                self.test_connect_started = open_restored_window(
+                    self.runtime.clone(),
+                    None,
+                    Default::default(),
+                    None,
+                    self.background.clone(),
+                    self.exit_group.clone(),
+                    cx,
+                )
+                .is_some();
             }
             return false;
         }
@@ -1919,9 +2559,18 @@ impl RestoredDashboard {
             let path = std::path::Path::new(&output).with_extension("progress.json");
             let _ = std::fs::write(path, serde_json::to_vec_pretty(&observation).unwrap());
         }
-        if self.test_sequence.is_some(){return self.sequence_acceptance_tick(&output,seconds,cx);}
-        if self.test_media_cycle.as_ref().is_some_and(|cycle|match cycle { Err(_)=>true, Ok(c)=>c.phase==4 }) {
-            return self.media_acceptance_tick(&output,seconds,cx);
+        if self.test_sequence.is_some() {
+            return self.sequence_acceptance_tick(&output, seconds, cx);
+        }
+        if self
+            .test_media_cycle
+            .as_ref()
+            .is_some_and(|cycle| match cycle {
+                Err(_) => true,
+                Ok(c) => c.phase == 4,
+            })
+        {
+            return self.media_acceptance_tick(&output, seconds, cx);
         }
         if !self.test_connect_started
             && let Ok(key) = std::env::var("WEAVELO_RESTORED_TEST_DEVICE")
@@ -1941,11 +2590,24 @@ impl RestoredDashboard {
             let owner = self.owner.clone();
             let media_mode = self.test_media_cycle.is_some();
             cx.spawn(async move |view, cx| {
-                if !view.update(cx, |this, _| this.session_commands.is_current(ticket)).unwrap_or(false) { return; }
-                let result = if media_mode { owner.connect_files(&key).await } else { owner.connect_silent_files(&key).await };
-                if media_mode { owner.set_input_locked(true); }
+                if !view
+                    .update(cx, |this, _| this.session_commands.is_current(ticket))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                let result = if media_mode {
+                    owner.connect_files(&key).await
+                } else {
+                    owner.connect_silent_files(&key).await
+                };
+                if media_mode {
+                    owner.set_input_locked(true);
+                }
                 let _ = view.update(cx, |this, cx| {
-                    if !this.session_commands.is_current(ticket) { return; }
+                    if !this.session_commands.is_current(ticket) {
+                        return;
+                    }
                     if let Err(e) = result {
                         this.status = e.to_string();
                     } else {
@@ -1959,16 +2621,27 @@ impl RestoredDashboard {
         if self.test_connect_started && !self.test_source_started {
             let state = self.owner.snapshot();
             let requested_device = std::env::var("WEAVELO_RESTORED_TEST_DEVICE").ok();
-            if state.role.session().is_some_and(|session| Some(&session.peer.device_id) == requested_device.as_ref()) {
+            if state
+                .role
+                .session()
+                .is_some_and(|session| Some(&session.peer.device_id) == requested_device.as_ref())
+            {
                 match self.test_source_request.clone() {
-                    Some(Ok(request)) => if let Some(source) = request.select(&state.sources) {
-                        if self.start_capture_source_switch(state.source_binding, source.clone(), source.title.clone(), cx) {
-                            self.test_selected_source = Some(source);
-                            self.test_source_started = true;
+                    Some(Ok(request)) => {
+                        if let Some(source) = request.select(&state.sources) {
+                            if self.start_capture_source_switch(
+                                state.source_binding,
+                                source.clone(),
+                                source.title.clone(),
+                                cx,
+                            ) {
+                                self.test_selected_source = Some(source);
+                                self.test_source_started = true;
+                            }
                         }
-                    },
+                    }
                     Some(Err(error)) => self.status = format!("Source selector rejected: {error}"),
-                    None => {},
+                    None => {}
                 }
             }
         }
@@ -1989,7 +2662,9 @@ impl RestoredDashboard {
             }
             self.toolbar_revealed = true;
         }
-        if self.test_media_cycle.is_some() { return self.media_acceptance_tick(&output,seconds,cx); }
+        if self.test_media_cycle.is_some() {
+            return self.media_acceptance_tick(&output, seconds, cx);
+        }
         if self.started.elapsed() >= Duration::from_secs(seconds) {
             owned_gui_stage(12);
             self.quitting = true;
@@ -2011,177 +2686,370 @@ impl RestoredDashboard {
         false
     }
 
-    fn media_acceptance_tick(&mut self,output:&str,seconds:u64,cx:&mut Context<Self>)->bool {
-        let pending=self.test_media_cycle.take().expect("media cycle present");
-        let mut cycle=match pending {
-            Ok(c)=>c,
-            Err(error)=>{
-                let record=serde_json::json!({"cycle_observed":false,"passed":false,"error":error,"full_acceptance":false});
-                let _=std::fs::write(output,serde_json::to_vec_pretty(&record).unwrap());
-                self.clear_acceptance_session();self.quitting=true;cx.quit();return true;
+    fn media_acceptance_tick(
+        &mut self,
+        output: &str,
+        seconds: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pending = self.test_media_cycle.take().expect("media cycle present");
+        let mut cycle = match pending {
+            Ok(c) => c,
+            Err(error) => {
+                let record = serde_json::json!({"cycle_observed":false,"passed":false,"error":error,"full_acceptance":false});
+                let _ = std::fs::write(output, serde_json::to_vec_pretty(&record).unwrap());
+                self.clear_acceptance_session();
+                self.quitting = true;
+                cx.quit();
+                return true;
             }
         };
-        let snapshot=self.owner.diagnostic_snapshot();
-        if cycle.phase<4 {
-            if self.started.elapsed()>=Duration::from_secs(seconds)||cycle.phase_started.elapsed()>Duration::from_secs(25) {cycle.error=Some(format!("media phase {} timed out",cycle.phase));}
-            let sessions=snapshot["sessions"].as_array().cloned().unwrap_or_default();
-            if sessions.len()>1 {cycle.error=Some("media fixture has more than its own one session".into());}
-            if self.test_source_started && let Some(s)=sessions.first()
-                && (cycle.phase>0 || s["confirmed"]==true) {
-                let id=(s["connection_id"].as_u64().unwrap_or(0),s["subscription_id"].as_u64().unwrap_or(0));
-                let frames=s["decoded_frames"].as_u64().unwrap_or(0);
-                let samples=s["audio_output_callback_evidence"]["nonzero_samples"].as_u64().unwrap_or(0);
-                let callbacks=s["audio_output_callback_evidence"]["callbacks"].as_u64().unwrap_or(0);
-                let revision=s["activity_revision"].as_u64().unwrap_or(0);
-                let expected=self.test_selected_source.as_ref().map(|source|format!("{:?}",source.source));
-                let device=std::env::var("WEAVELO_RESTORED_TEST_DEVICE").unwrap_or_default();
-                if s["device_id"]!=device || s["source"].as_str()!=expected.as_deref()
-                    || cycle.identity.is_some_and(|old|old!=id) {cycle.error=Some("media connection/subscription/source identity changed".into());}
-                if s["connected"]!=true || !s["video_error"].is_null() || s["audio_output_callback_evidence"]["errors"].as_u64().unwrap_or(0)>0 {cycle.error=Some("media connection or output failed".into());}
-                let ready=s["confirmed"]==true && s["activity_pending"]==false;
+        let snapshot = self.owner.diagnostic_snapshot();
+        if cycle.phase < 4 {
+            if self.started.elapsed() >= Duration::from_secs(seconds)
+                || cycle.phase_started.elapsed() > Duration::from_secs(25)
+            {
+                cycle.error = Some(format!("media phase {} timed out", cycle.phase));
+            }
+            let sessions = snapshot["sessions"].as_array().cloned().unwrap_or_default();
+            if sessions.len() > 1 {
+                cycle.error = Some("media fixture has more than its own one session".into());
+            }
+            if self.test_source_started
+                && let Some(s) = sessions.first()
+                && (cycle.phase > 0 || s["confirmed"] == true)
+            {
+                let id = (
+                    s["connection_id"].as_u64().unwrap_or(0),
+                    s["subscription_id"].as_u64().unwrap_or(0),
+                );
+                let frames = s["decoded_frames"].as_u64().unwrap_or(0);
+                let samples = s["audio_output_callback_evidence"]["nonzero_samples"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let callbacks = s["audio_output_callback_evidence"]["callbacks"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let revision = s["activity_revision"].as_u64().unwrap_or(0);
+                let expected = self
+                    .test_selected_source
+                    .as_ref()
+                    .map(|source| format!("{:?}", source.source));
+                let device = std::env::var("WEAVELO_RESTORED_TEST_DEVICE").unwrap_or_default();
+                if s["device_id"] != device
+                    || s["source"].as_str() != expected.as_deref()
+                    || cycle.identity.is_some_and(|old| old != id)
+                {
+                    cycle.error =
+                        Some("media connection/subscription/source identity changed".into());
+                }
+                if s["connected"] != true
+                    || !s["video_error"].is_null()
+                    || s["audio_output_callback_evidence"]["errors"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        > 0
+                {
+                    cycle.error = Some("media connection or output failed".into());
+                }
+                let ready = s["confirmed"] == true && s["activity_pending"] == false;
                 if cycle.error.is_none() {
                     match cycle.phase {
-                        0 if ready && frames>=15 && samples>0 && callbacks>0 => {
-                            let since=cycle.stable_since.get_or_insert_with(Instant::now);
-                            if since.elapsed()>=Duration::from_secs(2) {
-                                cycle.identity=Some(id);cycle.frames=frames;cycle.samples=samples;cycle.callbacks=callbacks;cycle.revision=revision;
-                                cycle.observations.push(serde_json::json!({"phase":"warmup","state":snapshot}));
-                                self.manual_media_paused=true;self.sync_media_pause();
-                                cycle.phase=1;cycle.phase_started=Instant::now();cycle.stable_since=None;
+                        0 if ready && frames >= 15 && samples > 0 && callbacks > 0 => {
+                            let since = cycle.stable_since.get_or_insert_with(Instant::now);
+                            if since.elapsed() >= Duration::from_secs(2) {
+                                cycle.identity = Some(id);
+                                cycle.frames = frames;
+                                cycle.samples = samples;
+                                cycle.callbacks = callbacks;
+                                cycle.revision = revision;
+                                cycle
+                                    .observations
+                                    .push(serde_json::json!({"phase":"warmup","state":snapshot}));
+                                self.manual_media_paused = true;
+                                self.sync_media_pause();
+                                cycle.phase = 1;
+                                cycle.phase_started = Instant::now();
+                                cycle.stable_since = None;
                             }
                         }
-                        0=>{cycle.stable_since=None;}
-                        1 if ready && s["paused"]==true && revision>cycle.revision => {
-                            cycle.revision=revision;cycle.frames=frames;cycle.samples=samples;cycle.callbacks=callbacks;
-                            cycle.stable_since=Some(Instant::now());cycle.phase=2;cycle.phase_started=Instant::now();
+                        0 => {
+                            cycle.stable_since = None;
                         }
-                        2=>{
-                            if !ready || s["paused"]!=true {cycle.error=Some("pause acknowledgement was lost".into());}
-                            else if frames!=cycle.frames || samples!=cycle.samples {
-                                cycle.frames=frames;cycle.samples=samples;cycle.callbacks=callbacks;cycle.stable_since=Some(Instant::now());
-                            } else if cycle.stable_since.is_some_and(|since|since.elapsed()>=Duration::from_secs(2)) {
-                                if callbacks<=cycle.callbacks {cycle.error=Some("audio output callbacks stopped during pause".into());}
-                                else {
-                                    cycle.callbacks=callbacks;cycle.observations.push(serde_json::json!({"phase":"pause_stable_2s","state":snapshot}));
-                                    cycle.resume_started=Some(Instant::now());self.manual_media_paused=false;self.sync_media_pause();
-                                    cycle.phase=3;cycle.phase_started=Instant::now();
+                        1 if ready && s["paused"] == true && revision > cycle.revision => {
+                            cycle.revision = revision;
+                            cycle.frames = frames;
+                            cycle.samples = samples;
+                            cycle.callbacks = callbacks;
+                            cycle.stable_since = Some(Instant::now());
+                            cycle.phase = 2;
+                            cycle.phase_started = Instant::now();
+                        }
+                        2 => {
+                            if !ready || s["paused"] != true {
+                                cycle.error = Some("pause acknowledgement was lost".into());
+                            } else if frames != cycle.frames || samples != cycle.samples {
+                                cycle.frames = frames;
+                                cycle.samples = samples;
+                                cycle.callbacks = callbacks;
+                                cycle.stable_since = Some(Instant::now());
+                            } else if cycle
+                                .stable_since
+                                .is_some_and(|since| since.elapsed() >= Duration::from_secs(2))
+                            {
+                                if callbacks <= cycle.callbacks {
+                                    cycle.error =
+                                        Some("audio output callbacks stopped during pause".into());
+                                } else {
+                                    cycle.callbacks = callbacks;
+                                    cycle.observations.push(serde_json::json!({"phase":"pause_stable_2s","state":snapshot}));
+                                    cycle.resume_started = Some(Instant::now());
+                                    self.manual_media_paused = false;
+                                    self.sync_media_pause();
+                                    cycle.phase = 3;
+                                    cycle.phase_started = Instant::now();
                                 }
                             }
                         }
-                        3=>{
-                            let elapsed=cycle.resume_started.unwrap().elapsed().as_millis();
-                            if frames>cycle.frames && cycle.first_decode_ms.is_none() {cycle.first_decode_ms=Some(elapsed);}
-                            if samples>cycle.samples && cycle.first_audio_ms.is_none() {cycle.first_audio_ms=Some(elapsed);}
-                            if ready && s["paused"]==false && revision>cycle.revision && callbacks>cycle.callbacks
-                                && cycle.first_decode_ms.is_some() && cycle.first_audio_ms.is_some() {
-                                cycle.observations.push(serde_json::json!({"phase":"resume_observed","state":snapshot}));
-                                cycle.phase=4;cycle.phase_started=Instant::now();self.clear_acceptance_session();
+                        3 => {
+                            let elapsed = cycle.resume_started.unwrap().elapsed().as_millis();
+                            if frames > cycle.frames && cycle.first_decode_ms.is_none() {
+                                cycle.first_decode_ms = Some(elapsed);
+                            }
+                            if samples > cycle.samples && cycle.first_audio_ms.is_none() {
+                                cycle.first_audio_ms = Some(elapsed);
+                            }
+                            if ready
+                                && s["paused"] == false
+                                && revision > cycle.revision
+                                && callbacks > cycle.callbacks
+                                && cycle.first_decode_ms.is_some()
+                                && cycle.first_audio_ms.is_some()
+                            {
+                                cycle.observations.push(
+                                    serde_json::json!({"phase":"resume_observed","state":snapshot}),
+                                );
+                                cycle.phase = 4;
+                                cycle.phase_started = Instant::now();
+                                self.clear_acceptance_session();
                             }
                         }
-                        _=>{}
+                        _ => {}
                     }
                 }
             }
-            if cycle.error.is_some() {cycle.observations.push(snapshot);self.clear_acceptance_session();cycle.phase=4;cycle.phase_started=Instant::now();}
+            if cycle.error.is_some() {
+                cycle.observations.push(snapshot);
+                self.clear_acceptance_session();
+                cycle.phase = 4;
+                cycle.phase_started = Instant::now();
+            }
         }
-        if cycle.phase==4 && cycle.phase_started.elapsed()>=Duration::from_millis(300) {
-            let closed=self.owner.diagnostic_snapshot()["sessions"].as_array().is_some_and(|sessions|sessions.is_empty());
-            let record=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"renderer":"restored-original-gpui",
+        if cycle.phase == 4 && cycle.phase_started.elapsed() >= Duration::from_millis(300) {
+            let closed = self.owner.diagnostic_snapshot()["sessions"]
+                .as_array()
+                .is_some_and(|sessions| sessions.is_empty());
+            let record = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"renderer":"restored-original-gpui",
                 "cycle_observed":cycle.error.is_none()&&closed,"passed":false,"error":cycle.error,"session_closed_locally":closed,
                 "connection_subscription_identity":cycle.identity,"observations":cycle.observations,
                 "observed_resume_first_decode_ms":cycle.first_decode_ms,"observed_resume_first_nonzero_audio_ms":cycle.first_audio_ms,
                 "actual_display_completion_measured":false,"acoustic_latency_measured":false,"host_build_verified":false,
                 "signature_verified":false,"remote_native_teardown_verified":false,"input_injected":false,"full_acceptance":false});
-            let _=std::fs::write(output,serde_json::to_vec_pretty(&record).unwrap());println!("RESTORED_MEDIA_CYCLE_RESULT {record}");
-            self.quitting=true;cx.quit();return true;
+            let _ = std::fs::write(output, serde_json::to_vec_pretty(&record).unwrap());
+            println!("RESTORED_MEDIA_CYCLE_RESULT {record}");
+            self.quitting = true;
+            cx.quit();
+            return true;
         }
-        self.test_media_cycle=Some(Ok(cycle));cx.notify();false
+        self.test_media_cycle = Some(Ok(cycle));
+        cx.notify();
+        false
     }
 
     fn clear_acceptance_session(&mut self) {
-        self.owner.release_input();self.owner.close_all();self.current_frame=None;
-        self.presentation_frame.lock().unwrap().take();self.bound_source=None;
-        self.pointer_input=PointerInputTracker::default();self.input_locked=true;
-        self.test_connect_started=false;self.test_source_started=false;
-        self.test_selected_source=None;
+        self.owner.release_input();
+        self.owner.close_all();
+        self.current_frame = None;
+        self.presentation_frame.lock().unwrap().take();
+        self.bound_source = None;
+        self.pointer_input = PointerInputTracker::default();
+        self.input_locked = true;
+        self.test_connect_started = false;
+        self.test_source_started = false;
+        self.test_selected_source = None;
     }
-    fn sequence_acceptance_tick(&mut self,output:&str,seconds:u64,cx:&mut Context<Self>)->bool {
-        let pending=self.test_sequence.take().expect("sequence state present");
-        let mut sequence=match pending {
-            Ok(s)=>s,
-            Err(error)=>{
-                let record=serde_json::json!({"passed":false,"error":error,"input_injected":false,"full_acceptance":false});
-                let _=std::fs::write(output,serde_json::to_vec_pretty(&record).unwrap());
-                self.clear_acceptance_session();self.quitting=true;cx.quit();return true;
+    fn sequence_acceptance_tick(
+        &mut self,
+        output: &str,
+        seconds: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pending = self.test_sequence.take().expect("sequence state present");
+        let mut sequence = match pending {
+            Ok(s) => s,
+            Err(error) => {
+                let record = serde_json::json!({"passed":false,"error":error,"input_injected":false,"full_acceptance":false});
+                let _ = std::fs::write(output, serde_json::to_vec_pretty(&record).unwrap());
+                self.clear_acceptance_session();
+                self.quitting = true;
+                cx.quit();
+                return true;
             }
         };
         if sequence.closing.is_none() {
-            if self.started.elapsed()>=Duration::from_secs(seconds)||sequence.phase_expired(){
-                sequence.error=Some(format!("bounded source step {} timed out",sequence.index));
+            if self.started.elapsed() >= Duration::from_secs(seconds) || sequence.phase_expired() {
+                sequence.error = Some(format!("bounded source step {} timed out", sequence.index));
                 sequence.receipts.push(self.owner.diagnostic_snapshot());
             }
-            let source=sequence.step().clone();
-            if sequence.error.is_none()&&!self.test_connect_started&&self.runtime.owner.runtime().lock().unwrap().devices().iter().any(|d|d.device_id==source.device&&d.online){
-                self.test_connect_started=true;self.pause_when_inactive=false;
-                let owner=self.owner.clone();let key=source.device.clone();
-                cx.spawn(async move|view,cx|{
-                    let result=owner.connect_silent_files(&key).await;
-                    if result.is_ok(){let _=owner.request_capture_sources().await;}
-                    let _=view.update(cx,|this,cx|{if let Err(e)=result{this.status=e.to_string();}cx.notify();});
-                }).detach();
+            let source = sequence.step().clone();
+            if sequence.error.is_none()
+                && !self.test_connect_started
+                && self
+                    .runtime
+                    .owner
+                    .runtime()
+                    .lock()
+                    .unwrap()
+                    .devices()
+                    .iter()
+                    .any(|d| d.device_id == source.device && d.online)
+            {
+                self.test_connect_started = true;
+                self.pause_when_inactive = false;
+                let owner = self.owner.clone();
+                let key = source.device.clone();
+                cx.spawn(async move |view, cx| {
+                    let result = owner.connect_silent_files(&key).await;
+                    if result.is_ok() {
+                        let _ = owner.request_capture_sources().await;
+                    }
+                    let _ = view.update(cx, |this, cx| {
+                        if let Err(e) = result {
+                            this.status = e.to_string();
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
             }
-            if sequence.error.is_none()&&self.test_connect_started&&!self.test_source_started {
-                let state=self.owner.snapshot();
-                if state.sources.iter().any(|s|s.source==protocol::session::CaptureSource::Window(source.window)&&s.process_id==Some(source.pid)&&s.title==source.title){
-                    self.test_source_started=true;let owner=self.owner.clone();let id=source.window;
-                    cx.spawn(async move|view,cx|{
-                        let result=owner.switch_capture_source(protocol::session::CaptureSource::Window(id),1280,720,30,6000).await;
-                        let _=view.update(cx,|this,cx|{if let Err(e)=result{this.status=e.to_string();}cx.notify();});
-                    }).detach();
+            if sequence.error.is_none() && self.test_connect_started && !self.test_source_started {
+                let state = self.owner.snapshot();
+                if state.sources.iter().any(|s| {
+                    s.source == protocol::session::CaptureSource::Window(source.window)
+                        && s.process_id == Some(source.pid)
+                        && s.title == source.title
+                }) {
+                    self.test_source_started = true;
+                    let owner = self.owner.clone();
+                    let id = source.window;
+                    cx.spawn(async move |view, cx| {
+                        let result = owner
+                            .switch_capture_source(
+                                protocol::session::CaptureSource::Window(id),
+                                1280,
+                                720,
+                                30,
+                                6000,
+                            )
+                            .await;
+                        let _ = view.update(cx, |this, cx| {
+                            if let Err(e) = result {
+                                this.status = e.to_string();
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
                 }
             }
-            let snapshot=self.owner.diagnostic_snapshot();
-            let sessions=snapshot["sessions"].as_array().cloned().unwrap_or_default();
-            let current=sessions.first();
-            let ready=current.is_some_and(|s|s["device_id"]==source.device&&s["source"]==format!("Window({})",source.window)&&s["route"]==sequence.plan.route&&s["connected"]==true&&s["peer_responsive"]==true&&s["confirmed"]==true&&s["scene_submitted_frame"]==true&&s["input_locked"]==true&&s["decoded_frames"].as_u64().unwrap_or(0)>=sequence.plan.minimum_frames&&s["decode_errors"]==0&&s["video_error"].is_null()&&s["error"]=="");
-            if sessions.len()>1||current.is_some_and(|s|s["device_id"]!=source.device){sequence.error=Some("old/wrong device survived explicit close and reconnect".into());}
+            let snapshot = self.owner.diagnostic_snapshot();
+            let sessions = snapshot["sessions"].as_array().cloned().unwrap_or_default();
+            let current = sessions.first();
+            let ready = current.is_some_and(|s| {
+                s["device_id"] == source.device
+                    && s["source"] == format!("Window({})", source.window)
+                    && s["route"] == sequence.plan.route
+                    && s["connected"] == true
+                    && s["peer_responsive"] == true
+                    && s["confirmed"] == true
+                    && s["scene_submitted_frame"] == true
+                    && s["input_locked"] == true
+                    && s["decoded_frames"].as_u64().unwrap_or(0) >= sequence.plan.minimum_frames
+                    && s["decode_errors"] == 0
+                    && s["video_error"].is_null()
+                    && s["error"] == ""
+            });
+            if sessions.len() > 1 || current.is_some_and(|s| s["device_id"] != source.device) {
+                sequence.error =
+                    Some("old/wrong device survived explicit close and reconnect".into());
+            }
             if ready {
-                let since=sequence.healthy_since.get_or_insert_with(Instant::now);
-                if since.elapsed()>=Duration::from_secs(sequence.plan.hold_seconds){
+                let since = sequence.healthy_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_secs(sequence.plan.hold_seconds) {
                     sequence.receipts.push(serde_json::json!({"step":sequence.index,"expected_device":source.device,"expected_window":source.window,"state":snapshot,"passed":true}));
-                    self.clear_acceptance_session();sequence.index+=1;sequence.healthy_since=None;sequence.phase_started=Instant::now();
-                    if sequence.index==sequence.plan.sources.len(){sequence.closing=Some(Instant::now());}
+                    self.clear_acceptance_session();
+                    sequence.index += 1;
+                    sequence.healthy_since = None;
+                    sequence.phase_started = Instant::now();
+                    if sequence.index == sequence.plan.sources.len() {
+                        sequence.closing = Some(Instant::now());
+                    }
                 }
-            }else{sequence.healthy_since=None;}
-            if sequence.error.is_some(){self.clear_acceptance_session();sequence.closing=Some(Instant::now());}
-        }
-        if let Some(closing)=sequence.closing {
-            let mut native_released=true;
-            #[cfg(all(target_os="linux",feature="native-linux-video"))]
-            {native_released=gpui::native_video::linux_video_imports_live()==0;}
-            if native_released&&closing.elapsed()>Duration::from_millis(300)||closing.elapsed()>Duration::from_secs(3){
-                let passed=sequence.error.is_none()&&sequence.index==sequence.plan.sources.len()&&native_released;
-                let record=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"renderer":"restored-original-gpui","passed":passed,"sequence_steps":sequence.receipts,"error":sequence.error,"native_allocations_released_before_exit":native_released,"input_injected":false,"screen_capture_started_locally":false,"actual_display_completion_measured":false,"full_acceptance":false});
-                let _=std::fs::write(output,serde_json::to_vec_pretty(&record).unwrap());println!("RESTORED_SEQUENCE_RESULT {record}");
-                self.quitting=true;cx.quit();return true;
+            } else {
+                sequence.healthy_since = None;
+            }
+            if sequence.error.is_some() {
+                self.clear_acceptance_session();
+                sequence.closing = Some(Instant::now());
             }
         }
-        self.test_sequence=Some(Ok(sequence));cx.notify();false
+        if let Some(closing) = sequence.closing {
+            let mut native_released = true;
+            #[cfg(all(target_os = "linux", feature = "native-linux-video"))]
+            {
+                native_released = gpui::native_video::linux_video_imports_live() == 0;
+            }
+            if native_released && closing.elapsed() > Duration::from_millis(300)
+                || closing.elapsed() > Duration::from_secs(3)
+            {
+                let passed = sequence.error.is_none()
+                    && sequence.index == sequence.plan.sources.len()
+                    && native_released;
+                let record = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"renderer":"restored-original-gpui","passed":passed,"sequence_steps":sequence.receipts,"error":sequence.error,"native_allocations_released_before_exit":native_released,"input_injected":false,"screen_capture_started_locally":false,"actual_display_completion_measured":false,"full_acceptance":false});
+                let _ = std::fs::write(output, serde_json::to_vec_pretty(&record).unwrap());
+                println!("RESTORED_SEQUENCE_RESULT {record}");
+                self.quitting = true;
+                cx.quit();
+                return true;
+            }
+        }
+        self.test_sequence = Some(Ok(sequence));
+        cx.notify();
+        false
     }
 
     fn open_device_window(&mut self, device_id: &str, cx: &mut Context<Self>) {
         for handle in cx.windows() {
-            if handle == self.window_handle { continue; }
-            let Some(handle) = handle.downcast::<RestoredDashboard>() else { continue; };
-            let existing = handle.read(cx).is_ok_and(|view| view.purpose == WindowPurpose::Stream
-                && view.stream_device.as_deref() == Some(device_id) && view.stream_source.is_none());
+            if handle == self.window_handle {
+                continue;
+            }
+            let Some(handle) = handle.downcast::<RestoredDashboard>() else {
+                continue;
+            };
+            let existing = handle.read(cx).is_ok_and(|view| {
+                view.purpose == WindowPurpose::Stream
+                    && view.stream_device.as_deref() == Some(device_id)
+                    && view.stream_source.is_none()
+            });
             if existing {
                 cx.activate(true);
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
                 return;
             }
         }
-        if self.exit_group.stopping.load(Ordering::Acquire) { return; }
+        if self.exit_group.stopping.load(Ordering::Acquire) {
+            return;
+        }
         let device = self
             .runtime
             .owner
@@ -2210,34 +3078,68 @@ impl RestoredDashboard {
         if !native_presentation_available() {
             return div().into_any_element();
         }
-        let frame=self.current_frame.clone();
-        let owner=self.owner.clone();
-        let viewport=self.viewport.clone();
-        let connection=self.bound_source.map(|(id,_)|id);
-        canvas(|_,_,_|(),move |_,(),_,_| {
-            if let (Some(id),Some(frame))=(connection,frame.as_ref()) {
-                if frame.frame_geometry.is_some()&&!viewport.lock().unwrap().acknowledges(frame){return;}
-                owned_gui_stage(10);
-                owner.acknowledge_paint(id,frame);
-                owned_gui_stage(11);
-            }
-        }).absolute().top_0().left_0().w_full().h_full().into_any_element()
+        let frame = self.current_frame.clone();
+        let owner = self.owner.clone();
+        let viewport = self.viewport.clone();
+        let connection = self.bound_source.map(|(id, _)| id);
+        canvas(
+            |_, _, _| (),
+            move |_, (), _, _| {
+                if let (Some(id), Some(frame)) = (connection, frame.as_ref()) {
+                    if frame.frame_geometry.is_some()
+                        && !viewport.lock().unwrap().acknowledges(frame)
+                    {
+                        return;
+                    }
+                    owned_gui_stage(10);
+                    owner.acknowledge_paint(id, frame);
+                    owned_gui_stage(11);
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .w_full()
+        .h_full()
+        .into_any_element()
     }
 
-    #[cfg(any(unix,windows))]
-    fn begin_gui_quit(&mut self, command: Option<crate::desktop::directed_receive::Command>,
-        idle_only: bool, cx: &mut Context<Self>) {
-        use crate::desktop::{directed_receive::{Request,Reply},upgrade_quit};
+    #[cfg(any(unix, windows))]
+    fn begin_gui_quit(
+        &mut self,
+        command: Option<crate::desktop::directed_receive::Command>,
+        idle_only: bool,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::desktop::{
+            directed_receive::{Reply, Request},
+            upgrade_quit,
+        };
         let reply = command.map(|command| {
-            let (generation,executable_sha256,request_id) = match command.request {
-                Request::UpgradeQuit {generation,executable_sha256,request_id,..}
-                | Request::CloseGui {generation,executable_sha256,request_id,..} => (generation,executable_sha256,request_id),
+            let (generation, executable_sha256, request_id) = match command.request {
+                Request::UpgradeQuit {
+                    generation,
+                    executable_sha256,
+                    request_id,
+                    ..
+                }
+                | Request::CloseGui {
+                    generation,
+                    executable_sha256,
+                    request_id,
+                    ..
+                } => (generation, executable_sha256, request_id),
                 _ => unreachable!(),
             };
-            (command.reply,generation,executable_sha256,request_id)
+            (command.reply, generation, executable_sha256, request_id)
         });
-        if self.exit_group.stopping.swap(true,Ordering::AcqRel) {
-            if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":"GUI exit already requested"}).into());}
+        if self.exit_group.stopping.swap(true, Ordering::AcqRel) {
+            if let Some((reply, ..)) = reply {
+                let _ = reply.send(
+                    serde_json::json!({"ok":false,"error":"GUI exit already requested"}).into(),
+                );
+            }
             return;
         }
         // Re-observe retained owners in close_verified below. A previous
@@ -2245,22 +3147,43 @@ impl RestoredDashboard {
         let refusal = (if self.background.is_none() {
             Err("GUI-only exit requires an attached background service")
         } else if idle_only {
-            let adapter=self.directed_receive.as_ref().unwrap();
-            let states=self.exit_group.owners().iter().map(|o|o.diagnostic_snapshot()).collect::<Vec<_>>();
-            upgrade_quit::idle(&states,!adapter.leases.is_empty(),adapter.active_operations.load(Ordering::Acquire))
-        } else {Ok(())}).map_err(str::to_owned)
-            .and_then(|()|self.exit_group.prepare_gui_exit());
-        if let Err(error)=refusal {
-            self.exit_group.stopping.store(false,Ordering::Release);
-            if let Some((reply,..))=reply {let _=reply.send(serde_json::json!({"ok":false,"error":error}).into());}
-            self.status=error.into();cx.notify();return;
+            let adapter = self.directed_receive.as_ref().unwrap();
+            let states = self
+                .exit_group
+                .owners()
+                .iter()
+                .map(|o| o.diagnostic_snapshot())
+                .collect::<Vec<_>>();
+            upgrade_quit::idle(
+                &states,
+                !adapter.leases.is_empty(),
+                adapter.active_operations.load(Ordering::Acquire),
+            )
+        } else {
+            Ok(())
+        })
+        .map_err(str::to_owned)
+        .and_then(|()| self.exit_group.prepare_gui_exit());
+        if let Err(error) = refusal {
+            self.exit_group.stopping.store(false, Ordering::Release);
+            if let Some((reply, ..)) = reply {
+                let _ = reply.send(serde_json::json!({"ok":false,"error":error}).into());
+            }
+            self.status = error.into();
+            cx.notify();
+            return;
         }
-        self.full_exit_pending=true;
-        for owner in self.exit_group.owners() {owner.set_input_locked(true);owner.release_input();}
-        self.pointer_input=PointerInputTracker::default();
-        self.session_commands.begin();self.invalidate_source_commands();
-        self.stop_directed_receive();self.directed_send.lock().unwrap().clear();
-        let group=self.exit_group.clone();
+        self.full_exit_pending = true;
+        for owner in self.exit_group.owners() {
+            owner.set_input_locked(true);
+            owner.release_input();
+        }
+        self.pointer_input = PointerInputTracker::default();
+        self.session_commands.begin();
+        self.invalidate_source_commands();
+        self.stop_directed_receive();
+        self.directed_send.lock().unwrap().clear();
+        let group = self.exit_group.clone();
         cx.spawn(async move |view,cx| {
             let result=if idle_only {group.close_verified().await.map(|()|true)} else {group.close_for_gui_exit().await};
             let remote_cleanup_confirmed=match result {
@@ -2284,22 +3207,33 @@ impl RestoredDashboard {
     }
 
     fn begin_full_exit(&mut self, cx: &mut Context<Self>) {
-        if self.exit_group.stopping.swap(true, Ordering::AcqRel) { return; }
-        if let Err(error)=self.exit_group.prepare_gui_exit() {
-            self.exit_group.stopping.store(false,Ordering::Release);
-            self.status=error;cx.notify();return;
+        if self.exit_group.stopping.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Err(error) = self.exit_group.prepare_gui_exit() {
+            self.exit_group.stopping.store(false, Ordering::Release);
+            self.status = error;
+            cx.notify();
+            return;
         }
         self.full_exit_pending = true;
-        for owner in self.exit_group.owners() { owner.set_input_locked(true); owner.release_input(); }
+        for owner in self.exit_group.owners() {
+            owner.set_input_locked(true);
+            owner.release_input();
+        }
         self.set_input_locked(true);
-        self.owner.release_input(); self.pointer_input = PointerInputTracker::default();
-        self.invalidate_source_commands(); self.session_commands.begin();
+        self.owner.release_input();
+        self.pointer_input = PointerInputTracker::default();
+        self.invalidate_source_commands();
+        self.session_commands.begin();
         #[cfg(any(unix, windows))]
         self.stop_directed_receive();
         #[cfg(any(unix, windows))]
         self.directed_send.lock().unwrap().clear();
         self.status = "Releasing connections and stopping Weavelo…".into();
-        let group = self.exit_group.clone(); let runtime = self.runtime.clone(); let background = self.background.clone();
+        let group = self.exit_group.clone();
+        let runtime = self.runtime.clone();
+        let background = self.background.clone();
         cx.spawn(async move |view, cx| {
             let result = async {
                 let _remote_cleanup_confirmed=group.close_for_gui_exit().await?;
@@ -2324,7 +3258,9 @@ impl RestoredDashboard {
     }
 
     fn set_input_locked(&mut self, locked: bool) {
-        if !locked && self.exit_group.stopping.load(Ordering::Acquire) { return; }
+        if !locked && self.exit_group.stopping.load(Ordering::Acquire) {
+            return;
+        }
         if locked && !self.input_locked {
             self.release_pointer_input();
         }
@@ -2373,7 +3309,11 @@ fn stream_video_canvas_surface(
                     .gap_3()
                     .p_6()
                     .rounded(px(16.0))
-                    .bg(if theme.surface.canvas.l < 0.5 { Hsla::from(rgba(0x171d28f2)) } else { Hsla::from(rgba(0xfffffff5)) })
+                    .bg(if theme.surface.canvas.l < 0.5 {
+                        Hsla::from(rgba(0x171d28f2))
+                    } else {
+                        Hsla::from(rgba(0xfffffff5))
+                    })
                     .border_1()
                     .border_color(theme.border.default)
                     .shadow_sm()
@@ -2412,9 +3352,14 @@ fn stream_video_canvas_surface(
 
 // Android's selected screen/app source is explicitly tagged by its publisher;
 // desktop display sources keep their existing default sizing.
-fn adaptive_source(source: protocol::session::CaptureSource, sources: &[protocol::session::CaptureSourceInfo]) -> bool {
+fn adaptive_source(
+    source: protocol::session::CaptureSource,
+    sources: &[protocol::session::CaptureSourceInfo],
+) -> bool {
     matches!(source, protocol::session::CaptureSource::Window(_))
-        || sources.iter().any(|item| item.source == source && item.application == "MediaProjection")
+        || sources
+            .iter()
+            .any(|item| item.source == source && item.application == "MediaProjection")
 }
 
 fn has_android_mediaprojection_source(sources: &[protocol::session::CaptureSourceInfo]) -> bool {
@@ -2441,18 +3386,37 @@ impl Render for PopoutStreamView {
         let theme = cx.theme().clone();
         let view = cx.weak_entity();
         let snapshot = self.owner.snapshot();
-        let bitmap=matches!(snapshot.active_source,protocol::session::CaptureSource::Window(_))
-            .then(||snapshot.source_icons.get(&snapshot.active_source)).flatten();
-        self.native_window_artwork.sync_viewer(window,cx,bitmap.map(AsRef::as_ref),
-            snapshot.source_appearances.get(&snapshot.active_source).map(AsRef::as_ref));
-        if let Some((_, frame)) = self.owner.frame_binding() { self.presentation_frame = frame; }
-        else { self.presentation_frame.lock().unwrap().take(); }
+        let bitmap = matches!(
+            snapshot.active_source,
+            protocol::session::CaptureSource::Window(_)
+        )
+        .then(|| snapshot.source_icons.get(&snapshot.active_source))
+        .flatten();
+        self.native_window_artwork.sync_viewer(
+            window,
+            cx,
+            bitmap.map(AsRef::as_ref),
+            snapshot
+                .source_appearances
+                .get(&snapshot.active_source)
+                .map(AsRef::as_ref),
+        );
+        if let Some((_, frame)) = self.owner.frame_binding() {
+            self.presentation_frame = frame;
+        } else {
+            self.presentation_frame.lock().unwrap().take();
+        }
         self.host_stats = self.owner.stats();
         let source = confirmed_source(&snapshot.sources, snapshot.active_source);
-        let peer = snapshot.role.session().map(|s| s.peer.display_name.as_str());
+        let peer = snapshot
+            .role
+            .session()
+            .map(|s| s.peer.display_name.as_str());
         let title = if peer.is_none() && !self.native_window_title.is_empty() {
             self.native_window_title.clone()
-        } else {remote_window_title(peer,source)};
+        } else {
+            remote_window_title(peer, source)
+        };
         if title != self.native_window_title {
             window.set_window_title(&title);
             self.native_window_title = title.clone();
@@ -2462,16 +3426,33 @@ impl Render for PopoutStreamView {
             .lock()
             .expect("presentation frame lock")
             .clone();
-        if let Some(source_size) = current_frame.as_ref().filter(|frame| frame.frame_geometry.is_some_and(|geometry| self.owner.accepts_frame_source_revision(geometry.source_revision))).and_then(|frame| window_fit::source_size(frame)) {
-            window_fit::fit(window, cx, &mut self.window_fit, source_size,
-                adaptive_source(snapshot.active_source, &snapshot.sources), [0.0, 0.0]);
+        let fullscreen = window.is_fullscreen();
+        let pip_chrome = if fullscreen { [0.0, 0.0] } else { [0.0, 30.0] };
+        if let Some(source_size) = current_frame
+            .as_ref()
+            .filter(|frame| {
+                frame.frame_geometry.is_some_and(|geometry| {
+                    self.owner
+                        .accepts_frame_source_revision(geometry.source_revision)
+                })
+            })
+            .and_then(|frame| window_fit::source_size(frame))
+        {
+            window_fit::fit(
+                window,
+                cx,
+                &mut self.window_fit,
+                source_size,
+                adaptive_source(snapshot.active_source, &snapshot.sources),
+                pip_chrome,
+            );
         }
         let stats = self
             .host_stats
             .as_ref()
             .map(|stats| UiHostStats::read(stats))
             .filter(|stats| host_stats_available(stats));
-        let network=UiHostStats::network_quality(snapshot.role.kind(),stats.as_ref());
+        let network = UiHostStats::network_quality(snapshot.role.kind(), stats.as_ref());
 
         let content = stream_video_canvas_surface(
             current_frame.as_deref(),
@@ -2483,12 +3464,14 @@ impl Render for PopoutStreamView {
 
         let scale_mode = self.scale_mode;
         let scale_btn = command_button("pip_toggle_scale", ActionVariantKind::Neutral, cx)
-            .h(px(24.0))
-            .px_2()
-            .text_size(px(10.0))
+            .size(px(22.0))
+            .rounded_full()
+            .p_0()
             .tooltip(
                 tooltip(match scale_mode {
-                    ViewportScaleMode::AspectFit => crate::i18n::tr("Scale mode: Aspect Fit (click for Fill)"),
+                    ViewportScaleMode::AspectFit => {
+                        crate::i18n::tr("Scale mode: Aspect Fit (click for Fill)")
+                    }
                     ViewportScaleMode::Fill => crate::i18n::tr("Scale mode: Fill (click for Fit)"),
                 })
                 .build(),
@@ -2510,132 +3493,210 @@ impl Render for PopoutStreamView {
                 ViewportScaleMode::Fill => icon(IconName::Maximize(true)).size(px(12.0)),
             })
             .into_any_element();
-        let fullscreen = window.is_fullscreen();
-        let controls = div().flex().items_center().justify_center().gap_1()
+        let signal_btn = command_button(
+            "expand_pip_hud_btn",
+            if !self.telemetry_hud_collapsed {
+                ActionVariantKind::Primary
+            } else {
+                ActionVariantKind::Neutral
+            },
+            cx,
+        )
+        .size(px(22.0))
+        .rounded_full()
+        .p_0()
+        .tooltip(
+            tooltip(crate::i18n::tr_format!(
+                "{} · Show telemetry",
+                UiHostStats::network_detail(network, stats.as_ref())
+            ))
+            .build(),
+        )
+        .on_click({
+            let view = view.clone();
+            move |_event, _window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.telemetry_hud_collapsed = !this.telemetry_hud_collapsed;
+                    cx.notify();
+                });
+            }
+        })
+        .child(network_quality_icon(network, &theme).size(px(12.0)))
+        .into_any_element();
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(signal_btn)
             .child(scale_btn)
-            .child(command_button("pip_fit_window", ActionVariantKind::Neutral, cx)
-                .h(px(24.0)).px_2()
-                .tooltip(tooltip(crate::i18n::tr("Fit window")).build())
-                .on_click(cx.listener(|this, _, _, cx| { this.window_fit.request_fit(); cx.notify(); }))
-                .child(icon(IconName::Window).size(px(12.0))))
-            .child(command_button("pip_fullscreen", ActionVariantKind::Neutral, cx)
-                .h(px(24.0)).px_2()
-                .tooltip(tooltip(if fullscreen { crate::i18n::tr("Exit fullscreen") } else { crate::i18n::tr("Fullscreen") }).build())
-                .on_click(|_, window, cx| { window.toggle_fullscreen(); cx.refresh_windows(); })
-                .child(icon(IconName::Maximize(fullscreen)).size(px(12.0))))
+            .child(
+                command_button("pip_fit_window", ActionVariantKind::Neutral, cx)
+                    .size(px(22.0))
+                    .rounded_full()
+                    .p_0()
+                    .tooltip(tooltip(crate::i18n::tr("Fit window")).build())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.window_fit.request_fit();
+                        cx.notify();
+                    }))
+                    .child(icon(IconName::Window).size(px(12.0))),
+            )
+            .child(
+                command_button("pip_fullscreen", ActionVariantKind::Neutral, cx)
+                    .size(px(22.0))
+                    .rounded_full()
+                    .p_0()
+                    .tooltip(
+                        tooltip(if fullscreen {
+                            crate::i18n::tr("Exit fullscreen")
+                        } else {
+                            crate::i18n::tr("Fullscreen")
+                        })
+                        .build(),
+                    )
+                    .on_click(|_, window, cx| {
+                        window.toggle_fullscreen();
+                        cx.refresh_windows();
+                    })
+                    .child(icon(IconName::Maximize(fullscreen)).size(px(12.0))),
+            )
             .into_any_element();
 
         div()
             .relative()
+            .flex()
+            .flex_col()
             .w_full()
             .h_full()
             .bg(theme.surface.canvas)
             .text_color(theme.content.primary)
             .font_family(crate::design_system::product_ui_font())
-            .child(content)
-            .child(
-                div()
-                    .absolute()
-                    .top(px(10.0))
-                    .left_0()
-                    .right_0()
-                    .flex()
-                    .justify_center()
-                    .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
-                        cx.stop_propagation();
-                    }))
-                    .child(
-                        div().flex().flex_col().items_center().gap_1()
-                            .max_w(relative(0.95)).min_w_0().px_1p5().py_1()
-                            .rounded(px(14.)).bg(theme_glass_floating(cx)).border_1()
-                            .border_color(theme_border_fine(cx)).shadow_lg()
-                            .child(div().id("pip_source_title").w_full().min_w_0().truncate().text_center()
-                                .text_size(px(10.)).font_weight(FontWeight::MEDIUM)
-                                .tooltip(tooltip(format!("{} · {}", title, compact_telemetry_label(stats.as_ref()))).build())
-                                .child(title))
-                            .child(controls),
-                    ),
-            )
-            .child(if self.telemetry_hud_collapsed {
-                div()
-                    .absolute()
-                    .bottom(px(12.0))
-                    .right(px(16.0))
-                    .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
-                        cx.stop_propagation();
-                    }))
-                    .child(
-                        command_button("expand_pip_hud_btn", ActionVariantKind::Neutral, cx)
-                            .size(px(28.0))
-                            .rounded_full()
-                            .tooltip(tooltip(crate::i18n::tr_format!("{} · Show telemetry",UiHostStats::network_detail(network, stats.as_ref()))).build())
-                            .on_click({
-                                let view = view.clone();
-                                move |_event, _window, cx| {
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.telemetry_hud_collapsed = false;
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                            .child(network_quality_icon(network,&theme).size(px(12.0))),
-                    )
-            } else {
-                div()
-                    .absolute()
-                    .bottom(px(12.0))
-                    .right(px(16.0))
-                    .w(px(248.0))
-                    .max_w(relative(0.95))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .p_2p5()
-                    .bg(theme_glass_floating(cx))
-                    .border_1()
-                    .border_color(theme_border_fine(cx))
-                    .rounded(px(12.0))
-                    .shadow_lg()
-                    .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
-                        cx.stop_propagation();
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme_accent_brand(cx))
-                                    .child(crate::i18n::tr("Network")),
-                            )
-                            .child(
-                                command_button(
-                                    "collapse_pip_hud_btn",
-                                    ActionVariantKind::Neutral,
-                                    cx,
-                                )
-                                .size(px(18.0))
-                                .rounded_full()
-                                .text_size(px(8.0))
-                                .tooltip(tooltip(crate::i18n::tr("Collapse live telemetry")).build())
-                                .on_click({
-                                    let view = view.clone();
-                                    move |_event, _window, cx| {
-                                        let _ = view.update(cx, |this, cx| {
-                                            this.telemetry_hud_collapsed = true;
-                                            cx.notify();
-                                        });
+            .when(!fullscreen, |root| {
+                root.child(
+                    div()
+                        .w_full()
+                        .h(px(30.0))
+                        .px_2()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .bg(theme.surface.base)
+                        .border_b_1()
+                        .border_color(theme.border.divider)
+                        .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
+                            cx.stop_propagation();
+                        }))
+                        .when(cfg!(target_os = "macos"), |bar| {
+                            bar.child(div().w(px(62.0)).h_full().flex_none().on_mouse_down(
+                                MouseButton::Left,
+                                |_, window, _| {
+                                    if !cfg!(test) {
+                                        window.start_window_move();
+                                    }
+                                },
+                            ))
+                        })
+                        .child(
+                            div()
+                                .id("pip_source_title")
+                                .flex_1()
+                                .h_full()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .truncate()
+                                .text_size(px(11.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                    if event.click_count >= 2 {
+                                        window.titlebar_double_click();
+                                    } else if !cfg!(test) {
+                                        window.start_window_move();
                                     }
                                 })
-                                .child(icon(IconName::Minimize).size(px(10.0))),
-                            ),
-                    )
-                    .child(telemetry_hud_metrics_list(stats.as_ref(), network, &theme))
+                                .tooltip(
+                                    tooltip(format!(
+                                        "{} · {}",
+                                        title,
+                                        compact_telemetry_label(stats.as_ref())
+                                    ))
+                                    .build(),
+                                )
+                                .child(title),
+                        )
+                        .child(controls),
+                )
+            })
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(content),
+            )
+            .when(!self.telemetry_hud_collapsed, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .top(px(if fullscreen { 12.0 } else { 36.0 }))
+                        .right(px(10.0))
+                        .w(px(248.0))
+                        .max_w(relative(0.95))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_1p5()
+                        .p_2p5()
+                        .bg(theme_glass_floating(cx))
+                        .border_1()
+                        .border_color(theme_border_fine(cx))
+                        .rounded(px(12.0))
+                        .shadow_lg()
+                        .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
+                            cx.stop_propagation();
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_4()
+                                .child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme_accent_brand(cx))
+                                        .child(crate::i18n::tr("Network")),
+                                )
+                                .child(
+                                    command_button(
+                                        "collapse_pip_hud_btn",
+                                        ActionVariantKind::Neutral,
+                                        cx,
+                                    )
+                                    .size(px(18.0))
+                                    .rounded_full()
+                                    .text_size(px(8.0))
+                                    .tooltip(
+                                        tooltip(crate::i18n::tr("Collapse live telemetry")).build(),
+                                    )
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_event, _window, cx| {
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.telemetry_hud_collapsed = true;
+                                                cx.notify();
+                                            });
+                                        }
+                                    })
+                                    .child(icon(IconName::Minimize).size(px(10.0))),
+                                ),
+                        )
+                        .child(telemetry_hud_metrics_list(stats.as_ref(), network, &theme)),
+                )
             })
     }
 }
@@ -2660,7 +3721,7 @@ impl Render for RestoredDashboard {
             return self.management_view(&snapshot, cx);
         }
         if self.purpose == WindowPurpose::Sending {
-            return self.sending_view(&snapshot,window,cx);
+            return self.sending_view(&snapshot, window, cx);
         }
         let role = snapshot.role.clone();
         let fullscreen = window.is_fullscreen();
@@ -2672,9 +3733,25 @@ impl Render for RestoredDashboard {
                 snapshot.computer_use_status.mode.is_some(),
             )
         };
-        if let Some(source_size) = self.current_frame.as_ref().filter(|frame| frame.frame_geometry.is_some_and(|geometry| self.owner.accepts_frame_source_revision(geometry.source_revision))).and_then(|frame| window_fit::source_size(frame)) {
-            window_fit::fit(window, cx, &mut self.window_fit, source_size,
-                adaptive_source(snapshot.active_capture_source, &snapshot.capture_sources), fit_chrome);
+        if let Some(source_size) = self
+            .current_frame
+            .as_ref()
+            .filter(|frame| {
+                frame.frame_geometry.is_some_and(|geometry| {
+                    self.owner
+                        .accepts_frame_source_revision(geometry.source_revision)
+                })
+            })
+            .and_then(|frame| window_fit::source_size(frame))
+        {
+            window_fit::fit(
+                window,
+                cx,
+                &mut self.window_fit,
+                source_size,
+                adaptive_source(snapshot.active_capture_source, &snapshot.capture_sources),
+                fit_chrome,
+            );
         }
         self.capture_supports_input = snapshot.active_capture_supports_input;
         if self.capture_error_seen != snapshot.capture_source_error {
@@ -2711,8 +3788,8 @@ impl Render for RestoredDashboard {
             self.request_remote_source_focus();
         }
         let active_session = role.session().cloned();
-        if matches!(role,RoleState::Viewing(_)) {
-            self.stream_source=Some(snapshot.active_capture_source);
+        if matches!(role, RoleState::Viewing(_)) {
+            self.stream_source = Some(snapshot.active_capture_source);
             let vp = window.viewport_size();
             let vp_w = f32::from(vp.width).round() as i64;
             let vp_h = (f32::from(vp.height) - fit_chrome[1]).round() as i64;
@@ -2724,61 +3801,140 @@ impl Render for RestoredDashboard {
             self.window_last_fitted_viewport = None;
         }
         let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
-        let peer=active_session.as_ref().map(|s|s.peer.display_name.as_str()).or_else(|| {
-            self.stream_device.as_ref().and_then(|id|snapshot.devices.iter().find(|device|&device.device_id==id))
-                .map(|device|device.display_name.as_str())
-        });
+        let peer = active_session
+            .as_ref()
+            .map(|s| s.peer.display_name.as_str())
+            .or_else(|| {
+                self.stream_device
+                    .as_ref()
+                    .and_then(|id| {
+                        snapshot
+                            .devices
+                            .iter()
+                            .find(|device| &device.device_id == id)
+                    })
+                    .map(|device| device.display_name.as_str())
+            });
         let title = if self.stream_source.is_none() {
-            peer.or(self.stream_device.as_deref()).unwrap_or(crate::i18n::tr("Device")).to_owned()
-        } else if active_session.is_none() && self.native_window_title!="Weavelo" && !self.native_window_title.is_empty() {
+            peer.or(self.stream_device.as_deref())
+                .unwrap_or(crate::i18n::tr("Device"))
+                .to_owned()
+        } else if active_session.is_none()
+            && self.native_window_title != "Weavelo"
+            && !self.native_window_title.is_empty()
+        {
             self.native_window_title.clone()
-        } else {remote_window_title(peer.or(self.stream_device.as_deref()),source)};
+        } else {
+            remote_window_title(peer.or(self.stream_device.as_deref()), source)
+        };
         if title != self.native_window_title {
             window.set_window_title(&title);
             self.native_window_title = title;
         }
-        let appearance=snapshot.source_appearances.get(&snapshot.active_capture_source);
-        let bitmap=appearance.and_then(|value|value.application.clone()).or_else(||matches!(snapshot.active_capture_source,protocol::session::CaptureSource::Window(_))
-            .then(||self.artwork_cache.borrow().assets.get(&snapshot.active_capture_source).cloned()).flatten());
-        let app_source = matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_));
-        if self.purpose == WindowPurpose::Stream && matches!(role, RoleState::Viewing(_))
-            && (!app_source || source.is_some()) {
-            let screen_source = snapshot.active_capture_source.category() == protocol::session::SourceCategory::Screen;
-            let app_name = source.map(|source| source.application.trim())
+        let appearance = snapshot
+            .source_appearances
+            .get(&snapshot.active_capture_source);
+        let bitmap = appearance
+            .and_then(|value| value.application.clone())
+            .or_else(|| {
+                matches!(
+                    snapshot.active_capture_source,
+                    protocol::session::CaptureSource::Window(_)
+                )
+                .then(|| {
+                    self.artwork_cache
+                        .borrow()
+                        .assets
+                        .get(&snapshot.active_capture_source)
+                        .cloned()
+                })
+                .flatten()
+            });
+        let app_source = matches!(
+            snapshot.active_capture_source,
+            protocol::session::CaptureSource::Window(_)
+        );
+        if self.purpose == WindowPurpose::Stream
+            && matches!(role, RoleState::Viewing(_))
+            && (!app_source || source.is_some())
+        {
+            let screen_source = snapshot.active_capture_source.category()
+                == protocol::session::SourceCategory::Screen;
+            let app_name = source
+                .map(|source| source.application.trim())
                 .filter(|name| !name.is_empty())
                 .unwrap_or(match snapshot.active_capture_source.category() {
                     protocol::session::SourceCategory::Window => crate::i18n::tr("Remote window"),
                     protocol::session::SourceCategory::Camera => crate::i18n::tr("Camera"),
-                    protocol::session::SourceCategory::Screen => peer.unwrap_or(crate::i18n::tr("Device")),
+                    protocol::session::SourceCategory::Screen => {
+                        peer.unwrap_or(crate::i18n::tr("Device"))
+                    }
                 });
             self.native_window_artwork.sync_stream(
-                window, cx, bitmap.as_deref(), appearance.map(AsRef::as_ref),
-                if screen_source { peer.unwrap_or(crate::i18n::tr("Device")) } else { app_name },
-                if screen_source { "" } else { peer.unwrap_or(crate::i18n::tr("Device")) },
+                window,
+                cx,
+                bitmap.as_deref(),
+                appearance.map(AsRef::as_ref),
+                if screen_source {
+                    peer.unwrap_or(crate::i18n::tr("Device"))
+                } else {
+                    app_name
+                },
+                if screen_source {
+                    ""
+                } else {
+                    peer.unwrap_or(crate::i18n::tr("Device"))
+                },
             );
         } else {
             self.native_window_artwork.close();
-            self.native_window_artwork.sync(window,cx,bitmap.as_deref());
+            self.native_window_artwork
+                .sync(window, cx, bitmap.as_deref());
         }
         let theme = cx.theme().clone();
         let show_drawer = self.drawer_open;
-        let input_hint = matches!(role, RoleState::Viewing(_)).then(|| {
-            remote_input_hint(&snapshot.input_status, snapshot.input_eligible,
-                self.input_focus.is_focused(window), show_drawer || self.show_apps_menu || self.source_selection.is_some())
-        }).flatten();
+        let input_hint = matches!(role, RoleState::Viewing(_))
+            .then(|| {
+                remote_input_hint(
+                    &snapshot.input_status,
+                    snapshot.input_eligible,
+                    self.input_focus.is_focused(window),
+                    show_drawer || self.show_apps_menu || self.source_selection.is_some(),
+                )
+            })
+            .flatten();
         // The native text client must be ready with the current, focused grant;
         // a display debounce here would silently discard the first typed text.
-        let text_host_ready = (snapshot.input_eligible || (snapshot.active_capture_supports_input && matches!(role, RoleState::Viewing(_))))
-            && self.input_focus.is_focused(window) && !show_drawer && !self.show_apps_menu && self.source_selection.is_none();
-        let text_binding=if self.text_mode && text_host_ready && !self.input_locked {
+        let text_host_ready = (snapshot.input_eligible
+            || (snapshot.active_capture_supports_input && matches!(role, RoleState::Viewing(_))))
+            && self.input_focus.is_focused(window)
+            && !show_drawer
+            && !self.show_apps_menu
+            && self.source_selection.is_none();
+        let text_binding = if self.text_mode && text_host_ready && !self.input_locked {
             self.owner.text_input_owner()
-        } else {None};
-        if let Some((view,binding))=text_binding {
-            if self.remote_text.as_ref().is_none_or(|input|input.read(cx).binding!=binding) {
-                self.remote_text=Some(cx.new(|_|remote_text_input::RemoteTextInput::new(
-                    self.owner.clone(),view,binding,self.input_focus.clone(),self.ime_anchor)));
+        } else {
+            None
+        };
+        if let Some((view, binding)) = text_binding {
+            if self
+                .remote_text
+                .as_ref()
+                .is_none_or(|input| input.read(cx).binding != binding)
+            {
+                self.remote_text = Some(cx.new(|_| {
+                    remote_text_input::RemoteTextInput::new(
+                        self.owner.clone(),
+                        view,
+                        binding,
+                        self.input_focus.clone(),
+                        self.ime_anchor,
+                    )
+                }));
             }
-        } else {self.remote_text=None;}
+        } else {
+            self.remote_text = None;
+        }
         let is_fullscreen = fullscreen;
         let viewport_size = window.viewport_size();
         let viewport_width = f32::from(viewport_size.width);
@@ -2813,42 +3969,20 @@ impl Render for RestoredDashboard {
         } else {
             theme.surface.canvas
         };
-        div()
+        let stream_stage = div()
             .relative()
+            .flex_1()
             .w_full()
-            .h_full()
             .min_w_0()
             .min_h_0()
-            .bg(root_background)
-            .text_color(theme.content.primary)
-            .font_family(crate::design_system::product_ui_font())
             .overflow_hidden()
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-        let Some(keystroke) = fresh_key_down(event) else { return; };
-                if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
-                    if !this.input_locked && this.owner.retry_viewing_input() {
-                        this.pointer_input = PointerInputTracker::default();
-                    }
-                    if this.text_mode && text_key_stays_local(keystroke, this.remote_text.as_ref().is_some_and(|input|input.read(cx).composing())) {
-                        return;
-                    }
-                    this.queue_key(keystroke, true);
-                    cx.stop_propagation();
+            .capture_any_mouse_down(cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
+                if this.network_details_open || this.show_apps_menu {
+                    this.network_details_open = false;
+                    this.show_apps_menu = false;
+                    cx.notify();
                 }
             }))
-            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
-                    this.queue_key(&event.keystroke, false);
-                    cx.stop_propagation();
-                }
-            }))
-            .on_modifiers_changed(cx.listener(
-                |this, event: &ModifiersChangedEvent, window, _cx| {
-                    if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
-                        this.queue_modifiers(event);
-                    }
-                },
-            ))
             .child(stream_content)
             .when_some(snapshot.computer_use_status.mode, |this, mode| {
                 let border_color = match mode {
@@ -2862,9 +3996,12 @@ impl Render for RestoredDashboard {
                         cx.theme().content.secondary
                     }
                 };
-                let cursor_overlay=snapshot.computer_use_status.cursor_norm.and_then(|(x,y)| {
-                    self.viewport.lock().unwrap().cursor_position(x,y,snapshot.computer_use_status.cursor_geometry)
-                        .map(|point|(f32::from(point.x),f32::from(point.y)))
+                let cursor_overlay = snapshot.computer_use_status.cursor_norm.and_then(|(x, y)| {
+                    self.viewport
+                        .lock()
+                        .unwrap()
+                        .cursor_position(x, y, snapshot.computer_use_status.cursor_geometry)
+                        .map(|point| (f32::from(point.x), f32::from(point.y)))
                 });
                 this.child(
                     div()
@@ -2896,10 +4033,7 @@ impl Render for RestoredDashboard {
                                             .items_center()
                                             .justify_center()
                                             .child(
-                                                div()
-                                                    .size(px(4.))
-                                                    .rounded_full()
-                                                    .bg(border_color),
+                                                div().size(px(4.)).rounded_full().bg(border_color),
                                             ),
                                     )
                                     .child(
@@ -2916,8 +4050,75 @@ impl Render for RestoredDashboard {
                             )
                         }),
                 )
+            });
+        let source_menu_top = if is_fullscreen {
+            if snapshot.computer_use_status.mode.is_some() {
+                78.0
+            } else {
+                46.0
+            }
+        } else {
+            window_fit::STREAM_HEADER_HEIGHT_PX + 6.0
+        };
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .min_w_0()
+            .min_h_0()
+            .bg(root_background)
+            .text_color(theme.content.primary)
+            .font_family(crate::design_system::product_ui_font())
+            .overflow_hidden()
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let Some(keystroke) = fresh_key_down(event) else {
+                    return;
+                };
+                if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
+                    if !this.input_locked && this.owner.retry_viewing_input() {
+                        this.pointer_input = PointerInputTracker::default();
+                    }
+                    if this.text_mode
+                        && text_key_stays_local(
+                            keystroke,
+                            this.remote_text
+                                .as_ref()
+                                .is_some_and(|input| input.read(cx).composing()),
+                        )
+                    {
+                        return;
+                    }
+                    this.queue_key(keystroke, true);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
+                    this.queue_key(&event.keystroke, false);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &ModifiersChangedEvent, window, _cx| {
+                    if this.input_session_id.is_some() && this.input_focus.is_focused(window) {
+                        this.queue_modifiers(event);
+                    }
+                },
+            ))
+            .when(!is_fullscreen, |tree| {
+                tree.child(self.stream_toolbar(
+                    &snapshot,
+                    false,
+                    compact,
+                    tiny,
+                    input_hint.as_deref(),
+                    cx,
+                ))
             })
-            .when(fullscreen_controls_visible, |tree| {
+            .child(stream_stage)
+            .when(is_fullscreen && fullscreen_controls_visible, |tree| {
                 tree.child(self.stream_toolbar(
                     &snapshot,
                     true,
@@ -2927,81 +4128,146 @@ impl Render for RestoredDashboard {
                     cx,
                 ))
             })
-            .when(!fullscreen_controls_visible, |tree| {
+            .when(is_fullscreen && !fullscreen_controls_visible, |tree| {
                 tree.child(self.fullscreen_micro_rail(cx))
             })
-            .when(android_companion && fullscreen_controls_visible, |tree| {
-                tree.child(div().absolute().right(px(8.)).top(px(60.))
-                    .child(self.android_companion_controls(&snapshot, is_fullscreen, cx)))
+            .when(
+                is_fullscreen && android_companion && fullscreen_controls_visible,
+                |tree| {
+                    tree.child(
+                        div()
+                            .absolute()
+                            .right(px(8.))
+                            .top(px(60.))
+                            .child(self.android_companion_controls(&snapshot, is_fullscreen, cx)),
+                    )
+                },
+            )
+            .when(self.show_apps_menu, |tree| {
+                tree.child(
+                    div()
+                        .absolute()
+                        .top(px(source_menu_top))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(capture_source_menu(
+                            &snapshot.capture_sources,
+                            &snapshot.source_icons,
+                            snapshot.source_binding.as_ref(),
+                            snapshot.active_capture_source,
+                            snapshot.pending_capture_source,
+                            snapshot.capture_source_error.as_deref(),
+                            snapshot.role.session(),
+                            cx,
+                        )),
+                )
             })
-            .child(div().absolute().right(px(12.)).bottom(px(12.)).child(self.network_status_chip(&role, snapshot.route.as_deref(), host_stats.as_ref(), cx)))
-            .when(self.network_details_open, |tree| tree.child(self.network_status_panel(&role, snapshot.route.as_deref(), host_stats.as_ref(), cx)))
+            .when(self.network_details_open, |tree| {
+                tree.child(self.network_status_panel(
+                    &role,
+                    snapshot.route.as_deref(),
+                    host_stats.as_ref(),
+                    is_fullscreen,
+                    cx,
+                ))
+            })
             .child(self.paint_acknowledgement())
-            .when(show_drawer, |tree| tree.child(self.stream_controls_panel(
-                &snapshot, host_stats.as_ref(), viewport_width, viewport_height, cx)))
-            .when_some(self.source_selection.as_ref(),|tree,selection|tree.child(source_selection::render(selection,#[cfg(target_os="linux")] self.local_share_state.pending(),cx)))
+            .when(show_drawer, |tree| {
+                tree.child(self.stream_controls_panel(
+                    &snapshot,
+                    host_stats.as_ref(),
+                    viewport_width,
+                    viewport_height,
+                    cx,
+                ))
+            })
+            .when_some(self.source_selection.as_ref(), |tree, selection| {
+                tree.child(source_selection::render(
+                    selection,
+                    #[cfg(target_os = "linux")]
+                    self.local_share_state.pending(),
+                    cx,
+                ))
+            })
             // Local window commands must also see the root focus itself. The
             // remote-input surface remains inside the scope and keeps its focus guard.
-            .map(|tree| div().size_full()
-                .capture_any_mouse_down(cx.listener(|this, _event: &MouseDownEvent, _window, _cx| {
-                    this.reset_pointer_scroll();
-                }))
-                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    let Some(keystroke) = fresh_key_down(event) else { return; };
-                    if keystroke.key == "f11" {
-                        this.reset_pointer_scroll();
-                        this.owner.release_input();
-                        this.pointer_input = PointerInputTracker::default();
-                        window.toggle_fullscreen();
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    }
-                    if keystroke.key == "escape"
-                        && !keystroke.modifiers.control
-                        && (this.drawer_open || this.show_apps_menu || this.source_selection.is_some() || this.network_details_open)
-                    {
-                        this.owner.release_input();
-                        this.drawer_open = false;
-                        this.network_details_open = false;
-                        this.show_apps_menu = false;
-                        this.cancel_source_selection(cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    }
-                    if keystroke.key == "escape"
-                        && keystroke.modifiers.control
-                        && keystroke.modifiers.alt
-                    {
-                        this.set_input_locked(true);
-                        this.toolbar_revealed = true;
-                        this.last_toolbar_activity = Instant::now();
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    }
-                    if keystroke.key.eq_ignore_ascii_case("s")
-                        && keystroke.modifiers.control
-                        && keystroke.modifiers.alt
-                    {
-                        this.toggle_source_menu(cx);
-                        cx.stop_propagation();
-                        return;
-                    }
-                    if keystroke.key.eq_ignore_ascii_case("f")
-                        && keystroke.modifiers.control
-                        && keystroke.modifiers.alt
-                    {
-                        this.window_fit.request_fit();
-                        this.toolbar_revealed = true;
-                        this.last_toolbar_activity = Instant::now();
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    }
-                }))
-                .child(ely_gpui_component::primitives::FocusScope::new(&self.root_focus).root().size_full().child(tree)))
+            .map(|tree| {
+                div()
+                    .size_full()
+                    .capture_any_mouse_down(cx.listener(
+                        |this, _event: &MouseDownEvent, _window, _cx| {
+                            this.reset_pointer_scroll();
+                        },
+                    ))
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        let Some(keystroke) = fresh_key_down(event) else {
+                            return;
+                        };
+                        if keystroke.key == "f11" {
+                            this.reset_pointer_scroll();
+                            this.owner.release_input();
+                            this.pointer_input = PointerInputTracker::default();
+                            window.toggle_fullscreen();
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                        if keystroke.key == "escape"
+                            && !keystroke.modifiers.control
+                            && (this.drawer_open
+                                || this.show_apps_menu
+                                || this.source_selection.is_some()
+                                || this.network_details_open)
+                        {
+                            this.owner.release_input();
+                            this.drawer_open = false;
+                            this.network_details_open = false;
+                            this.show_apps_menu = false;
+                            this.cancel_source_selection(cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                        if keystroke.key == "escape"
+                            && keystroke.modifiers.control
+                            && keystroke.modifiers.alt
+                        {
+                            this.set_input_locked(true);
+                            this.toolbar_revealed = true;
+                            this.last_toolbar_activity = Instant::now();
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                        if keystroke.key.eq_ignore_ascii_case("s")
+                            && keystroke.modifiers.control
+                            && keystroke.modifiers.alt
+                        {
+                            this.toggle_source_menu(cx);
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if keystroke.key.eq_ignore_ascii_case("f")
+                            && keystroke.modifiers.control
+                            && keystroke.modifiers.alt
+                        {
+                            this.window_fit.request_fit();
+                            this.toolbar_revealed = true;
+                            this.last_toolbar_activity = Instant::now();
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                    }))
+                    .child(
+                        ely_gpui_component::primitives::FocusScope::new(&self.root_focus)
+                            .root()
+                            .size_full()
+                            .child(tree),
+                    )
+            })
             .into_any_element()
     }
 }
@@ -3011,7 +4277,7 @@ fn full_canvas_stream_viewport(
     frame: Option<Arc<MacDecodedVideoFrame>>,
     input_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
-    viewport:Arc<Mutex<viewer_viewport::State>>,
+    viewport: Arc<Mutex<viewer_viewport::State>>,
     scale_mode: ViewportScaleMode,
     text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
     idle_stage: Option<AnyElement>,
@@ -3035,7 +4301,7 @@ fn full_canvas_stream_viewport(
         RoleState::Serving(session) => {
             full_serving_stage(&session.peer.display_name, cx).into_any_element()
         }
-        RoleState::Idle => idle_stage.unwrap_or_else(||div().into_any_element()),
+        RoleState::Idle => idle_stage.unwrap_or_else(|| div().into_any_element()),
     }
 }
 
@@ -3044,25 +4310,30 @@ fn full_video_surface(
     fallback: &'static str,
     input_focus: FocusHandle,
     video_surface_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
-    viewport:Arc<Mutex<viewer_viewport::State>>,
+    viewport: Arc<Mutex<viewer_viewport::State>>,
     scale_mode: ViewportScaleMode,
     text_input: Option<Entity<remote_text_input::RemoteTextInput>>,
     cx: &mut Context<RestoredDashboard>,
 ) -> AnyElement {
     let theme = cx.theme().clone();
-    let content = if let Some(frame)=frame.as_ref().filter(|frame|frame.frame_geometry.is_some()) {
-        viewer_viewport::surface(frame.clone(),viewport.clone(),scale_mode)
-    }else{stream_video_canvas_surface(
-        frame.as_deref(),
-        fallback,
-        "Waiting for the first decoded video frame",
-        scale_mode,
-        &theme,
-    )};
-    let navigation=viewport.lock().unwrap().navigation();
-    let pan_epoch=viewport.lock().unwrap().epoch();
+    let content = if let Some(frame) = frame
+        .as_ref()
+        .filter(|frame| frame.frame_geometry.is_some())
+    {
+        viewer_viewport::surface(frame.clone(), viewport.clone(), scale_mode)
+    } else {
+        stream_video_canvas_surface(
+            frame.as_deref(),
+            fallback,
+            "Waiting for the first decoded video frame",
+            scale_mode,
+            &theme,
+        )
+    };
+    let navigation = viewport.lock().unwrap().navigation();
+    let pan_epoch = viewport.lock().unwrap().epoch();
 
-    let text_focus=input_focus.clone();
+    let text_focus = input_focus.clone();
     let input_bounds_probe = canvas(
         move |bounds, _window, _cx| {
             *video_surface_bounds
@@ -3070,7 +4341,13 @@ fn full_video_surface(
                 .expect("video surface bounds lock") = Some(bounds);
         },
         move |bounds, (), window, cx| {
-            if let Some(input)=&text_input {window.handle_input(&text_focus,ElementInputHandler::new(bounds,input.clone()),cx);}
+            if let Some(input) = &text_input {
+                window.handle_input(
+                    &text_focus,
+                    ElementInputHandler::new(bounds, input.clone()),
+                    cx,
+                );
+            }
         },
     )
     .absolute()
@@ -3086,16 +4363,29 @@ fn full_video_surface(
         .w_full()
         .h_full()
         .bg(rgb(0x050706))
-        .when(navigation,|element|element.cursor(CursorStyle::OpenHand)
-            .on_drag(viewer_viewport::PanDrag{owner:cx.entity_id(),epoch:pan_epoch},|_,_,_,cx|cx.new(|_|viewer_viewport::PanImage))
-            .on_drag_move(cx.listener(|this,event:&DragMoveEvent<viewer_viewport::PanDrag>,_,cx|this.move_view_pan(event,cx))))
+        .when(navigation, |element| {
+            element
+                .cursor(CursorStyle::OpenHand)
+                .on_drag(
+                    viewer_viewport::PanDrag {
+                        owner: cx.entity_id(),
+                        epoch: pan_epoch,
+                    },
+                    |_, _, _, cx| cx.new(|_| viewer_viewport::PanImage),
+                )
+                .on_drag_move(cx.listener(
+                    |this, event: &DragMoveEvent<viewer_viewport::PanDrag>, _, cx| {
+                        this.move_view_pan(event, cx)
+                    },
+                ))
+        })
         .on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
             if !hovered {
                 this.reset_pointer_scroll();
             }
         }))
         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-            this.pointer_event_counts[0]=this.pointer_event_counts[0].saturating_add(1);
+            this.pointer_event_counts[0] = this.pointer_event_counts[0].saturating_add(1);
             let was_revealed = this.toolbar_revealed;
             this.queue_pointer_move(event.position, false);
             if !was_revealed && this.toolbar_revealed {
@@ -3103,7 +4393,7 @@ fn full_video_surface(
             }
         }))
         .on_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-            this.pointer_event_counts[1]=this.pointer_event_counts[1].saturating_add(1);
+            this.pointer_event_counts[1] = this.pointer_event_counts[1].saturating_add(1);
             if this.show_apps_menu {
                 this.show_apps_menu = false;
                 this.owner.release_input();
@@ -3115,11 +4405,15 @@ fn full_video_surface(
                 return; // dismissing a local menu is not a remote click
             }
             if this.viewport.lock().unwrap().navigation() {
-                if event.button==MouseButton::Left{this.begin_view_pan(event.position);}
+                if event.button == MouseButton::Left {
+                    this.begin_view_pan(event.position);
+                }
                 return;
             }
-            this.ime_anchor=Some(event.position);
-            if let Some(input)=&this.remote_text {input.update(cx,|input,_|input.anchor=Some(event.position));}
+            this.ime_anchor = Some(event.position);
+            if let Some(input) = &this.remote_text {
+                input.update(cx, |input, _| input.anchor = Some(event.position));
+            }
             window.focus(&this.input_focus);
             // AppKit can deliver the focusing click before GPUI's queued activation observer.
             // Activate immediately and let the first click both raise the remote window and hit its target.
@@ -3141,8 +4435,10 @@ fn full_video_surface(
             cx.stop_propagation();
         }))
         .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
-            this.pointer_event_counts[2]=this.pointer_event_counts[2].saturating_add(1);
-            if event.button==MouseButton::Left{this.end_view_pan();}
+            this.pointer_event_counts[2] = this.pointer_event_counts[2].saturating_add(1);
+            if event.button == MouseButton::Left {
+                this.end_view_pan();
+            }
             if protocol_mouse_button(event.button)
                 .is_some_and(|button| this.pointer_input.pressed_buttons.contains(&button))
             {
@@ -3173,7 +4469,9 @@ fn full_video_surface(
             }),
         )
         .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-            if !this.view_scroll(event.position,event.delta,cx){this.queue_pointer_scroll(event);}
+            if !this.view_scroll(event.position, event.delta, cx) {
+                this.queue_pointer_scroll(event);
+            }
             cx.stop_propagation();
         }))
         .child(content)
@@ -3227,7 +4525,10 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<RestoredDashboard>) -> D
                     div()
                         .text_size(px(12.0))
                         .text_color(theme.content.secondary)
-                        .child(crate::i18n::tr_format!("Controlled by remote client {peer_name}", peer_name=peer_name)),
+                        .child(crate::i18n::tr_format!(
+                            "Controlled by remote client {peer_name}",
+                            peer_name = peer_name
+                        )),
                 ),
         )
 }
@@ -3289,7 +4590,8 @@ fn display_capture_sources(
         let id = match source.source {
             protocol::session::CaptureSource::MainDisplay => 0,
             protocol::session::CaptureSource::Display(id) => id,
-            protocol::session::CaptureSource::Window(_) | protocol::session::CaptureSource::Camera(_) => u32::MAX,
+            protocol::session::CaptureSource::Window(_)
+            | protocol::session::CaptureSource::Camera(_) => u32::MAX,
         };
         (primary_rank, id)
     });
@@ -3356,16 +4658,38 @@ fn display_switcher_control(
         );
     }
 
-    if let Some(target)=sources.iter().find(|source|source.source==active_source)
-        .and_then(|source|sources.iter().find(|target|source.camera_switch_target(target))).cloned() {
-        let view=view.clone();let binding=source_binding.cloned();
-        items.push(command_button("island_camera_switch",ActionVariantKind::Neutral,cx)
-            .disabled(pending_source.is_some()).h(px(24.0)).w(px(28.0)).rounded(px(7.0))
-            .tooltip(tooltip(crate::i18n::tr("Switch camera")).build())
-            .on_click(move|_,_,cx| {
-                let _=view.update(cx,|this,cx|this.start_capture_source_switch(
-                    binding.clone(),target.clone(),target.title.clone(),cx));
-            }).child(icon(IconName::CameraSwitch).size(px(13.0))).into_any_element());
+    if let Some(target) = sources
+        .iter()
+        .find(|source| source.source == active_source)
+        .and_then(|source| {
+            sources
+                .iter()
+                .find(|target| source.camera_switch_target(target))
+        })
+        .cloned()
+    {
+        let view = view.clone();
+        let binding = source_binding.cloned();
+        items.push(
+            command_button("island_camera_switch", ActionVariantKind::Neutral, cx)
+                .disabled(pending_source.is_some())
+                .h(px(24.0))
+                .w(px(28.0))
+                .rounded(px(7.0))
+                .tooltip(tooltip(crate::i18n::tr("Switch camera")).build())
+                .on_click(move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.start_capture_source_switch(
+                            binding.clone(),
+                            target.clone(),
+                            target.title.clone(),
+                            cx,
+                        )
+                    });
+                })
+                .child(icon(IconName::CameraSwitch).size(px(13.0)))
+                .into_any_element(),
+        );
     }
     let view = view.clone();
     let binding = source_binding.cloned();
@@ -3386,7 +4710,12 @@ fn display_switcher_control(
         .tooltip(tooltip(crate::i18n::tr("Switch displays or application windows")).build())
         .on_click(move |_event, _window, cx| {
             let _ = view.update(cx, |this, cx| {
-                let Some(binding) = binding.clone().filter(|binding| this.owner.source_binding_is_current(binding)) else { return; };
+                let Some(binding) = binding
+                    .clone()
+                    .filter(|binding| this.owner.source_binding_is_current(binding))
+                else {
+                    return;
+                };
                 this.reset_pointer_scroll();
                 this.owner.release_input();
                 this.pointer_input = PointerInputTracker::default();
@@ -3409,24 +4738,47 @@ fn confirmed_source(
     sources: &[protocol::session::CaptureSourceInfo],
     selected: protocol::session::CaptureSource,
 ) -> Option<&protocol::session::CaptureSourceInfo> {
-    sources.iter().find(|source| source.source == selected).or_else(|| {
-        if selected != protocol::session::CaptureSource::MainDisplay { return None; }
-        sources.iter().filter(|source| matches!(source.source,
-            protocol::session::CaptureSource::MainDisplay | protocol::session::CaptureSource::Display(_)))
-            .min_by_key(|source| (!source.supports_input, match source.source {
-                protocol::session::CaptureSource::Display(id) => id, _ => 0,
-            }))
-    })
+    sources
+        .iter()
+        .find(|source| source.source == selected)
+        .or_else(|| {
+            if selected != protocol::session::CaptureSource::MainDisplay {
+                return None;
+            }
+            sources
+                .iter()
+                .filter(|source| {
+                    matches!(
+                        source.source,
+                        protocol::session::CaptureSource::MainDisplay
+                            | protocol::session::CaptureSource::Display(_)
+                    )
+                })
+                .min_by_key(|source| {
+                    (
+                        !source.supports_input,
+                        match source.source {
+                            protocol::session::CaptureSource::Display(id) => id,
+                            _ => 0,
+                        },
+                    )
+                })
+        })
 }
 
 fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String {
     let app = source.application.trim();
     let title = source.title.trim();
     if title.is_empty() {
-        if !app.is_empty() { app.into() }
-        else if matches!(source.source, protocol::session::CaptureSource::Window(_)) { crate::i18n::tr("Application window").into() }
-        else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) { crate::i18n::tr("Camera").into() }
-        else { crate::i18n::tr("Display").into() }
+        if !app.is_empty() {
+            app.into()
+        } else if matches!(source.source, protocol::session::CaptureSource::Window(_)) {
+            crate::i18n::tr("Application window").into()
+        } else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) {
+            crate::i18n::tr("Camera").into()
+        } else {
+            crate::i18n::tr("Display").into()
+        }
     } else {
         let is_system_title = !matches!(source.source, protocol::session::CaptureSource::Window(_))
             || (app.is_empty() && title == "Shared window");
@@ -3443,41 +4795,83 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
     }
 }
 
-fn remote_window_title(peer: Option<&str>, source: Option<&protocol::session::CaptureSourceInfo>) -> String {
+fn remote_window_title(
+    peer: Option<&str>,
+    source: Option<&protocol::session::CaptureSourceInfo>,
+) -> String {
     match peer {
         Some(peer) => match source {
             Some(source) => {
-                let label=match source.source.category() {
-                    protocol::session::SourceCategory::Screen=>return peer.to_owned(),
-                    protocol::session::SourceCategory::Camera=>if source.title.trim().is_empty(){crate::i18n::tr("Camera").into()}else{source.title.trim().to_owned()},
-                    protocol::session::SourceCategory::Window=>if source.application.trim().is_empty(){capture_source_label(source)}else{source.application.trim().to_owned()},
+                let label = match source.source.category() {
+                    protocol::session::SourceCategory::Screen => return peer.to_owned(),
+                    protocol::session::SourceCategory::Camera => {
+                        if source.title.trim().is_empty() {
+                            crate::i18n::tr("Camera").into()
+                        } else {
+                            source.title.trim().to_owned()
+                        }
+                    }
+                    protocol::session::SourceCategory::Window => {
+                        if source.application.trim().is_empty() {
+                            capture_source_label(source)
+                        } else {
+                            source.application.trim().to_owned()
+                        }
+                    }
                 };
                 format!("{label} · {peer}")
-            },
+            }
             None => peer.to_owned(),
         },
         None => crate::i18n::tr("Device").into(),
     }
 }
 
-fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, source_icons: &SourceArtwork, theme: &Theme) -> AnyElement {
-    if let Some(image)=source_icons.get(&source.source) {
-        return gpui::img(image.clone()).size(px(20.0)).flex_none().into_any_element();
+fn capture_source_badge(
+    source: &protocol::session::CaptureSourceInfo,
+    source_icons: &SourceArtwork,
+    theme: &Theme,
+) -> AnyElement {
+    if let Some(image) = source_icons.get(&source.source) {
+        return gpui::img(image.clone())
+            .size(px(20.0))
+            .flex_none()
+            .into_any_element();
     }
     let window = matches!(source.source, protocol::session::CaptureSource::Window(_));
-    let initial = window.then(|| source.application.trim().chars().next()).flatten();
-    let soft_bg: Hsla = if theme.surface.canvas.l < 0.5 { rgba(0x38cfe024).into() } else { rgb(0xe3f3f5).into() };
-    div().size(px(22.0)).flex_none().flex().items_center().justify_center()
-        .rounded(px(6.0)).bg(soft_bg)
-        .text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme.action.primary.bg)
+    let initial = window
+        .then(|| source.application.trim().chars().next())
+        .flatten();
+    let soft_bg: Hsla = if theme.surface.canvas.l < 0.5 {
+        rgba(0x38cfe024).into()
+    } else {
+        rgb(0xe3f3f5).into()
+    };
+    div()
+        .size(px(22.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .bg(soft_bg)
+        .text_size(px(11.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.action.primary.bg)
         .child(match initial {
-            Some(letter) => div().child(letter.to_uppercase().collect::<String>()).into_any_element(),
+            Some(letter) => div()
+                .child(letter.to_uppercase().collect::<String>())
+                .into_any_element(),
             None => icon(match source.source.category() {
-                protocol::session::SourceCategory::Window=>IconName::Window,
-                protocol::session::SourceCategory::Camera=>IconName::Camera,
-                protocol::session::SourceCategory::Screen=>IconName::Display,
-            }).size(px(14.0)).color(theme.action.primary.bg).into_any_element(),
-        }).into_any_element()
+                protocol::session::SourceCategory::Window => IconName::Window,
+                protocol::session::SourceCategory::Camera => IconName::Camera,
+                protocol::session::SourceCategory::Screen => IconName::Display,
+            })
+            .size(px(14.0))
+            .color(theme.action.primary.bg)
+            .into_any_element(),
+        })
+        .into_any_element()
 }
 
 fn capture_source_menu(
@@ -3550,17 +4944,33 @@ fn capture_source_menu(
                 ),
         )
         .child(div().w_full().h(px(1.0)).bg(theme.border.divider))
-        .when(error.is_none() && !sources.is_empty()
-            && sources.iter().all(|source|matches!(source.source,protocol::session::CaptureSource::Camera(_))),|menu|
-            menu.child(div().text_size(px(11.0)).text_color(theme.content.secondary)
-                .child(crate::i18n::tr("Screen not shared. Start sharing on the remote device."))));
+        .when(
+            error.is_none()
+                && !sources.is_empty()
+                && sources.iter().all(|source| {
+                    matches!(source.source, protocol::session::CaptureSource::Camera(_))
+                }),
+            |menu| {
+                menu.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.content.secondary)
+                        .child(crate::i18n::tr(
+                            "Screen not shared. Start sharing on the remote device.",
+                        )),
+                )
+            },
+        );
 
     if let Some(error) = error {
         menu = menu.child(
             div()
                 .text_size(px(10.0))
                 .text_color(theme.status.error.bg)
-                .child(crate::i18n::tr_format!("Last switch failed: {error}", error=error)),
+                .child(crate::i18n::tr_format!(
+                    "Last switch failed: {error}",
+                    error = error
+                )),
         );
     }
 
@@ -3612,7 +5022,11 @@ fn capture_source_menu(
                                 switch_source.title.clone(),
                                 cx,
                             ) {
-                                this.open_enumerated_source(switch_binding.clone(), switch_source.clone(), cx);
+                                this.open_enumerated_source(
+                                    switch_binding.clone(),
+                                    switch_source.clone(),
+                                    cx,
+                                );
                             }
                             cx.notify();
                         });
@@ -3633,7 +5047,11 @@ fn capture_source_menu(
                     .tooltip(tooltip(crate::i18n::tr("Open in new window")).build())
                     .on_click(move |_event, _window, cx| {
                         let _ = new_win_view.update(cx, |this, cx| {
-                            this.open_enumerated_source(new_win_binding.clone(), new_win_source.clone(), cx);
+                            this.open_enumerated_source(
+                                new_win_binding.clone(),
+                                new_win_source.clone(),
+                                cx,
+                            );
                             cx.notify();
                         });
                     })
@@ -3702,7 +5120,11 @@ fn capture_source_menu(
                                     switch_source.title.clone(),
                                     cx,
                                 ) {
-                                    this.open_enumerated_source(switch_binding.clone(), switch_source.clone(), cx);
+                                    this.open_enumerated_source(
+                                        switch_binding.clone(),
+                                        switch_source.clone(),
+                                        cx,
+                                    );
                                 }
                                 cx.notify();
                             });
@@ -3723,7 +5145,11 @@ fn capture_source_menu(
                         .tooltip(tooltip(crate::i18n::tr("Open in new window")).build())
                         .on_click(move |_event, _window, cx| {
                             let _ = new_win_view.update(cx, |this, cx| {
-                                this.open_enumerated_source(new_win_binding.clone(), new_win_source.clone(), cx);
+                                this.open_enumerated_source(
+                                    new_win_binding.clone(),
+                                    new_win_source.clone(),
+                                    cx,
+                                );
                                 cx.notify();
                             });
                         })
@@ -3736,13 +5162,17 @@ fn capture_source_menu(
             div()
                 .text_size(px(10.0))
                 .text_color(theme.content.secondary)
-                .child(crate::i18n::tr("No application-window capture sources are available on this host.")),
+                .child(crate::i18n::tr(
+                    "No application-window capture sources are available on this host.",
+                )),
         );
     }
 
     menu = menu.child(div().w_full().h(px(1.0)).bg(theme.border.divider));
-    let multiple_view=view.clone();let multiple_binding=source_binding.cloned();
-    let replace_view=view.clone();let replace_binding=source_binding.cloned();
+    let multiple_view = view.clone();
+    let multiple_binding = source_binding.cloned();
+    let replace_view = view.clone();
+    let replace_binding = source_binding.cloned();
     menu = menu.child(
         div()
             .flex()
@@ -3750,21 +5180,29 @@ fn capture_source_menu(
             .gap_1p5()
             .w_full()
             .child(
-                command_button("island_menu_multiple",ActionVariantKind::Neutral,cx)
-                    .disabled(multiple_binding.is_none()||pending_source.is_some())
+                command_button("island_menu_multiple", ActionVariantKind::Neutral, cx)
+                    .disabled(multiple_binding.is_none() || pending_source.is_some())
                     .flex_1()
                     .h(px(28.))
                     .text_size(px(10.))
-                    .on_click(move|_,_,cx| {let _=multiple_view.update(cx,|this,cx|this.begin_remote_source_selection(multiple_binding.clone(),cx));})
+                    .on_click(move |_, _, cx| {
+                        let _ = multiple_view.update(cx, |this, cx| {
+                            this.begin_remote_source_selection(multiple_binding.clone(), cx)
+                        });
+                    })
                     .child(crate::i18n::tr("Open several windows…")),
             )
             .child(
-                command_button("island_menu_replace",ActionVariantKind::Neutral,cx)
-                    .disabled(replace_binding.is_none()||pending_source.is_some())
+                command_button("island_menu_replace", ActionVariantKind::Neutral, cx)
+                    .disabled(replace_binding.is_none() || pending_source.is_some())
                     .flex_1()
                     .h(px(28.))
                     .text_size(px(10.))
-                    .on_click(move|_,_,cx| {let _=replace_view.update(cx,|this,cx|this.begin_remote_source_replacement(replace_binding.clone(),cx));})
+                    .on_click(move |_, _, cx| {
+                        let _ = replace_view.update(cx, |this, cx| {
+                            this.begin_remote_source_replacement(replace_binding.clone(), cx)
+                        });
+                    })
                     .child(crate::i18n::tr("Replace current source…")),
             ),
     );
@@ -3923,8 +5361,8 @@ fn slide_over_management_drawer(
     device_list_state: &DeviceListState,
     #[cfg(any(unix, windows))] activity: StreamActivity,
     #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
-    local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
-    checking_permissions:bool,
+    local_permissions: Option<Result<crate::sharing_permissions::Status, String>>,
+    checking_permissions: bool,
     update_card: Option<Div>,
     pipeline_open: bool,
     input_locked: bool,
@@ -3942,80 +5380,144 @@ fn slide_over_management_drawer(
     let view = cx.weak_entity();
 
     div()
-        .when(!management, |panel| panel.absolute().top_0().left_0().w(px(394.0)))
+        .when(!management, |panel| {
+            panel.absolute().top_0().left_0().w(px(394.0))
+        })
         .when(management, |panel| panel.w_full())
         .h_full()
         .flex()
         .flex_col()
-        .bg(if management { theme.surface.canvas } else { theme_glass_card(cx) })
-        .when(!management, |panel| panel.border_r_1().border_color(theme_border_fine(cx)).shadow_xl())
+        .bg(if management {
+            theme.surface.canvas
+        } else {
+            theme_glass_card(cx)
+        })
+        .when(!management, |panel| {
+            panel
+                .border_r_1()
+                .border_color(theme_border_fine(cx))
+                .shadow_xl()
+        })
         .overflow_hidden()
         .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
             cx.stop_propagation();
         }))
-        .when(!management, |panel| panel.child(
-            div()
-                .h(px(56.0))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px_4()
-                .border_b_1()
-                .border_color(theme.border.divider)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2p5()
-                        .min_w_0()
-                        .child(product_mark(cx))
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.content.primary)
-                                .whitespace_nowrap()
-                                .truncate()
-                                .child(if management { crate::i18n::tr("Weavelo") } else { crate::i18n::tr("Device & Network Control") }),
-                        ),
-                )
-                .when(!management, |header| header.child(
-                    command_button("close_drawer_btn", ActionVariantKind::Neutral, cx)
-                        .size(px(28.0))
-                        .p_0()
-                        .flex_none()
-                        .rounded_full()
-                        .tooltip(tooltip(crate::i18n::tr("Close device panel")).build())
-                        .on_click(move |_event, _window, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.drawer_open = false;
+        .when(!management, |panel| {
+            panel.child(
+                div()
+                    .h(px(56.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .border_b_1()
+                    .border_color(theme.border.divider)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2p5()
+                            .min_w_0()
+                            .child(product_mark(cx))
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.content.primary)
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(if management {
+                                        crate::i18n::tr("Weavelo")
+                                    } else {
+                                        crate::i18n::tr("Device & Network Control")
+                                    }),
+                            ),
+                    )
+                    .when(!management, |header| {
+                        header.child(
+                            command_button("close_drawer_btn", ActionVariantKind::Neutral, cx)
+                                .size(px(28.0))
+                                .p_0()
+                                .flex_none()
+                                .rounded_full()
+                                .tooltip(tooltip(crate::i18n::tr("Close device panel")).build())
+                                .on_click(move |_event, _window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.drawer_open = false;
+                                        cx.notify();
+                                    });
+                                })
+                                .child(icon(IconName::Close).size(px(15.0))),
+                        )
+                    }),
+            )
+        })
+        .when(management, |panel| {
+            panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .pt_2p5()
+                    .pb_1p5()
+                    .child(
+                        component::text_input("device-search")
+                            .placeholder(crate::i18n::tr("Search devices"))
+                            .height(px(34.).into())
+                            .content(device_query.to_owned())
+                            .on_change({
+                                let view = cx.weak_entity();
+                                move |text, _, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.device_query = text.to_string();
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        command_button("add-device", ActionVariantKind::Neutral, cx)
+                            .size(px(34.))
+                            .rounded(px(9.))
+                            .p_0()
+                            .icon(ely_gpui_component::primitives::IconName::Plus)
+                            .tooltip(tooltip(crate::i18n::tr("Add device")).build())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.active_tab = DrawerTab::DeviceGroup;
                                 cx.notify();
-                            });
-                        })
-                        .child(icon(IconName::Close).size(px(15.0))),
-                )),
-        ))
-        .when(management, |panel| panel.child(
-            div().flex().items_center().gap_2().px_3().pt_2p5().pb_1p5()
-                .child(component::text_input("device-search").placeholder(crate::i18n::tr("Search devices")).height(px(34.).into()).content(device_query.to_owned())
-                    .on_change({ let view=cx.weak_entity(); move |text, _, cx| {
-                        let _=view.update(cx, |this,cx| {this.device_query=text.to_string();cx.notify();});
-                    }}))
-                .child(command_button("add-device",ActionVariantKind::Neutral,cx).size(px(34.)).rounded(px(9.)).p_0().icon(ely_gpui_component::primitives::IconName::Plus).tooltip(tooltip(crate::i18n::tr("Add device")).build())
-                    .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})))
-        ))
+                            })),
+                    ),
+            )
+        })
         .child({
             let tab_items: Vec<AnyElement> = (if management {
-                vec![("Devices",DrawerTab::Devices),("Transfers",DrawerTab::Files),
-                    ("Sharing & permissions",DrawerTab::Security),("Settings",DrawerTab::Network)]
+                vec![
+                    ("Devices", DrawerTab::Devices),
+                    ("Transfers", DrawerTab::Files),
+                    ("Sharing & permissions", DrawerTab::Security),
+                    ("Settings", DrawerTab::Network),
+                ]
             } else {
-                vec![("Devices",DrawerTab::Devices),("Pairing",DrawerTab::DeviceGroup),
-                    ("Files",DrawerTab::Files),("Sharing",DrawerTab::Security),("Settings",DrawerTab::Network)]
-            }).into_iter().map(|(label,tab)| {
-                let selected=match active_tab {DrawerTab::Activity=>DrawerTab::Devices,DrawerTab::DeviceGroup if management=>DrawerTab::Network,_=>active_tab};
-                drawer_tab_button(label,tab,selected,cx).into_any_element()
-            }).collect();
+                vec![
+                    ("Devices", DrawerTab::Devices),
+                    ("Pairing", DrawerTab::DeviceGroup),
+                    ("Files", DrawerTab::Files),
+                    ("Sharing", DrawerTab::Security),
+                    ("Settings", DrawerTab::Network),
+                ]
+            })
+            .into_iter()
+            .map(|(label, tab)| {
+                let selected = match active_tab {
+                    DrawerTab::Activity => DrawerTab::Devices,
+                    DrawerTab::DeviceGroup if management => DrawerTab::Network,
+                    _ => active_tab,
+                };
+                drawer_tab_button(label, tab, selected, cx).into_any_element()
+            })
+            .collect();
             div()
                 .flex_none()
                 .px_3()
@@ -4035,39 +5537,55 @@ fn slide_over_management_drawer(
                     DrawerTab::Activity | DrawerTab::Devices => drawer_devices_tab(
                         devices,
                         role,
-                        mesh_pairing_snapshot.as_ref().map(|snapshot| snapshot.display_name.clone()),
+                        mesh_pairing_snapshot
+                            .as_ref()
+                            .map(|snapshot| snapshot.display_name.clone()),
                         device_list_state,
                         device_badge_editor,
                         local_permissions.clone(),
-                        #[cfg(any(unix, windows))] activity,
+                        #[cfg(any(unix, windows))]
+                        activity,
                         owner.clone(),
                         cx,
                     )
                     .into_any_element(),
-                    DrawerTab::DeviceGroup => {
-                        drawer_device_group_tab(mesh_pairing_snapshot, pairing_image_pending, device_name_editor, device_badge_editor, cx).into_any_element()
-                    }
-                    DrawerTab::Files => transfers.into_any_element(),
-                    DrawerTab::Security => {
-                        drawer_security_tab(local_permissions.clone(),checking_permissions,input_locked, side_services,
-                            #[cfg(target_os = "linux")] local_share_state,
-                            owner, cx)
-                            .into_any_element()
-                    }
-                    DrawerTab::Network => div().flex().flex_col().gap_3()
-                    .children(update_card)
-                    .child(drawer_network_telemetry_tab(
-                        selected_resolution,
-                        selected_fps,
-                        selected_bitrate_kbps,
-                        media_controls,
-                        host_stats,
-                        owner,
-                        management,
-                        pipeline_open,
+                    DrawerTab::DeviceGroup => drawer_device_group_tab(
+                        mesh_pairing_snapshot,
+                        pairing_image_pending,
+                        device_name_editor,
+                        device_badge_editor,
                         cx,
-                    ))
+                    )
                     .into_any_element(),
+                    DrawerTab::Files => transfers.into_any_element(),
+                    DrawerTab::Security => drawer_security_tab(
+                        local_permissions.clone(),
+                        checking_permissions,
+                        input_locked,
+                        side_services,
+                        #[cfg(target_os = "linux")]
+                        local_share_state,
+                        owner,
+                        cx,
+                    )
+                    .into_any_element(),
+                    DrawerTab::Network => div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .children(update_card)
+                        .child(drawer_network_telemetry_tab(
+                            selected_resolution,
+                            selected_fps,
+                            selected_bitrate_kbps,
+                            media_controls,
+                            host_stats,
+                            owner,
+                            management,
+                            pipeline_open,
+                            cx,
+                        ))
+                        .into_any_element(),
                 }),
         )
 }
@@ -4093,12 +5611,20 @@ fn drawer_tab_button(
     .px_2p5()
     .rounded(px(7.0))
     .text_size(px(10.5))
-    .font_weight(if is_active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+    .font_weight(if is_active {
+        FontWeight::SEMIBOLD
+    } else {
+        FontWeight::MEDIUM
+    })
     .on_click(move |_event, _window, cx| {
         let _ = view.update(cx, |this, cx| {
             this.active_tab = tab;
-            if tab == DrawerTab::Security { this.refresh_local_permissions(cx); }
-            if tab == DrawerTab::Network && this.update_check.is_none() { this.check_for_updates(cx); }
+            if tab == DrawerTab::Security {
+                this.refresh_local_permissions(cx);
+            }
+            if tab == DrawerTab::Network && this.update_check.is_none() {
+                this.check_for_updates(cx);
+            }
             cx.notify();
         });
     })
@@ -4106,53 +5632,135 @@ fn drawer_tab_button(
 }
 
 fn drawer_devices_tab(
-    devices:&[AppDevice], role:&RoleState, local_name:Option<String>, state:&DeviceListState,
+    devices: &[AppDevice],
+    role: &RoleState,
+    local_name: Option<String>,
+    state: &DeviceListState,
     badge: &device_badges::Editor,
-    permissions:Option<Result<crate::sharing_permissions::Status,String>>,
-    #[cfg(any(unix, windows))] activity:StreamActivity,
-    _owner:Arc<OriginalOwner>, cx:&mut Context<RestoredDashboard>,
-)->Div {
+    permissions: Option<Result<crate::sharing_permissions::Status, String>>,
+    #[cfg(any(unix, windows))] activity: StreamActivity,
+    _owner: Arc<OriginalOwner>,
+    cx: &mut Context<RestoredDashboard>,
+) -> Div {
     use crate::sharing_permissions::Access;
     let theme = cx.theme().clone();
-    let name=local_name.unwrap_or_else(||crate::i18n::tr("This device").into());
-    let permission_hint=match permissions {
-        Some(Ok(status)) if [status.screen,status.control,status.microphone,status.camera].contains(&Access::NeedsReview)=>"Review sharing permissions",
-        Some(Ok(status)) if status.screen==Access::SelectSource=>"Choose a screen or window",
-        Some(Err(_))=>"Permission status unavailable",
-        _=>"This device",
+    let name = local_name.unwrap_or_else(|| crate::i18n::tr("This device").into());
+    let permission_hint = match permissions {
+        Some(Ok(status))
+            if [
+                status.screen,
+                status.control,
+                status.microphone,
+                status.camera,
+            ]
+            .contains(&Access::NeedsReview) =>
+        {
+            "Review sharing permissions"
+        }
+        Some(Ok(status)) if status.screen == Access::SelectSource => "Choose a screen or window",
+        Some(Err(_)) => "Permission status unavailable",
+        _ => "This device",
     };
-    let local=div().flex().items_center().gap_2p5().px_3().py_2().rounded(px(12.))
-        .bg(theme.surface.base).border_1().border_color(theme_border_fine(cx))
-        .child(crate::product_components::device_badge_element(badge.image(cx)))
-        .child(div().min_w_0().flex_1().flex().flex_col().gap_0p5()
-            .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(theme.content.primary).child(name))
-            .child(div().text_size(px(10.5)).text_color(theme.content.secondary).child(crate::i18n::message(&permission_hint)))
-            .when(activity.unattributed_sharing>0,|card|card.child(div().text_size(px(10.5)).font_weight(FontWeight::MEDIUM).text_color(theme_accent_emerald(cx))
-                .child(crate::i18n::tr_format!("Sharing · {} direct streams",activity.unattributed_sharing)))))
-        .child(command_button("sharing-permissions",ActionVariantKind::Neutral,cx).size(px(30.)).rounded(px(8.)).p_0()
-            .child(icon(IconName::Permissions).size(px(16.))).tooltip(tooltip(crate::i18n::tr("Sharing & permissions")).build())
-            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::Security;this.refresh_local_permissions(cx);cx.notify();})))
-        .child(command_button("edit-this-device-name",ActionVariantKind::Neutral,cx).size(px(30.)).rounded(px(8.)).p_0()
-            .child(icon(IconName::More).size(px(16.))).tooltip(tooltip(crate::i18n::tr("Device name & pairing")).build())
-            .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})));
-    let view=cx.weak_entity();
-    div().flex().flex_col().gap_2p5().child(local)
-        .child(crate::desktop::device_drawer::DeviceDrawer::new(
-            crate::desktop::device_list::DeviceListModel {devices,role}.project(state.filter),state.clone(),
-            move|action,cx| {let _=view.update(cx,|this,cx|this.dispatch_device_action(action.clone(),cx));},
-        ).with_activity(activity.devices))
+    let local = div()
+        .flex()
+        .items_center()
+        .gap_2p5()
+        .px_3()
+        .py_2()
+        .rounded(px(12.))
+        .bg(theme.surface.base)
+        .border_1()
+        .border_color(theme_border_fine(cx))
+        .child(crate::product_components::device_badge_element(
+            badge.image(cx),
+        ))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.content.primary)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(theme.content.secondary)
+                        .child(crate::i18n::message(&permission_hint)),
+                )
+                .when(activity.unattributed_sharing > 0, |card| {
+                    card.child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme_accent_emerald(cx))
+                            .child(crate::i18n::tr_format!(
+                                "Sharing · {} direct streams",
+                                activity.unattributed_sharing
+                            )),
+                    )
+                }),
+        )
+        .child(
+            command_button("sharing-permissions", ActionVariantKind::Neutral, cx)
+                .size(px(30.))
+                .rounded(px(8.))
+                .p_0()
+                .child(icon(IconName::Permissions).size(px(16.)))
+                .tooltip(tooltip(crate::i18n::tr("Sharing & permissions")).build())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.active_tab = DrawerTab::Security;
+                    this.refresh_local_permissions(cx);
+                    cx.notify();
+                })),
+        )
+        .child(
+            command_button("edit-this-device-name", ActionVariantKind::Neutral, cx)
+                .size(px(30.))
+                .rounded(px(8.))
+                .p_0()
+                .child(icon(IconName::More).size(px(16.)))
+                .tooltip(tooltip(crate::i18n::tr("Device name & pairing")).build())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.active_tab = DrawerTab::DeviceGroup;
+                    cx.notify();
+                })),
+        );
+    let view = cx.weak_entity();
+    div().flex().flex_col().gap_2p5().child(local).child(
+        crate::desktop::device_drawer::DeviceDrawer::new(
+            crate::desktop::device_list::DeviceListModel { devices, role }.project(state.filter),
+            state.clone(),
+            move |action, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.dispatch_device_action(action.clone(), cx)
+                });
+            },
+        )
+        .with_activity(activity.devices),
+    )
 }
 
 impl RestoredDashboard {
-    #[cfg(target_os="macos")]
+    #[cfg(target_os = "macos")]
     fn install_latest_update(&mut self, cx: &mut Context<Self>) {
-        if self.installing_update { return; }
+        if self.installing_update {
+            return;
+        }
         self.installing_update = true;
         self.update_install_result = None;
         // The installer asks this GUI to exit. A Tokio blocking task would keep
         // its runtime alive while the installer waits for the process to stop.
         let (sender, work) = tokio::sync::oneshot::channel();
-        std::thread::spawn(move || { let _ = sender.send(crate::desktop_update::install_latest_macos()); });
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::desktop_update::install_latest_macos());
+        });
         cx.spawn(async move |view, cx| {
             let result = work.await.unwrap_or_else(|_| Err("Update failed".into()));
             let _ = view.update(cx, |this, cx| {
@@ -4160,109 +5768,179 @@ impl RestoredDashboard {
                 this.update_install_result = Some(result);
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
     fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        if self.checking_update { return; }
+        if self.checking_update {
+            return;
+        }
         self.checking_update = true;
         let work = tokio::task::spawn_blocking(crate::desktop_update::check);
         cx.spawn(async move |view, cx| {
-            let result = work.await.unwrap_or_else(|_| Err("Update check unavailable".into()));
+            let result = work
+                .await
+                .unwrap_or_else(|_| Err("Update check unavailable".into()));
             let _ = view.update(cx, |this, cx| {
                 this.checking_update = false;
                 this.update_check = Some(result);
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 
-    #[cfg(any(target_os="macos",target_os="linux"))]
-    fn request_local_camera_permission(&mut self,cx:&mut Context<Self>) {
-        if self.checking_permissions{return;}
-        self.checking_permissions=true;
-        self.status="Waiting for camera permission on this device".into();
-        let work=tokio::spawn(host::cameras::request_access());
-        cx.spawn(async move|view,cx| {
-            let result=work.await.unwrap_or_else(|error|Err(error.to_string()));
-            let _=view.update(cx,|this,cx| {
-                this.checking_permissions=false;
-                this.status=match result {
-                    Ok(true)=>"Camera permission allowed".into(),
-                    Ok(false)=>"Camera permission was not allowed; review Camera in system settings".into(),
-                    Err(error)=>error,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn request_local_camera_permission(&mut self, cx: &mut Context<Self>) {
+        if self.checking_permissions {
+            return;
+        }
+        self.checking_permissions = true;
+        self.status = "Waiting for camera permission on this device".into();
+        let work = tokio::spawn(host::cameras::request_access());
+        cx.spawn(async move |view, cx| {
+            let result = work.await.unwrap_or_else(|error| Err(error.to_string()));
+            let _ = view.update(cx, |this, cx| {
+                this.checking_permissions = false;
+                this.status = match result {
+                    Ok(true) => "Camera permission allowed".into(),
+                    Ok(false) => {
+                        "Camera permission was not allowed; review Camera in system settings".into()
+                    }
+                    Err(error) => error,
                 };
-                this.refresh_local_permissions(cx);cx.notify();
-            });
-        }).detach();cx.notify();
-    }
-    fn refresh_local_permissions(&mut self, cx: &mut Context<Self>) {
-        if self.checking_permissions { return; }
-        self.checking_permissions=true;
-        #[cfg(target_os="linux")]
-        {self.dispatch_local_share(crate::desktop::local_share::Action::Refresh,cx);}
-        let background=self.background.clone();
-        let work=tokio::task::spawn_blocking(move || match background {
-            Some(client)=>client.sharing_permissions().map_err(|error|error.to_string()),
-            None=>Ok(crate::sharing_permissions::inspect()),
-        });
-        cx.spawn(async move |view,cx| {
-            let result=work.await.unwrap_or_else(|_|Err("Permission check stopped; try again".into()));
-            let _=view.update(cx,|this,cx| {
-                this.checking_permissions=false;
-                this.local_permissions=Some(result);
+                this.refresh_local_permissions(cx);
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
+        cx.notify();
+    }
+    fn refresh_local_permissions(&mut self, cx: &mut Context<Self>) {
+        if self.checking_permissions {
+            return;
+        }
+        self.checking_permissions = true;
+        #[cfg(target_os = "linux")]
+        {
+            self.dispatch_local_share(crate::desktop::local_share::Action::Refresh, cx);
+        }
+        let background = self.background.clone();
+        let work = tokio::task::spawn_blocking(move || match background {
+            Some(client) => client
+                .sharing_permissions()
+                .map_err(|error| error.to_string()),
+            None => Ok(crate::sharing_permissions::inspect()),
+        });
+        cx.spawn(async move |view, cx| {
+            let result = work
+                .await
+                .unwrap_or_else(|_| Err("Permission check stopped; try again".into()));
+            let _ = view.update(cx, |this, cx| {
+                this.checking_permissions = false;
+                this.local_permissions = Some(result);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     #[cfg(target_os = "linux")]
-    fn dispatch_local_share(&mut self, action:crate::desktop::local_share::Action,cx:&mut Context<Self>) {
-        let Some(effect)=self.local_share_state.reduce(action) else {cx.notify();return;};
-        let receipt=effect.receipt;
-        let task=tokio::spawn(self.local_share_owner.call(effect.call));
-        cx.spawn(async move |view,cx| {
-            let result=task.await.unwrap_or_else(|_|Err("Sharing request stopped; check status".into()));
-            let _=view.update(cx,|this,cx| {
-                let before=this.local_share_state.snapshot.clone();
-                if this.local_share_state.completed(receipt,result) {this.refresh_delivery_sharing(&before,cx);}
+    fn dispatch_local_share(
+        &mut self,
+        action: crate::desktop::local_share::Action,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(effect) = self.local_share_state.reduce(action) else {
+            cx.notify();
+            return;
+        };
+        let receipt = effect.receipt;
+        let task = tokio::spawn(self.local_share_owner.call(effect.call));
+        cx.spawn(async move |view, cx| {
+            let result = task
+                .await
+                .unwrap_or_else(|_| Err("Sharing request stopped; check status".into()));
+            let _ = view.update(cx, |this, cx| {
+                let before = this.local_share_state.snapshot.clone();
+                if this.local_share_state.completed(receipt, result) {
+                    this.refresh_delivery_sharing(&before, cx);
+                }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         self.poll_local_sharing(cx);
         cx.notify();
     }
     #[cfg(target_os = "linux")]
-    fn poll_local_sharing(&mut self,cx:&mut Context<Self>) {
-        if self.local_share_polling {return;}
-        self.local_share_polling=true;
-        cx.spawn(async move |view,cx| {
+    fn poll_local_sharing(&mut self, cx: &mut Context<Self>) {
+        if self.local_share_polling {
+            return;
+        }
+        self.local_share_polling = true;
+        cx.spawn(async move |view, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(500)).await;
-                let next=view.update(cx,|this,_| {
-                    let delivery_open=this.source_selection.as_ref().is_some_and(source_selection::Selection::is_delivery);
-                    if !this.window_active || (!delivery_open && (!this.drawer_open || this.active_tab!=DrawerTab::Security)) {
-                        this.local_share_polling=false;return None;
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let next = view.update(cx, |this, _| {
+                    let delivery_open = this
+                        .source_selection
+                        .as_ref()
+                        .is_some_and(source_selection::Selection::is_delivery);
+                    if !this.window_active
+                        || (!delivery_open
+                            && (!this.drawer_open || this.active_tab != DrawerTab::Security))
+                    {
+                        this.local_share_polling = false;
+                        return None;
                     }
-                    Some((this.local_share_state.receipt(),this.local_share_owner.call(crate::sharing_permissions::SharingCall::Status)))
+                    Some((
+                        this.local_share_state.receipt(),
+                        this.local_share_owner
+                            .call(crate::sharing_permissions::SharingCall::Status),
+                    ))
                 });
-                let Ok(Some((receipt,future)))=next else {break;};
-                let result=tokio::spawn(future).await.unwrap_or_else(|_|Err("Sharing status is unavailable".into()));
-                if view.update(cx,|this,cx| {
-                    let before=this.local_share_state.snapshot.clone();
-                    if this.local_share_state.polled(receipt,result) {this.refresh_delivery_sharing(&before,cx);cx.notify();}
-                }).is_err() {break;}
+                let Ok(Some((receipt, future))) = next else {
+                    break;
+                };
+                let result = tokio::spawn(future)
+                    .await
+                    .unwrap_or_else(|_| Err("Sharing status is unavailable".into()));
+                if view
+                    .update(cx, |this, cx| {
+                        let before = this.local_share_state.snapshot.clone();
+                        if this.local_share_state.polled(receipt, result) {
+                            this.refresh_delivery_sharing(&before, cx);
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
-        }).detach();
+        })
+        .detach();
     }
 
-    #[cfg(target_os="linux")]
-    fn refresh_delivery_sharing(&mut self,before:&crate::sharing_permissions::SharingSnapshot,cx:&mut Context<Self>) {
-        let current=&self.local_share_state.snapshot;
-        if (before.sources!=current.sources || before.message!=current.message)
-            && self.source_selection.as_ref().is_some_and(source_selection::Selection::is_delivery) {
+    #[cfg(target_os = "linux")]
+    fn refresh_delivery_sharing(
+        &mut self,
+        before: &crate::sharing_permissions::SharingSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let current = &self.local_share_state.snapshot;
+        if (before.sources != current.sources || before.message != current.message)
+            && self
+                .source_selection
+                .as_ref()
+                .is_some_and(source_selection::Selection::is_delivery)
+        {
             self.refresh_delivery_sources(cx);
         }
     }
@@ -4275,7 +5953,10 @@ impl RestoredDashboard {
         let effect = self.stream_settings.reduce(action);
         if let Some(effect) = effect {
             self.persist_preferences();
-            if self.purpose == WindowPurpose::Management { cx.notify(); return; }
+            if self.purpose == WindowPurpose::Management {
+                cx.notify();
+                return;
+            }
             let should_update = effect.should_update(false)
                 || matches!(
                     self.snapshot().role,
@@ -4287,12 +5968,17 @@ impl RestoredDashboard {
                 // yielding would lose settings or apply them to a newer device intent.
                 let connection = match owner.prepare_stream_settings_update(effect.values) {
                     Ok(Some(connection)) => connection,
-                    Ok(None) => { cx.notify(); return; }
+                    Ok(None) => {
+                        cx.notify();
+                        return;
+                    }
                     Err(error) => {
                         if effect.report_error {
-                            self.stream_settings.reduce(StreamSettingsAction::UpdateFailed(
-                                effect.receipt, error.to_string(),
-                            ));
+                            self.stream_settings
+                                .reduce(StreamSettingsAction::UpdateFailed(
+                                    effect.receipt,
+                                    error.to_string(),
+                                ));
                         }
                         cx.notify();
                         return;
@@ -4383,7 +6069,10 @@ impl RestoredDashboard {
         &self,
         snapshot: &DashboardSnapshot,
     ) -> Option<(String, protocol::session::CaptureSource, String, (u32, u32))> {
-        if !matches!(snapshot.active_capture_source, protocol::session::CaptureSource::Window(_)) {
+        if !matches!(
+            snapshot.active_capture_source,
+            protocol::session::CaptureSource::Window(_)
+        ) {
             return None;
         }
         let device_id = snapshot
@@ -4398,7 +6087,11 @@ impl RestoredDashboard {
         let app_name = catalog_entry
             .map(|i| i.application.trim())
             .filter(|s| !s.is_empty())
-            .or_else(|| catalog_entry.map(|i| i.title.trim()).filter(|s| !s.is_empty()))
+            .or_else(|| {
+                catalog_entry
+                    .map(|i| i.title.trim())
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or("Window")
             .to_string();
         let live_source = self
@@ -4413,11 +6106,18 @@ impl RestoredDashboard {
                     .filter(|&(w, h)| w >= 2 && h >= 2)
             })
             .unwrap_or((1920, 1080));
-        Some((device_id, snapshot.active_capture_source, app_name, live_source))
+        Some((
+            device_id,
+            snapshot.active_capture_source,
+            app_name,
+            live_source,
+        ))
     }
 
     fn persist_window_app_override(&self, device_id: &str, app_name: &str) {
-        let Some(key) = crate::preferences::UserPreferences::window_override_key(device_id, app_name) else {
+        let Some(key) =
+            crate::preferences::UserPreferences::window_override_key(device_id, app_name)
+        else {
             return;
         };
         let ov = self.window_stream_override;
@@ -4477,7 +6177,9 @@ impl RestoredDashboard {
         local_viewport: Option<(u32, u32)>,
         cx: &mut Context<Self>,
     ) {
-        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(snapshot) else {
+        let Some((device_id, source, app_name, live_source)) =
+            self.active_window_app_identity(snapshot)
+        else {
             self.window_override_bound = None;
             self.window_last_applied_cap = None;
             self.window_last_fitted_viewport = None;
@@ -4488,7 +6190,9 @@ impl RestoredDashboard {
         if self.window_override_bound.as_ref() != Some(&bound_key) {
             let loaded = self
                 .load_saved_window_override(&device_id, &app_name)
-                .unwrap_or_else(|| WindowStreamOverride::from_baseline(self.stream_settings.values()));
+                .unwrap_or_else(|| {
+                    WindowStreamOverride::from_baseline(self.stream_settings.values())
+                });
             self.window_stream_override = loaded;
             self.window_fps_draft = loaded.fps.to_string();
             self.window_bitrate_draft = loaded.bitrate_kbps.to_string();
@@ -4504,7 +6208,9 @@ impl RestoredDashboard {
                 let _ = self.owner.resize_active_window(binding, Some(target_wh));
             }
         }
-        let desired = self.window_stream_override.effective_stream_values(live_source);
+        let desired = self
+            .window_stream_override
+            .effective_stream_values(live_source);
         let desired_cap = (desired.width, desired.height);
         if self.window_last_applied_cap != Some((source, desired_cap)) {
             self.window_last_applied_cap = Some((source, desired_cap));
@@ -4514,7 +6220,9 @@ impl RestoredDashboard {
             && let Some(vp) = local_viewport
             && let Some(target_wh) = WindowLayoutPreset::FitLocalViewport.target_size(Some(vp))
             && self.window_last_fitted_viewport.is_none_or(|(s, prev)| {
-                s != source || prev.0.abs_diff(target_wh.0) >= 24 || prev.1.abs_diff(target_wh.1) >= 24
+                s != source
+                    || prev.0.abs_diff(target_wh.0) >= 24
+                    || prev.1.abs_diff(target_wh.1) >= 24
             })
         {
             self.window_last_fitted_viewport = Some((source, target_wh));
@@ -4524,15 +6232,23 @@ impl RestoredDashboard {
         }
     }
 
-    pub(super) fn select_window_clarity(&mut self, scale: WindowClarityScale, cx: &mut Context<Self>) {
+    pub(super) fn select_window_clarity(
+        &mut self,
+        scale: WindowClarityScale,
+        cx: &mut Context<Self>,
+    ) {
         let snapshot = self.snapshot();
-        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+        let Some((device_id, source, app_name, live_source)) =
+            self.active_window_app_identity(&snapshot)
+        else {
             return;
         };
         self.window_stream_override.clarity = scale;
         self.window_settings_error = None;
         self.persist_window_app_override(&device_id, &app_name);
-        let values = self.window_stream_override.effective_stream_values(live_source);
+        let values = self
+            .window_stream_override
+            .effective_stream_values(live_source);
         self.window_last_applied_cap = Some((source, (values.width, values.height)));
         self.apply_live_window_stream_values(values, true, cx);
         cx.notify();
@@ -4545,7 +6261,8 @@ impl RestoredDashboard {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.snapshot();
-        let Some((device_id, source, app_name, _)) = self.active_window_app_identity(&snapshot) else {
+        let Some((device_id, source, app_name, _)) = self.active_window_app_identity(&snapshot)
+        else {
             return;
         };
         self.window_stream_override.layout = preset;
@@ -4563,14 +6280,18 @@ impl RestoredDashboard {
 
     pub(super) fn select_window_fps(&mut self, fps: u32, cx: &mut Context<Self>) {
         let snapshot = self.snapshot();
-        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+        let Some((device_id, source, app_name, live_source)) =
+            self.active_window_app_identity(&snapshot)
+        else {
             return;
         };
         self.window_stream_override.fps = fps;
         self.window_fps_draft = fps.to_string();
         self.window_settings_error = None;
         self.persist_window_app_override(&device_id, &app_name);
-        let values = self.window_stream_override.effective_stream_values(live_source);
+        let values = self
+            .window_stream_override
+            .effective_stream_values(live_source);
         self.window_last_applied_cap = Some((source, (values.width, values.height)));
         self.apply_live_window_stream_values(values, true, cx);
         cx.notify();
@@ -4578,14 +6299,18 @@ impl RestoredDashboard {
 
     pub(super) fn select_window_bitrate(&mut self, kbps: u32, cx: &mut Context<Self>) {
         let snapshot = self.snapshot();
-        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+        let Some((device_id, source, app_name, live_source)) =
+            self.active_window_app_identity(&snapshot)
+        else {
             return;
         };
         self.window_stream_override.bitrate_kbps = kbps;
         self.window_bitrate_draft = kbps.to_string();
         self.window_settings_error = None;
         self.persist_window_app_override(&device_id, &app_name);
-        let values = self.window_stream_override.effective_stream_values(live_source);
+        let values = self
+            .window_stream_override
+            .effective_stream_values(live_source);
         self.window_last_applied_cap = Some((source, (values.width, values.height)));
         self.apply_live_window_stream_values(values, true, cx);
         cx.notify();
@@ -4593,7 +6318,9 @@ impl RestoredDashboard {
 
     pub(super) fn apply_window_custom_rates(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.snapshot();
-        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+        let Some((device_id, source, app_name, live_source)) =
+            self.active_window_app_identity(&snapshot)
+        else {
             return;
         };
         let parsed = self
@@ -4603,11 +6330,11 @@ impl RestoredDashboard {
             .ok()
             .zip(self.window_bitrate_draft.trim().parse::<u32>().ok());
         let Some((fps, bitrate_kbps)) = parsed.filter(|&(f, b)| {
-            protocol::validate_video_settings(live_source.0.max(2), live_source.1.max(2), f, b).is_ok()
+            protocol::validate_video_settings(live_source.0.max(2), live_source.1.max(2), f, b)
+                .is_ok()
         }) else {
-            self.window_settings_error = Some(
-                crate::i18n::tr("Enter positive whole numbers for FPS and kbps.").to_string(),
-            );
+            self.window_settings_error =
+                Some(crate::i18n::tr("Enter positive whole numbers for FPS and kbps.").to_string());
             cx.notify();
             return;
         };
@@ -4615,7 +6342,9 @@ impl RestoredDashboard {
         self.window_stream_override.bitrate_kbps = bitrate_kbps;
         self.window_settings_error = None;
         self.persist_window_app_override(&device_id, &app_name);
-        let values = self.window_stream_override.effective_stream_values(live_source);
+        let values = self
+            .window_stream_override
+            .effective_stream_values(live_source);
         self.window_last_applied_cap = Some((source, (values.width, values.height)));
         self.apply_live_window_stream_values(values, true, cx);
         cx.notify();
@@ -4623,7 +6352,9 @@ impl RestoredDashboard {
 
     pub(super) fn reset_window_stream_override(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.snapshot();
-        let Some((device_id, source, app_name, live_source)) = self.active_window_app_identity(&snapshot) else {
+        let Some((device_id, source, app_name, live_source)) =
+            self.active_window_app_identity(&snapshot)
+        else {
             return;
         };
         let baseline = self.stream_settings.values();
@@ -4636,17 +6367,23 @@ impl RestoredDashboard {
         if let Some(binding) = snapshot.source_binding.as_ref() {
             let _ = self.owner.resize_active_window(binding, None);
         }
-        let values = self.window_stream_override.effective_stream_values(live_source);
+        let values = self
+            .window_stream_override
+            .effective_stream_values(live_source);
         self.window_last_applied_cap = Some((source, (values.width, values.height)));
         self.apply_live_window_stream_values(values, false, cx);
         cx.notify();
     }
 
     fn dispatch_session_action(&mut self, action: SessionTabsAction, cx: &mut Context<Self>) {
-        if self.exit_group.stopping.load(Ordering::Acquire) { return; }
+        if self.exit_group.stopping.load(Ordering::Acquire) {
+            return;
+        }
         #[cfg(any(unix, windows))]
         self.stop_directed_receive();
-        let Some(effect) = self.owner.session_tabs().effect(action) else { return; };
+        let Some(effect) = self.owner.session_tabs().effect(action) else {
+            return;
+        };
         self.invalidate_source_commands();
         let ticket = self.session_commands.begin();
         match effect {
@@ -4654,169 +6391,366 @@ impl RestoredDashboard {
             SessionTabsEffect::Close(id) => self.owner.close_session(id),
             SessionTabsEffect::Disconnect | SessionTabsEffect::Reconnect => {
                 let disconnect = effect == SessionTabsEffect::Disconnect;
-                self.status = if disconnect { "Disconnecting" } else { "Retrying connection" }.into();
+                self.status = if disconnect {
+                    "Disconnecting"
+                } else {
+                    "Retrying connection"
+                }
+                .into();
                 let owner = self.owner.clone();
                 cx.spawn(async move |view, cx| {
-                    let Some(options) = view.update(cx, |this, _| {
-                        if !this.session_commands.is_current(ticket) { return None; }
-                        let values = this.stream_settings.values();
-                        Some(StreamStartOptions { width: values.width, height: values.height,
-                            fps: values.fps, bitrate_kbps: values.bitrate_kbps })
-                    }).unwrap_or(None) else { return; };
-                    let result = if disconnect { owner.disconnect_active().await } else { owner.reconnect_active(options).await };
+                    let Some(options) = view
+                        .update(cx, |this, _| {
+                            if !this.session_commands.is_current(ticket) {
+                                return None;
+                            }
+                            let values = this.stream_settings.values();
+                            Some(StreamStartOptions {
+                                width: values.width,
+                                height: values.height,
+                                fps: values.fps,
+                                bitrate_kbps: values.bitrate_kbps,
+                            })
+                        })
+                        .unwrap_or(None)
+                    else {
+                        return;
+                    };
+                    let result = if disconnect {
+                        owner.disconnect_active().await
+                    } else {
+                        owner.reconnect_active(options).await
+                    };
                     let _ = view.update(cx, |this, cx| {
-                        if !this.session_commands.is_current(ticket) { return; }
+                        if !this.session_commands.is_current(ticket) {
+                            return;
+                        }
                         if disconnect {
                             match result {
-                                Ok(_) => { this.status = "Ready".into(); this.drawer_open = true; }
+                                Ok(_) => {
+                                    this.status = "Ready".into();
+                                    this.drawer_open = true;
+                                }
                                 Err(error) => this.status = format!("Disconnect failed: {error}"),
                             }
                         } else if let Err(error) = result {
-                            if !owner.connection_error_is_current(&error) { return; }
-                            this.status = error.to_string(); this.drawer_open = true;
+                            if !owner.connection_error_is_current(&error) {
+                                return;
+                            }
+                            this.status = error.to_string();
+                            this.drawer_open = true;
                             this.active_tab = DrawerTab::Devices;
                         }
                         cx.notify();
                     });
-                }).detach();
+                })
+                .detach();
             }
         }
         cx.notify();
     }
 
-    fn start_stream_connection(&mut self, device_id: String, receive: Option<String>, cx: &mut Context<Self>) {
-        self.start_stream_connection_capture(device_id,receive,None,cx);
+    fn start_stream_connection(
+        &mut self,
+        device_id: String,
+        receive: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.start_stream_connection_capture(device_id, receive, None, cx);
     }
-    fn start_stream_connection_capture(&mut self, device_id:String,receive:Option<String>,capture:Option<protocol::session::CaptureSource>,cx:&mut Context<Self>) {
-        if self.exit_group.stopping.load(Ordering::Acquire) { return; }
-        if self.stream_device.as_ref().is_some_and(|device|device != &device_id) {
-            self.status="Open the other device in a new stream window".into();cx.notify();return;
-        }
-        if capture.zip(self.stream_source).is_some_and(|(requested,current)|requested!=current) {
-            self.status="Open the other source in a new stream window".into();cx.notify();return;
-        }
-        let capture=capture.or(self.stream_source);
-        if receive.is_none() && capture.is_none() {
-            self.start_source_browser(device_id,cx);
+    fn start_stream_connection_capture(
+        &mut self,
+        device_id: String,
+        receive: Option<String>,
+        capture: Option<protocol::session::CaptureSource>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.exit_group.stopping.load(Ordering::Acquire) {
             return;
         }
-        self.exit_group.receive_failures.lock().unwrap().retry_device(&device_id);
-        self.stream_device=Some(device_id.clone());
-        self.stream_source=capture;
-                self.invalidate_source_commands();
-                let ticket = self.session_commands.begin();
-                self.status = format!("Connecting to {device_id}");
-                self.reset_host_stats();
-                let owner = self.owner.clone();
-                cx.spawn(async move |view, cx| {
-                    let Some(options) = view.update(cx, |this, _| {
-                        if !this.session_commands.is_current(ticket) { return None; }
-                        let values = this.stream_settings.values();
-                        Some(StreamStartOptions {
-                            width: values.width, height: values.height,
-                            fps: values.fps, bitrate_kbps: values.bitrate_kbps,
-                        })
-                    }).unwrap_or(None) else { return; };
-                    let result = match receive {
-                        Some(request) => owner.connect_received_device(&device_id, options, &request).await,
-                        None => match capture {
-                            Some(source)=>owner.connect_capture_device(&device_id,source,options).await,
-                            None=>owner.connect_device(&device_id, options, crate::unix_now_ms()).await,
-                        },
-                    };
-                    let _ = view.update(cx, |this, cx| {
-                        if !this.session_commands.is_current(ticket) { return; }
-                        match result {
-                            Ok(_) => this.status = "Waiting for video".into(),
-                            Err(error) => {
-                                if !owner.connection_error_is_current(&error) { return; }
-                                this.status = format!("Connection failed: {error}"); this.drawer_open=true;
-                                this.active_tab = DrawerTab::Devices;
-                            }
+        if self
+            .stream_device
+            .as_ref()
+            .is_some_and(|device| device != &device_id)
+        {
+            self.status = "Open the other device in a new stream window".into();
+            cx.notify();
+            return;
+        }
+        if capture
+            .zip(self.stream_source)
+            .is_some_and(|(requested, current)| requested != current)
+        {
+            self.status = "Open the other source in a new stream window".into();
+            cx.notify();
+            return;
+        }
+        let capture = capture.or(self.stream_source);
+        if receive.is_none() && capture.is_none() {
+            self.start_source_browser(device_id, cx);
+            return;
+        }
+        self.exit_group
+            .receive_failures
+            .lock()
+            .unwrap()
+            .retry_device(&device_id);
+        self.stream_device = Some(device_id.clone());
+        self.stream_source = capture;
+        self.invalidate_source_commands();
+        let ticket = self.session_commands.begin();
+        self.status = format!("Connecting to {device_id}");
+        self.reset_host_stats();
+        let owner = self.owner.clone();
+        cx.spawn(async move |view, cx| {
+            let Some(options) = view
+                .update(cx, |this, _| {
+                    if !this.session_commands.is_current(ticket) {
+                        return None;
+                    }
+                    let values = this.stream_settings.values();
+                    Some(StreamStartOptions {
+                        width: values.width,
+                        height: values.height,
+                        fps: values.fps,
+                        bitrate_kbps: values.bitrate_kbps,
+                    })
+                })
+                .unwrap_or(None)
+            else {
+                return;
+            };
+            let result = match receive {
+                Some(request) => {
+                    owner
+                        .connect_received_device(&device_id, options, &request)
+                        .await
+                }
+                None => match capture {
+                    Some(source) => {
+                        owner
+                            .connect_capture_device(&device_id, source, options)
+                            .await
+                    }
+                    None => {
+                        owner
+                            .connect_device(&device_id, options, crate::unix_now_ms())
+                            .await
+                    }
+                },
+            };
+            let _ = view.update(cx, |this, cx| {
+                if !this.session_commands.is_current(ticket) {
+                    return;
+                }
+                match result {
+                    Ok(_) => this.status = "Waiting for video".into(),
+                    Err(error) => {
+                        if !owner.connection_error_is_current(&error) {
+                            return;
                         }
-                        cx.notify();
-                    });
-                }).detach();
+                        this.status = format!("Connection failed: {error}");
+                        this.drawer_open = true;
+                        this.active_tab = DrawerTab::Devices;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     #[cfg(any(unix, windows))]
-    fn send_screen(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>)->Result<String,String>{
-        if let Some(request)=self.directed_send.lock().unwrap().values()
-            .find(|sender|!sender.is_finished()&&sender.target==device_id&&sender.sources==sources)
-            .map(|sender|sender.request_id.clone()) {return Ok(request);}
-        let request_id=format!("{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos());
-        self.send_screen_request(device_id,sources,request_id.clone())?;
+    fn send_screen(
+        &mut self,
+        device_id: String,
+        sources: Vec<protocol::session::CaptureSource>,
+    ) -> Result<String, String> {
+        if let Some(request) = self
+            .directed_send
+            .lock()
+            .unwrap()
+            .values()
+            .find(|sender| {
+                !sender.is_finished() && sender.target == device_id && sender.sources == sources
+            })
+            .map(|sender| sender.request_id.clone())
+        {
+            return Ok(request);
+        }
+        let request_id = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_nanos()
+        );
+        self.send_screen_request(device_id, sources, request_id.clone())?;
         Ok(request_id)
     }
     #[cfg(any(unix, windows))]
-    fn send_screen_request(&mut self,device_id:String,sources:Vec<protocol::session::CaptureSource>,request_id:String)->Result<(),String>{
+    fn send_screen_request(
+        &mut self,
+        device_id: String,
+        sources: Vec<protocol::session::CaptureSource>,
+        request_id: String,
+    ) -> Result<(), String> {
         protocol::session::validate_delivery_sources(&sources).map_err(str::to_owned)?;
-        if self.exit_group.stopping.load(Ordering::Acquire) {return Err("GUI exit is already requested".into());}
-        let profile=self.background.as_ref().ok_or("Sharing service is unavailable")?.profile_directory().to_owned();
-        let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(&profile).load().map_err(|e|e.to_string())?.ok_or("Missing device identity")?;
-        if device_id==identity.node_id {return Err("Choose another device to receive the screen".into());}
-        let generation=self.exit_group.gui_generation.lock().unwrap().clone().ok_or("GUI generation is unavailable")?;
-        let routes=self.runtime.owner.discovery_snapshot_rx().map(|rx|crate::desktop::model::candidate_routes(&rx.borrow(),&device_id)).unwrap_or_default();
-        if routes.is_empty(){return Err("Target is not currently available".into());}
-        let mut senders=self.directed_send.lock().unwrap();
-        if senders.contains_key(&request_id) {return Err("This sending request already exists".into());}
-        let ended=senders.iter().filter(|(_,sender)|sender.target==device_id&&sender.is_finished()).map(|(id,_)|id.clone()).collect::<Vec<_>>();
-        for id in ended {senders.remove(&id);self.exit_group.send_labels.lock().unwrap().remove(&id);}
-        // Keep a small recent result set without limiting independent live sends.
-        let finished:Vec<_>=senders.iter().filter(|(_,sender)|sender.is_finished()).map(|(id,_)|id.clone()).collect();
-        for id in finished.iter().take(finished.len().saturating_sub(protocol::session::MAX_SUBSCRIPTIONS)) {
-            senders.remove(id);self.exit_group.send_labels.lock().unwrap().remove(id);
+        if self.exit_group.stopping.load(Ordering::Acquire) {
+            return Err("GUI exit is already requested".into());
         }
-        senders.insert(request_id.clone(),crate::desktop::directed_send::SendHandle::start(request_id,profile,generation,identity.node_id,device_id,routes,sources,crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations)));
-        self.status="Contacting target to receive this screen".into();Ok(())
+        let profile = self
+            .background
+            .as_ref()
+            .ok_or("Sharing service is unavailable")?
+            .profile_directory()
+            .to_owned();
+        let identity = remote_core::mesh::AppPrivateMeshConfigStore::new(&profile)
+            .load()
+            .map_err(|e| e.to_string())?
+            .ok_or("Missing device identity")?;
+        if device_id == identity.node_id {
+            return Err("Choose another device to receive the screen".into());
+        }
+        let generation = self
+            .exit_group
+            .gui_generation
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("GUI generation is unavailable")?;
+        let routes = self
+            .runtime
+            .owner
+            .discovery_snapshot_rx()
+            .map(|rx| crate::desktop::model::candidate_routes(&rx.borrow(), &device_id))
+            .unwrap_or_default();
+        if routes.is_empty() {
+            return Err("Target is not currently available".into());
+        }
+        let mut senders = self.directed_send.lock().unwrap();
+        if senders.contains_key(&request_id) {
+            return Err("This sending request already exists".into());
+        }
+        let ended = senders
+            .iter()
+            .filter(|(_, sender)| sender.target == device_id && sender.is_finished())
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in ended {
+            senders.remove(&id);
+            self.exit_group.send_labels.lock().unwrap().remove(&id);
+        }
+        // Keep a small recent result set without limiting independent live sends.
+        let finished: Vec<_> = senders
+            .iter()
+            .filter(|(_, sender)| sender.is_finished())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in finished.iter().take(
+            finished
+                .len()
+                .saturating_sub(protocol::session::MAX_SUBSCRIPTIONS),
+        ) {
+            senders.remove(id);
+            self.exit_group.send_labels.lock().unwrap().remove(id);
+        }
+        senders.insert(
+            request_id.clone(),
+            crate::desktop::directed_send::SendHandle::start(
+                request_id,
+                profile,
+                generation,
+                identity.node_id,
+                device_id,
+                routes,
+                sources,
+                crate::desktop::upgrade_quit::Operation::begin(&self.exit_group.upgrade_operations),
+            ),
+        );
+        self.status = "Contacting target to receive this screen".into();
+        Ok(())
     }
     fn dispatch_device_action(&mut self, action: DeviceListAction, cx: &mut Context<Self>) {
-        if self.exit_group.stopping.load(Ordering::Acquire) { return; }
-        let Some(effect) = self.device_list_state.reduce(action) else { cx.notify(); return; };
+        if self.exit_group.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(effect) = self.device_list_state.reduce(action) else {
+            cx.notify();
+            return;
+        };
         match effect {
             DeviceListEffect::EndStreams(device) => {
                 for view in self.menu_streams(cx) {
-                    if view.read(cx).stream_device.as_deref()==Some(device.as_str()) {
-                        view.update(cx,|this,cx|this.end_stream_window(cx));
+                    if view.read(cx).stream_device.as_deref() == Some(device.as_str()) {
+                        view.update(cx, |this, cx| this.end_stream_window(cx));
                     }
                 }
-            },
+            }
             DeviceListEffect::ShowStreams(device) => {
-                if let Some(view)=self.menu_streams(cx).into_iter().find(|view|view.read(cx).stream_device.as_deref()==Some(device.as_str())) {
-                    let handle=view.read(cx).window_handle;
-                    let _=handle.update(cx,|_,window,_|window.activate_window());
+                if let Some(view) = self
+                    .menu_streams(cx)
+                    .into_iter()
+                    .find(|view| view.read(cx).stream_device.as_deref() == Some(device.as_str()))
+                {
+                    let handle = view.read(cx).window_handle;
+                    let _ = handle.update(cx, |_, window, _| window.activate_window());
                 }
-            },
+            }
             DeviceListEffect::StopSending(device) => {
-                let requests=self.send_activity().into_iter().filter(|send|send.target==device&&!send.finished).map(|send|send.request_id).collect::<Vec<_>>();
-                self.stop_sending_requests(&requests,cx);
-            },
+                let requests = self
+                    .send_activity()
+                    .into_iter()
+                    .filter(|send| send.target == device && !send.finished)
+                    .map(|send| send.request_id)
+                    .collect::<Vec<_>>();
+                self.stop_sending_requests(&requests, cx);
+            }
             DeviceListEffect::ConnectStream(device_id) => self.open_device_window(&device_id, cx),
             DeviceListEffect::ConnectFiles(device_id) => self.open_device_files(device_id, cx),
             DeviceListEffect::SendScreen(device_id) => {
                 #[cfg(any(unix, windows))]
-                self.begin_delivery_selection(device_id,cx);
+                self.begin_delivery_selection(device_id, cx);
                 #[cfg(not(any(unix, windows)))]
-                {let _=device_id;self.status="Automatic delivery GUI adapter is currently available on macOS/Linux".into();}
+                {
+                    let _ = device_id;
+                    self.status =
+                        "Automatic delivery GUI adapter is currently available on macOS/Linux"
+                            .into();
+                }
             }
             DeviceListEffect::CopyReceiveCommand(device_id) => {
                 let result = (|| -> Result<String, String> {
-                    let instance = self._instance.as_ref().ok_or("Prepare delivery from the main device window")?;
+                    let instance = self
+                        ._instance
+                        .as_ref()
+                        .ok_or("Prepare delivery from the main device window")?;
                     let directory = instance.state_directory();
-                    let profile = if instance.is_frontend() { directory.parent().ok_or("Missing profile directory")? } else { directory };
-                    let identity = remote_core::mesh::AppPrivateMeshConfigStore::new(profile).load()
-                        .map_err(|error| error.to_string())?.ok_or("Device identity is unavailable")?;
-                    crate::desktop::device_list::receive_command(&identity.node_id, &device_id).map_err(str::to_owned)
+                    let profile = if instance.is_frontend() {
+                        directory.parent().ok_or("Missing profile directory")?
+                    } else {
+                        directory
+                    };
+                    let identity = remote_core::mesh::AppPrivateMeshConfigStore::new(profile)
+                        .load()
+                        .map_err(|error| error.to_string())?
+                        .ok_or("Device identity is unavailable")?;
+                    crate::desktop::device_list::receive_command(&identity.node_id, &device_id)
+                        .map_err(str::to_owned)
                 })();
                 match result {
                     Ok(command) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(command));
-                        self.status = format!("macOS receive command copied for {}. Open its Weavelo GUI, then run the command through your remote-host connection. Delivery has not started.", compact_device_id(&device_id));
+                        self.status = format!(
+                            "macOS receive command copied for {}. Open its Weavelo GUI, then run the command through your remote-host connection. Delivery has not started.",
+                            compact_device_id(&device_id)
+                        );
                     }
                     Err(error) => self.status = error,
                 }
             }
-            DeviceListEffect::OpenWorkspace(device_id) => self.open_device_window(&device_id,cx),
+            DeviceListEffect::OpenWorkspace(device_id) => self.open_device_window(&device_id, cx),
         }
         cx.notify();
     }
@@ -4832,7 +6766,8 @@ fn drawer_device_group_tab(
     let mut content = div().flex().flex_col().gap_3();
 
     if let Some(snapshot) = mesh_pairing_snapshot {
-        content = content.child(device_name_controls(device_name_editor.clone(), cx))
+        content = content
+            .child(device_name_controls(device_name_editor.clone(), cx))
             .child(device_badges::controls(device_badge_editor, cx))
             .child(mesh_pairing_card(snapshot, pairing_image_pending, cx));
     }
@@ -4840,52 +6775,146 @@ fn drawer_device_group_tab(
     content
 }
 
-fn local_permissions_panel(status:Option<Result<crate::sharing_permissions::Status,String>>,checking:bool,cx: &mut Context<RestoredDashboard>) -> Div {
+fn local_permissions_panel(
+    status: Option<Result<crate::sharing_permissions::Status, String>>,
+    checking: bool,
+    cx: &mut Context<RestoredDashboard>,
+) -> Div {
     use crate::sharing_permissions::{Access, Setting};
-    let view=cx.weak_entity();
-    let mut panel=div().flex().flex_col().gap_2()
-        .child(div().flex().items_center().justify_between()
-            .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).child(crate::i18n::tr("Sharing & permissions")))
-            .child(command_button("refresh-local-permissions",ActionVariantKind::Neutral,cx)
-                .h(px(26.0)).text_size(px(10.0)).child(if checking {crate::i18n::tr("Checking…")} else {crate::i18n::tr("Check status")})
-                .on_click(move |_,_,cx| {let _=view.update(cx,|this,cx|this.refresh_local_permissions(cx));})))
-        .child(div().text_size(px(11.0)).text_color(cx.theme().content.secondary)
-            .child(crate::i18n::tr("Choose what to share, with control and audio permissions.")));
-    let status=match status {
-        Some(Ok(status))=>Some(status),
-        Some(Err(error))=>{panel=panel.child(div().text_size(px(11.0)).child(crate::i18n::message(&error)));None},
-        None=>None,
+    let view = cx.weak_entity();
+    let mut panel = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(crate::i18n::tr("Sharing & permissions")),
+                )
+                .child(
+                    command_button("refresh-local-permissions", ActionVariantKind::Neutral, cx)
+                        .h(px(26.0))
+                        .text_size(px(10.0))
+                        .child(if checking {
+                            crate::i18n::tr("Checking…")
+                        } else {
+                            crate::i18n::tr("Check status")
+                        })
+                        .on_click(move |_, _, cx| {
+                            let _ = view.update(cx, |this, cx| this.refresh_local_permissions(cx));
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(cx.theme().content.secondary)
+                .child(crate::i18n::tr(
+                    "Choose what to share, with control and audio permissions.",
+                )),
+        );
+    let status = match status {
+        Some(Ok(status)) => Some(status),
+        Some(Err(error)) => {
+            panel = panel.child(
+                div()
+                    .text_size(px(11.0))
+                    .child(crate::i18n::message(&error)),
+            );
+            None
+        }
+        None => None,
     };
-    for (id,label,setting,access) in [
-        ("permission-screen","Screen & windows",Setting::Screen,status.as_ref().map(|s|s.screen)),
-        ("permission-control","Remote control",Setting::Control,status.as_ref().map(|s|s.control)),
-        ("permission-audio","Microphone",Setting::Microphone,status.as_ref().map(|s|s.microphone)),
-        ("permission-camera","Camera",Setting::Camera,status.as_ref().map(|s|s.camera)),
+    for (id, label, setting, access) in [
+        (
+            "permission-screen",
+            "Screen & windows",
+            Setting::Screen,
+            status.as_ref().map(|s| s.screen),
+        ),
+        (
+            "permission-control",
+            "Remote control",
+            Setting::Control,
+            status.as_ref().map(|s| s.control),
+        ),
+        (
+            "permission-audio",
+            "Microphone",
+            Setting::Microphone,
+            status.as_ref().map(|s| s.microphone),
+        ),
+        (
+            "permission-camera",
+            "Camera",
+            Setting::Camera,
+            status.as_ref().map(|s| s.camera),
+        ),
     ] {
-        let row=div().flex().items_center().justify_between().gap_2().text_size(px(11.0))
+        let row = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .text_size(px(11.0))
             .child(div().flex_1().child(crate::i18n::tr(&label).to_owned()))
-            .child(div().text_color(cx.theme().content.secondary)
-                .child(crate::i18n::tr(access.map(Access::label).unwrap_or(if checking {"Checking…"} else {"Unchecked"}))));
-        #[cfg(any(target_os="macos",target_os="linux"))]
-        if matches!(setting,Setting::Camera) && (host::cameras::access()==0 || (cfg!(target_os="linux") && host::cameras::access()!=3)) {
-            let view=cx.weak_entity();
-            panel=panel.child(row.child(command_button(id,ActionVariantKind::Neutral,cx)
-                .h(px(26.0)).text_size(px(10.0)).disabled(checking).child(crate::i18n::tr("Allow camera"))
-                .on_click(move|_,_,cx|{let _=view.update(cx,|this,cx|this.request_local_camera_permission(cx));})));
+            .child(
+                div()
+                    .text_color(cx.theme().content.secondary)
+                    .child(crate::i18n::tr(
+                        access.map(Access::label).unwrap_or(if checking {
+                            "Checking…"
+                        } else {
+                            "Unchecked"
+                        }),
+                    )),
+            );
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if matches!(setting, Setting::Camera)
+            && (host::cameras::access() == 0
+                || (cfg!(target_os = "linux") && host::cameras::access() != 3))
+        {
+            let view = cx.weak_entity();
+            panel = panel.child(
+                row.child(
+                    command_button(id, ActionVariantKind::Neutral, cx)
+                        .h(px(26.0))
+                        .text_size(px(10.0))
+                        .disabled(checking)
+                        .child(crate::i18n::tr("Allow camera"))
+                        .on_click(move |_, _, cx| {
+                            let _ = view
+                                .update(cx, |this, cx| this.request_local_camera_permission(cx));
+                        }),
+                ),
+            );
             continue;
         }
-        let row=if let Some(uri)=crate::sharing_permissions::settings_uri(setting) {
-            row.child(command_button(id,ActionVariantKind::Neutral,cx).h(px(26.0)).text_size(px(10.0))
-                .child(crate::i18n::tr("Open settings")).on_click(move |_,_,cx|cx.open_url(uri)))
-        } else {row};
-        panel=panel.child(row);
+        let row = if let Some(uri) = crate::sharing_permissions::settings_uri(setting) {
+            row.child(
+                command_button(id, ActionVariantKind::Neutral, cx)
+                    .h(px(26.0))
+                    .text_size(px(10.0))
+                    .child(crate::i18n::tr("Open settings"))
+                    .on_click(move |_, _, cx| cx.open_url(uri)),
+            )
+        } else {
+            row
+        };
+        panel = panel.child(row);
     }
     panel
 }
 
 fn drawer_security_tab(
-    local_permissions:Option<Result<crate::sharing_permissions::Status,String>>,
-    checking_permissions:bool,
+    local_permissions: Option<Result<crate::sharing_permissions::Status, String>>,
+    checking_permissions: bool,
     input_locked: bool,
     side_services: SideServiceUiState,
     #[cfg(target_os = "linux")] local_share_state: &crate::desktop::local_share::State,
@@ -4899,13 +6928,15 @@ fn drawer_security_tab(
     let file_transfer_enabled = side_services.file_transfer.enabled;
     let snapshot = owner.snapshot();
     let input_available = snapshot.supports_input && matches!(snapshot.role, RoleState::Viewing(_));
-    let mut local = local_permissions_panel(local_permissions,checking_permissions,cx);
+    let mut local = local_permissions_panel(local_permissions, checking_permissions, cx);
     #[cfg(target_os = "linux")]
     {
-        let share_view=cx.weak_entity();
-        local=local.child(crate::desktop::local_share::Controls::new(
+        let share_view = cx.weak_entity();
+        local = local.child(crate::desktop::local_share::Controls::new(
             local_share_state.clone(),
-            move |action,cx| {let _=share_view.update(cx,|this,cx|this.dispatch_local_share(action,cx));},
+            move |action, cx| {
+                let _ = share_view.update(cx, |this, cx| this.dispatch_local_share(action, cx));
+            },
         ));
     }
 
@@ -5063,11 +7094,18 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         div()
             .text_size(px(10.))
             .text_color(theme.content.tertiary)
-            .child(crate::i18n::tr_format!("Receive: {}", owner.receive_dir().display())),
+            .child(crate::i18n::tr_format!(
+                "Receive: {}",
+                owner.receive_dir().display()
+            )),
     );
     let publication_status = owner.publication_status();
     if !publication_status.is_empty() {
-        panel = panel.child(div().text_size(px(11.)).child(crate::i18n::message(&publication_status)));
+        panel = panel.child(
+            div()
+                .text_size(px(11.))
+                .child(crate::i18n::message(&publication_status)),
+        );
     }
     let binding = owner.file_view_binding();
     let refresh_binding = binding.clone();
@@ -5108,7 +7146,11 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
                         .min_w_0()
                         .truncate()
                         .text_size(px(11.))
-                        .child(format!("{} · {}", file.name, format_human_bytes(file.size_bytes))),
+                        .child(format!(
+                            "{} · {}",
+                            file.name,
+                            format_human_bytes(file.size_bytes)
+                        )),
                 )
                 .child(
                     command_button(format!("pull_{}", file.id), ActionVariantKind::Primary, cx)
@@ -5144,62 +7186,86 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
     panel = panel.child(file_transfer_rows(owner.clone(), cx));
     let recent_local = owner.recent_received_files(6);
     if !recent_local.is_empty() {
-        panel = panel.child(
-            div()
-                .pt_1()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.content.secondary)
-                        .child(crate::i18n::tr("Received files (local)")),
-                )
-                .children(recent_local.into_iter().enumerate().map(|(idx, (name, path, size))| {
-                    let open_path = path.clone();
-                    let reveal_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| owner.receive_dir());
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .px_2p5()
-                        .py_1p5()
-                        .rounded(px(8.))
-                        .bg(theme.surface.sunken)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(11.0))
-                                .text_color(theme.content.primary)
-                                .child(format!("{} · {}", name, format_human_bytes(size))),
-                        )
-                        .child(
+        panel =
+            panel.child(
+                div()
+                    .pt_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.content.secondary)
+                            .child(crate::i18n::tr("Received files (local)")),
+                    )
+                    .children(recent_local.into_iter().enumerate().map(
+                        |(idx, (name, path, size))| {
+                            let open_path = path.clone();
+                            let reveal_dir = path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| owner.receive_dir());
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_1p5()
+                                .justify_between()
+                                .gap_2()
+                                .px_2p5()
+                                .py_1p5()
+                                .rounded(px(8.))
+                                .bg(theme.surface.sunken)
                                 .child(
-                                    command_button(format!("open_local_rx_{idx}"), ActionVariantKind::Neutral, cx)
-                                        .h(px(24.0))
-                                        .text_size(px(10.0))
-                                        .child(crate::i18n::tr("Open"))
-                                        .on_click(move |_, _, _| open_file_with_system_default(open_path.clone())),
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.content.primary)
+                                        .child(format!("{} · {}", name, format_human_bytes(size))),
                                 )
                                 .child(
-                                    command_button(format!("reveal_local_rx_{idx}"), ActionVariantKind::Neutral, cx)
-                                        .h(px(24.0))
-                                        .text_size(px(10.0))
-                                        .child(crate::i18n::tr("Reveal"))
-                                        .on_click(move |_, _, _| open_directory_in_file_manager(reveal_dir.clone())),
-                                ),
-                        )
-                })),
-        );
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .child(
+                                            command_button(
+                                                format!("open_local_rx_{idx}"),
+                                                ActionVariantKind::Neutral,
+                                                cx,
+                                            )
+                                            .h(px(24.0))
+                                            .text_size(px(10.0))
+                                            .child(crate::i18n::tr("Open"))
+                                            .on_click(
+                                                move |_, _, _| {
+                                                    open_file_with_system_default(open_path.clone())
+                                                },
+                                            ),
+                                        )
+                                        .child(
+                                            command_button(
+                                                format!("reveal_local_rx_{idx}"),
+                                                ActionVariantKind::Neutral,
+                                                cx,
+                                            )
+                                            .h(px(24.0))
+                                            .text_size(px(10.0))
+                                            .child(crate::i18n::tr("Reveal"))
+                                            .on_click(
+                                                move |_, _, _| {
+                                                    open_directory_in_file_manager(
+                                                        reveal_dir.clone(),
+                                                    )
+                                                },
+                                            ),
+                                        ),
+                                )
+                        },
+                    )),
+            );
     }
     panel
 }
@@ -5220,7 +7286,10 @@ fn format_human_bytes(bytes: u64) -> String {
     format!("{gb:.2} GB")
 }
 
-pub(super) fn clipboard_quick_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashboard>) -> Div {
+pub(super) fn clipboard_quick_panel(
+    owner: Arc<OriginalOwner>,
+    cx: &mut Context<RestoredDashboard>,
+) -> Div {
     let theme = cx.theme().clone();
     let view = cx.weak_entity();
     let sync_enabled = owner.clipboard_sync_enabled();
@@ -5230,7 +7299,10 @@ pub(super) fn clipboard_quick_panel(owner: Arc<OriginalOwner>, cx: &mut Context<
         .and_then(|item| item.text())
         .unwrap_or_default();
     let preview = if local_text.trim().is_empty() {
-        crate::i18n::tr("Local clipboard has no plain text (images/files still sync automatically).").to_owned()
+        crate::i18n::tr(
+            "Local clipboard has no plain text (images/files still sync automatically).",
+        )
+        .to_owned()
     } else {
         let compact = local_text.trim().replace('\n', " ↵ ");
         let chars: Vec<char> = compact.chars().collect();
@@ -5270,13 +7342,21 @@ pub(super) fn clipboard_quick_panel(owner: Arc<OriginalOwner>, cx: &mut Context<
                 .child(
                     command_button(
                         "clipboard_quick_toggle",
-                        if sync_enabled { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
+                        if sync_enabled {
+                            ActionVariantKind::Primary
+                        } else {
+                            ActionVariantKind::Neutral
+                        },
                         cx,
                     )
                     .h(px(24.0))
                     .text_size(px(10.0))
                     .disabled(!available)
-                    .child(crate::i18n::tr(if sync_enabled { "Sync · On" } else { "Sync · Off" }))
+                    .child(crate::i18n::tr(if sync_enabled {
+                        "Sync · On"
+                    } else {
+                        "Sync · Off"
+                    }))
                     .on_click(move |_, _, cx| {
                         let _ = toggle_view.update(cx, |_, cx| {
                             toggle_owner.set_clipboard_sync_enabled(!sync_enabled);
@@ -5310,7 +7390,9 @@ pub(super) fn clipboard_quick_panel(owner: Arc<OriginalOwner>, cx: &mut Context<
                         .disabled(!available)
                         .child(crate::i18n::tr("Push clipboard now"))
                         .on_click(move |_, _, cx| {
-                            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                            if let Some(text) =
+                                cx.read_from_clipboard().and_then(|item| item.text())
+                            {
                                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                             }
                             let _ = resync_view.update(cx, |_, cx| {
@@ -5465,9 +7547,13 @@ fn open_file_with_system_default(path: std::path::PathBuf) {
             return;
         }
         #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("/usr/bin/open").arg(&path).spawn();
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg(&path)
+            .spawn();
         #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("explorer.exe").arg(&path).spawn();
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(&path)
+            .spawn();
         #[cfg(target_os = "linux")]
         let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
     });
@@ -5491,7 +7577,9 @@ fn open_directory_in_file_manager(dir: std::path::PathBuf) {
     tokio::task::spawn_blocking(move || {
         let _ = std::fs::create_dir_all(&dir);
         #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("/usr/bin/open").arg(&dir).spawn();
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg(&dir)
+            .spawn();
         #[cfg(target_os = "windows")]
         let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
         #[cfg(target_os = "linux")]
@@ -5528,7 +7616,11 @@ fn pick_session_files(owner: Arc<OriginalOwner>, share: bool) {
                     break;
                 }
                 owner.set_publication_status("Verifying selected file…".into());
-                let status = match crate::background_service::shared_publication::publish_selected(path, scope).await {
+                let status = match crate::background_service::shared_publication::publish_selected(
+                    path, scope,
+                )
+                .await
+                {
                     Ok(file) => format!("Published {} · {} bytes", file.name, file.size_bytes),
                     Err(error) => format!("Cannot publish file: {error}"),
                 };
@@ -5591,7 +7683,10 @@ fn security_toggle_row(
                         .child(if available {
                             crate::i18n::tr(detail).to_string()
                         } else {
-                            crate::i18n::tr_format!("{detail} / Unavailable", detail=crate::i18n::tr(detail))
+                            crate::i18n::tr_format!(
+                                "{detail} / Unavailable",
+                                detail = crate::i18n::tr(detail)
+                            )
                         }),
                 ),
         )
@@ -5605,7 +7700,8 @@ fn security_toggle_row(
                 .flex_none()
                 .tooltip(
                     tooltip(format!(
-                        "{}: {}", crate::i18n::tr(title),
+                        "{}: {}",
+                        crate::i18n::tr(title),
                         if !available {
                             crate::i18n::tr("unavailable")
                         } else if enabled {
@@ -5658,7 +7754,8 @@ fn compact_telemetry_label(stats: Option<&UiHostStats>) -> String {
                 "{:.0} FPS / capture→UI {} / enc {:.1} ms",
                 stats.fps,
                 stats.capture_submit.value(),
-                stats.latency)
+                stats.latency
+            )
         },
     )
 }
@@ -5668,7 +7765,9 @@ fn viewer_media_status_label(status: &UnifiedViewerMediaStatus) -> &'static str 
     match status {
         UnifiedViewerMediaStatus::Disabled => crate::i18n::tr("Viewer media disabled"),
         UnifiedViewerMediaStatus::Ready => crate::i18n::tr("Awaiting telemetry"),
-        UnifiedViewerMediaStatus::AudioUnavailable { .. } => crate::i18n::tr("Video ready / audio unavailable"),
+        UnifiedViewerMediaStatus::AudioUnavailable { .. } => {
+            crate::i18n::tr("Video ready / audio unavailable")
+        }
         UnifiedViewerMediaStatus::Unavailable { .. } => crate::i18n::tr("Viewer media unavailable"),
     }
 }
@@ -5677,44 +7776,77 @@ fn format_bitrate(bitrate_kbps: u32) -> String {
     if bitrate_kbps >= 1_000 {
         crate::i18n::tr_format!("{:.1} Mbps", bitrate_kbps as f32 / 1_000.0)
     } else {
-        crate::i18n::tr_format!("{bitrate_kbps} kbps", bitrate_kbps=bitrate_kbps)
+        crate::i18n::tr_format!("{bitrate_kbps} kbps", bitrate_kbps = bitrate_kbps)
     }
 }
 
 fn interface_language_controls(cx: &mut Context<RestoredDashboard>) -> Div {
     use crate::i18n::{Language, tr};
     let selected = crate::i18n::language();
-    div().flex().flex_col().gap_2()
-        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(tr("Interface language")))
-        .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary)
-            .child(tr("Changes apply to all windows immediately.")))
-        .child(div().flex().flex_wrap().gap_2().children(
-            [Language::Chinese, Language::English].into_iter().map(|language| {
-                command_button(language.native_name(), if selected == language { ActionVariantKind::Primary } else { ActionVariantKind::Neutral }, cx)
-                    .child(language.native_name())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        match crate::i18n::select(language) {
-                            Ok(()) => cx.refresh_windows(),
-                            Err(error) => { this.status = format!("Could not save language: {error}"); cx.notify(); }
-                        }
-                    }))
-            })
-        ))
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(tr("Interface language")),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(cx.theme().content.secondary)
+                .child(tr("Changes apply to all windows immediately.")),
+        )
+        .child(
+            div().flex().flex_wrap().gap_2().children(
+                [Language::Chinese, Language::English]
+                    .into_iter()
+                    .map(|language| {
+                        command_button(
+                            language.native_name(),
+                            if selected == language {
+                                ActionVariantKind::Primary
+                            } else {
+                                ActionVariantKind::Neutral
+                            },
+                            cx,
+                        )
+                        .child(language.native_name())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            match crate::i18n::select(language) {
+                                Ok(()) => cx.refresh_windows(),
+                                Err(error) => {
+                                    this.status = format!("Could not save language: {error}");
+                                    cx.notify();
+                                }
+                            }
+                        }))
+                    }),
+            ),
+        )
 }
 
 fn desktop_update_card(state: &RestoredDashboard, cx: &mut Context<RestoredDashboard>) -> Div {
     let theme = cx.theme().clone();
     let checking = state.checking_update;
-    #[cfg(target_os="macos")]
+    #[cfg(target_os = "macos")]
     let installing = state.installing_update;
-    #[cfg(target_os="macos")]
+    #[cfg(target_os = "macos")]
     let install_result = state.update_install_result.clone();
     let current_version = env!("CARGO_PKG_VERSION");
-    let current_line = match crate::build_identity::compiled()
-        .and_then(|v| v["source"]["commit"].as_str().map(|s| s.chars().take(7).collect::<String>()))
-    {
-        Some(commit) => crate::i18n::tr_format!("Current version: v{version} · {commit}", version=current_version, commit=commit),
-        None => crate::i18n::tr_format!("Current version: v{version}", version=current_version),
+    let current_line = match crate::build_identity::compiled().and_then(|v| {
+        v["source"]["commit"]
+            .as_str()
+            .map(|s| s.chars().take(7).collect::<String>())
+    }) {
+        Some(commit) => crate::i18n::tr_format!(
+            "Current version: v{version} · {commit}",
+            version = current_version,
+            commit = commit
+        ),
+        None => crate::i18n::tr_format!("Current version: v{version}", version = current_version),
     };
     let result = state.update_check.clone();
     let text = match result {
@@ -5724,38 +7856,96 @@ fn desktop_update_card(state: &RestoredDashboard, cx: &mut Context<RestoredDashb
                 Some(false) => "Published package uses different source",
                 None => "Current build source is unknown",
             };
-            format!("{} · {} · {}", crate::i18n::tr(relation), release.version, &release.source_commit[..7])
+            format!(
+                "{} · {} · {}",
+                crate::i18n::tr(relation),
+                release.version,
+                &release.source_commit[..7]
+            )
         }
         Some(Err(error)) => crate::i18n::message(&error),
         None if checking => crate::i18n::tr("Checking…").to_owned(),
         None => crate::i18n::tr("Check for updates").to_owned(),
     };
-    div().p_3p5().bg(theme.surface.base).border_1().border_color(theme_border_fine(cx))
-        .rounded(px(12.)).flex().flex_col().gap_2()
-        .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(crate::i18n::tr("Application updates")))
-        .child(div().text_size(px(10.5)).text_color(theme.content.primary).child(current_line))
-        .child(div().text_size(px(10.5)).text_color(theme.content.secondary).child(text))
-        .when(cfg!(not(target_os="macos")), |card| card.child(div().text_size(px(10.5)).text_color(theme.content.secondary)
-            .child(crate::i18n::tr("Installation and signing compatibility are not yet available in the app."))))
-        .child(command_button("check-application-update", ActionVariantKind::Neutral, cx)
-            .rounded_full()
-            .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx)))
-            .child(crate::i18n::tr(if checking { "Checking…" } else { "Check for updates" })))
-        .when(cfg!(target_os="macos"), |card| {
-            #[cfg(target_os="macos")]
-            let card = card.when_some(install_result, |card, result| card.child(
-                div().text_size(px(10.5)).text_color(theme.content.secondary)
-                    .child({
-                        let text = match &result { Ok(text) | Err(text) => text };
-                        let prefix = "Published package failed signing or identity verification";
-                        if let Some(detail) = text.strip_prefix(prefix) {
-                            format!("{}{}", crate::i18n::tr(prefix), detail)
-                        } else { crate::i18n::message(text) }
-                    })
-            )).child(command_button("install-application-update", ActionVariantKind::Primary, cx)
+    div()
+        .p_3p5()
+        .bg(theme.surface.base)
+        .border_1()
+        .border_color(theme_border_fine(cx))
+        .rounded(px(12.))
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(crate::i18n::tr("Application updates")),
+        )
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(theme.content.primary)
+                .child(current_line),
+        )
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(theme.content.secondary)
+                .child(text),
+        )
+        .when(cfg!(not(target_os = "macos")), |card| {
+            card.child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme.content.secondary)
+                    .child(crate::i18n::tr(
+                        "Installation and signing compatibility are not yet available in the app.",
+                    )),
+            )
+        })
+        .child(
+            command_button("check-application-update", ActionVariantKind::Neutral, cx)
                 .rounded_full()
-                .on_click(cx.listener(|this, _, _, cx| this.install_latest_update(cx)))
-                .child(crate::i18n::tr(if installing { "Installing update…" } else { "Install latest update" })));
+                .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx)))
+                .child(crate::i18n::tr(if checking {
+                    "Checking…"
+                } else {
+                    "Check for updates"
+                })),
+        )
+        .when(cfg!(target_os = "macos"), |card| {
+            #[cfg(target_os = "macos")]
+            let card = card
+                .when_some(install_result, |card, result| {
+                    card.child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(theme.content.secondary)
+                            .child({
+                                let text = match &result {
+                                    Ok(text) | Err(text) => text,
+                                };
+                                let prefix =
+                                    "Published package failed signing or identity verification";
+                                if let Some(detail) = text.strip_prefix(prefix) {
+                                    format!("{}{}", crate::i18n::tr(prefix), detail)
+                                } else {
+                                    crate::i18n::message(text)
+                                }
+                            }),
+                    )
+                })
+                .child(
+                    command_button("install-application-update", ActionVariantKind::Primary, cx)
+                        .rounded_full()
+                        .on_click(cx.listener(|this, _, _, cx| this.install_latest_update(cx)))
+                        .child(crate::i18n::tr(if installing {
+                            "Installing update…"
+                        } else {
+                            "Install latest update"
+                        })),
+                );
             card
         })
 }
@@ -5781,7 +7971,9 @@ fn drawer_network_telemetry_tab(
         .flex()
         .flex_col()
         .gap_3()
-        .when(defaults, |panel| panel.child(interface_language_controls(cx)))
+        .when(defaults, |panel| {
+            panel.child(interface_language_controls(cx))
+        })
         .child(
             div()
                 .text_size(px(12.0))
@@ -5806,128 +7998,140 @@ fn drawer_network_telemetry_tab(
                 .flex_col()
                 .gap_2p5()
                 .child(
-                    div().flex().flex_col().gap_1().child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(theme.content.secondary)
-                            .child(crate::i18n::tr("Target Resolution:")),
-                    ).child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_1p5()
-                            .children(vec![
-                                (1280, 720, "720p HD"),
-                                (1920, 1080, "1080p FHD"),
-                                (2560, 1440, "2K QHD"),
-                                (3840, 2160, "4K UHD"),
-                            ].into_iter().map(|(w, h, label)| {
-                                let view = view.clone();
-                                let is_active = cur_res == (w, h);
-                                let variant = if is_active {
-                                    ActionVariantKind::Primary
-                                } else {
-                                    ActionVariantKind::Neutral
-                                };
-                                command_button(
-                                    format!("res_{w}x{h}"),
-                                    variant,
-                                    cx,
-                                )
-                                .h(px(24.0))
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
                                 .text_size(px(10.0))
-                                .on_click(move |_event, _window, cx| {
+                                .text_color(theme.content.secondary)
+                                .child(crate::i18n::tr("Target Resolution:")),
+                        )
+                        .child(
+                            div().flex().flex_wrap().gap_1p5().children(
+                                vec![
+                                    (1280, 720, "720p HD"),
+                                    (1920, 1080, "1080p FHD"),
+                                    (2560, 1440, "2K QHD"),
+                                    (3840, 2160, "4K UHD"),
+                                ]
+                                .into_iter()
+                                .map(|(w, h, label)| {
                                     let view = view.clone();
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.dispatch_stream_settings_action(StreamSettingsAction::SelectResolution(w, h), cx);
-                                    });
-                                })
-                                .child(crate::i18n::tr(&label).to_owned())
-                            }))
-                    )
+                                    let is_active = cur_res == (w, h);
+                                    let variant = if is_active {
+                                        ActionVariantKind::Primary
+                                    } else {
+                                        ActionVariantKind::Neutral
+                                    };
+                                    command_button(format!("res_{w}x{h}"), variant, cx)
+                                        .h(px(24.0))
+                                        .text_size(px(10.0))
+                                        .on_click(move |_event, _window, cx| {
+                                            let view = view.clone();
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.dispatch_stream_settings_action(
+                                                    StreamSettingsAction::SelectResolution(w, h),
+                                                    cx,
+                                                );
+                                            });
+                                        })
+                                        .child(crate::i18n::tr(&label).to_owned())
+                                }),
+                            ),
+                        ),
                 )
                 .child(
-                    div().flex().flex_col().gap_1().child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(theme.content.secondary)
-                            .child(crate::i18n::tr("Capture & Stream Frame Rate:")),
-                    ).child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_1p5()
-                            .children(vec![
-                                (30, "30 FPS (Power Save)"),
-                                (60, "60 FPS (Standard)"),
-                                (120, "120 FPS (High-Hz)"),
-                            ].into_iter().map(|(fps, label)| {
-                                let view = view.clone();
-                                let is_active = cur_fps == fps;
-                                let variant = if is_active {
-                                    ActionVariantKind::Primary
-                                } else {
-                                    ActionVariantKind::Neutral
-                                };
-                                command_button(
-                                    format!("fps_{fps}"),
-                                    variant,
-                                    cx,
-                                )
-                                .h(px(24.0))
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
                                 .text_size(px(10.0))
-                                .on_click(move |_event, _window, cx| {
+                                .text_color(theme.content.secondary)
+                                .child(crate::i18n::tr("Capture & Stream Frame Rate:")),
+                        )
+                        .child(
+                            div().flex().flex_wrap().gap_1p5().children(
+                                vec![
+                                    (30, "30 FPS (Power Save)"),
+                                    (60, "60 FPS (Standard)"),
+                                    (120, "120 FPS (High-Hz)"),
+                                ]
+                                .into_iter()
+                                .map(|(fps, label)| {
                                     let view = view.clone();
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.dispatch_stream_settings_action(StreamSettingsAction::SelectFps(fps), cx);
-                                    });
-                                })
-                                .child(crate::i18n::tr(&label).to_owned())
-                            }))
-                    )
+                                    let is_active = cur_fps == fps;
+                                    let variant = if is_active {
+                                        ActionVariantKind::Primary
+                                    } else {
+                                        ActionVariantKind::Neutral
+                                    };
+                                    command_button(format!("fps_{fps}"), variant, cx)
+                                        .h(px(24.0))
+                                        .text_size(px(10.0))
+                                        .on_click(move |_event, _window, cx| {
+                                            let view = view.clone();
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.dispatch_stream_settings_action(
+                                                    StreamSettingsAction::SelectFps(fps),
+                                                    cx,
+                                                );
+                                            });
+                                        })
+                                        .child(crate::i18n::tr(&label).to_owned())
+                                }),
+                            ),
+                        ),
                 )
                 .child(
-                    div().flex().flex_col().gap_1().child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(theme.content.secondary)
-                            .child(crate::i18n::tr("Video Bitrate (CBR Data Rate Limit):")),
-                    ).child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_1p5()
-                            .children(vec![
-                                (2_000, "2 Mbps"),
-                                (5_000, "5 Mbps"),
-                                (10_000, "10 Mbps"),
-                                (20_000, "20 Mbps"),
-                                (40_000, "40 Mbps"),
-                                (80_000, "80 Mbps"),
-                            ].into_iter().map(|(kbps, label)| {
-                                let view = view.clone();
-                                let is_active = cur_bitrate == kbps;
-                                let variant = if is_active {
-                                    ActionVariantKind::Primary
-                                } else {
-                                    ActionVariantKind::Neutral
-                                };
-                                command_button(
-                                    format!("bitrate_{kbps}"),
-                                    variant,
-                                    cx,
-                                )
-                                .h(px(24.0))
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
                                 .text_size(px(10.0))
-                                .on_click(move |_event, _window, cx| {
+                                .text_color(theme.content.secondary)
+                                .child(crate::i18n::tr("Video Bitrate (CBR Data Rate Limit):")),
+                        )
+                        .child(
+                            div().flex().flex_wrap().gap_1p5().children(
+                                vec![
+                                    (2_000, "2 Mbps"),
+                                    (5_000, "5 Mbps"),
+                                    (10_000, "10 Mbps"),
+                                    (20_000, "20 Mbps"),
+                                    (40_000, "40 Mbps"),
+                                    (80_000, "80 Mbps"),
+                                ]
+                                .into_iter()
+                                .map(|(kbps, label)| {
                                     let view = view.clone();
-                                    let _ = view.update(cx, |this, cx| {
-                                        this.dispatch_stream_settings_action(StreamSettingsAction::SelectBitrate(kbps), cx);
-                                    });
-                                })
-                                .child(crate::i18n::tr(&label).to_owned())
-                            }))
-                    )
+                                    let is_active = cur_bitrate == kbps;
+                                    let variant = if is_active {
+                                        ActionVariantKind::Primary
+                                    } else {
+                                        ActionVariantKind::Neutral
+                                    };
+                                    command_button(format!("bitrate_{kbps}"), variant, cx)
+                                        .h(px(24.0))
+                                        .text_size(px(10.0))
+                                        .on_click(move |_event, _window, cx| {
+                                            let view = view.clone();
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.dispatch_stream_settings_action(
+                                                    StreamSettingsAction::SelectBitrate(kbps),
+                                                    cx,
+                                                );
+                                            });
+                                        })
+                                        .child(crate::i18n::tr(&label).to_owned())
+                                }),
+                            ),
+                        ),
                 ),
         )
         .child(media_controls);
@@ -6102,28 +8306,63 @@ fn telemetry_metric_row(
         )
 }
 
-fn network_quality_icon(quality:NetworkQuality,theme:&Theme)->crate::product_components::ProductIcon {
+fn network_quality_icon(
+    quality: NetworkQuality,
+    theme: &Theme,
+) -> crate::product_components::ProductIcon {
     let dark = theme.surface.canvas.l < 0.5;
-    let cyan: Hsla = if dark { rgb(0x38cfe0).into() } else { rgb(0x087a8a).into() };
-    let emerald: Hsla = if dark { rgb(0x34d399).into() } else { rgb(0x057a55).into() };
-    let amber: Hsla = if dark { rgb(0xfbbf24).into() } else { rgb(0xb45309).into() };
-    let rose: Hsla = if dark { rgb(0xf87171).into() } else { rgb(0xc83a37).into() };
-    let (symbol,color)=match quality {
-        NetworkQuality::Connecting=>(IconName::NetworkConnecting,cyan),
-        NetworkQuality::Disconnected=>(IconName::NetworkDisconnected,rose),
-        NetworkQuality::Unknown=>(IconName::PingIndicator(0),theme.content.secondary),
-        NetworkQuality::Good=>(IconName::PingIndicator(3),emerald),
-        NetworkQuality::Fair=>(IconName::PingIndicator(2),amber),
-        NetworkQuality::Poor=>(IconName::PingIndicator(1),rose),
+    let cyan: Hsla = if dark {
+        rgb(0x38cfe0).into()
+    } else {
+        rgb(0x087a8a).into()
+    };
+    let emerald: Hsla = if dark {
+        rgb(0x34d399).into()
+    } else {
+        rgb(0x057a55).into()
+    };
+    let amber: Hsla = if dark {
+        rgb(0xfbbf24).into()
+    } else {
+        rgb(0xb45309).into()
+    };
+    let rose: Hsla = if dark {
+        rgb(0xf87171).into()
+    } else {
+        rgb(0xc83a37).into()
+    };
+    let (symbol, color) = match quality {
+        NetworkQuality::Connecting => (IconName::NetworkConnecting, cyan),
+        NetworkQuality::Disconnected => (IconName::NetworkDisconnected, rose),
+        NetworkQuality::Unknown => (IconName::PingIndicator(0), theme.content.secondary),
+        NetworkQuality::Good => (IconName::PingIndicator(3), emerald),
+        NetworkQuality::Fair => (IconName::PingIndicator(2), amber),
+        NetworkQuality::Poor => (IconName::PingIndicator(1), rose),
     };
     icon(symbol).color(color)
 }
 
-fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: NetworkQuality, theme: &Theme) -> Div {
+fn telemetry_hud_metrics_list(
+    host_stats: Option<&UiHostStats>,
+    network: NetworkQuality,
+    theme: &Theme,
+) -> Div {
     let dark = theme.surface.canvas.l < 0.5;
-    let cyan: Hsla = if dark { rgb(0x38cfe0).into() } else { rgb(0x087a8a).into() };
-    let emerald: Hsla = if dark { rgb(0x34d399).into() } else { rgb(0x057a55).into() };
-    let amber: Hsla = if dark { rgb(0xfbbf24).into() } else { rgb(0xb45309).into() };
+    let cyan: Hsla = if dark {
+        rgb(0x38cfe0).into()
+    } else {
+        rgb(0x087a8a).into()
+    };
+    let emerald: Hsla = if dark {
+        rgb(0x34d399).into()
+    } else {
+        rgb(0x057a55).into()
+    };
+    let amber: Hsla = if dark {
+        rgb(0xfbbf24).into()
+    } else {
+        rgb(0xb45309).into()
+    };
     if let Some(stats) = host_stats {
         div()
             .flex()
@@ -6137,7 +8376,11 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                     .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
-                    .child(div().text_color(theme.content.tertiary).child(crate::i18n::tr("Frame rate")))
+                    .child(
+                        div()
+                            .text_color(theme.content.tertiary)
+                            .child(crate::i18n::tr("Frame rate")),
+                    )
                     .child(
                         div()
                             .min_w_0()
@@ -6155,7 +8398,11 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                     .gap_2()
                     .text_size(px(10.0))
                     .font_family(crate::design_system::product_mono_font())
-                    .child(div().text_color(theme.content.tertiary).child(crate::i18n::tr("Bitrate")))
+                    .child(
+                        div()
+                            .text_color(theme.content.tertiary)
+                            .child(crate::i18n::tr("Bitrate")),
+                    )
                     .child(
                         div()
                             .min_w_0()
@@ -6344,7 +8591,10 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
     }
 }
 
-fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut Context<RestoredDashboard>) -> Div {
+fn device_name_controls(
+    editor: remote_core::device_name::NameEditor,
+    cx: &mut Context<RestoredDashboard>,
+) -> Div {
     let theme = cx.theme().clone();
     let edit_view = cx.weak_entity();
     let submit_view = cx.weak_entity();
@@ -6385,7 +8635,11 @@ fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut C
             .child(crate::i18n::tr("Visible to your paired devices. Use host name restores this computer’s current device name.")))
 }
 
-fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mut Context<RestoredDashboard>) -> Div {
+fn mesh_pairing_card(
+    snapshot: MeshPairingSnapshot,
+    image_pending: bool,
+    cx: &mut Context<RestoredDashboard>,
+) -> Div {
     let theme = cx.theme().clone();
     let message_tone = pairing_message_tone(snapshot.message_kind);
     let message_color = status_color(message_tone, cx);
@@ -6423,8 +8677,15 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                                 .text_size(px(12.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.content.primary)
-                                .flex().items_center().gap_2()
-                                .child(svg().path("weavelo-brand/mark-mono.svg").size(px(18.0)).text_color(theme.content.primary))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    svg()
+                                        .path("weavelo-brand/mark-mono.svg")
+                                        .size(px(18.0))
+                                        .text_color(theme.content.primary),
+                                )
                                 .child(crate::i18n::tr("Weavelo Device Group")),
                         )
                         .child(
@@ -6484,8 +8745,14 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                 )
             },
         )
-        .child(div().text_size(px(10.0)).text_color(theme.content.secondary)
-            .child(crate::i18n::tr("Scan with Weavelo on Android, or copy the invitation code.")))
+        .child(
+            div()
+                .text_size(px(10.0))
+                .text_color(theme.content.secondary)
+                .child(crate::i18n::tr(
+                    "Scan with Weavelo on Android, or copy the invitation code.",
+                )),
+        )
         .child(
             div()
                 .flex()
@@ -6524,22 +8791,40 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
                 ),
         )
         .child(
-            div().flex().gap_2()
-                .child(command_button("join_mesh_image", ActionVariantKind::Neutral, cx)
-                    .h(px(28.0)).flex_1().px_2().text_size(px(10.0)).disabled(image_pending)
-                    .on_click(move |_, _, cx| {
-                        let _ = image_view.update(cx, |this, cx| this.scan_pairing_image(cx));
-                    }).child(crate::i18n::tr("Scan QR Image…")))
-                .when(image_pending, |row| row.child(
-                    command_button("cancel_mesh_image", ActionVariantKind::Neutral, cx)
-                        .h(px(28.0)).px_2().text_size(px(10.0))
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    command_button("join_mesh_image", ActionVariantKind::Neutral, cx)
+                        .h(px(28.0))
+                        .flex_1()
+                        .px_2()
+                        .text_size(px(10.0))
+                        .disabled(image_pending)
                         .on_click(move |_, _, cx| {
-                            let _ = cancel_image_view.update(cx, |this, cx| {
-                                this.pairing_image_import.cancel();
-                                this.pairing_image_status("Image scan cancelled.", MeshPairingMessageKind::Neutral);
-                                cx.notify();
-                            });
-                        }).child(crate::i18n::tr("Cancel")))),
+                            let _ = image_view.update(cx, |this, cx| this.scan_pairing_image(cx));
+                        })
+                        .child(crate::i18n::tr("Scan QR Image…")),
+                )
+                .when(image_pending, |row| {
+                    row.child(
+                        command_button("cancel_mesh_image", ActionVariantKind::Neutral, cx)
+                            .h(px(28.0))
+                            .px_2()
+                            .text_size(px(10.0))
+                            .on_click(move |_, _, cx| {
+                                let _ = cancel_image_view.update(cx, |this, cx| {
+                                    this.pairing_image_import.cancel();
+                                    this.pairing_image_status(
+                                        "Image scan cancelled.",
+                                        MeshPairingMessageKind::Neutral,
+                                    );
+                                    cx.notify();
+                                });
+                            })
+                            .child(crate::i18n::tr("Cancel")),
+                    )
+                }),
         )
         .child(
             div().flex().gap_2().child(
@@ -6598,13 +8883,7 @@ fn product_mark(cx: &mut Context<RestoredDashboard>) -> Div {
                 .flex_col()
                 .justify_between()
                 .child(div().h(px(3.0)).w_full().rounded(px(1.0)).bg(fg))
-                .child(
-                    div()
-                        .h(px(3.0))
-                        .w(px(6.0))
-                        .rounded(px(1.0))
-                        .bg(fg),
-                ),
+                .child(div().h(px(3.0)).w(px(6.0)).rounded(px(1.0)).bg(fg)),
         )
 }
 
@@ -6617,16 +8896,22 @@ fn qr_matrix_view(matrix: &remote_core::QrMatrix) -> Div {
         .flex_none()
         .rounded(px(10.0))
         // QR readers require a full four-module quiet zone on every side.
-        .p(px(3.0 * remote_core::pairing_qr::QR_QUIET_ZONE_MODULES as f32))
+        .p(px(
+            3.0 * remote_core::pairing_qr::QR_QUIET_ZONE_MODULES as f32
+        ))
         .bg(rgb(0xffffff))
         .children((0..width).map(|y| {
-            div().flex().flex_row().flex_none().children((0..width).map(move |x| {
-                div().flex_none().size(cell).bg(if matrix.is_dark(x, y) {
-                    rgb(0x0f172a)
-                } else {
-                    rgb(0xffffff)
-                })
-            }))
+            div()
+                .flex()
+                .flex_row()
+                .flex_none()
+                .children((0..width).map(move |x| {
+                    div().flex_none().size(cell).bg(if matrix.is_dark(x, y) {
+                        rgb(0x0f172a)
+                    } else {
+                        rgb(0xffffff)
+                    })
+                }))
         }))
 }
 
@@ -6640,7 +8925,6 @@ fn command_button<T: 'static>(
         .variant(variant)
         .focusable()
         .focus_visible(move |style| style.border_2().border_color(focus))
-
 }
 
 fn empty_state(
@@ -6751,16 +9035,34 @@ impl PointerInputTracker {
         self.scroll_binding = None;
     }
 
-    fn accepts_scroll(&self, gesture: protocol::ScrollGesture, binding: &crate::desktop::original_owner::ViewportTarget) -> bool {
-        gesture == protocol::ScrollGesture::default() || gesture.phase == protocol::ScrollPhase::Began
-            || self.scroll_binding.as_ref().is_some_and(|old|old.same_target(binding))
+    fn accepts_scroll(
+        &self,
+        gesture: protocol::ScrollGesture,
+        binding: &crate::desktop::original_owner::ViewportTarget,
+    ) -> bool {
+        gesture == protocol::ScrollGesture::default()
+            || gesture.phase == protocol::ScrollPhase::Began
+            || self
+                .scroll_binding
+                .as_ref()
+                .is_some_and(|old| old.same_target(binding))
     }
 
-    fn scroll_queued(&mut self, gesture: protocol::ScrollGesture, binding: crate::desktop::original_owner::ViewportTarget) {
+    fn scroll_queued(
+        &mut self,
+        gesture: protocol::ScrollGesture,
+        binding: crate::desktop::original_owner::ViewportTarget,
+    ) {
         self.scroll_gesture = gesture;
-        if gesture.phase == protocol::ScrollPhase::Began { self.scroll_binding = Some(binding); }
-        if gesture == protocol::ScrollGesture::default() || gesture.phase == protocol::ScrollPhase::Cancelled
-            || gesture.momentum == protocol::MomentumPhase::Ended { self.scroll_binding = None; }
+        if gesture.phase == protocol::ScrollPhase::Began {
+            self.scroll_binding = Some(binding);
+        }
+        if gesture == protocol::ScrollGesture::default()
+            || gesture.phase == protocol::ScrollPhase::Cancelled
+            || gesture.momentum == protocol::MomentumPhase::Ended
+        {
+            self.scroll_binding = None;
+        }
     }
 
     fn button_changed(&mut self, button: u8, pressed: bool) {
@@ -6779,10 +9081,22 @@ impl PointerInputTracker {
         }
     }
 
-    fn cancel_scroll(&mut self) -> Option<(crate::desktop::original_owner::ViewportTarget,protocol::InputEvent)> {
+    fn cancel_scroll(
+        &mut self,
+    ) -> Option<(
+        crate::desktop::original_owner::ViewportTarget,
+        protocol::InputEvent,
+    )> {
         let binding = self.scroll_binding.take()?;
         let gesture = std::mem::take(&mut self.scroll_gesture).cancellation()?;
-        Some((binding,protocol::InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }))
+        Some((
+            binding,
+            protocol::InputEvent::MouseScroll {
+                delta_x: 0,
+                delta_y: 0,
+                gesture,
+            },
+        ))
     }
 
     fn release_events(&mut self) -> Vec<protocol::InputEvent> {
@@ -6807,7 +9121,11 @@ impl PointerInputTracker {
         events
     }
 
-    fn scrolled(&mut self, delta: (f32, f32), gesture: protocol::ScrollGesture) -> Option<protocol::InputEvent> {
+    fn scrolled(
+        &mut self,
+        delta: (f32, f32),
+        gesture: protocol::ScrollGesture,
+    ) -> Option<protocol::InputEvent> {
         if !delta.0.is_finite() || !delta.1.is_finite() {
             return None;
         }
@@ -6859,12 +9177,16 @@ fn quantize_delta(delta: (f32, f32)) -> (i32, i32) {
     )
 }
 
-fn frame_source_pointer(frame:&MacDecodedVideoFrame,event:Option<protocol::InputEvent>)->Option<protocol::InputEvent> {
-    event.map(|event|match (event,frame.frame_geometry) {
-        (protocol::InputEvent::MouseMoveAbsolute{x,y},Some(geometry))=>{
-            let (x,y)=geometry.source_point(x,y);protocol::InputEvent::MouseMoveAbsolute{x,y}
+fn frame_source_pointer(
+    frame: &MacDecodedVideoFrame,
+    event: Option<protocol::InputEvent>,
+) -> Option<protocol::InputEvent> {
+    event.map(|event| match (event, frame.frame_geometry) {
+        (protocol::InputEvent::MouseMoveAbsolute { x, y }, Some(geometry)) => {
+            let (x, y) = geometry.source_point(x, y);
+            protocol::InputEvent::MouseMoveAbsolute { x, y }
         }
-        (event,_)=>event,
+        (event, _) => event,
     })
 }
 
@@ -6946,9 +9268,13 @@ pub(crate) fn protocol_modifiers(modifiers: Modifiers) -> u8 {
 // Native held input is renewed by the healthy frontend. OS autorepeat is not
 // a fresh press and must never resurrect an expired chord before the next poll.
 fn text_key_stays_local(key: &Keystroke, composing: bool) -> bool {
-    !key.modifiers.control && !key.modifiers.platform
-        && (composing || key.key_char.as_ref().is_some_and(|text|
-            !text.is_empty() && text.chars().all(|ch| !ch.is_control())))
+    !key.modifiers.control
+        && !key.modifiers.platform
+        && (composing
+            || key
+                .key_char
+                .as_ref()
+                .is_some_and(|text| !text.is_empty() && text.chars().all(|ch| !ch.is_control())))
 }
 
 pub(crate) fn fresh_key_down(event: &KeyDownEvent) -> Option<&Keystroke> {
@@ -7096,21 +9422,38 @@ struct DashboardSnapshot {
 }
 
 // Coarse state in the existing control, exact backend reason in its tooltip.
-fn input_control_caption(locked: bool, supported: bool, ready: bool, compact: bool) -> &'static str {
+fn input_control_caption(
+    locked: bool,
+    supported: bool,
+    ready: bool,
+    compact: bool,
+) -> &'static str {
     match (supported, locked, ready, compact) {
-        (false, _, _, true) => crate::i18n::tr("View"), (false, _, _, false) => crate::i18n::tr("View only"),
-        (true, true, _, true) => crate::i18n::tr("Enable"), (true, true, _, false) => crate::i18n::tr("Enable control"),
-        (true, false, false, true) => crate::i18n::tr("Paused"), (true, false, false, false) => crate::i18n::tr("Control paused"),
-        (true, false, true, true) => crate::i18n::tr("Ready"), (true, false, true, false) => crate::i18n::tr("Control ready"),
+        (false, _, _, true) => crate::i18n::tr("View"),
+        (false, _, _, false) => crate::i18n::tr("View only"),
+        (true, true, _, true) => crate::i18n::tr("Enable"),
+        (true, true, _, false) => crate::i18n::tr("Enable control"),
+        (true, false, false, true) => crate::i18n::tr("Paused"),
+        (true, false, false, false) => crate::i18n::tr("Control paused"),
+        (true, false, true, true) => crate::i18n::tr("Ready"),
+        (true, false, true, false) => crate::i18n::tr("Control ready"),
     }
 }
-fn remote_input_hint(status: &str, eligible: bool, focused: bool, local_overlay: bool) -> Option<String> {
+fn remote_input_hint(
+    status: &str,
+    eligible: bool,
+    focused: bool,
+    local_overlay: bool,
+) -> Option<String> {
     if local_overlay {
         Some(crate::i18n::tr("Remote input is paused while a local menu is open. Close the drawer or source menu to continue").into())
     } else if !eligible {
         Some(crate::i18n::message(status))
     } else if !focused {
-        Some(crate::i18n::tr("Control enabled. Click the remote picture to send keyboard input").into())
+        Some(
+            crate::i18n::tr("Control enabled. Click the remote picture to send keyboard input")
+                .into(),
+        )
     } else {
         None
     }
@@ -7119,35 +9462,47 @@ fn remote_input_hint(status: &str, eligible: bool, focused: bool, local_overlay:
 #[cfg(test)]
 mod input_tests {
     use super::{
-        ControlIslandVisibility, PointerInputTracker, TOOLBAR_AUTO_HIDE_DELAY,
-        ViewportScaleMode, absolute_pointer_event,
-        control_island_visibility, dashboard_refresh_interval, display_capture_sources,
-        host_stats_available, is_shifted_macos_symbol, macos_key_code, product_window_appearance,
-        protocol_key_event, protocol_modifiers, protocol_mouse_button, should_auto_hide_toolbar,
+        ControlIslandVisibility, PointerInputTracker, TOOLBAR_AUTO_HIDE_DELAY, ViewportScaleMode,
+        absolute_pointer_event, control_island_visibility, dashboard_refresh_interval,
+        display_capture_sources, host_stats_available, is_shifted_macos_symbol, macos_key_code,
+        product_window_appearance, protocol_key_event, protocol_modifiers, protocol_mouse_button,
+        should_auto_hide_toolbar,
     };
     use crate::HostStats;
 
     struct ObservedPairing(std::sync::Mutex<super::MeshPairingSnapshot>);
 
     impl client::MeshPairingBackend for ObservedPairing {
-        fn snapshot(&self) -> super::MeshPairingSnapshot { self.0.lock().unwrap().clone() }
-        fn create_new_group(&self) -> super::MeshPairingSnapshot { panic!("refresh must be read-only") }
-        fn join_from_invite_code(&self, _: &str) -> super::MeshPairingSnapshot { panic!("refresh must be read-only") }
-        fn request_runtime_reload(&self, _: String) -> super::MeshPairingSnapshot { panic!("refresh must be read-only") }
-        fn rename_device(&self, _: &str, _: &str) -> super::MeshPairingSnapshot { panic!("refresh must be read-only") }
+        fn snapshot(&self) -> super::MeshPairingSnapshot {
+            self.0.lock().unwrap().clone()
+        }
+        fn create_new_group(&self) -> super::MeshPairingSnapshot {
+            panic!("refresh must be read-only")
+        }
+        fn join_from_invite_code(&self, _: &str) -> super::MeshPairingSnapshot {
+            panic!("refresh must be read-only")
+        }
+        fn request_runtime_reload(&self, _: String) -> super::MeshPairingSnapshot {
+            panic!("refresh must be read-only")
+        }
+        fn rename_device(&self, _: &str, _: &str) -> super::MeshPairingSnapshot {
+            panic!("refresh must be read-only")
+        }
     }
 
     fn observed_pairing_fixture() -> std::sync::Arc<ObservedPairing> {
-        std::sync::Arc::new(ObservedPairing(std::sync::Mutex::new(super::MeshPairingSnapshot {
-            network_name: "Synthetic desktop group".into(),
-            device_id: "synthetic-studio-device".into(),
-            display_name: "Old test name".into(),
-            invite_code: "non-valid synthetic invitation".into(),
-            config_dir: std::path::PathBuf::from("synthetic-profile"),
-            message: "Ready".into(),
-            message_kind: super::MeshPairingMessageKind::Neutral,
-            restart_required: false,
-        })))
+        std::sync::Arc::new(ObservedPairing(std::sync::Mutex::new(
+            super::MeshPairingSnapshot {
+                network_name: "Synthetic desktop group".into(),
+                device_id: "synthetic-studio-device".into(),
+                display_name: "Old test name".into(),
+                invite_code: "non-valid synthetic invitation".into(),
+                config_dir: std::path::PathBuf::from("synthetic-profile"),
+                message: "Ready".into(),
+                message_kind: super::MeshPairingMessageKind::Neutral,
+                restart_required: false,
+            },
+        )))
     }
 
     #[test]
@@ -7217,73 +9572,167 @@ mod input_tests {
 
     #[tokio::test]
     async fn full_exit_collects_both_windows_and_refuses_one_missing_remote_receipt() {
-        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
-        use remote_core::{net::{UdpMultiplexer,MultiplexedPacket},workspace_session::WorkspaceConnection};
-        use protocol::{ControlMessage,session::SessionCommand};
-        assert!(remote_core::session_crypto::load_session_psk().is_none(),"Fixture must not inherit a user's key");
+        use protocol::{ControlMessage, session::SessionCommand};
+        use remote_core::{
+            net::{MultiplexedPacket, UdpMultiplexer},
+            workspace_session::WorkspaceConnection,
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        assert!(
+            remote_core::session_crypto::load_session_psk().is_none(),
+            "Fixture must not inherit a user's key"
+        );
         remote_core::init_crypto_provider();
-        for confirm_second in [true,false] {
-            let group=Arc::new(super::FrontendExitGroup::default());
-            let (_,peers)=tokio::sync::watch::channel(remote_core::discovery::DiscoveryPeerSnapshot::default());
-            let backend=Arc::new(crate::UnifiedServiceOwner::from_background_snapshot(peers).await.unwrap());
-            let seen=Arc::new(AtomicUsize::new(0));let mut servers=Vec::new();let mut owners=Vec::new();
+        for confirm_second in [true, false] {
+            let group = Arc::new(super::FrontendExitGroup::default());
+            let (_, peers) = tokio::sync::watch::channel(
+                remote_core::discovery::DiscoveryPeerSnapshot::default(),
+            );
+            let backend = Arc::new(
+                crate::UnifiedServiceOwner::from_background_snapshot(peers)
+                    .await
+                    .unwrap(),
+            );
+            let seen = Arc::new(AtomicUsize::new(0));
+            let mut servers = Vec::new();
+            let mut owners = Vec::new();
             for index in 0..2 {
-                let mux=UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();let addr=mux.local_addr().unwrap();
-                let (sender,receiver)=mux.split();let seen=seen.clone();let confirmed=index==0||confirm_second;
+                let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+                let addr = mux.local_addr().unwrap();
+                let (sender, receiver) = mux.split();
+                let seen = seen.clone();
+                let confirmed = index == 0 || confirm_second;
                 servers.push(tokio::spawn(async move {
-                    let mut received_close=false;
-                    while let Ok(packet)=receiver.recv().await {
-                        if let MultiplexedPacket::Control(ControlMessage::Session(command),from)=packet {
-                            let response=match *command {
-                                SessionCommand::Open{connection_id,..}=>Some(SessionCommand::Opened{connection_id,version:protocol::session::SESSION_VERSION,max_subscriptions:1,files:false,clipboard:false,window_capture:false}),
-                                SessionCommand::Close{connection_id}=>{
-                                    if !received_close {seen.fetch_add(1,Ordering::SeqCst);received_close=true;}
-                                    confirmed.then(||SessionCommand::Closed{connection_id,reason:"owned fixture cleanup complete".into()})
-                                }, _=>None,
+                    let mut received_close = false;
+                    while let Ok(packet) = receiver.recv().await {
+                        if let MultiplexedPacket::Control(ControlMessage::Session(command), from) =
+                            packet
+                        {
+                            let response = match *command {
+                                SessionCommand::Open { connection_id, .. } => {
+                                    Some(SessionCommand::Opened {
+                                        connection_id,
+                                        version: protocol::session::SESSION_VERSION,
+                                        max_subscriptions: 1,
+                                        files: false,
+                                        clipboard: false,
+                                        window_capture: false,
+                                    })
+                                }
+                                SessionCommand::Close { connection_id } => {
+                                    if !received_close {
+                                        seen.fetch_add(1, Ordering::SeqCst);
+                                        received_close = true;
+                                    }
+                                    confirmed.then(|| SessionCommand::Closed {
+                                        connection_id,
+                                        reason: "owned fixture cleanup complete".into(),
+                                    })
+                                }
+                                _ => None,
                             };
-                            if let Some(response)=response {sender.send_control(&ControlMessage::Session(Box::new(response)),from).await.unwrap();}
+                            if let Some(response) = response {
+                                sender
+                                    .send_control(
+                                        &ControlMessage::Session(Box::new(response)),
+                                        from,
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
                         }
                     }
                 }));
-                let (connection,events)=WorkspaceConnection::connect_media(addr).await.unwrap();
-                let owner=super::OriginalOwner::new(backend.clone());
-                owner.attach_recorder_session(crate::desktop::OriginalGuiSession::new(format!("fixture-{index}"),"Fixture".into(),"Loopback".into(),connection,events));
-                group.owners.lock().unwrap().push(Arc::downgrade(&owner));owners.push(owner);
+                let (connection, events) = WorkspaceConnection::connect_media(addr).await.unwrap();
+                let owner = super::OriginalOwner::new(backend.clone());
+                owner.attach_recorder_session(crate::desktop::OriginalGuiSession::new(
+                    format!("fixture-{index}"),
+                    "Fixture".into(),
+                    "Loopback".into(),
+                    connection,
+                    events,
+                ));
+                group.owners.lock().unwrap().push(Arc::downgrade(&owner));
+                owners.push(owner);
             }
             // Normal GUI exit retires receive windows before awaiting cleanup.
             // Keep the original connection actors even after every view drops.
             group.prepare_gui_exit().unwrap();
             owners.clear();
-            let result=group.close_verified().await;
-            assert_eq!(result.is_ok(),confirm_second);
-            assert_eq!(seen.load(Ordering::SeqCst),2,"both actual connection actors must receive Close");
+            let result = group.close_verified().await;
+            assert_eq!(result.is_ok(), confirm_second);
+            assert_eq!(
+                seen.load(Ordering::SeqCst),
+                2,
+                "both actual connection actors must receive Close"
+            );
             if !confirm_second {
                 // Empty UI lists are still not a remote cleanup receipt.
-                assert!(group.close_verified().await.is_err(),"a repeated whole-exit request must not erase missing cleanup proof");
-                assert!(!group.close_for_gui_exit().await.unwrap(),
-                    "local GUI exit must report the missing remote cleanup receipt");
-                assert!(group.pending.lock().unwrap().is_empty(),
-                    "normal GUI exit must release its retained local owners");
+                assert!(
+                    group.close_verified().await.is_err(),
+                    "a repeated whole-exit request must not erase missing cleanup proof"
+                );
+                assert!(
+                    !group.close_for_gui_exit().await.unwrap(),
+                    "local GUI exit must report the missing remote cleanup receipt"
+                );
+                assert!(
+                    group.pending.lock().unwrap().is_empty(),
+                    "normal GUI exit must release its retained local owners"
+                );
             }
-            for server in servers {server.abort();let _=server.await;}
+            for server in servers {
+                server.abort();
+                let _ = server.await;
+            }
             drop(owners);
         }
     }
 
     #[test]
     fn control_caption_never_calls_a_blocked_or_locked_session_ready() {
-        assert_eq!(super::input_control_caption(false,true,false,false),"Control paused");
-        assert_eq!(super::input_control_caption(false,true,true,false),"Control ready");
-        assert_eq!(super::input_control_caption(true,true,true,false),"Enable control");
-        assert_eq!(super::input_control_caption(false,false,true,false),"View only");
+        assert_eq!(
+            super::input_control_caption(false, true, false, false),
+            "Control paused"
+        );
+        assert_eq!(
+            super::input_control_caption(false, true, true, false),
+            "Control ready"
+        );
+        assert_eq!(
+            super::input_control_caption(true, true, true, false),
+            "Enable control"
+        );
+        assert_eq!(
+            super::input_control_caption(false, false, true, false),
+            "View only"
+        );
     }
     #[test]
     fn blocked_input_reason_remains_visible_without_enabling_control() {
-        for reason in ["View only: click Enable control", "Host source is view-only", "Weavelo needs Accessibility"] {
-            assert_eq!(super::remote_input_hint(reason, false, true, false).as_deref(), Some(reason));
+        for reason in [
+            "View only: click Enable control",
+            "Host source is view-only",
+            "Weavelo needs Accessibility",
+        ] {
+            assert_eq!(
+                super::remote_input_hint(reason, false, true, false).as_deref(),
+                Some(reason)
+            );
         }
-        assert!(super::remote_input_hint("enabled", true, false, false).unwrap().contains("Click the remote picture"));
-        assert!(super::remote_input_hint("enabled", true, true, true).unwrap().contains("local menu"));
+        assert!(
+            super::remote_input_hint("enabled", true, false, false)
+                .unwrap()
+                .contains("Click the remote picture")
+        );
+        assert!(
+            super::remote_input_hint("enabled", true, true, true)
+                .unwrap()
+                .contains("local menu")
+        );
         assert!(super::remote_input_hint("enabled", true, true, false).is_none());
     }
     use gpui::{
@@ -7297,82 +9746,206 @@ mod input_tests {
 
     #[gpui::test]
     fn management_close_retains_coordinator_and_other_windows(cx: &mut TestAppContext) {
-        use super::{FrontendExitGroup, ManagementRoot, WindowPurpose, open_restored_window, reopen_restored_window};
+        use super::{
+            FrontendExitGroup, ManagementRoot, WindowPurpose, open_restored_window,
+            reopen_restored_window,
+        };
         let executor = tokio::runtime::Runtime::new().unwrap();
         let _entered = executor.enter();
-        let backend = executor.block_on(crate::UnifiedServiceOwner::start(
-            crate::UnifiedServiceOwnerConfig::default(),
-        )).unwrap();
-        let runtime = std::sync::Arc::new(crate::UnifiedRuntimeHandle::from_workspace_owner(std::sync::Arc::new(backend)));
+        let backend = executor
+            .block_on(crate::UnifiedServiceOwner::start(
+                crate::UnifiedServiceOwnerConfig::default(),
+            ))
+            .unwrap();
+        let runtime = std::sync::Arc::new(crate::UnifiedRuntimeHandle::from_workspace_owner(
+            std::sync::Arc::new(backend),
+        ));
         let profile = tempfile::tempdir().unwrap();
-        let instance = super::Instance::acquire_for_renderer(profile.path(), crate::gui_backend::ORIGINAL_RENDERER).unwrap().unwrap();
+        let instance = super::Instance::acquire_for_renderer(
+            profile.path(),
+            crate::gui_backend::ORIGINAL_RENDERER,
+        )
+        .unwrap()
+        .unwrap();
         let group = std::sync::Arc::new(FrontendExitGroup::default());
         let manager = cx.update(|cx| {
             crate::product_components::component::init(cx).unwrap();
-            crate::product_components::theme::install(super::product_window_appearance(), super::weavelo_themes(), cx);
-            open_restored_window(runtime.clone(), Some(instance), Default::default(), None, None, group.clone(), cx).unwrap()
+            crate::product_components::theme::install(
+                super::product_window_appearance(),
+                super::weavelo_themes(),
+                cx,
+            );
+            open_restored_window(
+                runtime.clone(),
+                Some(instance),
+                Default::default(),
+                None,
+                None,
+                group.clone(),
+                cx,
+            )
+            .unwrap()
         });
         let manager_view = manager.root(cx).unwrap();
-        manager.update(cx, |this, window, cx| {
-            this.active_tab = super::DrawerTab::Network;
-            // Settings is rendered while the dashboard entity is already leased.
-            drop(this.render(window, cx));
-            this.active_tab = super::DrawerTab::Devices;
-        }).unwrap();
+        manager
+            .update(cx, |this, window, cx| {
+                this.active_tab = super::DrawerTab::Network;
+                // Settings is rendered while the dashboard entity is already leased.
+                drop(this.render(window, cx));
+                this.active_tab = super::DrawerTab::Devices;
+            })
+            .unwrap();
         manager_view.update(cx, |this, _| this.status = "Retained local work".into());
-        let stream = cx.update(|cx| open_restored_window(runtime, None, Default::default(), None, None, group.clone(), cx).unwrap());
+        let stream = cx.update(|cx| {
+            open_restored_window(
+                runtime,
+                None,
+                Default::default(),
+                None,
+                None,
+                group.clone(),
+                cx,
+            )
+            .unwrap()
+        });
         let stream_view = stream.root(cx).unwrap();
-        assert_eq!(stream_view.read_with(cx, |this, _| this.purpose), WindowPurpose::Stream);
-        let source=protocol::session::CaptureSource::Window(77);
-        stream_view.update(cx,|this,_| {this.stream_device=Some("fixture-device-a".into());this.stream_source=Some(source);});
+        assert_eq!(
+            stream_view.read_with(cx, |this, _| this.purpose),
+            WindowPurpose::Stream
+        );
+        let source = protocol::session::CaptureSource::Window(77);
+        stream_view.update(cx, |this, _| {
+            this.stream_device = Some("fixture-device-a".into());
+            this.stream_source = Some(source);
+        });
         let files_a = manager_view.read_with(cx, |this, _| this.device_files("fixture-device-a"));
         let same_files = stream_view.read_with(cx, |this, _| this.device_files("fixture-device-a"));
         let files_b = manager_view.read_with(cx, |this, _| this.device_files("fixture-device-b"));
-        assert!(std::sync::Arc::ptr_eq(&files_a.owner, &same_files.owner), "all presentations reuse the same device files context");
-        assert!(!std::sync::Arc::ptr_eq(&files_a.owner, &files_b.owner), "files never follow another device's selection");
-        stream_view.update(cx, |this, cx| this.open_device_files("fixture-device-b".into(), cx));
-        assert!(stream_view.read_with(cx, |this, _| this.files_device.is_none()), "a stream cannot open another device's files");
-        manager_view.update(cx, |this, _| this.files_device = Some("fixture-device-b".into()));
-        let window_count=cx.update(|cx|cx.windows().len());
-        manager_view.update(cx,|this,cx|assert!(this.open_stream_source("fixture-device-a".into(),source,cx)));
-        assert_eq!(cx.update(|cx|cx.windows().len()),window_count,"same source focuses its existing presentation");
-        stream_view.update(cx,|this,cx|this.start_stream_connection_capture("fixture-device-b".into(),None,Some(source),cx));
-        assert_eq!(stream_view.read_with(cx,|this,_|this.stream_device.clone()).as_deref(),Some("fixture-device-a"));
-        stream_view.update(cx,|this,cx|this.start_stream_connection_capture("fixture-device-a".into(),None,Some(protocol::session::CaptureSource::Window(88)),cx));
-        assert_eq!(stream_view.read_with(cx,|this,_|this.stream_source),Some(source),"new-source requests cannot silently replace this stream");
+        assert!(
+            std::sync::Arc::ptr_eq(&files_a.owner, &same_files.owner),
+            "all presentations reuse the same device files context"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(&files_a.owner, &files_b.owner),
+            "files never follow another device's selection"
+        );
+        stream_view.update(cx, |this, cx| {
+            this.open_device_files("fixture-device-b".into(), cx)
+        });
+        assert!(
+            stream_view.read_with(cx, |this, _| this.files_device.is_none()),
+            "a stream cannot open another device's files"
+        );
+        manager_view.update(cx, |this, _| {
+            this.files_device = Some("fixture-device-b".into())
+        });
+        let window_count = cx.update(|cx| cx.windows().len());
+        manager_view.update(cx, |this, cx| {
+            assert!(this.open_stream_source("fixture-device-a".into(), source, cx))
+        });
+        assert_eq!(
+            cx.update(|cx| cx.windows().len()),
+            window_count,
+            "same source focuses its existing presentation"
+        );
+        stream_view.update(cx, |this, cx| {
+            this.start_stream_connection_capture("fixture-device-b".into(), None, Some(source), cx)
+        });
+        assert_eq!(
+            stream_view
+                .read_with(cx, |this, _| this.stream_device.clone())
+                .as_deref(),
+            Some("fixture-device-a")
+        );
+        stream_view.update(cx, |this, cx| {
+            this.start_stream_connection_capture(
+                "fixture-device-a".into(),
+                None,
+                Some(protocol::session::CaptureSource::Window(88)),
+                cx,
+            )
+        });
+        assert_eq!(
+            stream_view.read_with(cx, |this, _| this.stream_source),
+            Some(source),
+            "new-source requests cannot silently replace this stream"
+        );
         stream_view.update(cx, |this, cx| this.open_popout_pip_window(cx));
         let pip = stream_view.read_with(cx, |this, _| this.pip_windows[0]);
         let mut visual = gpui::VisualTestContext::from_window(manager.into(), cx);
-        assert!(visual.simulate_close(), "management close should close only its presentation");
-        manager.update(cx, |_, window, _| window.remove_window()).unwrap();
+        assert!(
+            visual.simulate_close(),
+            "management close should close only its presentation"
+        );
+        manager
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
         assert!(manager.update(cx, |_, _, _| ()).is_err());
-        assert!(stream.update(cx, |_, _, _| ()).is_ok(), "stream remains independently open");
-        assert!(group.file_contexts.lock().unwrap().values().any(|context| std::sync::Arc::ptr_eq(&context.owner, &files_a.owner)),
-            "file work is retained when the management presentation closes");
+        assert!(
+            stream.update(cx, |_, _, _| ()).is_ok(),
+            "stream remains independently open"
+        );
+        assert!(
+            group
+                .file_contexts
+                .lock()
+                .unwrap()
+                .values()
+                .any(|context| std::sync::Arc::ptr_eq(&context.owner, &files_a.owner)),
+            "file work is retained when the management presentation closes"
+        );
         assert!(!group.stopping.load(std::sync::atomic::Ordering::Acquire));
         cx.update(|cx| {
             let retained = cx.global::<ManagementRoot>().0.clone();
             assert_eq!(retained, manager_view);
             assert_eq!(retained.read(cx).status, "Retained local work");
             reopen_restored_window(retained.clone(), cx);
-            assert!(retained.read(cx).window_handle.update(cx, |_, _, _| ()).is_ok());
+            assert!(
+                retained
+                    .read(cx)
+                    .window_handle
+                    .update(cx, |_, _, _| ())
+                    .is_ok()
+            );
         });
         let stream_weak = stream_view.downgrade();
         drop(stream_view);
         // A lost primary presentation can still be restored from its PiP.
         // Explicit user close now ends the stream; that path is tested separately.
-        stream.update(cx, |_, window, _| window.remove_window()).unwrap();
-        assert!(stream_weak.upgrade().is_some(), "PiP retains its exact stream controller");
+        stream
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        assert!(
+            stream_weak.upgrade().is_some(),
+            "PiP retains its exact stream controller"
+        );
         assert!(pip.update(cx, |_, _, _| ()).is_ok());
-        let owners=group.owners().len();
-        manager_view.update(cx,|this,cx|assert!(this.open_stream_source("fixture-device-a".into(),source,cx)));
-        let restored=stream_weak.read_with(cx,|this,_|this.window_handle).unwrap();
-        assert!(restored.update(cx,|_,_,_|()).is_ok(),"opening a PiP-only stream restores its same primary controller");
-        assert_eq!(group.owners().len(),owners,"restoring a presentation must not start another connection owner");
-        restored.update(cx,|_,window,_|window.remove_window()).unwrap();
-        pip.update(cx, |_, window, _| window.remove_window()).unwrap();
+        let owners = group.owners().len();
+        manager_view.update(cx, |this, cx| {
+            assert!(this.open_stream_source("fixture-device-a".into(), source, cx))
+        });
+        let restored = stream_weak
+            .read_with(cx, |this, _| this.window_handle)
+            .unwrap();
+        assert!(
+            restored.update(cx, |_, _, _| ()).is_ok(),
+            "opening a PiP-only stream restores its same primary controller"
+        );
+        assert_eq!(
+            group.owners().len(),
+            owners,
+            "restoring a presentation must not start another connection owner"
+        );
+        restored
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+        pip.update(cx, |_, window, _| window.remove_window())
+            .unwrap();
         cx.run_until_parked();
-        assert!(stream_weak.upgrade().is_none(), "last presentation releases the stream; timer must not retain it");
+        assert!(
+            stream_weak.upgrade().is_none(),
+            "last presentation releases the stream; timer must not retain it"
+        );
     }
 
     #[test]
@@ -7477,16 +10050,19 @@ mod input_tests {
     #[test]
     fn display_switcher_uses_real_sources_and_never_invents_display_two() {
         assert!(display_capture_sources(&[]).is_empty());
-        assert!(display_capture_sources(&[protocol::session::CaptureSourceInfo {
-            source: protocol::session::CaptureSource::Window(3),
-            title: "Only a window".into(),
-            application: String::new(),
-            process_id: Some(7),
-            width: 640,
-            height: 480,
-            supports_input: false,
-            camera: None,
-        }]).is_empty());
+        assert!(
+            display_capture_sources(&[protocol::session::CaptureSourceInfo {
+                source: protocol::session::CaptureSource::Window(3),
+                title: "Only a window".into(),
+                application: String::new(),
+                process_id: Some(7),
+                width: 640,
+                height: 480,
+                supports_input: false,
+                camera: None,
+            }])
+            .is_empty()
+        );
         let one = vec![protocol::session::CaptureSourceInfo {
             source: protocol::session::CaptureSource::MainDisplay,
             title: "Physical display".into(),
@@ -7533,8 +10109,14 @@ mod input_tests {
             ..Default::default()
         };
         assert!(host_stats_available(&stats));
-        stats.fps=0.0;stats.latency=0.0;stats.jitter=0.0;stats.bitrate_kbps=0;
-        assert!(host_stats_available(&stats),"A fresh idle-stream sample is valid telemetry");
+        stats.fps = 0.0;
+        stats.latency = 0.0;
+        stats.jitter = 0.0;
+        stats.bitrate_kbps = 0;
+        assert!(
+            host_stats_available(&stats),
+            "A fresh idle-stream sample is valid telemetry"
+        );
 
         stats.updated_at = Instant::now().checked_sub(Duration::from_secs(6));
         assert!(!host_stats_available(&stats));
@@ -7676,23 +10258,44 @@ mod input_tests {
     fn precise_scroll_preserves_phase_only_boundaries_and_momentum() {
         use protocol::{MomentumPhase as M, ScrollGesture, ScrollPhase as P};
         let mut tracker = PointerInputTracker::default();
-        let gestures = [(P::Began, M::None), (P::Changed, M::None), (P::Ended, M::None),
-            (P::None, M::Began), (P::None, M::Changed), (P::None, M::Ended),
-            (P::Cancelled, M::None)];
+        let gestures = [
+            (P::Began, M::None),
+            (P::Changed, M::None),
+            (P::Ended, M::None),
+            (P::None, M::Began),
+            (P::None, M::Changed),
+            (P::None, M::Ended),
+            (P::Cancelled, M::None),
+        ];
         for (phase, momentum) in gestures {
             let gesture = ScrollGesture { phase, momentum };
-            assert_eq!(tracker.scrolled((0., 0.), gesture),
-                Some(InputEvent::MouseScroll { delta_x: 0, delta_y: 0, gesture }));
+            assert_eq!(
+                tracker.scrolled((0., 0.), gesture),
+                Some(InputEvent::MouseScroll {
+                    delta_x: 0,
+                    delta_y: 0,
+                    gesture
+                })
+            );
         }
         assert_eq!(tracker.scrolled((0., 0.), Default::default()), None);
     }
 
     #[test]
     fn unqueued_scroll_never_emits_an_unbound_cancellation() {
-        use protocol::{ScrollGesture, ScrollPhase as P, MomentumPhase as M};
-        for gesture in [ScrollGesture {phase:P::Changed,momentum:M::None}, ScrollGesture {phase:P::None,momentum:M::Changed}] {
+        use protocol::{MomentumPhase as M, ScrollGesture, ScrollPhase as P};
+        for gesture in [
+            ScrollGesture {
+                phase: P::Changed,
+                momentum: M::None,
+            },
+            ScrollGesture {
+                phase: P::None,
+                momentum: M::Changed,
+            },
+        ] {
             let mut tracker = PointerInputTracker::default();
-            tracker.scrolled((0.,8.),gesture);
+            tracker.scrolled((0., 8.), gesture);
             assert!(tracker.cancel_scroll().is_none());
             assert!(tracker.release_events().is_empty());
         }
@@ -7734,27 +10337,42 @@ mod input_tests {
     #[test]
     fn text_mode_keeps_ime_confirmation_local_but_routes_enter_and_tab() {
         for (name, text) in [("enter", "\n"), ("tab", "\t")] {
-            let key=Keystroke {key:name.into(),key_char:Some(text.into()),..Default::default()};
-            assert!(!super::text_key_stays_local(&key,false));
-            assert!(protocol_key_event(&key,true).is_some());
-            assert!(super::text_key_stays_local(&key,true));
+            let key = Keystroke {
+                key: name.into(),
+                key_char: Some(text.into()),
+                ..Default::default()
+            };
+            assert!(!super::text_key_stays_local(&key, false));
+            assert!(protocol_key_event(&key, true).is_some());
+            assert!(super::text_key_stays_local(&key, true));
         }
         for text in ["a", " ", "你好🙂"] {
-            let key=Keystroke {key:"a".into(),key_char:Some(text.into()),..Default::default()};
-            assert!(super::text_key_stays_local(&key,false));
+            let key = Keystroke {
+                key: "a".into(),
+                key_char: Some(text.into()),
+                ..Default::default()
+            };
+            assert!(super::text_key_stays_local(&key, false));
         }
     }
 
     #[test]
     fn gpui_autorepeat_cannot_become_a_fresh_remote_press() {
         let mut event = gpui::KeyDownEvent {
-            keystroke: Keystroke { key: "a".into(), ..Default::default() },
+            keystroke: Keystroke {
+                key: "a".into(),
+                ..Default::default()
+            },
             is_held: true,
             prefer_character_input: false,
         };
         assert!(super::fresh_key_down(&event).is_none());
         event.is_held = false;
-        assert!(super::fresh_key_down(&event).and_then(|key| protocol_key_event(key, true)).is_some());
+        assert!(
+            super::fresh_key_down(&event)
+                .and_then(|key| protocol_key_event(key, true))
+                .is_some()
+        );
         event.is_held = true;
         assert!(super::fresh_key_down(&event).is_none());
     }
@@ -7826,7 +10444,9 @@ fn decoded_video_frame_surface_with_fit(
         .flex()
         .items_center()
         .justify_center()
-        .child(crate::i18n::tr("Native video adapter pending. This development preview is not the released viewer."))
+        .child(crate::i18n::tr(
+            "Native video adapter pending. This development preview is not the released viewer.",
+        ))
         .into_any_element()
 }
 
@@ -7876,7 +10496,10 @@ fn start_owned_gui_trace() {
     });
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    test,
+    any(target_os = "macos", target_os = "linux", target_os = "windows")
+))]
 #[path = "restored_input_tests.rs"]
 mod restored_input_tests;
 
@@ -7893,61 +10516,150 @@ fn decoded_video_frame_surface_with_fit(
             .into_any_element()
     } else {
         div()
-            .child(crate::i18n::tr("Waiting for a native decoder frame; no CPU presentation fallback"))
+            .child(crate::i18n::tr(
+                "Waiting for a native decoder frame; no CPU presentation fallback",
+            ))
             .into_any_element()
     }
 }
 
-#[cfg(all(target_os="linux",feature="native-linux-video"))]
-fn decoded_video_frame_surface_with_fit(frame:&MacDecodedVideoFrame,fit:ObjectFit)->AnyElement {
+#[cfg(all(target_os = "linux", feature = "native-linux-video"))]
+fn decoded_video_frame_surface_with_fit(
+    frame: &MacDecodedVideoFrame,
+    fit: ObjectFit,
+) -> AnyElement {
     match &frame.native_linux {
-        Some(native)=>gpui::surface(native.frame.clone()).video_geometry(native_frame_geometry(frame).expect("native frame geometry")).object_fit(fit).size_full().into_any_element(),
-        None=>div().size_full().flex().items_center().justify_center().child(crate::i18n::tr("Native video is unavailable; see the decoder status.")).into_any_element(),
+        Some(native) => gpui::surface(native.frame.clone())
+            .video_geometry(native_frame_geometry(frame).expect("native frame geometry"))
+            .object_fit(fit)
+            .size_full()
+            .into_any_element(),
+        None => div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(crate::i18n::tr(
+                "Native video is unavailable; see the decoder status.",
+            ))
+            .into_any_element(),
     }
 }
 
 // Keep capability, display acknowledgement, and input geometry aligned. No
 // unsupported platform or fallback placeholder can acknowledge a displayed frame.
-const fn native_surface_enabled(macos:bool,windows:bool,linux:bool,windows_native:bool,linux_native:bool)->bool {
-    macos || (windows&&windows_native) || (linux&&linux_native)
+const fn native_surface_enabled(
+    macos: bool,
+    windows: bool,
+    linux: bool,
+    windows_native: bool,
+    linux_native: bool,
+) -> bool {
+    macos || (windows && windows_native) || (linux && linux_native)
 }
-const fn native_presentation_available()->bool {
-    native_surface_enabled(cfg!(target_os="macos"),cfg!(target_os="windows"),cfg!(target_os="linux"),cfg!(feature="native-windows-video"),cfg!(feature="native-linux-video"))
+const fn native_presentation_available() -> bool {
+    native_surface_enabled(
+        cfg!(target_os = "macos"),
+        cfg!(target_os = "windows"),
+        cfg!(target_os = "linux"),
+        cfg!(feature = "native-windows-video"),
+        cfg!(feature = "native-linux-video"),
+    )
 }
-#[cfg(feature="gpui-native-video")]
-fn native_frame_geometry(frame:&MacDecodedVideoFrame)->Option<gpui::native_video::VideoGeometry> {
-    #[cfg(all(target_os="windows",feature="native-windows-video"))]
-    { return frame.native.as_ref().map(|n|gpui::native_video::VideoGeometry{rotation:gpui::native_video::Rotation::from_degrees(frame.display_rotation).expect("validated camera rotation"),..n.ready.frame.geometry()}); }
-    #[cfg(all(target_os="linux",feature="native-linux-video"))]
-    { return frame.native_linux.as_ref().map(|n|gpui::native_video::VideoGeometry{rotation:gpui::native_video::Rotation::from_degrees(frame.display_rotation).expect("validated camera rotation"),..n.frame.geometry()}); }
-    #[cfg(not(any(all(target_os="windows",feature="native-windows-video"),all(target_os="linux",feature="native-linux-video"))))]
-    {let _=frame;None}
-}
-#[cfg(feature="gpui-native-video")]
-fn native_pointer_event(geometry:gpui::native_video::VideoGeometry,viewport:gpui::native_video::VideoRect,fit:gpui::native_video::VideoFit,point:[f32;2])->Option<protocol::InputEvent> {
-    let [x,y]=geometry.map_input(viewport,fit,point)?;
-    Some(protocol::InputEvent::MouseMoveAbsolute{x:(x*f32::from(u16::MAX)).round() as u16,y:(y*f32::from(u16::MAX)).round() as u16})
-}
-#[cfg(test)] mod native_surface_input_tests {
-    use super::native_surface_enabled;
-    #[cfg(feature="gpui-native-video")]
-    use super::native_pointer_event;
-    #[test] fn all_supported_native_backends_have_a_paint_acknowledgement_path() {
-        assert!(native_surface_enabled(true,false,false,false,false));
-        assert!(native_surface_enabled(false,true,false,true,false));
-        assert!(native_surface_enabled(false,false,true,false,true));
-        assert!(!native_surface_enabled(false,true,false,false,true));
-        assert!(!native_surface_enabled(false,false,true,true,false));
-        assert!(!native_surface_enabled(false,false,false,true,true));
+#[cfg(feature = "gpui-native-video")]
+fn native_frame_geometry(
+    frame: &MacDecodedVideoFrame,
+) -> Option<gpui::native_video::VideoGeometry> {
+    #[cfg(all(target_os = "windows", feature = "native-windows-video"))]
+    {
+        return frame
+            .native
+            .as_ref()
+            .map(|n| gpui::native_video::VideoGeometry {
+                rotation: gpui::native_video::Rotation::from_degrees(frame.display_rotation)
+                    .expect("validated camera rotation"),
+                ..n.ready.frame.geometry()
+            });
     }
-    #[cfg(feature="gpui-native-video")]
-    #[test] fn linux_and_windows_use_the_same_painted_geometry_for_pointer_input() {
+    #[cfg(all(target_os = "linux", feature = "native-linux-video"))]
+    {
+        return frame
+            .native_linux
+            .as_ref()
+            .map(|n| gpui::native_video::VideoGeometry {
+                rotation: gpui::native_video::Rotation::from_degrees(frame.display_rotation)
+                    .expect("validated camera rotation"),
+                ..n.frame.geometry()
+            });
+    }
+    #[cfg(not(any(
+        all(target_os = "windows", feature = "native-windows-video"),
+        all(target_os = "linux", feature = "native-linux-video")
+    )))]
+    {
+        let _ = frame;
+        None
+    }
+}
+#[cfg(feature = "gpui-native-video")]
+fn native_pointer_event(
+    geometry: gpui::native_video::VideoGeometry,
+    viewport: gpui::native_video::VideoRect,
+    fit: gpui::native_video::VideoFit,
+    point: [f32; 2],
+) -> Option<protocol::InputEvent> {
+    let [x, y] = geometry.map_input(viewport, fit, point)?;
+    Some(protocol::InputEvent::MouseMoveAbsolute {
+        x: (x * f32::from(u16::MAX)).round() as u16,
+        y: (y * f32::from(u16::MAX)).round() as u16,
+    })
+}
+#[cfg(test)]
+mod native_surface_input_tests {
+    #[cfg(feature = "gpui-native-video")]
+    use super::native_pointer_event;
+    use super::native_surface_enabled;
+    #[test]
+    fn all_supported_native_backends_have_a_paint_acknowledgement_path() {
+        assert!(native_surface_enabled(true, false, false, false, false));
+        assert!(native_surface_enabled(false, true, false, true, false));
+        assert!(native_surface_enabled(false, false, true, false, true));
+        assert!(!native_surface_enabled(false, true, false, false, true));
+        assert!(!native_surface_enabled(false, false, true, true, false));
+        assert!(!native_surface_enabled(false, false, false, true, true));
+    }
+    #[cfg(feature = "gpui-native-video")]
+    #[test]
+    fn linux_and_windows_use_the_same_painted_geometry_for_pointer_input() {
         use gpui::native_video::*;
-        let viewport=VideoRect{x:-150.,y:20.,width:1000.,height:1000.};
-        let geometry=VideoGeometry{coded:[2048,1152],visible:[32,16,1920,1080],pixel_aspect:[1,1],rotation:Rotation::R90};
-        assert!(native_pointer_event(geometry,viewport,VideoFit::Contain,[-140.,30.]).is_none());
-        assert!(matches!(native_pointer_event(geometry,viewport,VideoFit::Contain,[350.,520.]),Some(protocol::InputEvent::MouseMoveAbsolute{x:32768,y:32768})));
-        let view=VideoRect{x:-225.,y:30.,width:1500.,height:1500.};
-        assert_eq!(native_pointer_event(geometry,viewport,VideoFit::Cover,[450.,420.]),native_pointer_event(geometry,view,VideoFit::Cover,[675.,630.]));
+        let viewport = VideoRect {
+            x: -150.,
+            y: 20.,
+            width: 1000.,
+            height: 1000.,
+        };
+        let geometry = VideoGeometry {
+            coded: [2048, 1152],
+            visible: [32, 16, 1920, 1080],
+            pixel_aspect: [1, 1],
+            rotation: Rotation::R90,
+        };
+        assert!(
+            native_pointer_event(geometry, viewport, VideoFit::Contain, [-140., 30.]).is_none()
+        );
+        assert!(matches!(
+            native_pointer_event(geometry, viewport, VideoFit::Contain, [350., 520.]),
+            Some(protocol::InputEvent::MouseMoveAbsolute { x: 32768, y: 32768 })
+        ));
+        let view = VideoRect {
+            x: -225.,
+            y: 30.,
+            width: 1500.,
+            height: 1500.,
+        };
+        assert_eq!(
+            native_pointer_event(geometry, viewport, VideoFit::Cover, [450., 420.]),
+            native_pointer_event(geometry, view, VideoFit::Cover, [675., 630.])
+        );
     }
 }

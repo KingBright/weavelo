@@ -487,7 +487,9 @@ impl P2pTunnelConfig {
     fn registration_packet(&self) -> Result<Vec<u8>, P2pError> {
         let announcement = if self.live_capabilities.is_some() {
             crate::discovery::DiscoveryAnnouncement::decode(&self.announcement)
-                .and_then(|announcement| announcement.encode_with_capabilities(self.live_capabilities.as_ref()))
+                .and_then(|announcement| {
+                    announcement.encode_with_capabilities(self.live_capabilities.as_ref())
+                })
                 .map_err(|_| P2pError::InvalidPacket)?
         } else {
             self.announcement.clone()
@@ -496,7 +498,8 @@ impl P2pTunnelConfig {
             group_id: self.group_id.clone(),
             peer_id: self.peer_id.clone(),
             announcement,
-        }.encode()
+        }
+        .encode()
     }
 
     pub fn with_local_target_addr(mut self, addr: SocketAddr) -> Self {
@@ -1954,15 +1957,21 @@ mod tests {
     #[tokio::test]
     async fn live_capture_capabilities_refresh_registration_without_rebinding() {
         let rendezvous = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let initial = crate::discovery::DiscoveryAnnouncement::decode(&announcement("mobile", 5001)).unwrap();
+        let initial =
+            crate::discovery::DiscoveryAnnouncement::decode(&announcement("mobile", 5001)).unwrap();
         let mut caps = initial.capabilities;
         caps.can_stream = false;
         caps.file_transfer = true;
         let (caps_tx, caps_rx) = watch::channel(caps);
         let mut config = P2pTunnelConfig::new(
-            "127.0.0.1:0".parse().unwrap(), rendezvous.local_addr().unwrap(),
-            "fixture-group", "mobile", initial.encode().unwrap(),
-        ).unwrap().with_live_capabilities(caps_rx);
+            "127.0.0.1:0".parse().unwrap(),
+            rendezvous.local_addr().unwrap(),
+            "fixture-group",
+            "mobile",
+            initial.encode().unwrap(),
+        )
+        .unwrap()
+        .with_live_capabilities(caps_rx);
         config.register_interval = Duration::from_millis(15);
         let tunnel = BoundP2pTunnel::bind(config).await.unwrap();
         let original_address = tunnel.local_addr().unwrap();
@@ -1977,15 +1986,27 @@ mod tests {
                 loop {
                     let (len, source) = rendezvous.recv_from(&mut buf).await.unwrap();
                     assert_eq!(source, original_address);
-                    let P2pPacket::Register { group_id, peer_id, announcement } = P2pPacket::decode(&buf[..len]).unwrap() else { panic!("expected registration"); };
+                    let P2pPacket::Register {
+                        group_id,
+                        peer_id,
+                        announcement,
+                    } = P2pPacket::decode(&buf[..len]).unwrap()
+                    else {
+                        panic!("expected registration");
+                    };
                     assert_eq!(group_id, "fixture-group");
                     assert_eq!(peer_id, "mobile");
-                    let received = crate::discovery::DiscoveryAnnouncement::decode(&announcement).unwrap();
+                    let received =
+                        crate::discovery::DiscoveryAnnouncement::decode(&announcement).unwrap();
                     assert_eq!(received.control_port, 5001);
                     assert!(received.capabilities.file_transfer);
-                    if received.capabilities.can_stream == capture { break; }
+                    if received.capabilities.can_stream == capture {
+                        break;
+                    }
                 }
-            }).await.expect("P2P registration refreshes media authorization");
+            })
+            .await
+            .expect("P2P registration refreshes media authorization");
         }
         cancel.send(()).unwrap();
         task.await.unwrap().unwrap();

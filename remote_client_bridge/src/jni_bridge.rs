@@ -25,8 +25,10 @@ static PUBLISHER: std::sync::Mutex<Option<Arc<crate::publisher_bridge::MobilePub
 // same inbound endpoint independently; media authorization is never implicit.
 static FILE_RECEIVER_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-static INPUT_SERVICE_AVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static DELIVERY_RECEIVER_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INPUT_SERVICE_AVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static DELIVERY_RECEIVER_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 static CAPTURE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CAMERA_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -48,12 +50,23 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
     let result = (|| -> Result<String, String> {
         let value: String = env.get_string(&payload).map_err(|e| e.to_string())?.into();
         if operation == 42 {
-            #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-            struct Pixels {width:u32,height:u32,rgba:Vec<u8>}
-            if value.len()>100_000 {return Err("Device badge pixels are oversized".into());}
-            let pixels:Pixels=serde_json::from_str(&value).map_err(|e|e.to_string())?;
-            let icon=remote_core::application_icons::encode_rgba(pixels.width,pixels.height,&pixels.rgba)?;
-            return serde_json::to_string(&icon).map_err(|e|e.to_string());
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Pixels {
+                width: u32,
+                height: u32,
+                rgba: Vec<u8>,
+            }
+            if value.len() > 100_000 {
+                return Err("Device badge pixels are oversized".into());
+            }
+            let pixels: Pixels = serde_json::from_str(&value).map_err(|e| e.to_string())?;
+            let icon = remote_core::application_icons::encode_rgba(
+                pixels.width,
+                pixels.height,
+                &pixels.rgba,
+            )?;
+            return serde_json::to_string(&icon).map_err(|e| e.to_string());
         }
         if operation == 0 || operation == 5 || operation == 20 || operation == 30 {
             let value: serde_json::Value =
@@ -77,28 +90,43 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             let newly_started = node.is_none();
             if newly_started {
                 *node = Some(Arc::new(client().runtime().block_on(
-                    crate::publisher_bridge::MobilePublisher::start_delivery_listener(bind, directory),
+                    crate::publisher_bridge::MobilePublisher::start_delivery_listener(
+                        bind, directory,
+                    ),
                 )?));
             }
             let publisher = node.as_ref().unwrap();
-            let identity=remote_core::mesh::AppPrivateMeshConfigStore::new(crate::bridge_device_group_dir()).load()
-                .map_err(|error|error.to_string())?.ok_or("Missing device identity")?;
+            let identity =
+                remote_core::mesh::AppPrivateMeshConfigStore::new(crate::bridge_device_group_dir())
+                    .load()
+                    .map_err(|error| error.to_string())?
+                    .ok_or("Missing device identity")?;
             publisher.set_device_identity(identity.node_id);
-            let badge=value.get("device_badge").cloned().map(serde_json::from_value).transpose().map_err(|e|e.to_string())?.unwrap_or_default();
+            let badge = value
+                .get("device_badge")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
             publisher.set_device_badge(badge)?;
             if operation == 0 {
                 publisher.set_capture_available(true, value["audio"].as_bool().unwrap_or(false));
-                publisher.set_input_service_available(INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed));
+                publisher.set_input_service_available(
+                    INPUT_SERVICE_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed),
+                );
                 publisher.set_input_capture_allowed(value["control"].as_bool().unwrap_or(false));
                 CAPTURE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             } else if operation == 30 {
-                CAMERA_ENABLED.store(true,std::sync::atomic::Ordering::Relaxed);
+                CAMERA_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             } else if operation == 20 {
                 DELIVERY_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             } else {
                 FILE_RECEIVER_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            publisher.set_file_reception(FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
+            publisher.set_file_reception(
+                FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+            );
             let address = publisher.address.to_string();
             crate::PUBLISHING_PORT.store(
                 publisher.address.port(),
@@ -122,8 +150,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                     publisher.set_capture_available(false, false);
                 }
             } else if operation == 33 {
-                CAMERA_ENABLED.store(false,std::sync::atomic::Ordering::Relaxed);
-                if let Some(publisher)=node.as_ref(){publisher.set_cameras(vec![])?;}
+                CAMERA_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+                if let Some(publisher) = node.as_ref() {
+                    publisher.set_cameras(vec![])?;
+                }
             } else if operation == 21 {
                 DELIVERY_RECEIVER_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
             } else {
@@ -134,7 +164,9 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 && !FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
                 && !DELIVERY_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
             if let Some(publisher) = node.as_ref() {
-                publisher.set_file_reception(FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed));
+                publisher.set_file_reception(
+                    FILE_RECEIVER_ENABLED.load(std::sync::atomic::Ordering::Relaxed),
+                );
             }
             if stop {
                 node.take();
@@ -160,8 +192,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
         }
         if operation == 8 {
             let available: bool = serde_json::from_str(&value).map_err(|e| e.to_string())?;
-            INPUT_SERVICE_AVAILABLE.store(available,std::sync::atomic::Ordering::Relaxed);
-            if let Some(publisher) = PUBLISHER.lock().unwrap().as_ref() { publisher.set_input_service_available(available); }
+            INPUT_SERVICE_AVAILABLE.store(available, std::sync::atomic::Ordering::Relaxed);
+            if let Some(publisher) = PUBLISHER.lock().unwrap().as_ref() {
+                publisher.set_input_service_available(available);
+            }
             return Ok(String::new());
         }
         if operation == 9 {
@@ -171,20 +205,37 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 |p| p.input_dispatch(),
             );
         }
-        if operation==16 {
-            let publisher=PUBLISHER.lock().unwrap().clone();
-            if publisher.as_ref().is_some_and(|publisher|publisher.is_finished()) {return Err("Incoming screen service stopped; stop sharing and receiving before retrying".into());}
-            return serde_json::to_string(&publisher.and_then(|publisher|publisher.next_delivery())).map_err(|error|error.to_string());
+        if operation == 16 {
+            let publisher = PUBLISHER.lock().unwrap().clone();
+            if publisher
+                .as_ref()
+                .is_some_and(|publisher| publisher.is_finished())
+            {
+                return Err(
+                    "Incoming screen service stopped; stop sharing and receiving before retrying"
+                        .into(),
+                );
+            }
+            return serde_json::to_string(
+                &publisher.and_then(|publisher| publisher.next_delivery()),
+            )
+            .map_err(|error| error.to_string());
         }
-        if operation==23 {
-            let publisher=PUBLISHER.lock().unwrap().clone();
-            let mut status=publisher.as_ref().map_or_else(||serde_json::json!({"id":0,"active":false,"target":"","status":""}),|publisher|publisher.outgoing_status());
-            status["incoming_ready"]=serde_json::json!(publisher.is_some_and(|publisher|!publisher.is_finished()));
+        if operation == 23 {
+            let publisher = PUBLISHER.lock().unwrap().clone();
+            let mut status = publisher.as_ref().map_or_else(
+                || serde_json::json!({"id":0,"active":false,"target":"","status":""}),
+                |publisher| publisher.outgoing_status(),
+            );
+            status["incoming_ready"] =
+                serde_json::json!(publisher.is_some_and(|publisher| !publisher.is_finished()));
             return Ok(status.to_string());
         }
-        if operation==18 {
-            let publisher=PUBLISHER.lock().unwrap().clone();
-            return Ok(publisher.is_some_and(|publisher|publisher.delivery_alive(&value)).to_string());
+        if operation == 18 {
+            let publisher = PUBLISHER.lock().unwrap().clone();
+            return Ok(publisher
+                .is_some_and(|publisher| publisher.delivery_alive(&value))
+                .to_string());
         }
         let publisher = PUBLISHER
             .lock()
@@ -193,99 +244,205 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
             .ok_or("screen sharing is not running")?;
         match operation {
             43 => {
-                if !CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed){return Err("Enable sharing before opening independent apps".into());}
-                if value.len()>256*2048{return Err("App catalog is oversized".into());}
-                publisher.set_applications(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())
+                if !CAPTURE_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("Enable sharing before opening independent apps".into());
+                }
+                if value.len() > 256 * 2048 {
+                    return Err("App catalog is oversized".into());
+                }
+                publisher
+                    .set_applications(serde_json::from_str(&value).map_err(|e| e.to_string())?)?;
+                Ok(String::new())
             }
             46 => {
-                if value.len()>22*1024*1024 {return Err("Application icon directory is oversized".into());}
-                publisher.set_catalog_icons(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())
+                if value.len() > 22 * 1024 * 1024 {
+                    return Err("Application icon directory is oversized".into());
+                }
+                publisher
+                    .set_catalog_icons(serde_json::from_str(&value).map_err(|e| e.to_string())?)?;
+                Ok(String::new())
             }
             44 => Ok(publisher.application_demands().to_string()),
             45 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Artwork {source:protocol::session::CaptureSource,grant:u64,epoch:u64,icon:Option<protocol::interaction::ApplicationIcon>}
-                if value.len()>1400*1024 {return Err("Application artwork is oversized".into());}
-                let artwork:Artwork=serde_json::from_str(&value).map_err(|e|e.to_string())?;
-                publisher.set_application_artwork(artwork.source,artwork.grant,artwork.epoch,artwork.icon)?;Ok(String::new())
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Artwork {
+                    source: protocol::session::CaptureSource,
+                    grant: u64,
+                    epoch: u64,
+                    icon: Option<protocol::interaction::ApplicationIcon>,
+                }
+                if value.len() > 1400 * 1024 {
+                    return Err("Application artwork is oversized".into());
+                }
+                let artwork: Artwork = serde_json::from_str(&value).map_err(|e| e.to_string())?;
+                publisher.set_application_artwork(
+                    artwork.source,
+                    artwork.grant,
+                    artwork.epoch,
+                    artwork.icon,
+                )?;
+                Ok(String::new())
             }
-            41 => {publisher.set_device_badge(serde_json::from_str(&value).map_err(|e|e.to_string())?)?;Ok(String::new())}
+            41 => {
+                publisher
+                    .set_device_badge(serde_json::from_str(&value).map_err(|e| e.to_string())?)?;
+                Ok(String::new())
+            }
             22 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Send {target:String,endpoint:std::net::SocketAddr,quality:crate::outgoing_quality::InitialQuality}
-                let send:Send=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                let id=client().runtime().block_on(publisher.send_screen_quality(send.target,send.endpoint,send.quality))?;
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Send {
+                    target: String,
+                    endpoint: std::net::SocketAddr,
+                    quality: crate::outgoing_quality::InitialQuality,
+                }
+                let send: Send = serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                let id = client().runtime().block_on(publisher.send_screen_quality(
+                    send.target,
+                    send.endpoint,
+                    send.quality,
+                ))?;
                 Ok(serde_json::json!({"id":id}).to_string())
             }
-            24 => {publisher.stop_sending_id(serde_json::from_str(&value).map_err(|error|error.to_string())?)?;Ok(String::new())}
+            24 => {
+                publisher.stop_sending_id(
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?,
+                )?;
+                Ok(String::new())
+            }
             17 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Update {id:String,state:protocol::session::DeliveryState,reason:String}
-                let update:Update=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                publisher.delivery_state(&update.id,update.state,&update.reason)?;Ok(String::new())
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Update {
+                    id: String,
+                    state: protocol::session::DeliveryState,
+                    reason: String,
+                }
+                let update: Update =
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                publisher.delivery_state(&update.id, update.state, &update.reason)?;
+                Ok(String::new())
             }
             2 if publisher.is_finished() => {
                 Err("Screen sharing ended; request a new system authorization".into())
             }
             2 => serde_json::to_string(&publisher.demand()).map_err(|e| e.to_string()),
             3 => {
-                let value:serde_json::Value=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                let source:protocol::session::CaptureSource=serde_json::from_value(value.get("source").cloned().unwrap_or(serde_json::json!("MainDisplay"))).map_err(|error|error.to_string())?;
-                let grant=value["grant"].as_u64().ok_or("Missing capture grant")?;
-                if publisher.source_grant(source)!=Some(grant){return Err("Capture authorization changed".into());}
-                let epoch=value["epoch"].as_u64().or_else(||(source==protocol::session::CaptureSource::MainDisplay).then(||publisher.demand().epoch)).ok_or("Missing capture epoch")?;
-                let width=value["width"].as_u64().and_then(|n|u32::try_from(n).ok()).ok_or("Invalid capture width")?;
-                let height=value["height"].as_u64().and_then(|n|u32::try_from(n).ok()).ok_or("Invalid capture height")?;
-                let rotation=value["rotation"].as_u64().unwrap_or(0);
-                let rotation=u16::try_from(rotation).map_err(|_|"Invalid capture rotation")?;
-                let epoch=publisher.configure_geometry(source,epoch,width,height,rotation)?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                let source: protocol::session::CaptureSource = serde_json::from_value(
+                    value
+                        .get("source")
+                        .cloned()
+                        .unwrap_or(serde_json::json!("MainDisplay")),
+                )
+                .map_err(|error| error.to_string())?;
+                let grant = value["grant"].as_u64().ok_or("Missing capture grant")?;
+                if publisher.source_grant(source) != Some(grant) {
+                    return Err("Capture authorization changed".into());
+                }
+                let epoch = value["epoch"]
+                    .as_u64()
+                    .or_else(|| {
+                        (source == protocol::session::CaptureSource::MainDisplay)
+                            .then(|| publisher.demand().epoch)
+                    })
+                    .ok_or("Missing capture epoch")?;
+                let width = value["width"]
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or("Invalid capture width")?;
+                let height = value["height"]
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or("Invalid capture height")?;
+                let rotation = value["rotation"].as_u64().unwrap_or(0);
+                let rotation = u16::try_from(rotation).map_err(|_| "Invalid capture rotation")?;
+                let epoch = publisher.configure_geometry(source, epoch, width, height, rotation)?;
                 Ok(serde_json::json!({"epoch":epoch}).to_string())
             }
             31 => {
-                if publisher.is_finished(){return Err("Camera service stopped".into());}
+                if publisher.is_finished() {
+                    return Err("Camera service stopped".into());
+                }
                 Ok(publisher.camera_demands().to_string())
             }
             32 => {
-                if !CAMERA_ENABLED.load(std::sync::atomic::Ordering::Relaxed){return Err("Enable camera sharing on this phone first".into());}
-                let cameras=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                serde_json::to_string(&publisher.set_cameras(cameras)?).map_err(|error|error.to_string())
+                if !CAMERA_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("Enable camera sharing on this phone first".into());
+                }
+                let cameras = serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                serde_json::to_string(&publisher.set_cameras(cameras)?)
+                    .map_err(|error| error.to_string())
             }
             34 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Send {target:String,endpoint:std::net::SocketAddr,sources:Vec<protocol::session::CaptureSource>}
-                let send:Send=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                client().runtime().block_on(publisher.send_sources(send.target,send.endpoint,send.sources))?;Ok(String::new())
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Send {
+                    target: String,
+                    endpoint: std::net::SocketAddr,
+                    sources: Vec<protocol::session::CaptureSource>,
+                }
+                let send: Send = serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                client().runtime().block_on(publisher.send_sources(
+                    send.target,
+                    send.endpoint,
+                    send.sources,
+                ))?;
+                Ok(String::new())
             }
             35 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Failure {source:protocol::session::CaptureSource,epoch:u64,reason:String}
-                let failure:Failure=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                if failure.reason.len()>1024{return Err("Camera failure detail is too long".into());}
-                publisher.fail_source(failure.source,failure.epoch,failure.reason);Ok(String::new())
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Failure {
+                    source: protocol::session::CaptureSource,
+                    epoch: u64,
+                    reason: String,
+                }
+                let failure: Failure =
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                if failure.reason.len() > 1024 {
+                    return Err("Camera failure detail is too long".into());
+                }
+                publisher.fail_source(failure.source, failure.epoch, failure.reason);
+                Ok(String::new())
             }
             36 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Failure {stream:u64,grant:u64,reason:String}
-                let failure:Failure=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                client().runtime().block_on(publisher.fail_screen_view(failure.stream,failure.grant,failure.reason))?;
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Failure {
+                    stream: u64,
+                    grant: u64,
+                    reason: String,
+                }
+                let failure: Failure =
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                client().runtime().block_on(publisher.fail_screen_view(
+                    failure.stream,
+                    failure.grant,
+                    failure.reason,
+                ))?;
                 Ok(String::new())
             }
             37 => {
-                let settings:crate::outgoing_quality::QualityRequest=serde_json::from_str(&value).map_err(|error|format!("Invalid outgoing quality: {error}"))?;
-                if let Some((revision,result))=publisher.set_outgoing_quality(settings)? {
+                let settings: crate::outgoing_quality::QualityRequest =
+                    serde_json::from_str(&value)
+                        .map_err(|error| format!("Invalid outgoing quality: {error}"))?;
+                if let Some((revision, result)) = publisher.set_outgoing_quality(settings)? {
                     match result.recv_timeout(std::time::Duration::from_secs(8)) {
-                        Ok(result)=>result?,
-                        Err(_)=>{
+                        Ok(result) => result?,
+                        Err(_) => {
                             // The encoder may have completed immediately after
                             // recv_timeout. Cancellation shares the media lock
                             // with completion, so its channel result is settled
                             // once this returns.
-                            if publisher.cancel_outgoing_quality(settings.id,revision) {
+                            if publisher.cancel_outgoing_quality(settings.id, revision) {
                                 return Err("Screen quality update timed out".into());
                             }
                             match result.try_recv() {
-                                Ok(settled)=>settled?,
-                                Err(_)=>return Err("Screen quality update timed out".into()),
+                                Ok(settled) => settled?,
+                                Err(_) => return Err("Screen quality update timed out".into()),
                             }
                         }
                     }
@@ -293,20 +450,49 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
                 Ok(String::new())
             }
             38 => {
-                #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)]
-                struct Applied {id:u64,stream:u64,grant:u64,revision:u64,accepted:bool}
-                let applied:Applied=serde_json::from_str(&value).map_err(|error|error.to_string())?;
-                Ok(publisher.complete_outgoing_quality(applied.id,applied.stream,applied.grant,applied.revision,applied.accepted).to_string())
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Applied {
+                    id: u64,
+                    stream: u64,
+                    grant: u64,
+                    revision: u64,
+                    accepted: bool,
+                }
+                let applied: Applied =
+                    serde_json::from_str(&value).map_err(|error| error.to_string())?;
+                Ok(publisher
+                    .complete_outgoing_quality(
+                        applied.id,
+                        applied.stream,
+                        applied.grant,
+                        applied.revision,
+                        applied.accepted,
+                    )
+                    .to_string())
             }
             11 => {
-                let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
-                Ok(publisher.input_execution_valid(value["generation"].as_u64().ok_or("missing input generation")?,
-                    value["token"].as_u64().ok_or("missing input token")?).to_string())
+                let value: serde_json::Value =
+                    serde_json::from_str(&value).map_err(|e| e.to_string())?;
+                Ok(publisher
+                    .input_execution_valid(
+                        value["generation"]
+                            .as_u64()
+                            .ok_or("missing input generation")?,
+                        value["token"].as_u64().ok_or("missing input token")?,
+                    )
+                    .to_string())
             }
             10 => {
-                let value: serde_json::Value = serde_json::from_str(&value).map_err(|e|e.to_string())?;
-                publisher.complete_input(value["generation"].as_u64().ok_or("missing input generation")?,
-                    value["token"].as_u64().ok_or("missing input token")?, value["accepted"].as_bool().ok_or("missing input outcome")?);
+                let value: serde_json::Value =
+                    serde_json::from_str(&value).map_err(|e| e.to_string())?;
+                publisher.complete_input(
+                    value["generation"]
+                        .as_u64()
+                        .ok_or("missing input generation")?,
+                    value["token"].as_u64().ok_or("missing input token")?,
+                    value["accepted"].as_bool().ok_or("missing input outcome")?,
+                );
                 Ok(String::new())
             }
             4 => {
@@ -332,36 +518,74 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeAction(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeFrame(
-    mut env:JNIEnv,_class:JClass,source:JString,epoch:jni::sys::jlong,
-    bytes:jni::objects::JByteArray,pts:jni::sys::jlong,
-)->jboolean {
-    let source=env.get_string(&source).ok().and_then(|s|serde_json::from_str::<protocol::session::CaptureSource>(&String::from(s)).ok());
-    if epoch<=0{return 0;}
-    if env.get_array_length(&bytes).is_ok_and(|n|n>0&&n<=8*1024*1024)
-        &&let Some(source)=source&&let Ok(bytes)=env.convert_byte_array(&bytes) {
-        let publisher=PUBLISHER.lock().unwrap().clone();
-        if let Some(publisher)=publisher {
-            return client().runtime().block_on(publisher.frame_from(source,epoch as u64,bytes,pts,false)) as jboolean;
+    mut env: JNIEnv,
+    _class: JClass,
+    source: JString,
+    epoch: jni::sys::jlong,
+    bytes: jni::objects::JByteArray,
+    pts: jni::sys::jlong,
+) -> jboolean {
+    let source = env.get_string(&source).ok().and_then(|s| {
+        serde_json::from_str::<protocol::session::CaptureSource>(&String::from(s)).ok()
+    });
+    if epoch <= 0 {
+        return 0;
+    }
+    if env
+        .get_array_length(&bytes)
+        .is_ok_and(|n| n > 0 && n <= 8 * 1024 * 1024)
+        && let Some(source) = source
+        && let Ok(bytes) = env.convert_byte_array(&bytes)
+    {
+        let publisher = PUBLISHER.lock().unwrap().clone();
+        if let Some(publisher) = publisher {
+            return client().runtime().block_on(publisher.frame_from(
+                source,
+                epoch as u64,
+                bytes,
+                pts,
+                false,
+            )) as jboolean;
         }
-    }0
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeClockMicros(
-    _env:JNIEnv,_class:JClass,
-)->jni::sys::jlong { remote_core::timing::quanta_now_us() as jni::sys::jlong }
+    _env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jlong {
+    remote_core::timing::quanta_now_us() as jni::sys::jlong
+}
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativeScreenFrame(
-    mut env:JNIEnv,_class:JClass,metadata:JString,bytes:jni::objects::JByteArray,
-)->jboolean {
-    if !env.get_array_length(&bytes).is_ok_and(|n|n>0&&n<=8*1024*1024){return 0;}
-    let metadata=env.get_string(&metadata).ok().and_then(|text|
-        serde_json::from_str::<crate::publisher_bridge::ScreenFrameMetadata>(&String::from(text)).ok());
-    let Some(metadata)=metadata else{return 0;};
-    let publisher=PUBLISHER.lock().unwrap().clone();
-    if let Some(publisher)=publisher && let Ok(bytes)=env.convert_byte_array(&bytes) {
-        return client().runtime().block_on(publisher.screen_frame(metadata,bytes)) as jboolean;
+    mut env: JNIEnv,
+    _class: JClass,
+    metadata: JString,
+    bytes: jni::objects::JByteArray,
+) -> jboolean {
+    if !env
+        .get_array_length(&bytes)
+        .is_ok_and(|n| n > 0 && n <= 8 * 1024 * 1024)
+    {
+        return 0;
+    }
+    let metadata = env.get_string(&metadata).ok().and_then(|text| {
+        serde_json::from_str::<crate::publisher_bridge::ScreenFrameMetadata>(&String::from(text))
+            .ok()
+    });
+    let Some(metadata) = metadata else {
+        return 0;
+    };
+    let publisher = PUBLISHER.lock().unwrap().clone();
+    if let Some(publisher) = publisher
+        && let Ok(bytes) = env.convert_byte_array(&bytes)
+    {
+        return client()
+            .runtime()
+            .block_on(publisher.screen_frame(metadata, bytes)) as jboolean;
     }
     0
 }
@@ -374,9 +598,16 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativePcm(
     grant: jni::sys::jlong,
     samples: jni::objects::JShortArray,
 ) -> jboolean {
-    static ENCODER: OnceLock<std::sync::Mutex<Option<(u64,opus::Encoder)>>> = OnceLock::new();
-    let Some(publisher)=PUBLISHER.lock().unwrap().clone()else{return 0;};
-    if grant<=0||publisher.source_grant(protocol::session::CaptureSource::MainDisplay)!=Some(grant as u64){return 0;}
+    static ENCODER: OnceLock<std::sync::Mutex<Option<(u64, opus::Encoder)>>> = OnceLock::new();
+    let Some(publisher) = PUBLISHER.lock().unwrap().clone() else {
+        return 0;
+    };
+    if grant <= 0
+        || publisher.source_grant(protocol::session::CaptureSource::MainDisplay)
+            != Some(grant as u64)
+    {
+        return 0;
+    }
     if env.get_array_length(&samples).ok() != Some(1920) {
         return 0;
     }
@@ -388,10 +619,12 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativePcm(
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .unwrap();
-    if slot.as_ref().is_none_or(|(old,_)|*old!=grant as u64) {
-        *slot=opus::Encoder::new(48000,opus::Channels::Stereo,opus::Application::Audio).ok().map(|encoder|(grant as u64,encoder));
+    if slot.as_ref().is_none_or(|(old, _)| *old != grant as u64) {
+        *slot = opus::Encoder::new(48000, opus::Channels::Stereo, opus::Application::Audio)
+            .ok()
+            .map(|encoder| (grant as u64, encoder));
     }
-    let Some((_,encoder)) = slot.as_mut() else {
+    let Some((_, encoder)) = slot.as_mut() else {
         return 0;
     };
     let mut bytes = [0u8; 4000];
@@ -399,7 +632,13 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_PublisherClient_nativePcm(
         return 0;
     };
     drop(slot);
-    client().runtime().block_on(publisher.frame_from(protocol::session::CaptureSource::MainDisplay,grant as u64,bytes[..length].to_vec(),0,true)) as jboolean
+    client().runtime().block_on(publisher.frame_from(
+        protocol::session::CaptureSource::MainDisplay,
+        grant as u64,
+        bytes[..length].to_vec(),
+        0,
+        true,
+    )) as jboolean
 }
 
 /// JSON control stays off Android's main thread; media uses separate bounded queues.
@@ -410,76 +649,83 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
     operation: jint,
     payload: JString,
 ) -> jstring {
-    let result =
-        (|| -> Result<String, String> {
-            let payload: String = env.get_string(&payload).map_err(|e| e.to_string())?.into();
-            let client = client();
-            if operation == 0 {
-                let value: serde_json::Value =
-                    serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-                let endpoint = value["endpoint"]
-                    .as_str()
-                    .ok_or("missing endpoint")?
-                    .parse()
-                    .map_err(|_| "invalid endpoint")?;
-                let directory = value["directory"]
-                    .as_str()
-                    .ok_or("missing receive directory")?
-                    .into();
-                let claim=value.get("claim").filter(|value|!value.is_null())
-                    .map(crate::delivery_claim_json::decode).transpose()?;
-                let workspace = client.runtime().block_on(
-                    crate::workspace_bridge::MobileWorkspace::connect_with_claim(endpoint, directory,claim),
-                )?;
-                let capabilities=workspace.capabilities().to_string();
-                *WORKSPACE.lock().unwrap() = Some(Arc::new(workspace));
-                refresh_network_ownership();
-                return Ok(capabilities);
-            }
-            if operation == 1 {
-                WORKSPACE.lock().unwrap().take();
-                refresh_network_ownership();
-                return Ok(String::new());
-            }
-            let workspace = WORKSPACE
-                .lock()
-                .unwrap()
-                .clone()
-                .ok_or("workspace disconnected")?;
-            match operation {
-                2 => client.runtime().block_on(workspace.command(&payload))?,
-                3 => client.runtime().block_on(workspace.settings(&payload))?,
-                4 => client
+    let result = (|| -> Result<String, String> {
+        let payload: String = env.get_string(&payload).map_err(|e| e.to_string())?.into();
+        let client = client();
+        if operation == 0 {
+            let value: serde_json::Value =
+                serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+            let endpoint = value["endpoint"]
+                .as_str()
+                .ok_or("missing endpoint")?
+                .parse()
+                .map_err(|_| "invalid endpoint")?;
+            let directory = value["directory"]
+                .as_str()
+                .ok_or("missing receive directory")?
+                .into();
+            let claim = value
+                .get("claim")
+                .filter(|value| !value.is_null())
+                .map(crate::delivery_claim_json::decode)
+                .transpose()?;
+            let workspace = client.runtime().block_on(
+                crate::workspace_bridge::MobileWorkspace::connect_with_claim(
+                    endpoint, directory, claim,
+                ),
+            )?;
+            let capabilities = workspace.capabilities().to_string();
+            *WORKSPACE.lock().unwrap() = Some(Arc::new(workspace));
+            refresh_network_ownership();
+            return Ok(capabilities);
+        }
+        if operation == 1 {
+            WORKSPACE.lock().unwrap().take();
+            refresh_network_ownership();
+            return Ok(String::new());
+        }
+        let workspace = WORKSPACE
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("workspace disconnected")?;
+        match operation {
+            2 => client.runtime().block_on(workspace.command(&payload))?,
+            3 => client.runtime().block_on(workspace.settings(&payload))?,
+            4 => client
+                .runtime()
+                .block_on(workspace.send_file(payload.into()))?,
+            5 => return Ok(workspace.events()),
+            6 => client.runtime().block_on(
+                workspace.keyframe(payload.parse().map_err(|_| "invalid subscription id")?),
+            )?,
+            7 => client
+                .runtime()
+                .block_on(workspace.send_clipboard(&payload))?,
+            8 => {
+                let catalog = remote_core::shared_files::shared_file_catalog();
+                let scope = remote_core::shared_files::current_share_scope();
+                let info = client
                     .runtime()
-                    .block_on(workspace.send_file(payload.into()))?,
-                5 => return Ok(workspace.events()),
-                6 => client.runtime().block_on(
-                    workspace.keyframe(payload.parse().map_err(|_| "invalid subscription id")?),
-                )?,
-                7 => client
-                    .runtime()
-                    .block_on(workspace.send_clipboard(&payload))?,
-                8 => {
-                    let catalog = remote_core::shared_files::shared_file_catalog();
-                    let scope = remote_core::shared_files::current_share_scope();
-                    let info = client
-                        .runtime()
-                        .block_on(catalog.publish(std::path::Path::new(&payload), scope))?;
-                    return serde_json::to_string(&info).map_err(|e| e.to_string());
-                }
-                9 => client
-                    .runtime()
-                    .block_on(workspace.shared_request(&payload))?,
-                10 => remote_core::shared_files::shared_file_catalog().clear(),
-                11 => workspace.surface(&payload)?,
-                12 => return serde_json::to_string(&workspace.touch(&payload)?).map_err(|e|e.to_string()),
-                13 => return workspace.keyboard_context(&payload),
-                14 => workspace.keyboard(&payload)?,
-                15 => workspace.presented(&payload)?,
-                _ => return Err("unknown workspace operation".into()),
+                    .block_on(catalog.publish(std::path::Path::new(&payload), scope))?;
+                return serde_json::to_string(&info).map_err(|e| e.to_string());
             }
-            Ok(String::new())
-        })();
+            9 => client
+                .runtime()
+                .block_on(workspace.shared_request(&payload))?,
+            10 => remote_core::shared_files::shared_file_catalog().clear(),
+            11 => workspace.surface(&payload)?,
+            12 => {
+                return serde_json::to_string(&workspace.touch(&payload)?)
+                    .map_err(|e| e.to_string());
+            }
+            13 => return workspace.keyboard_context(&payload),
+            14 => workspace.keyboard(&payload)?,
+            15 => workspace.presented(&payload)?,
+            _ => return Err("unknown workspace operation".into()),
+        }
+        Ok(String::new())
+    })();
     let output = match result {
         Ok(value) => value,
         Err(error) => serde_json::json!({"error":error}).to_string(),
@@ -547,15 +793,24 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeInit(
         .join("weavelo")
         .join("device-group");
     if configure_device_group_dir(device_group_dir).is_err() && GLOBAL_CLIENT.get().is_none() {
-        let _ = env.throw_new("java/lang/IllegalStateException", "WEAVELO_NATIVE_INIT:path-binding-conflict");
+        let _ = env.throw_new(
+            "java/lang/IllegalStateException",
+            "WEAVELO_NATIVE_INIT:path-binding-conflict",
+        );
         return 0;
     }
     let store = remote_core::mesh::AppPrivateMeshConfigStore::new(crate::bridge_device_group_dir());
     let identity = match crate::initialize_phone_identity(&store, &model_name) {
         Ok(identity) => identity,
         Err(error) => {
-            let code = crate::startup_diagnostics::profile_error_code(&error, std::path::Path::new(&storage_dir));
-            let _ = env.throw_new("java/lang/IllegalStateException", format!("WEAVELO_NATIVE_INIT:{code}"));
+            let code = crate::startup_diagnostics::profile_error_code(
+                &error,
+                std::path::Path::new(&storage_dir),
+            );
+            let _ = env.throw_new(
+                "java/lang/IllegalStateException",
+                format!("WEAVELO_NATIVE_INIT:{code}"),
+            );
             return 0;
         }
     };
@@ -636,12 +891,19 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeUpdateStr
 
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeInputIntentToken(_env:JNIEnv,_class:JClass)->jni::sys::jlong {
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeInputIntentToken(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jlong {
     client().input_intent_token() as jni::sys::jlong
 }
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeRefreshInputIntent(_env:JNIEnv,_class:JClass,token:jni::sys::jlong)->jboolean {
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeRefreshInputIntent(
+    _env: JNIEnv,
+    _class: JClass,
+    token: jni::sys::jlong,
+) -> jboolean {
     client().refresh_input_intent(token as u64) as jboolean
 }
 
@@ -663,35 +925,77 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendTouch
         2 => TouchAction::Up,
         _ => TouchAction::Cancel,
     };
-    client().handle_bound_touch_input(token as u64, action, pointer_id as u32, norm_x, norm_y, pressure);
+    client().handle_bound_touch_input(
+        token as u64,
+        action,
+        pointer_id as u32,
+        norm_x,
+        norm_y,
+        pressure,
+    );
 }
 
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeCommitText(
-    mut env:JNIEnv,_:JClass,owner:JString,text:JString) -> jboolean {
-    let Ok(owner)=env.get_string(&owner) else {return 0;};
-    let Ok(text)=env.get_string(&text) else {return 0;};
-    client().commit_text(&String::from(owner),&String::from(text)).is_ok() as jboolean
+    mut env: JNIEnv,
+    _: JClass,
+    owner: JString,
+    text: JString,
+) -> jboolean {
+    let Ok(owner) = env.get_string(&owner) else {
+        return 0;
+    };
+    let Ok(text) = env.get_string(&text) else {
+        return 0;
+    };
+    client()
+        .commit_text(&String::from(owner), &String::from(text))
+        .is_ok() as jboolean
 }
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeTextInputOwner(env:JNIEnv,_:JClass) -> jni::sys::jstring {
-    client().text_input_owner().and_then(|owner|env.new_string(owner).ok()).map(|s|s.into_raw()).unwrap_or(std::ptr::null_mut())
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeTextInputOwner(
+    env: JNIEnv,
+    _: JClass,
+) -> jni::sys::jstring {
+    client()
+        .text_input_owner()
+        .and_then(|owner| env.new_string(owner).ok())
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeTextKey(
-    mut env:JNIEnv,_:JClass,owner:JString,key:JString,pressed:jboolean) -> jboolean {
-    let Ok(owner)=env.get_string(&owner) else {return 0;};
-    let Ok(key)=env.get_string(&key) else {return 0;};
-    client().text_key(&String::from(owner),&String::from(key),pressed!=0).is_ok() as jboolean
+    mut env: JNIEnv,
+    _: JClass,
+    owner: JString,
+    key: JString,
+    pressed: jboolean,
+) -> jboolean {
+    let Ok(owner) = env.get_string(&owner) else {
+        return 0;
+    };
+    let Ok(key) = env.get_string(&key) else {
+        return 0;
+    };
+    client()
+        .text_key(&String::from(owner), &String::from(key), pressed != 0)
+        .is_ok() as jboolean
 }
 #[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSendBoundVirtualKey(
-    mut env:JNIEnv,_:JClass,token:jni::sys::jlong,key:JString,pressed:jboolean) {
-    if let Ok(key)=env.get_string(&key) {client().send_bound_virtual_key(token as u64,&String::from(key),pressed!=0);}
+    mut env: JNIEnv,
+    _: JClass,
+    token: jni::sys::jlong,
+    key: JString,
+    pressed: jboolean,
+) {
+    if let Ok(key) = env.get_string(&key) {
+        client().send_bound_virtual_key(token as u64, &String::from(key), pressed != 0);
+    }
 }
 
 #[cfg(feature = "android")]
@@ -919,6 +1223,10 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeGetInvita
     env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let result = client().invitation_json().unwrap_or_else(|error| serde_json::json!({"error": error}).to_string());
-    env.new_string(result).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    let result = client()
+        .invitation_json()
+        .unwrap_or_else(|error| serde_json::json!({"error": error}).to_string());
+    env.new_string(result)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }

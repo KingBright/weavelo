@@ -123,7 +123,8 @@ impl ScheduledDataSender {
         config.reliable_queue_capacity = config.reliable_queue_capacity.max(1);
         let (realtime_tx, realtime_rx) = mpsc::channel(config.realtime_queue_capacity);
         let (reliable_tx, reliable_rx) = mpsc::channel(config.reliable_queue_capacity);
-        let latest_video_overflow = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let latest_video_overflow =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let overflow_notify = Arc::new(tokio::sync::Notify::new());
         let counters = Arc::new(ScheduledDataSenderCounters::default());
         let worker = tokio::spawn(run_sender_worker(
@@ -328,7 +329,9 @@ fn pop_next_observed(
     let next = scheduler.pop_next(now_ms);
     let expired = scheduler.stats().dropped_stale_realtime - before;
     if expired > 0 {
-        counters.scheduler_dropped_stale_realtime.fetch_add(expired, Relaxed);
+        counters
+            .scheduler_dropped_stale_realtime
+            .fetch_add(expired, Relaxed);
         counters.pending_video_evictions.fetch_add(expired, Relaxed);
     }
     next
@@ -484,9 +487,7 @@ mod tests {
     fn queued_expiration_is_observed_once_and_preserves_ingress_drop_counts() {
         let mut scheduler = LaneScheduler::new();
         let counters = ScheduledDataSenderCounters::default();
-        let video = || make_realtime_envelope(
-            RealtimePacketSpec::video(1, 1, 1, 10), vec![1],
-        );
+        let video = || make_realtime_envelope(RealtimePacketSpec::video(1, 1, 1, 10), vec![1]);
         record_push_result(&counters, scheduler.push(video(), 11));
         record_push_result(&counters, scheduler.push(video(), 1));
         assert_eq!(counters.scheduler_dropped_stale_realtime.load(Relaxed), 1);
@@ -558,7 +559,9 @@ mod tests {
         let scheduled = ScheduledDataSender {
             realtime_tx,
             reliable_tx,
-            latest_video_overflow: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            latest_video_overflow: Arc::new(
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
             overflow_notify: Arc::new(tokio::sync::Notify::new()),
             counters: Arc::new(ScheduledDataSenderCounters::default()),
         };

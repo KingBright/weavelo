@@ -350,16 +350,18 @@ pub async fn run_file_transfer_runtime(
     let mut draining = false;
     loop {
         let active = !send_tasks.is_empty()
-                || exchange.pending()
-                || !command_rx.is_empty()
-                || !inbound_rx.is_empty()
-                || !inbound.incoming_files.is_empty()
-                || !inbound.manifest_assemblers.is_empty()
-                || !inbound.incoming_groups.is_empty();
+            || exchange.pending()
+            || !command_rx.is_empty()
+            || !inbound_rx.is_empty()
+            || !inbound.incoming_files.is_empty()
+            || !inbound.manifest_assemblers.is_empty()
+            || !inbound.incoming_groups.is_empty();
         config.active.store(active, Relaxed);
         // Incoming completion precedes delivery of its final ACK. Retain its
         // duplicate-ACK responder for the sender's existing retry deadline.
-        let receipt_deadline = inbound.receipt_deadline.filter(|until|*until > tokio::time::Instant::now());
+        let receipt_deadline = inbound
+            .receipt_deadline
+            .filter(|until| *until > tokio::time::Instant::now());
         if draining && !active && receipt_deadline.is_none() {
             emit_event(&event_tx, FileTransferEvent::Drained);
             return Ok(());
@@ -1239,12 +1241,18 @@ impl InboundFileTransfers {
     ) -> Result<(), FileTransferError> {
         match control_from_envelope(&envelope)? {
             FileTransferControl::ClipboardGroup { group_id } => {
-                if self.clipboard_groups.len() >= 32 && !self.clipboard_groups.contains_key(&group_id) {
+                if self.clipboard_groups.len() >= 32
+                    && !self.clipboard_groups.contains_key(&group_id)
+                {
                     return Err(FileTransferError::InvalidChunk {
                         reason: "too many pending clipboard groups",
                     });
                 }
-                self.clipboard_groups.entry(group_id).or_insert_with(|| self.clipboard_owner.as_ref().and_then(|slot| slot.lock().unwrap().clone()));
+                self.clipboard_groups.entry(group_id).or_insert_with(|| {
+                    self.clipboard_owner
+                        .as_ref()
+                        .and_then(|slot| slot.lock().unwrap().clone())
+                });
             }
             FileTransferControl::CancelTransfer {
                 transfer_id,
@@ -1389,15 +1397,17 @@ impl InboundFileTransfers {
             }
             let paths = completed.paths();
             if let Some(ownership) = self.clipboard_groups.remove(&group.group_id) {
-                if self.clipboard_owner.is_none() || ownership.as_ref().is_some_and(|token| token.current()) {
-                emit_event(
-                    event_tx,
-                    FileTransferEvent::IncomingClipboardReady {
-                        ownership,
-                        group_id: group.group_id,
-                        paths: paths.clone(),
-                    },
-                );
+                if self.clipboard_owner.is_none()
+                    || ownership.as_ref().is_some_and(|token| token.current())
+                {
+                    emit_event(
+                        event_tx,
+                        FileTransferEvent::IncomingClipboardReady {
+                            ownership,
+                            group_id: group.group_id,
+                            paths: paths.clone(),
+                        },
+                    );
                 }
             }
             emit_event(
@@ -1704,24 +1714,40 @@ mod tests {
 
     #[tokio::test]
     async fn clipboard_group_keeps_admission_generation_and_queued_send_checks_it() {
-        use std::sync::atomic::Ordering;
         use crate::clipboard_file_runtime::ClipboardOwnership;
+        use std::sync::atomic::Ordering;
         let a = Arc::new(AtomicBool::new(true));
         let slot = Arc::new(Mutex::new(Some(ClipboardOwnership(a.clone()))));
-        let mut inbound = InboundFileTransfers::new(PathBuf::from("/tmp"), FileReceivePolicy::default());
+        let mut inbound =
+            InboundFileTransfers::new(PathBuf::from("/tmp"), FileReceivePolicy::default());
         inbound.clipboard_owner = Some(slot.clone());
         let (events, _rx) = mpsc::unbounded_channel();
-        let marker = control_to_envelope(&FileTransferControl::ClipboardGroup { group_id: 42 }, 0, 2, 0, 0).unwrap();
-        inbound.handle_control(marker.clone(), &events).await.unwrap();
+        let marker = control_to_envelope(
+            &FileTransferControl::ClipboardGroup { group_id: 42 },
+            0,
+            2,
+            0,
+            0,
+        )
+        .unwrap();
+        inbound
+            .handle_control(marker.clone(), &events)
+            .await
+            .unwrap();
         a.store(false, Ordering::Release);
         let replacement = Arc::new(AtomicBool::new(true));
         *slot.lock().unwrap() = Some(ClipboardOwnership(replacement));
         inbound.handle_control(marker, &events).await.unwrap();
         let admitted = inbound.clipboard_groups.get(&42).unwrap().as_ref().unwrap();
         assert!(Arc::ptr_eq(&admitted.0, &a));
-        let command = FileTransferCommand::SendOwnedClipboardFiles { files: vec![], admission: crate::clipboard_file_runtime::ClipboardFileAdmission::new(admitted.clone()) };
+        let command = FileTransferCommand::SendOwnedClipboardFiles {
+            files: vec![],
+            admission: crate::clipboard_file_runtime::ClipboardFileAdmission::new(admitted.clone()),
+        };
         assert!(!clipboard_command_admitted(&command));
-        assert!(clipboard_command_admitted(&FileTransferCommand::SendFileGroup { files: vec![] }));
+        assert!(clipboard_command_admitted(
+            &FileTransferCommand::SendFileGroup { files: vec![] }
+        ));
     }
 
     #[test]
@@ -1938,7 +1964,10 @@ mod tests {
                         break;
                     }
                     if !draining_receiver && envelope.header.kind == ContentKind::FileManifest {
-                        target_command_tx.send(FileTransferCommand::Drain).await.unwrap();
+                        target_command_tx
+                            .send(FileTransferCommand::Drain)
+                            .await
+                            .unwrap();
                         draining_receiver = true;
                     }
                     if inject_faults
@@ -1964,7 +1993,10 @@ mod tests {
             .expect("send command should queue");
         // Closing a media view immediately after queuing a file must retain
         // both the queued command and its retransmissions until completion.
-        source_command_tx.send(FileTransferCommand::Drain).await.unwrap();
+        source_command_tx
+            .send(FileTransferCommand::Drain)
+            .await
+            .unwrap();
 
         let mut outgoing_completed = false;
         while !outgoing_completed {
@@ -1983,7 +2015,12 @@ mod tests {
             }
         }
 
-        assert!(matches!(timeout(Duration::from_secs(2), source_event_rx.recv()).await.unwrap(), Some(FileTransferEvent::Drained)));
+        assert!(matches!(
+            timeout(Duration::from_secs(2), source_event_rx.recv())
+                .await
+                .unwrap(),
+            Some(FileTransferEvent::Drained)
+        ));
 
         let received_path = loop {
             let event = timeout(Duration::from_secs(2), target_event_rx.recv())
@@ -2023,7 +2060,10 @@ mod tests {
             "Lost final acknowledgement and duplicate data must not create another numbered copy"
         );
 
-        assert!(!target_runtime.is_finished(), "Receiver must retain final-ACK retries after its view closes");
+        assert!(
+            !target_runtime.is_finished(),
+            "Receiver must retain final-ACK retries after its view closes"
+        );
         let _ = cancel_tx.send(());
         udp_router.abort();
         reply_router.abort();

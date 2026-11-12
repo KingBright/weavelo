@@ -35,17 +35,33 @@ pub struct SourceIconCache {
     appearances: SourceAppearances,
 }
 impl SourceIconCache {
-    pub fn appearances(&self) -> SourceAppearances { self.appearances.clone() }
-    pub fn retain_appearances(&mut self, sources:impl Iterator<Item=protocol::session::CaptureSource>) {
-        let live:HashSet<_>=sources.collect();
-        Arc::make_mut(&mut self.appearances).retain(|source,_|live.contains(source));
+    pub fn appearances(&self) -> SourceAppearances {
+        self.appearances.clone()
     }
-    pub fn set_appearance(&mut self, source: protocol::session::CaptureSource, value: &protocol::appearance::SourceAppearance) -> Result<(), String> {
-        let decoded=self.appearances.values().find(|cached|cached.matches(value)).cloned()
-            .map(Ok).unwrap_or_else(||SourceAppearance::decode(value).map(Arc::new))?;
-        let entries=Arc::make_mut(&mut self.appearances);
+    pub fn retain_appearances(
+        &mut self,
+        sources: impl Iterator<Item = protocol::session::CaptureSource>,
+    ) {
+        let live: HashSet<_> = sources.collect();
+        Arc::make_mut(&mut self.appearances).retain(|source, _| live.contains(source));
+    }
+    pub fn set_appearance(
+        &mut self,
+        source: protocol::session::CaptureSource,
+        value: &protocol::appearance::SourceAppearance,
+    ) -> Result<(), String> {
+        let decoded = self
+            .appearances
+            .values()
+            .find(|cached| cached.matches(value))
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| SourceAppearance::decode(value).map(Arc::new))?;
+        let entries = Arc::make_mut(&mut self.appearances);
         if !entries.contains_key(&source) && entries.len() >= protocol::session::MAX_SUBSCRIPTIONS {
-            if let Some(old)=entries.keys().next().copied(){entries.remove(&old);}
+            if let Some(old) = entries.keys().next().copied() {
+                entries.remove(&old);
+            }
         }
         entries.insert(source, decoded);
         Ok(())
@@ -152,7 +168,12 @@ fn decode(bytes: &[u8], id: IconId) -> Result<IconBitmap, String> {
     decode_bounded(bytes, id, MAX_ICON_EDGE, MAX_ICON_BYTES)
 }
 
-fn decode_bounded(bytes: &[u8], id: IconId, edge: u32, budget: usize) -> Result<IconBitmap, String> {
+fn decode_bounded(
+    bytes: &[u8],
+    id: IconId,
+    edge: u32,
+    budget: usize,
+) -> Result<IconBitmap, String> {
     let (width, height) = protocol::interaction::validate_png_container(bytes, edge, budget)?;
     let decoder =
         png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: 1024 * 1024 });
@@ -198,11 +219,28 @@ pub fn encode_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<ApplicationIc
 }
 
 pub fn encode_artwork(width: u32, height: u32, rgba: &[u8]) -> Result<ApplicationIcon, String> {
-    encode_bounded(width, height, rgba, protocol::appearance::MAX_ARTWORK_EDGE, protocol::appearance::MAX_ARTWORK_BYTES)
+    encode_bounded(
+        width,
+        height,
+        rgba,
+        protocol::appearance::MAX_ARTWORK_EDGE,
+        protocol::appearance::MAX_ARTWORK_BYTES,
+    )
 }
 
-fn encode_bounded(width: u32, height: u32, rgba: &[u8], mut edge: u32, budget: usize) -> Result<ApplicationIcon, String> {
-    if width == 0 || height == 0 || width > 512 || height > 512 || rgba.len() != width as usize * height as usize * 4 {
+fn encode_bounded(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    mut edge: u32,
+    budget: usize,
+) -> Result<ApplicationIcon, String> {
+    if width == 0
+        || height == 0
+        || width > 512
+        || height > 512
+        || rgba.len() != width as usize * height as usize * 4
+    {
         return Err("invalid native application icon pixels".into());
     }
     loop {
@@ -369,8 +407,17 @@ mod tests {
 
 /// Validate untrusted appearance bytes before exposing any pixels to a UI.
 pub fn decode_artwork(icon: &ApplicationIcon, large: bool) -> Result<Arc<IconBitmap>, String> {
-    if <[u8; 32]>::from(Sha256::digest(&icon.png)) != icon.id { return Err("application artwork digest differs".into()); }
-    let (edge,budget) = if large {(protocol::appearance::MAX_ARTWORK_EDGE,protocol::appearance::MAX_ARTWORK_BYTES)} else {(MAX_ICON_EDGE,MAX_ICON_BYTES)};
+    if <[u8; 32]>::from(Sha256::digest(&icon.png)) != icon.id {
+        return Err("application artwork digest differs".into());
+    }
+    let (edge, budget) = if large {
+        (
+            protocol::appearance::MAX_ARTWORK_EDGE,
+            protocol::appearance::MAX_ARTWORK_BYTES,
+        )
+    } else {
+        (MAX_ICON_EDGE, MAX_ICON_BYTES)
+    };
     Ok(Arc::new(decode_bounded(&icon.png, icon.id, edge, budget)?))
 }
 
@@ -382,48 +429,77 @@ pub struct SourceAppearance {
 }
 pub type SourceAppearances = Arc<HashMap<protocol::session::CaptureSource, Arc<SourceAppearance>>>;
 impl SourceAppearance {
-    fn matches(&self, value:&protocol::appearance::SourceAppearance)->bool {
-        fn same(cached:Option<&Arc<IconBitmap>>, incoming:Option<&ApplicationIcon>)->bool {
-            match (cached,incoming) {
-                (None,None)=>true,
-                (Some(cached),Some(incoming))=>cached.id==incoming.id && cached.png.as_ref()==incoming.png.as_slice(),
-                _=>false,
+    fn matches(&self, value: &protocol::appearance::SourceAppearance) -> bool {
+        fn same(cached: Option<&Arc<IconBitmap>>, incoming: Option<&ApplicationIcon>) -> bool {
+            match (cached, incoming) {
+                (None, None) => true,
+                (Some(cached), Some(incoming)) => {
+                    cached.id == incoming.id && cached.png.as_ref() == incoming.png.as_slice()
+                }
+                _ => false,
             }
         }
-        same(self.application.as_ref(),value.application.as_ref()) && match &value.device {
-            protocol::appearance::DeviceBadge::Preset(preset)=>self.custom.is_none() && self.preset==*preset,
-            protocol::appearance::DeviceBadge::Custom(icon)=>same(self.custom.as_ref(),Some(icon)),
-            _=>false,
-        }
+        same(self.application.as_ref(), value.application.as_ref())
+            && match &value.device {
+                protocol::appearance::DeviceBadge::Preset(preset) => {
+                    self.custom.is_none() && self.preset == *preset
+                }
+                protocol::appearance::DeviceBadge::Custom(icon) => {
+                    same(self.custom.as_ref(), Some(icon))
+                }
+                _ => false,
+            }
     }
     pub fn decode(value: &protocol::appearance::SourceAppearance) -> Result<Self, String> {
-        use protocol::appearance::{DeviceBadge,DeviceBadgePreset};
-        let (preset,custom) = match &value.device {
+        use protocol::appearance::{DeviceBadge, DeviceBadgePreset};
+        let (preset, custom) = match &value.device {
             DeviceBadge::Automatic => return Err("unresolved remote device badge".into()),
-            DeviceBadge::Preset(preset) => (*preset,None),
-            DeviceBadge::Custom(icon) => (DeviceBadgePreset::Computer,Some(decode_artwork(icon,false)?)),
+            DeviceBadge::Preset(preset) => (*preset, None),
+            DeviceBadge::Custom(icon) => (
+                DeviceBadgePreset::Computer,
+                Some(decode_artwork(icon, false)?),
+            ),
         };
-        Ok(Self {application: value.application.as_ref().map(|icon|decode_artwork(icon,true)).transpose()?,preset,custom})
+        Ok(Self {
+            application: value
+                .application
+                .as_ref()
+                .map(|icon| decode_artwork(icon, true))
+                .transpose()?,
+            preset,
+            custom,
+        })
     }
 }
 
 #[cfg(test)]
 mod appearance_tests {
     use super::*;
-    use protocol::appearance::{DeviceBadge,DeviceBadgePreset};
+    use protocol::appearance::{DeviceBadge, DeviceBadgePreset};
     #[test]
     fn hd_assets_preserve_pixels_without_enlarging_directory_or_badge_bounds() {
-        let pixels=vec![113;256*256*4];
-        let hd=encode_artwork(256,256,&pixels).unwrap();
-        assert_eq!(decode_artwork(&hd,true).unwrap().width,256);
-        assert!(decode_artwork(&hd,false).is_err());
-        let thumbnail=encode_rgba(256,256,&pixels).unwrap();
-        assert_eq!(decode_artwork(&thumbnail,false).unwrap().width,64);
-        assert!(SourceAppearance::decode(&protocol::appearance::SourceAppearance{application:None,device:DeviceBadge::Custom(hd.clone())}).is_err());
-        let mut tampered=hd.clone();tampered.id[0]^=1;
-        assert!(decode_artwork(&tampered,true).is_err());
-        let value=SourceAppearance::decode(&protocol::appearance::SourceAppearance{application:Some(hd),device:DeviceBadge::Preset(DeviceBadgePreset::Phone)}).unwrap();
-        assert_eq!(value.preset,DeviceBadgePreset::Phone);
-        assert_eq!(value.application.unwrap().rgba.as_ref(),pixels.as_slice());
+        let pixels = vec![113; 256 * 256 * 4];
+        let hd = encode_artwork(256, 256, &pixels).unwrap();
+        assert_eq!(decode_artwork(&hd, true).unwrap().width, 256);
+        assert!(decode_artwork(&hd, false).is_err());
+        let thumbnail = encode_rgba(256, 256, &pixels).unwrap();
+        assert_eq!(decode_artwork(&thumbnail, false).unwrap().width, 64);
+        assert!(
+            SourceAppearance::decode(&protocol::appearance::SourceAppearance {
+                application: None,
+                device: DeviceBadge::Custom(hd.clone())
+            })
+            .is_err()
+        );
+        let mut tampered = hd.clone();
+        tampered.id[0] ^= 1;
+        assert!(decode_artwork(&tampered, true).is_err());
+        let value = SourceAppearance::decode(&protocol::appearance::SourceAppearance {
+            application: Some(hd),
+            device: DeviceBadge::Preset(DeviceBadgePreset::Phone),
+        })
+        .unwrap();
+        assert_eq!(value.preset, DeviceBadgePreset::Phone);
+        assert_eq!(value.application.unwrap().rgba.as_ref(), pixels.as_slice());
     }
 }

@@ -1,4 +1,7 @@
-use crate::relay_status::{RelayFailure, RelayStage, RelayTunnelDiagnostics, StopObservation, io_failure, websocket_failure, tls_io_failure};
+use crate::relay_status::{
+    RelayFailure, RelayStage, RelayTunnelDiagnostics, StopObservation, io_failure, tls_io_failure,
+    websocket_failure,
+};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
@@ -570,75 +573,135 @@ struct ObservedRelayTransport {
     diagnostics: Arc<RelayTunnelDiagnostics>,
 }
 impl tokio::io::AsyncRead for ObservedRelayTransport {
-    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buffer: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<io::Result<()>> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
         let before = buffer.filled().len();
         let result = std::pin::Pin::new(&mut self.socket).poll_read(cx, buffer);
-        self.diagnostics.transport_bytes(false, buffer.filled().len().saturating_sub(before));
+        self.diagnostics
+            .transport_bytes(false, buffer.filled().len().saturating_sub(before));
         result
     }
 }
 impl tokio::io::AsyncWrite for ObservedRelayTransport {
-    fn poll_write(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buffer: &[u8]) -> std::task::Poll<io::Result<usize>> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
         let result = std::pin::Pin::new(&mut self.socket).poll_write(cx, buffer);
-        if let std::task::Poll::Ready(Ok(count)) = &result { self.diagnostics.transport_bytes(true, *count); }
+        if let std::task::Poll::Ready(Ok(count)) = &result {
+            self.diagnostics.transport_bytes(true, *count);
+        }
         result
     }
-    fn poll_flush(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<()>> { std::pin::Pin::new(&mut self.socket).poll_flush(cx) }
-    fn poll_shutdown(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<()>> { std::pin::Pin::new(&mut self.socket).poll_shutdown(cx) }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.socket).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.socket).poll_shutdown(cx)
+    }
 }
 
 async fn connect_observed_websocket(
     url: &str,
     diagnostics: &Arc<RelayTunnelDiagnostics>,
-) -> Result<(WebSocketStream<tokio_tungstenite::MaybeTlsStream<ObservedRelayTransport>>,
-    tokio_tungstenite::tungstenite::handshake::client::Response), RelayFailure> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+) -> Result<
+    (
+        WebSocketStream<tokio_tungstenite::MaybeTlsStream<ObservedRelayTransport>>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    RelayFailure,
+> {
     use tokio_tungstenite::MaybeTlsStream;
-    let request = url.into_client_request().map_err(|_| RelayFailure::Protocol)?;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let request = url
+        .into_client_request()
+        .map_err(|_| RelayFailure::Protocol)?;
     let uri = request.uri();
-    let host = uri.host().ok_or(RelayFailure::Protocol)?.trim_matches(['[', ']']).to_owned();
+    let host = uri
+        .host()
+        .ok_or(RelayFailure::Protocol)?
+        .trim_matches(['[', ']'])
+        .to_owned();
     let tls = uri.scheme_str() == Some("wss");
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
     diagnostics.stage(RelayStage::Dns);
-    let addresses = tokio::net::lookup_host((host.as_str(), port)).await.map_err(|error| {
-        diagnostics.connection_error(error.raw_os_error(), None);
-        io_failure(&error)
-    })?.collect::<Vec<_>>();
+    let addresses = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|error| {
+            diagnostics.connection_error(error.raw_os_error(), None);
+            io_failure(&error)
+        })?
+        .collect::<Vec<_>>();
     diagnostics.dns_resolved(&addresses);
-    if addresses.is_empty() { return Err(RelayFailure::Connection); }
+    if addresses.is_empty() {
+        return Err(RelayFailure::Connection);
+    }
     diagnostics.stage(RelayStage::Tcp);
-    let socket = TcpStream::connect(addresses.as_slice()).await.map_err(|error| {
-        diagnostics.connection_error(error.raw_os_error(), None);
-        io_failure(&error)
-    })?;
+    let socket = TcpStream::connect(addresses.as_slice())
+        .await
+        .map_err(|error| {
+            diagnostics.connection_error(error.raw_os_error(), None);
+            io_failure(&error)
+        })?;
     socket.set_nodelay(true).map_err(|error| {
         diagnostics.connection_error(error.raw_os_error(), None);
         io_failure(&error)
     })?;
     diagnostics.tcp_connected();
-    let socket = ObservedRelayTransport { socket, diagnostics: diagnostics.clone() };
+    let socket = ObservedRelayTransport {
+        socket,
+        diagnostics: diagnostics.clone(),
+    };
     let stream = if tls {
         diagnostics.stage(RelayStage::Tls);
         // Identical root set and builder to locked tokio-tungstenite 0.28's default.
         // Split only so EOF during TLS cannot be reported as a WebSocket failure.
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
-        let name = rustls::pki_types::ServerName::try_from(host).map_err(|_| RelayFailure::Protocol)?;
-        let stream = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, socket).await.map_err(|error| {
-            diagnostics.connection_error(error.raw_os_error(), None);
-            tls_io_failure(&error)
-        })?;
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name =
+            rustls::pki_types::ServerName::try_from(host).map_err(|_| RelayFailure::Protocol)?;
+        let stream = tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(name, socket)
+            .await
+            .map_err(|error| {
+                diagnostics.connection_error(error.raw_os_error(), None);
+                tls_io_failure(&error)
+            })?;
         diagnostics.tls_connected();
         MaybeTlsStream::Rustls(stream)
-    } else { MaybeTlsStream::Plain(socket) };
+    } else {
+        MaybeTlsStream::Plain(socket)
+    };
     diagnostics.stage(RelayStage::Websocket);
-    tokio_tungstenite::client_async_with_config(request, stream, Some(relay_websocket_config())).await.map_err(|error| {
-        let status = if let tokio_tungstenite::tungstenite::Error::Http(response) = &error { Some(response.status().as_u16()) } else { None };
-        let errno = if let tokio_tungstenite::tungstenite::Error::Io(io) = &error { io.raw_os_error() } else { None };
-        diagnostics.connection_error(errno, status);
-        websocket_failure(&error)
-    })
+    tokio_tungstenite::client_async_with_config(request, stream, Some(relay_websocket_config()))
+        .await
+        .map_err(|error| {
+            let status = if let tokio_tungstenite::tungstenite::Error::Http(response) = &error {
+                Some(response.status().as_u16())
+            } else {
+                None
+            };
+            let errno = if let tokio_tungstenite::tungstenite::Error::Io(io) = &error {
+                io.raw_os_error()
+            } else {
+                None
+            };
+            diagnostics.connection_error(errno, status);
+            websocket_failure(&error)
+        })
 }
 
 impl BoundWebSocketRelayTunnel {
@@ -650,14 +713,20 @@ impl BoundWebSocketRelayTunnel {
         }
         let socket = UdpSocket::bind(config.bind_addr).await?;
         crate::net::configure_relay_tunnel_udp_buffers(&socket);
-        Ok(Self { socket, config, diagnostics: Arc::new(RelayTunnelDiagnostics::default()) })
+        Ok(Self {
+            socket,
+            config,
+            diagnostics: Arc::new(RelayTunnelDiagnostics::default()),
+        })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }
 
-    pub fn diagnostics(&self) -> Arc<RelayTunnelDiagnostics> { self.diagnostics.clone() }
+    pub fn diagnostics(&self) -> Arc<RelayTunnelDiagnostics> {
+        self.diagnostics.clone()
+    }
 
     pub async fn run(self, mut cancel_rx: broadcast::Receiver<()>) -> io::Result<()> {
         let _stopped = StopObservation(self.diagnostics.clone());
@@ -682,7 +751,12 @@ impl BoundWebSocketRelayTunnel {
                     }
                 }
             }
-            if self.config.log_events { eprintln!("WebSocket relay retry: {:?}", self.diagnostics.snapshot().last_error); }
+            if self.config.log_events {
+                eprintln!(
+                    "WebSocket relay retry: {:?}",
+                    self.diagnostics.snapshot().last_error
+                );
+            }
             tokio::select! {
                 _ = cancel_rx.recv() => return Ok(()),
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -914,17 +988,26 @@ struct TcpRelayServerState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RelayRetirement { Replaced, SlowPeer }
+enum RelayRetirement {
+    Replaced,
+    SlowPeer,
+}
 impl std::fmt::Display for RelayRetirement {
-    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
-        f.write_str(match self { Self::Replaced=>"relay connection replaced", Self::SlowPeer=>"relay peer is too slow" })
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Replaced => "relay connection replaced",
+            Self::SlowPeer => "relay peer is too slow",
+        })
     }
 }
 impl std::error::Error for RelayRetirement {}
-fn relay_retirement_error(reason:Option<RelayRetirement>)->io::Error {
+fn relay_retirement_error(reason: Option<RelayRetirement>) -> io::Error {
     match reason {
-        Some(reason)=>io::Error::new(io::ErrorKind::ConnectionAborted,reason),
-        None=>io::Error::new(io::ErrorKind::BrokenPipe,"relay ownership notification ended"),
+        Some(reason) => io::Error::new(io::ErrorKind::ConnectionAborted, reason),
+        None => io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "relay ownership notification ended",
+        ),
     }
 }
 
@@ -1018,9 +1101,13 @@ impl TcpRelayServerState {
             disconnected_slow_peers: 0,
         };
         let mut deferred = Vec::new();
-        let Some(source) = self.identity(source_connection_id)
+        let Some(source) = self
+            .identity(source_connection_id)
             .filter(|identity| identity.group_id == group_id)
-            .map(|identity| identity.peer_id.as_str()) else { return (result, deferred); };
+            .map(|identity| identity.peer_id.as_str())
+        else {
+            return (result, deferred);
+        };
         let Ok(target) = crate::routed_relay::relay_target(payload, source) else {
             return (result, deferred);
         };
@@ -1028,7 +1115,8 @@ impl TcpRelayServerState {
             .peers
             .iter()
             .filter(|(key, peer)| {
-                key.group_id == group_id && peer.connection_id != source_connection_id
+                key.group_id == group_id
+                    && peer.connection_id != source_connection_id
                     && target.is_none_or(|target| key.peer_id == target)
             })
             .map(|(_, peer)| peer.clone())
@@ -1065,14 +1153,20 @@ async fn forward_relay_frame(
     frame: Arc<[u8]>,
     payload: &[u8],
 ) -> RelayForwardResult {
-    let (mut result, deferred) = state.lock().await
-        .forward_frame(group_id, source_connection_id, frame.clone(), payload);
+    let (mut result, deferred) =
+        state
+            .lock()
+            .await
+            .forward_frame(group_id, source_connection_id, frame.clone(), payload);
     let deadline = tokio::time::Instant::now() + TCP_WRITER_STALL_TIMEOUT;
     for peer in deferred {
         // Keep one current frame and stop reading this producer while the
         // bounded destination drains. A short socket stall is not a failed peer.
         match tokio::time::timeout_at(deadline, peer.writer_tx.send(frame.clone())).await {
-            Ok(Ok(())) => { result.forwarded += 1; continue; }
+            Ok(Ok(())) => {
+                result.forwarded += 1;
+                continue;
+            }
             Ok(Err(_)) => {}
             Err(_) => {
                 let retired = peer.disconnect_tx.borrow().is_some();
@@ -1212,19 +1306,36 @@ where
     // reads. Poll both halves in this task, retaining the existing bound.
     let receive = async {
         loop {
-            let inbound = tokio::time::timeout(config.idle_timeout, reader.next()).await
-                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay connection idle timeout"))?;
+            let inbound = tokio::time::timeout(config.idle_timeout, reader.next())
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "relay connection idle timeout")
+                })?;
             let Some(message) = inbound else {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "WebSocket relay closed"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "WebSocket relay closed",
+                ));
             };
             match message.map_err(websocket_io_error)? {
                 Message::Binary(frame) => {
-                    handle_tcp_relay_packet(&frame, addr, connection_id, &writer_tx,
-                        &disconnect_tx, &state, config).await?;
+                    handle_tcp_relay_packet(
+                        &frame,
+                        addr,
+                        connection_id,
+                        &writer_tx,
+                        &disconnect_tx,
+                        &state,
+                        config,
+                    )
+                    .await?;
                 }
                 Message::Close(_) => return Ok(()),
                 Message::Text(_) => {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "relay accepts binary WebSocket messages only"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "relay accepts binary WebSocket messages only",
+                    ));
                 }
                 // Tungstenite queues the matching Pong during the read. Wake
                 // the writer even when no media is queued for this peer.
@@ -1264,7 +1375,7 @@ async fn handle_tcp_relay_packet(
     state: &Arc<Mutex<TcpRelayServerState>>,
     config: &TcpRelayServerConfig,
 ) -> io::Result<()> {
-    if let Some(reason)=*disconnect_tx.borrow() {
+    if let Some(reason) = *disconnect_tx.borrow() {
         return Err(relay_retirement_error(Some(reason)));
     }
     let Some(packet) = RelayPacket::decode(frame) else {
@@ -1316,7 +1427,8 @@ async fn handle_tcp_relay_packet(
             }
             let encoded = Arc::<[u8]>::from(frame);
             drop(relay_state);
-            let forward = forward_relay_frame(state, &group_id, connection_id, encoded, &payload).await;
+            let forward =
+                forward_relay_frame(state, &group_id, connection_id, encoded, &payload).await;
             // A ready WebSocket burst must not monopolize the executor and
             // make another healthy connection's bounded writer look slow.
             tokio::task::yield_now().await;
@@ -1333,7 +1445,7 @@ async fn handle_tcp_relay_packet(
 
 async fn send_websocket_binary<S>(stream: &mut S, frame: Vec<u8>) -> io::Result<()>
 where
-    S: futures_util::Sink<Message,Error=tokio_tungstenite::tungstenite::Error> + Unpin,
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
     stream
         .send(Message::Binary(Bytes::from(frame)))
@@ -1551,23 +1663,39 @@ mod tests {
         if std::env::var_os(CHILD).is_some() {
             assert!(rustls::crypto::CryptoProvider::get_default().is_none());
             let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all().build().unwrap();
+                .enable_all()
+                .build()
+                .unwrap();
             let config = WebSocketRelayTunnelConfig::new(
                 "127.0.0.1:0".parse().unwrap(),
-                "wss://relay.invalid:443/v1/relay", "synthetic-group", "synthetic-peer",
-            ).unwrap();
+                "wss://relay.invalid:443/v1/relay",
+                "synthetic-group",
+                "synthetic-peer",
+            )
+            .unwrap();
             // Binding is the production entry point; no DNS, profile or gateway is used.
-            let _tunnel = runtime.block_on(BoundWebSocketRelayTunnel::bind(config)).unwrap();
+            let _tunnel = runtime
+                .block_on(BoundWebSocketRelayTunnel::bind(config))
+                .unwrap();
             let _client = rustls::ClientConfig::builder()
                 .with_root_certificates(rustls::RootCertStore::empty())
                 .with_no_client_auth();
             return;
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "relay::tests::websocket_tls_bootstraps_without_ambient_provider", "--nocapture"])
-            .env(CHILD, "1").output().unwrap();
-        assert!(output.status.success(), "Fresh TLS bootstrap failed: {}",
-            String::from_utf8_lossy(&output.stderr));
+            .args([
+                "--exact",
+                "relay::tests::websocket_tls_bootstraps_without_ambient_provider",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Fresh TLS bootstrap failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -1575,22 +1703,31 @@ mod tests {
         let diagnostics = RelayTunnelDiagnostics::default();
         diagnostics.retry(RelayFailure::Timeout);
         diagnostics.attempt();
-        assert_eq!(diagnostics.snapshot().last_error, Some(RelayFailure::Timeout));
+        assert_eq!(
+            diagnostics.snapshot().last_error,
+            Some(RelayFailure::Timeout)
+        );
         diagnostics.connected();
         assert_eq!(diagnostics.snapshot().last_error, None);
         let recovered = diagnostics.snapshot().last_disconnect.unwrap();
         assert_eq!(recovered.failure, RelayFailure::Timeout);
         assert_eq!(recovered.stage, RelayStage::Idle);
         diagnostics.attempt();
-        assert_eq!(diagnostics.snapshot().last_disconnect.unwrap().failure, RelayFailure::Timeout);
+        assert_eq!(
+            diagnostics.snapshot().last_disconnect.unwrap().failure,
+            RelayFailure::Timeout
+        );
     }
 
     #[test]
     fn active_websocket_failures_keep_the_structured_cause() {
         use tokio_tungstenite::tungstenite::{Error, error::ProtocolError};
-        let wrapped = websocket_io_error(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake));
+        let wrapped =
+            websocket_io_error(Error::Protocol(ProtocolError::ResetWithoutClosingHandshake));
         assert_eq!(io_failure(&wrapped), RelayFailure::ProtocolReset);
-        let wrapped = websocket_io_error(Error::WriteBufferFull(Box::new(Message::Binary(Bytes::from_static(b"synthetic")))));
+        let wrapped = websocket_io_error(Error::WriteBufferFull(Box::new(Message::Binary(
+            Bytes::from_static(b"synthetic"),
+        ))));
         assert_eq!(io_failure(&wrapped), RelayFailure::Backpressure);
     }
 
@@ -1603,22 +1740,40 @@ mod tests {
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
-            ws.send(Message::Pong(Bytes::from_static(b"unsolicited"))).await.unwrap();
+            ws.send(Message::Pong(Bytes::from_static(b"unsolicited")))
+                .await
+                .unwrap();
             sent.send(()).unwrap();
             allowed.await.unwrap();
             while let Some(Ok(message)) = ws.next().await {
                 match message {
-                    Message::Ping(payload) => { if ws.send(Message::Pong(payload)).await.is_err() { break; } }
-                    Message::Binary(frame) if matches!(RelayPacket::decode(&frame), Some(RelayPacket::Data { .. })) => {
-                        if ws.send(Message::Binary(frame)).await.is_err() { break; }
+                    Message::Ping(payload) => {
+                        if ws.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Message::Binary(frame)
+                        if matches!(
+                            RelayPacket::decode(&frame),
+                            Some(RelayPacket::Data { .. })
+                        ) =>
+                    {
+                        if ws.send(Message::Binary(frame)).await.is_err() {
+                            break;
+                        }
                     }
                     _ => {}
                 }
             }
         });
-        let config = WebSocketRelayTunnelConfig::new("127.0.0.1:0".parse().unwrap(),
-            format!("ws://{address}/relay"), "synthetic-group", "synthetic-peer").unwrap()
-            .with_heartbeat(Duration::from_millis(50), Duration::from_secs(2));
+        let config = WebSocketRelayTunnelConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            format!("ws://{address}/relay"),
+            "synthetic-group",
+            "synthetic-peer",
+        )
+        .unwrap()
+        .with_heartbeat(Duration::from_millis(50), Duration::from_secs(2));
         let tunnel = BoundWebSocketRelayTunnel::bind(config).await.unwrap();
         let endpoint = tunnel.local_addr().unwrap();
         let diagnostics = tunnel.diagnostics();
@@ -1631,11 +1786,18 @@ mod tests {
         let local = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         local.send_to(b"synthetic-payload", endpoint).await.unwrap();
         let mut received = [0; 64];
-        let count = timeout(Duration::from_secs(2), local.recv(&mut received)).await.unwrap().unwrap();
+        let count = timeout(Duration::from_secs(2), local.recv(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(&received[..count], b"synthetic-payload");
         timeout(Duration::from_secs(2), async {
-            while diagnostics.snapshot().pongs_received == 0 { tokio::time::sleep(Duration::from_millis(5)).await; }
-        }).await.unwrap();
+            while diagnostics.snapshot().pongs_received == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
         let state = diagnostics.snapshot();
         assert_eq!(state.data_frames_sent, 1);
         assert_eq!(state.data_frames_received, 1);
@@ -1655,8 +1817,13 @@ mod tests {
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
-            let Message::Binary(frame) = ws.next().await.unwrap().unwrap() else { panic!("registration missing") };
-            assert!(matches!(RelayPacket::decode(&frame), Some(RelayPacket::Register { .. })));
+            let Message::Binary(frame) = ws.next().await.unwrap().unwrap() else {
+                panic!("registration missing")
+            };
+            assert!(matches!(
+                RelayPacket::decode(&frame),
+                Some(RelayPacket::Register { .. })
+            ));
             registered_tx.send(()).unwrap();
             allow_rx.await.unwrap();
             // Reading alone must not be mistaken for receiving a Pong on the client.
@@ -1672,18 +1839,28 @@ mod tests {
             let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
             while let Some(Ok(message)) = ws.next().await {
                 if let Message::Ping(payload) = message {
-                    if ws.send(Message::Pong(payload)).await.is_err() { break; }
+                    if ws.send(Message::Pong(payload)).await.is_err() {
+                        break;
+                    }
                 }
             }
         });
-        let config = WebSocketRelayTunnelConfig::new("127.0.0.1:0".parse().unwrap(),
-            format!("ws://{address}/relay"), "synthetic-group", "synthetic-peer").unwrap()
-            .with_heartbeat(Duration::from_millis(20), Duration::from_millis(200));
+        let config = WebSocketRelayTunnelConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            format!("ws://{address}/relay"),
+            "synthetic-group",
+            "synthetic-peer",
+        )
+        .unwrap()
+        .with_heartbeat(Duration::from_millis(20), Duration::from_millis(200));
         let tunnel = BoundWebSocketRelayTunnel::bind(config).await.unwrap();
         let diagnostics = tunnel.diagnostics();
         let (cancel, rx) = broadcast::channel(2);
         let task = tokio::spawn(tunnel.run(rx));
-        timeout(Duration::from_secs(2), registered_rx).await.unwrap().unwrap();
+        timeout(Duration::from_secs(2), registered_rx)
+            .await
+            .unwrap()
+            .unwrap();
         let before_pong = diagnostics.snapshot();
         assert!(before_pong.registrations_sent > 0);
         assert_eq!(before_pong.pongs_received, 0);
@@ -1692,12 +1869,21 @@ mod tests {
         timeout(Duration::from_secs(4), async {
             loop {
                 let state = diagnostics.snapshot();
-                if state.attempts >= 2 && state.registrations_sent >= 3 && state.pongs_received >= 2 { break; }
+                if state.attempts >= 2 && state.registrations_sent >= 3 && state.pongs_received >= 2
+                {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         cancel.send(()).unwrap();
-        timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
+        timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert_eq!(diagnostics.snapshot().state, RelayConnectionState::Stopped);
         assert!(diagnostics.snapshot().last_pong_age_ms.is_none());
         server.abort();
@@ -1717,8 +1903,17 @@ mod tests {
             });
             let diagnostics = Arc::new(RelayTunnelDiagnostics::default());
             diagnostics.attempt();
-            assert!(timeout(Duration::from_millis(100), connect_observed_websocket(
-                &format!("{scheme}://{address}/relay"), &diagnostics)).await.is_err());
+            assert!(
+                timeout(
+                    Duration::from_millis(100),
+                    connect_observed_websocket(
+                        &format!("{scheme}://{address}/relay"),
+                        &diagnostics
+                    )
+                )
+                .await
+                .is_err()
+            );
             diagnostics.retry(RelayFailure::Timeout);
             let value = diagnostics.snapshot();
             assert_eq!(value.last_failure_stage, Some(expected));
@@ -1726,8 +1921,14 @@ mod tests {
             assert_eq!(value.tcp_connections, 1);
             assert_eq!(value.tls_handshakes, 0);
             assert_eq!(value.websocket_upgrades, 0);
-            if scheme == "wss" { assert!(value.tls_bytes_sent > 0); assert_eq!(value.tls_bytes_received, 0); }
-            timeout(Duration::from_secs(1), server).await.unwrap().unwrap();
+            if scheme == "wss" {
+                assert!(value.tls_bytes_sent > 0);
+                assert_eq!(value.tls_bytes_received, 0);
+            }
+            timeout(Duration::from_secs(1), server)
+                .await
+                .unwrap()
+                .unwrap();
         }
     }
 
@@ -1743,7 +1944,12 @@ mod tests {
         });
         let diagnostics = Arc::new(RelayTunnelDiagnostics::default());
         diagnostics.attempt();
-        let failure = match connect_observed_websocket(&format!("ws://{address}/relay"), &diagnostics).await {
+        let failure = match connect_observed_websocket(
+            &format!("ws://{address}/relay"),
+            &diagnostics,
+        )
+        .await
+        {
             Err(failure) => failure,
             Ok(_) => panic!("unexpected upgrade"),
         };
@@ -1751,15 +1957,24 @@ mod tests {
         let value = diagnostics.snapshot();
         assert_eq!(value.last_failure_stage, Some(RelayStage::Websocket));
         assert_eq!(value.http_status, Some(403));
-        assert!(!serde_json::to_string(&value).unwrap().contains("credential-canary"));
+        assert!(
+            !serde_json::to_string(&value)
+                .unwrap()
+                .contains("credential-canary")
+        );
         server.await.unwrap();
     }
 
     #[test]
     fn dns_comparison_keeps_address_hashes_and_benchmark_count_only() {
         let diagnostics = RelayTunnelDiagnostics::default();
-        let addresses = ["198.18.1.2:8443", "198.19.1.2:8443", "198.20.1.2:8443", "198.17.1.2:8443"]
-            .map(|address| address.parse().unwrap());
+        let addresses = [
+            "198.18.1.2:8443",
+            "198.19.1.2:8443",
+            "198.20.1.2:8443",
+            "198.17.1.2:8443",
+        ]
+        .map(|address| address.parse().unwrap());
         diagnostics.dns_resolved(&addresses);
         let value = diagnostics.snapshot();
         assert_eq!(value.dns_results, 4);
@@ -1881,17 +2096,46 @@ mod tests {
 
     #[test]
     fn retired_relay_connection_cannot_reclaim_a_replacement_peer() {
-        let mut state=TcpRelayServerState::default();
-        let (old_writer,_old_frames)=mpsc::channel(1);
-        let (old_disconnect,old_retired)=watch::channel(None);
-        let (new_writer,_new_frames)=mpsc::channel(1);
-        let (new_disconnect,new_retired)=watch::channel(None);
-        state.register("group".into(),"peer".into(),1,old_writer.clone(),old_disconnect.clone(),2).unwrap();
-        state.register("group".into(),"peer".into(),2,new_writer,new_disconnect,2).unwrap();
-        assert_eq!(*old_retired.borrow(),Some(RelayRetirement::Replaced));
-        let reclaim=state.register("group".into(),"peer".into(),1,old_writer,old_disconnect,2);
-        assert_eq!(reclaim,Err(RelayRegistrationError::ConnectionRetired),"retired connection reclaimed the replacement peer");
-        assert_eq!(state.identity(2).unwrap().peer_id,"peer");
+        let mut state = TcpRelayServerState::default();
+        let (old_writer, _old_frames) = mpsc::channel(1);
+        let (old_disconnect, old_retired) = watch::channel(None);
+        let (new_writer, _new_frames) = mpsc::channel(1);
+        let (new_disconnect, new_retired) = watch::channel(None);
+        state
+            .register(
+                "group".into(),
+                "peer".into(),
+                1,
+                old_writer.clone(),
+                old_disconnect.clone(),
+                2,
+            )
+            .unwrap();
+        state
+            .register(
+                "group".into(),
+                "peer".into(),
+                2,
+                new_writer,
+                new_disconnect,
+                2,
+            )
+            .unwrap();
+        assert_eq!(*old_retired.borrow(), Some(RelayRetirement::Replaced));
+        let reclaim = state.register(
+            "group".into(),
+            "peer".into(),
+            1,
+            old_writer,
+            old_disconnect,
+            2,
+        );
+        assert_eq!(
+            reclaim,
+            Err(RelayRegistrationError::ConnectionRetired),
+            "retired connection reclaimed the replacement peer"
+        );
+        assert_eq!(state.identity(2).unwrap().peer_id, "peer");
         assert!(state.identity(1).is_none());
         assert!(new_retired.borrow().is_none());
     }
@@ -1978,12 +2222,22 @@ mod tests {
             let connection = state.next_connection_id();
             let (writer, reader) = mpsc::channel(capacity);
             let (disconnect, disconnected) = watch::channel(None);
-            state.register(group.into(), peer.into(), connection, writer.clone(), disconnect, 8).unwrap();
+            state
+                .register(
+                    group.into(),
+                    peer.into(),
+                    connection,
+                    writer.clone(),
+                    disconnect,
+                    8,
+                )
+                .unwrap();
             (connection, writer, reader, disconnected)
         };
         let (source, _, _, _) = register("control-group", "source", 2);
         let (_, _, mut target, _) = register("control-group", "target", 2);
-        let (_, unrelated, _unrelated_reader, disconnected) = register("control-group", "unrelated", 1);
+        let (_, unrelated, _unrelated_reader, disconnected) =
+            register("control-group", "unrelated", 1);
         let (_, _, mut other_group, _) = register("other-group", "target", 2);
         unrelated.try_send(Arc::<[u8]>::from([7])).unwrap();
         // Existing RPMX v1 routing metadata. The relay does not hold the end-to-end
@@ -1995,24 +2249,67 @@ mod tests {
         payload.extend_from_slice(&5u16.to_be_bytes());
         payload.extend_from_slice(b"video");
         payload.extend_from_slice(&[0; 32]);
-        let frame = Arc::<[u8]>::from(RelayPacket::Data {
-            group_id: "control-group".into(), peer_id: "source".into(), payload: payload.clone(),
-        }.encode());
-        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &payload).0,
-            RelayForwardResult { forwarded: 1, disconnected_slow_peers: 0 });
+        let frame = Arc::<[u8]>::from(
+            RelayPacket::Data {
+                group_id: "control-group".into(),
+                peer_id: "source".into(),
+                payload: payload.clone(),
+            }
+            .encode(),
+        );
+        assert_eq!(
+            state
+                .forward_frame("control-group", source, frame.clone(), &payload)
+                .0,
+            RelayForwardResult {
+                forwarded: 1,
+                disconnected_slow_peers: 0
+            }
+        );
         assert_eq!(target.try_recv().unwrap().as_ref(), frame.as_ref());
-        let rejected = RelayForwardResult { forwarded: 0, disconnected_slow_peers: 0 };
-        assert_eq!(state.forward_frame("other-group", source, frame.clone(), &payload).0, rejected);
-        assert_eq!(state.forward_frame("control-group", u64::MAX, frame.clone(), &payload).0, rejected);
+        let rejected = RelayForwardResult {
+            forwarded: 0,
+            disconnected_slow_peers: 0,
+        };
+        assert_eq!(
+            state
+                .forward_frame("other-group", source, frame.clone(), &payload)
+                .0,
+            rejected
+        );
+        assert_eq!(
+            state
+                .forward_frame("control-group", u64::MAX, frame.clone(), &payload)
+                .0,
+            rejected
+        );
         let mut spoofed = payload.clone();
         spoofed[24] = b'x';
-        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &spoofed).0, rejected);
+        assert_eq!(
+            state
+                .forward_frame("control-group", source, frame.clone(), &spoofed)
+                .0,
+            rejected
+        );
         let mut unknown_target = payload.clone();
         unknown_target[30] = b'x';
-        assert_eq!(state.forward_frame("control-group", source, frame.clone(), &unknown_target).0, rejected);
-        assert_eq!(state.forward_frame("control-group", source, frame, &payload[..4]).0, rejected);
+        assert_eq!(
+            state
+                .forward_frame("control-group", source, frame.clone(), &unknown_target)
+                .0,
+            rejected
+        );
+        assert_eq!(
+            state
+                .forward_frame("control-group", source, frame, &payload[..4])
+                .0,
+            rejected
+        );
         assert!(target.try_recv().is_err());
-        assert!(disconnected.borrow().is_none(), "another device's stream disconnected this peer");
+        assert!(
+            disconnected.borrow().is_none(),
+            "another device's stream disconnected this peer"
+        );
         assert!(other_group.try_recv().is_err());
     }
 
@@ -2022,8 +2319,16 @@ mod tests {
         let source_connection = state.next_connection_id();
         let target_connection = state.next_connection_id();
         let (source_writer, _source_reader) = mpsc::channel(1);
-        state.register("group".into(), "source".into(), source_connection,
-            source_writer, watch::channel(None).0, 2).unwrap();
+        state
+            .register(
+                "group".into(),
+                "source".into(),
+                source_connection,
+                source_writer,
+                watch::channel(None).0,
+                2,
+            )
+            .unwrap();
         let (writer_tx, mut writer_rx) = mpsc::channel(1);
         let (disconnect_tx, disconnect_rx) = tokio::sync::watch::channel(None);
         state
@@ -2054,9 +2359,18 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(!waiting.is_finished());
         assert!(disconnect_rx.borrow().is_none());
-        assert!(state.lock().await.identity(source_connection).is_some(), "a slow writer must not hold the routing mutex");
+        assert!(
+            state.lock().await.identity(source_connection).is_some(),
+            "a slow writer must not hold the routing mutex"
+        );
         assert_eq!(writer_rx.recv().await.unwrap().as_ref(), frame.as_ref());
-        assert_eq!(waiting.await.unwrap(), RelayForwardResult { forwarded: 1, disconnected_slow_peers: 0 });
+        assert_eq!(
+            waiting.await.unwrap(),
+            RelayForwardResult {
+                forwarded: 1,
+                disconnected_slow_peers: 0
+            }
+        );
         assert_eq!(writer_rx.len(), 1);
         assert_eq!(
             forward_relay_frame(&state, "group", source_connection, frame, &[]).await,
@@ -2243,127 +2557,230 @@ mod tests {
     #[tokio::test]
     async fn websocket_reads_progress_while_a_local_datagram_write_is_backpressured() {
         use tokio_tungstenite::tungstenite::protocol::Role;
-        let (local,remote)=tokio::io::duplex(4096);
-        let client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
-        let mut server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
-        let app=UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let tunnel=BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
-            "127.0.0.1:0".parse().unwrap(),"ws://127.0.0.1/relay","duplex-fixture","client")
-            .unwrap().with_local_target_addr(app.local_addr().unwrap())).await.unwrap();
-        let address=tunnel.local_addr().unwrap();
-        let (cancel,mut cancelled)=broadcast::channel(1);
-        let task=tokio::spawn(async move {tunnel.run_connected(client,&mut cancelled).await});
-        assert!(matches!(server.next().await,Some(Ok(Message::Binary(_)))));
+        let (local, remote) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(local, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(remote, Role::Server, None).await;
+        let app = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tunnel = BoundWebSocketRelayTunnel::bind(
+            WebSocketRelayTunnelConfig::new(
+                "127.0.0.1:0".parse().unwrap(),
+                "ws://127.0.0.1/relay",
+                "duplex-fixture",
+                "client",
+            )
+            .unwrap()
+            .with_local_target_addr(app.local_addr().unwrap()),
+        )
+        .await
+        .unwrap();
+        let address = tunnel.local_addr().unwrap();
+        let (cancel, mut cancelled) = broadcast::channel(1);
+        let task = tokio::spawn(async move { tunnel.run_connected(client, &mut cancelled).await });
+        assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
         // Both legal UDP records exceed a constrained link's current writable
         // space. The peer writes before reading, as a busy full-duplex relay can.
-        let outgoing=vec![41;8*1024];let incoming=vec![73;8*1024];
-        app.send_to(&outgoing,address).await.unwrap();
+        let outgoing = vec![41; 8 * 1024];
+        let incoming = vec![73; 8 * 1024];
+        app.send_to(&outgoing, address).await.unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let exchange=async {
-            server.send(Message::Binary(RelayPacket::Data {group_id:"duplex-fixture".into(),
-                peer_id:"server".into(),payload:incoming.clone()}.encode().into())).await.unwrap();
+        let exchange = async {
+            server
+                .send(Message::Binary(
+                    RelayPacket::Data {
+                        group_id: "duplex-fixture".into(),
+                        peer_id: "server".into(),
+                        payload: incoming.clone(),
+                    }
+                    .encode()
+                    .into(),
+                ))
+                .await
+                .unwrap();
             loop {
-                let message=server.next().await.unwrap().unwrap();
-                if let Message::Binary(frame)=message
-                    && let Some(RelayPacket::Data {payload,..})=RelayPacket::decode(&frame) {
-                    assert_eq!(payload,outgoing);break;
+                let message = server.next().await.unwrap().unwrap();
+                if let Message::Binary(frame) = message
+                    && let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&frame)
+                {
+                    assert_eq!(payload, outgoing);
+                    break;
                 }
             }
-            let mut bytes=vec![0;MAX_PACKET_LEN];let (n,_)=app.recv_from(&mut bytes).await.unwrap();
-            assert_eq!(&bytes[..n],incoming);
+            let mut bytes = vec![0; MAX_PACKET_LEN];
+            let (n, _) = app.recv_from(&mut bytes).await.unwrap();
+            assert_eq!(&bytes[..n], incoming);
         };
-        let result=timeout(Duration::from_secs(2),exchange).await;
-        let _=cancel.send(());task.abort();let _=task.await;
-        assert!(result.is_ok(),"relay reads stopped behind an unrelated pending write");
+        let result = timeout(Duration::from_secs(2), exchange).await;
+        let _ = cancel.send(());
+        task.abort();
+        let _ = task.await;
+        assert!(
+            result.is_ok(),
+            "relay reads stopped behind an unrelated pending write"
+        );
     }
 
     #[tokio::test]
     async fn websocket_server_reads_progress_while_its_peer_write_is_backpressured() {
         use tokio_tungstenite::tungstenite::protocol::Role;
-        let (local,remote)=tokio::io::duplex(4096);
-        let mut client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
-        let server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
-        let state=Arc::new(Mutex::new(TcpRelayServerState::default()));
-        let server_state=state.clone();
-        let task=tokio::spawn(async move {
-            run_websocket_relay_connection(server,"127.0.0.1:12345".parse().unwrap(),
-                server_state,&TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap())).await
+        let (local, remote) = tokio::io::duplex(4096);
+        let mut client = WebSocketStream::from_raw_socket(local, Role::Client, None).await;
+        let server = WebSocketStream::from_raw_socket(remote, Role::Server, None).await;
+        let state = Arc::new(Mutex::new(TcpRelayServerState::default()));
+        let server_state = state.clone();
+        let task = tokio::spawn(async move {
+            run_websocket_relay_connection(
+                server,
+                "127.0.0.1:12345".parse().unwrap(),
+                server_state,
+                &TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap()),
+            )
+            .await
         });
-        client.send(Message::Binary(RelayPacket::Register {
-            group_id:"server-duplex".into(),peer_id:"client".into(),
-        }.encode().into())).await.unwrap();
-        let writer=timeout(Duration::from_secs(1),async {
+        client
+            .send(Message::Binary(
+                RelayPacket::Register {
+                    group_id: "server-duplex".into(),
+                    peer_id: "client".into(),
+                }
+                .encode()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let writer = timeout(Duration::from_secs(1), async {
             loop {
-                if let Some(peer)=state.lock().await.peers.values().next() {
+                if let Some(peer) = state.lock().await.peers.values().next() {
                     break peer.writer_tx.clone();
                 }
                 tokio::task::yield_now().await;
             }
-        }).await.unwrap();
-        let incoming=vec![73;8*1024];let outgoing=vec![41;8*1024];
-        writer.send(Arc::from(RelayPacket::Data {group_id:"server-duplex".into(),
-            peer_id:"other".into(),payload:incoming.clone()}.encode())).await.unwrap();
+        })
+        .await
+        .unwrap();
+        let incoming = vec![73; 8 * 1024];
+        let outgoing = vec![41; 8 * 1024];
+        writer
+            .send(Arc::from(
+                RelayPacket::Data {
+                    group_id: "server-duplex".into(),
+                    peer_id: "other".into(),
+                    payload: incoming.clone(),
+                }
+                .encode(),
+            ))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let exchange=async {
-            client.send(Message::Binary(RelayPacket::Data {group_id:"server-duplex".into(),
-                peer_id:"client".into(),payload:outgoing}.encode().into())).await.unwrap();
-            let Message::Binary(frame)=client.next().await.unwrap().unwrap() else {panic!("expected forwarded data")};
-            let Some(RelayPacket::Data {payload,..})=RelayPacket::decode(&frame) else {panic!("expected relay data")};
-            assert_eq!(payload,incoming);
+        let exchange = async {
+            client
+                .send(Message::Binary(
+                    RelayPacket::Data {
+                        group_id: "server-duplex".into(),
+                        peer_id: "client".into(),
+                        payload: outgoing,
+                    }
+                    .encode()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let Message::Binary(frame) = client.next().await.unwrap().unwrap() else {
+                panic!("expected forwarded data")
+            };
+            let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&frame) else {
+                panic!("expected relay data")
+            };
+            assert_eq!(payload, incoming);
             // An otherwise idle split writer must also flush automatic Pong.
-            let probe=Bytes::from_static(b"server-reader-ping");
+            let probe = Bytes::from_static(b"server-reader-ping");
             client.send(Message::Ping(probe.clone())).await.unwrap();
-            assert_eq!(client.next().await.unwrap().unwrap(),Message::Pong(probe));
+            assert_eq!(client.next().await.unwrap().unwrap(), Message::Pong(probe));
         };
-        let result=timeout(Duration::from_secs(2),exchange).await;
-        task.abort();let _=task.await;
-        assert!(result.is_ok(),"server reads stopped behind a pending peer write");
+        let result = timeout(Duration::from_secs(2), exchange).await;
+        task.abort();
+        let _ = task.await;
+        assert!(
+            result.is_ok(),
+            "server reads stopped behind a pending peer write"
+        );
     }
 
     #[tokio::test]
     async fn websocket_split_reader_flushes_server_ping_without_local_udp_traffic() {
         use tokio_tungstenite::tungstenite::protocol::Role;
-        let (local,remote)=tokio::io::duplex(4096);
-        let client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
-        let mut server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
-        let tunnel=BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
-            "127.0.0.1:0".parse().unwrap(),"ws://127.0.0.1/relay","ping-fixture","client").unwrap()).await.unwrap();
-        let (cancel,mut cancelled)=broadcast::channel(1);
-        let task=tokio::spawn(async move {tunnel.run_connected(client,&mut cancelled).await});
-        assert!(matches!(server.next().await,Some(Ok(Message::Binary(_)))));
-        let probe=Bytes::from_static(b"server-ping");
+        let (local, remote) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(local, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(remote, Role::Server, None).await;
+        let tunnel = BoundWebSocketRelayTunnel::bind(
+            WebSocketRelayTunnelConfig::new(
+                "127.0.0.1:0".parse().unwrap(),
+                "ws://127.0.0.1/relay",
+                "ping-fixture",
+                "client",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let (cancel, mut cancelled) = broadcast::channel(1);
+        let task = tokio::spawn(async move { tunnel.run_connected(client, &mut cancelled).await });
+        assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+        let probe = Bytes::from_static(b"server-ping");
         server.send(Message::Ping(probe.clone())).await.unwrap();
-        let response=timeout(Duration::from_secs(1),async {
+        let response = timeout(Duration::from_secs(1), async {
             loop {
                 match server.next().await.unwrap().unwrap() {
-                    Message::Pong(payload) if payload==probe=>break,
-                    Message::Ping(_)=>server.flush().await.unwrap(),
-                    _=>{},
+                    Message::Pong(payload) if payload == probe => break,
+                    Message::Ping(_) => server.flush().await.unwrap(),
+                    _ => {}
                 }
             }
-        }).await;
-        let _=cancel.send(());
-        let stopped=timeout(Duration::from_secs(1),task).await.unwrap().unwrap();
-        assert!(response.is_ok(),"an idle UDP tunnel must flush the WebSocket Pong");
+        })
+        .await;
+        let _ = cancel.send(());
+        let stopped = timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            response.is_ok(),
+            "an idle UDP tunnel must flush the WebSocket Pong"
+        );
         assert!(stopped.is_ok());
     }
 
     #[tokio::test]
     async fn websocket_cancel_interrupts_a_backpressured_local_write() {
         use tokio_tungstenite::tungstenite::protocol::Role;
-        let (local,remote)=tokio::io::duplex(4096);
-        let client=WebSocketStream::from_raw_socket(local,Role::Client,None).await;
-        let mut server=WebSocketStream::from_raw_socket(remote,Role::Server,None).await;
-        let app=UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let tunnel=BoundWebSocketRelayTunnel::bind(WebSocketRelayTunnelConfig::new(
-            "127.0.0.1:0".parse().unwrap(),"ws://127.0.0.1/relay","cancel-fixture","client").unwrap()).await.unwrap();
-        let address=tunnel.local_addr().unwrap();let (cancel,mut cancelled)=broadcast::channel(1);
-        let task=tokio::spawn(async move {tunnel.run_connected(client,&mut cancelled).await});
-        assert!(matches!(server.next().await,Some(Ok(Message::Binary(_)))));
-        app.send_to(&vec![41;8*1024],address).await.unwrap();
+        let (local, remote) = tokio::io::duplex(4096);
+        let client = WebSocketStream::from_raw_socket(local, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(remote, Role::Server, None).await;
+        let app = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tunnel = BoundWebSocketRelayTunnel::bind(
+            WebSocketRelayTunnelConfig::new(
+                "127.0.0.1:0".parse().unwrap(),
+                "ws://127.0.0.1/relay",
+                "cancel-fixture",
+                "client",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let address = tunnel.local_addr().unwrap();
+        let (cancel, mut cancelled) = broadcast::channel(1);
+        let task = tokio::spawn(async move { tunnel.run_connected(client, &mut cancelled).await });
+        assert!(matches!(server.next().await, Some(Ok(Message::Binary(_)))));
+        app.send_to(&vec![41; 8 * 1024], address).await.unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let _=cancel.send(());
-        assert!(timeout(Duration::from_secs(1),task).await.expect("cancel waited for the blocked writer").unwrap().is_ok());
+        let _ = cancel.send(());
+        assert!(
+            timeout(Duration::from_secs(1), task)
+                .await
+                .expect("cancel waited for the blocked writer")
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -2378,15 +2795,32 @@ mod tests {
             let server = WebSocketStream::from_raw_socket(remote, Role::Server, None).await;
             let server_state = state.clone();
             servers.push(tokio::spawn(async move {
-                run_websocket_relay_connection(server, "127.0.0.1:12345".parse().unwrap(),
-                    server_state, &TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap())).await
+                run_websocket_relay_connection(
+                    server,
+                    "127.0.0.1:12345".parse().unwrap(),
+                    server_state,
+                    &TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap()),
+                )
+                .await
             }));
-            client.send(Message::Binary(RelayPacket::Register {
-                group_id: "transient-stall".into(), peer_id: peer.into(),
-            }.encode().into())).await.unwrap();
+            client
+                .send(Message::Binary(
+                    RelayPacket::Register {
+                        group_id: "transient-stall".into(),
+                        peer_id: peer.into(),
+                    }
+                    .encode()
+                    .into(),
+                ))
+                .await
+                .unwrap();
             timeout(Duration::from_secs(1), async {
-                while state.lock().await.peers.len() != index + 1 { tokio::task::yield_now().await; }
-            }).await.unwrap();
+                while state.lock().await.peers.len() != index + 1 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
             clients.push(client);
         }
         let mut receiver = clients.pop().unwrap();
@@ -2395,9 +2829,18 @@ mod tests {
             for sequence in 0..256u32 {
                 let mut payload = vec![73; 1400];
                 payload[..4].copy_from_slice(&sequence.to_be_bytes());
-                sender.feed(Message::Binary(RelayPacket::Data {
-                    group_id: "transient-stall".into(), peer_id: "source".into(), payload,
-                }.encode().into())).await.map_err(|error| error.to_string())?;
+                sender
+                    .feed(Message::Binary(
+                        RelayPacket::Data {
+                            group_id: "transient-stall".into(),
+                            peer_id: "source".into(),
+                            payload,
+                        }
+                        .encode()
+                        .into(),
+                    ))
+                    .await
+                    .map_err(|error| error.to_string())?;
             }
             sender.flush().await.map_err(|error| error.to_string())?;
             Ok::<_, String>(sender)
@@ -2405,60 +2848,106 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(80)).await;
         let delivered = timeout(Duration::from_secs(3), async {
             for expected in 0..256u32 {
-                let message = receiver.next().await.ok_or("receiver disconnected")?
+                let message = receiver
+                    .next()
+                    .await
+                    .ok_or("receiver disconnected")?
                     .map_err(|error| error.to_string())?;
-                let Message::Binary(bytes) = message else { return Err("unexpected frame".to_owned()); };
-                let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&bytes)
-                    else { return Err("invalid relay frame".to_owned()); };
-                if payload.len() != 1400 || u32::from_be_bytes(payload[..4].try_into().unwrap()) != expected {
+                let Message::Binary(bytes) = message else {
+                    return Err("unexpected frame".to_owned());
+                };
+                let Some(RelayPacket::Data { payload, .. }) = RelayPacket::decode(&bytes) else {
+                    return Err("invalid relay frame".to_owned());
+                };
+                if payload.len() != 1400
+                    || u32::from_be_bytes(payload[..4].try_into().unwrap()) != expected
+                {
                     return Err("compressed frame order or content changed".to_owned());
                 }
             }
             Ok::<_, String>(256)
-        }).await;
-        for server in servers { server.abort(); }
+        })
+        .await;
+        for server in servers {
+            server.abort();
+        }
         sending.abort();
-        assert!(matches!(delivered, Ok(Ok(256))), "short receiver stalls must retain every frame: {delivered:?}");
+        assert!(
+            matches!(delivered, Ok(Ok(256))),
+            "short receiver stalls must retain every frame: {delivered:?}"
+        );
     }
 
     #[tokio::test]
     async fn websocket_video_fragment_burst_keeps_a_draining_peer_connected() {
         let (cancel, _) = broadcast::channel(1);
-        let server = BoundTcpRelayServer::bind(TcpRelayServerConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-        )).await.unwrap();
+        let server =
+            BoundTcpRelayServer::bind(TcpRelayServerConfig::new("127.0.0.1:0".parse().unwrap()))
+                .await
+                .unwrap();
         let url = format!("ws://{}/relay", server.local_addr().unwrap());
         let server_task = tokio::spawn(server.run_websocket(cancel.subscribe()));
         let (mut sender, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         let (mut receiver, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
         for (socket, peer) in [(&mut sender, "sender"), (&mut receiver, "receiver")] {
-            socket.send(Message::Binary(RelayPacket::Register {
-                group_id: "fragment-burst".into(), peer_id: peer.into(),
-            }.encode().into())).await.unwrap();
+            socket
+                .send(Message::Binary(
+                    RelayPacket::Register {
+                        group_id: "fragment-burst".into(),
+                        peer_id: peer.into(),
+                    }
+                    .encode()
+                    .into(),
+                ))
+                .await
+                .unwrap();
         }
         // Observe actual forwarding before the burst; registration has no ACK.
         timeout(Duration::from_secs(2), async {
             loop {
-                sender.send(Message::Binary(RelayPacket::Data {
-                    group_id: "fragment-burst".into(), peer_id: "sender".into(),
-                    payload: b"ready".to_vec(),
-                }.encode().into())).await.unwrap();
+                sender
+                    .send(Message::Binary(
+                        RelayPacket::Data {
+                            group_id: "fragment-burst".into(),
+                            peer_id: "sender".into(),
+                            payload: b"ready".to_vec(),
+                        }
+                        .encode()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
                 if let Ok(Some(Ok(Message::Binary(_)))) =
-                    timeout(Duration::from_millis(10), receiver.next()).await { break; }
+                    timeout(Duration::from_millis(10), receiver.next()).await
+                {
+                    break;
+                }
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         const FRAGMENTS: u32 = 256;
         let receive_task = tokio::spawn(async move {
             let mut received = 0;
             while received < FRAGMENTS {
-                let message = receiver.next().await.expect("draining peer disconnected")
+                let message = receiver
+                    .next()
+                    .await
+                    .expect("draining peer disconnected")
                     .expect("draining peer received a transport error");
                 if let Message::Binary(bytes) = message {
                     let RelayPacket::Data { payload, .. } = RelayPacket::decode(&bytes).unwrap()
-                        else { panic!("unexpected relay response") };
-                    if payload == b"ready" { continue; }
+                    else {
+                        panic!("unexpected relay response")
+                    };
+                    if payload == b"ready" {
+                        continue;
+                    }
                     assert_eq!(payload.len(), 1400);
-                    assert_eq!(u32::from_be_bytes(payload[..4].try_into().unwrap()), received);
+                    assert_eq!(
+                        u32::from_be_bytes(payload[..4].try_into().unwrap()),
+                        received
+                    );
                     received += 1;
                 }
             }
@@ -2466,12 +2955,24 @@ mod tests {
         for sequence in 0..FRAGMENTS {
             let mut payload = vec![0; 1400];
             payload[..4].copy_from_slice(&sequence.to_be_bytes());
-            sender.feed(Message::Binary(RelayPacket::Data {
-                group_id: "fragment-burst".into(), peer_id: "sender".into(), payload,
-            }.encode().into())).await.unwrap();
+            sender
+                .feed(Message::Binary(
+                    RelayPacket::Data {
+                        group_id: "fragment-burst".into(),
+                        peer_id: "sender".into(),
+                        payload,
+                    }
+                    .encode()
+                    .into(),
+                ))
+                .await
+                .unwrap();
         }
         sender.flush().await.unwrap();
-        timeout(Duration::from_secs(3), receive_task).await.unwrap().unwrap();
+        timeout(Duration::from_secs(3), receive_task)
+            .await
+            .unwrap()
+            .unwrap();
         cancel.send(()).unwrap();
         server_task.await.unwrap().unwrap();
     }

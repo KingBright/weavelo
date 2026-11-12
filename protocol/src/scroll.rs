@@ -34,20 +34,32 @@ pub enum MomentumPhase {
 impl ScrollGesture {
     /// Only a new gesture or an unphased wheel delta may take input ownership.
     pub fn can_take_control(self, delta_x: i32, delta_y: i32) -> bool {
-        self.momentum == MomentumPhase::None && match self.phase {
-            ScrollPhase::Began => true,
-            ScrollPhase::None => delta_x != 0 || delta_y != 0,
-            _ => false,
-        }
+        self.momentum == MomentumPhase::None
+            && match self.phase {
+                ScrollPhase::Began => true,
+                ScrollPhase::None => delta_x != 0 || delta_y != 0,
+                _ => false,
+            }
     }
 
     /// Close a gesture interrupted by focus, source, or input ownership changes.
     pub fn cancellation(self) -> Option<Self> {
         if matches!(self.momentum, MomentumPhase::Began | MomentumPhase::Changed) {
-            Some(Self { phase: ScrollPhase::None, momentum: MomentumPhase::Ended })
-        } else if matches!(self.phase, ScrollPhase::MayBegin | ScrollPhase::Began | ScrollPhase::Changed) {
-            Some(Self { phase: ScrollPhase::Cancelled, momentum: MomentumPhase::None })
-        } else { None }
+            Some(Self {
+                phase: ScrollPhase::None,
+                momentum: MomentumPhase::Ended,
+            })
+        } else if matches!(
+            self.phase,
+            ScrollPhase::MayBegin | ScrollPhase::Began | ScrollPhase::Changed
+        ) {
+            Some(Self {
+                phase: ScrollPhase::Cancelled,
+                momentum: MomentumPhase::None,
+            })
+        } else {
+            None
+        }
     }
 }
 

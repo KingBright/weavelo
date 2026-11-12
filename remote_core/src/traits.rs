@@ -205,10 +205,14 @@ pub trait ClipboardProvider {
     fn capabilities(&self) -> ClipboardBackendCapabilities;
 
     /// A stable native change counter, when the platform supplies one.
-    fn clipboard_revision(&self) -> Option<u64> { None }
+    fn clipboard_revision(&self) -> Option<u64> {
+        None
+    }
 
     /// Generation of the last successful native read or write, when tracked.
-    fn clipboard_observation_epoch(&self) -> Option<u64> { None }
+    fn clipboard_observation_epoch(&self) -> Option<u64> {
+        None
+    }
 
     async fn read_clipboard(
         &mut self,
@@ -235,7 +239,9 @@ impl ClipboardFileReference {
 
 #[async_trait]
 pub trait ClipboardFileReferenceProvider {
-    fn clipboard_observation_epoch(&self) -> Option<u64> { None }
+    fn clipboard_observation_epoch(&self) -> Option<u64> {
+        None
+    }
     fn platform(&self) -> PlatformKind {
         PlatformKind::current()
     }
@@ -276,14 +282,25 @@ impl Error for InputExpired {}
 
 pub trait InputInjector {
     fn inject_input(&self, event: InputEvent) -> Result<(), Box<dyn Error + Send + Sync>>;
-    fn inject_input_before(&self,event:InputEvent,deadline:std::time::Instant) -> Result<(),Box<dyn Error+Send+Sync>> {
-        if std::time::Instant::now()>=deadline {return Err(InputExpired("before native dispatch").into());}
+    fn inject_input_before(
+        &self,
+        event: InputEvent,
+        deadline: std::time::Instant,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if std::time::Instant::now() >= deadline {
+            return Err(InputExpired("before native dispatch").into());
+        }
         self.inject_input(event)
     }
     /// Snapshot the native target; a potentially blocking accessibility read runs separately.
-    fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> { None }
+    fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> {
+        None
+    }
     /// Repeat only an existing native press after a fresh, accepted held-state update.
-    fn repeat_held_key_before(&self, _deadline: std::time::Instant) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fn repeat_held_key_before(
+        &self,
+        _deadline: std::time::Instant,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         Ok(())
     }
     fn release_all_input(&self) {}

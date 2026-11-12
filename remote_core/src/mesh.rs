@@ -58,7 +58,10 @@ pub struct PublicMeshIdentity {
 
 /// Stable comparison of public metadata; callers must not pass credentials/capabilities.
 pub fn public_metadata_fingerprint(value: &str) -> String {
-    format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(value.as_bytes()))
+    format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(value.as_bytes())
+    )
 }
 
 impl MeshConfig {
@@ -157,9 +160,7 @@ fn decode_mesh_copy_code(value: &str) -> Result<MeshInvite, MeshConfigError> {
     let compact = compact_copy_code(value);
     if !compact
         .get(..WEAVELO_DEVICE_GROUP_COPY_CODE_PREFIX.len())
-        .is_some_and(|prefix| {
-            prefix.eq_ignore_ascii_case(WEAVELO_DEVICE_GROUP_COPY_CODE_PREFIX)
-        })
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(WEAVELO_DEVICE_GROUP_COPY_CODE_PREFIX))
     {
         return Err(MeshConfigError::InvalidInviteCode);
     }
@@ -416,11 +417,15 @@ impl StoredMeshPair {
             (Some(metadata), Some(secret)) => {
                 let mut config = decode_mesh_config_metadata(metadata)?;
                 config.network_secret = secret.clone();
-                config.validate().map_err(MeshStoreError::InvalidMeshConfig)?;
+                config
+                    .validate()
+                    .map_err(MeshStoreError::InvalidMeshConfig)?;
                 Ok(Some(config))
             }
             (Some(_), None) => Err(MeshStoreError::MissingNetworkSecret),
-            (None, Some(_)) => Err(transaction_error("configuration is missing but its existing secret is retained; explicit recovery is required")),
+            (None, Some(_)) => Err(transaction_error(
+                "configuration is missing but its existing secret is retained; explicit recovery is required",
+            )),
         }
     }
 }
@@ -435,12 +440,18 @@ pub trait MeshSecretStore {
     fn delete_secret(&self) -> Result<(), MeshStoreError>;
     /// Implementations must keep recovery in the SAME protected credential
     /// backend. Unsupported backends fail before either canonical value changes.
-    fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> { Ok(None) }
+    fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> {
+        Ok(None)
+    }
     fn save_recovery(&self, _record: &MeshRecoveryRecord) -> Result<(), MeshStoreError> {
-        Err(transaction_error("credential backend does not support protected recovery"))
+        Err(transaction_error(
+            "credential backend does not support protected recovery",
+        ))
     }
     fn delete_recovery(&self) -> Result<(), MeshStoreError> {
-        Err(transaction_error("credential backend does not support protected recovery"))
+        Err(transaction_error(
+            "credential backend does not support protected recovery",
+        ))
     }
     /// Check access without loading credentials or changing their protection.
     fn validate_access(&self) -> Result<(), MeshStoreError> {
@@ -465,7 +476,9 @@ pub fn default_app_private_mesh_dir() -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     if let Some(appdata) = env::var_os("APPDATA").and_then(non_empty_env_path) {
-        return PathBuf::from(appdata).join("Weavelo").join(&crate::desktop_identity::identity().profile_directory);
+        return PathBuf::from(appdata)
+            .join("Weavelo")
+            .join(&crate::desktop_identity::identity().profile_directory);
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let profile_folder = "desktop";
@@ -473,7 +486,9 @@ pub fn default_app_private_mesh_dir() -> PathBuf {
     let profile_folder = "mesh";
     #[cfg(not(target_os = "windows"))]
     if let Some(config_home) = env::var_os("XDG_CONFIG_HOME").and_then(non_empty_env_path) {
-        return PathBuf::from(config_home).join("weavelo").join(profile_folder);
+        return PathBuf::from(config_home)
+            .join("weavelo")
+            .join(profile_folder);
     }
     #[cfg(not(target_os = "windows"))]
     if let Some(home) = env::var_os("HOME").and_then(non_empty_env_path) {
@@ -496,8 +511,9 @@ impl AppPrivateMeshSecretStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
-    fn recovery_path(&self) -> PathBuf { self.path.with_extension("secret-recovery") }
-
+    fn recovery_path(&self) -> PathBuf {
+        self.path.with_extension("secret-recovery")
+    }
 }
 impl MeshSecretStore for AppPrivateMeshSecretStore {
     fn storage_kind(&self) -> MeshSecretStorageKind {
@@ -518,11 +534,15 @@ impl MeshSecretStore for AppPrivateMeshSecretStore {
         remove_file_if_exists(&self.path)
     }
     fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> {
-        read_private_file(&self.recovery_path())?.map(|value| decode_recovery(&value)).transpose()
+        read_private_file(&self.recovery_path())?
+            .map(|value| decode_recovery(&value))
+            .transpose()
     }
     fn save_recovery(&self, record: &MeshRecoveryRecord) -> Result<(), MeshStoreError> {
         if self.load_recovery()?.is_some() {
-            return Err(transaction_error("pending recovery retained; mutation refused"));
+            return Err(transaction_error(
+                "pending recovery retained; mutation refused",
+            ));
         }
         write_private_file(&self.recovery_path(), encode_recovery(record)?.as_bytes())
     }
@@ -549,30 +569,58 @@ struct RecoveryWire {
 const PRIVATE_ENTRY_LIMIT: u64 = 1024 * 1024;
 fn encode_recovery(record: &MeshRecoveryRecord) -> Result<String, MeshStoreError> {
     let encoded = serde_json::to_string(&RecoveryWire {
-        version: 1, profile: record.profile.clone(),
+        version: 1,
+        profile: record.profile.clone(),
         before_metadata: record.before.metadata.clone(),
-        before_secret: record.before.secret.as_ref().map(|s| s.expose_secret().to_owned()),
+        before_secret: record
+            .before
+            .secret
+            .as_ref()
+            .map(|s| s.expose_secret().to_owned()),
         after_metadata: record.after.metadata.clone(),
-        after_secret: record.after.secret.as_ref().map(|s| s.expose_secret().to_owned()),
-    }).map_err(|_| transaction_error("could not encode protected recovery"))?;
+        after_secret: record
+            .after
+            .secret
+            .as_ref()
+            .map(|s| s.expose_secret().to_owned()),
+    })
+    .map_err(|_| transaction_error("could not encode protected recovery"))?;
     if encoded.len() as u64 > PRIVATE_ENTRY_LIMIT {
-        return Err(transaction_error("protected recovery exceeds size limit; original configuration retained"));
+        return Err(transaction_error(
+            "protected recovery exceeds size limit; original configuration retained",
+        ));
     }
     if decode_recovery(&encoded)?.ne(record) {
-        return Err(transaction_error("protected recovery encoding did not verify"));
+        return Err(transaction_error(
+            "protected recovery encoding did not verify",
+        ));
     }
     Ok(encoded)
 }
 fn decode_recovery(value: &str) -> Result<MeshRecoveryRecord, MeshStoreError> {
     let wire: RecoveryWire = serde_json::from_str(value)
         .map_err(|_| transaction_error("invalid protected recovery; retained without replay"))?;
-    if wire.version != 1 { return Err(transaction_error("unknown protected recovery version")); }
+    if wire.version != 1 {
+        return Err(transaction_error("unknown protected recovery version"));
+    }
     let record = MeshRecoveryRecord {
         profile: wire.profile,
-        before: StoredMeshPair { metadata: wire.before_metadata,
-            secret: wire.before_secret.map(MeshSecret::new).transpose().map_err(MeshStoreError::InvalidMeshConfig)? },
-        after: StoredMeshPair { metadata: wire.after_metadata,
-            secret: wire.after_secret.map(MeshSecret::new).transpose().map_err(MeshStoreError::InvalidMeshConfig)? },
+        before: StoredMeshPair {
+            metadata: wire.before_metadata,
+            secret: wire
+                .before_secret
+                .map(MeshSecret::new)
+                .transpose()
+                .map_err(MeshStoreError::InvalidMeshConfig)?,
+        },
+        after: StoredMeshPair {
+            metadata: wire.after_metadata,
+            secret: wire
+                .after_secret
+                .map(MeshSecret::new)
+                .transpose()
+                .map_err(MeshStoreError::InvalidMeshConfig)?,
+        },
     };
     record.before.config()?;
     record.after.config()?;
@@ -641,36 +689,58 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
             // file and work for an existing read-only legacy profile without
             // creating an entry or widening access.
             let path = &self.root_dir;
-            let before = fs::symlink_metadata(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
+            let before =
+                fs::symlink_metadata(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
             let mut options = fs::OpenOptions::new();
-            options.read(true).custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_NONBLOCK);
-            let file = options.open(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
-            let opened = file.metadata().map_err(|e| MeshStoreError::io(path.clone(), e))?;
-            if !same_profile_file(&before, &opened) { return Err(transaction_error("profile changed while locking")); }
+            options
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_NONBLOCK);
+            let file = options
+                .open(path)
+                .map_err(|e| MeshStoreError::io(path.clone(), e))?;
+            let opened = file
+                .metadata()
+                .map_err(|e| MeshStoreError::io(path.clone(), e))?;
+            if !same_profile_file(&before, &opened) {
+                return Err(transaction_error("profile changed while locking"));
+            }
             file.try_lock().map_err(|error| match error {
                 std::fs::TryLockError::WouldBlock => MeshStoreError::ProfileBusy,
                 std::fs::TryLockError::Error(source) => MeshStoreError::io(path.clone(), source),
             })?;
             let lock = MeshProfileLock(file);
             validate_private_dir(path)?;
-            let now = fs::symlink_metadata(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
-            if !same_profile_file(&now, &opened) { return Err(transaction_error("profile lock changed; nothing replayed")); }
+            let now =
+                fs::symlink_metadata(path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
+            if !same_profile_file(&now, &opened) {
+                return Err(transaction_error("profile lock changed; nothing replayed"));
+            }
             Ok(lock)
         }
         #[cfg(not(unix))]
         {
             let path = self.root_dir.join(".mesh-config.lock");
             private_file_metadata(&path)?;
-            let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-                .open(&path).map_err(|e| MeshStoreError::io(path.clone(), e))?;
-            let opened = file.metadata().map_err(|e| MeshStoreError::io(path.clone(), e))?;
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .map_err(|e| MeshStoreError::io(path.clone(), e))?;
+            let opened = file
+                .metadata()
+                .map_err(|e| MeshStoreError::io(path.clone(), e))?;
             check_private_file(&path, &opened)?;
             file.try_lock().map_err(|error| match error {
                 std::fs::TryLockError::WouldBlock => MeshStoreError::ProfileBusy,
                 std::fs::TryLockError::Error(source) => MeshStoreError::io(path.clone(), source),
             })?;
             let lock = MeshProfileLock(file);
-            if private_file_metadata(&path)?.as_ref().is_none_or(|now| !same_profile_file(now, &opened)) {
+            if private_file_metadata(&path)?
+                .as_ref()
+                .is_none_or(|now| !same_profile_file(now, &opened))
+            {
                 return Err(transaction_error("profile lock changed; nothing replayed"));
             }
             Ok(lock)
@@ -678,52 +748,68 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
     }
 
     fn profile_binding(&self) -> Result<String, MeshStoreError> {
-        self.root_dir.canonicalize().map(|p| p.to_string_lossy().into_owned())
+        self.root_dir
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
             .map_err(|e| MeshStoreError::io(self.root_dir.clone(), e))
     }
     fn pair(&self) -> Result<StoredMeshPair, MeshStoreError> {
-        Ok(StoredMeshPair { metadata: read_private_file(&self.config_path)?,
-            secret: self.secret_store.load_secret()? })
+        Ok(StoredMeshPair {
+            metadata: read_private_file(&self.config_path)?,
+            secret: self.secret_store.load_secret()?,
+        })
     }
     fn refuse_pending(&self) -> Result<(), MeshStoreError> {
         if self.secret_store.load_recovery()?.is_some() {
-            return Err(transaction_error("pending recovery retained; read/recover original state before a new mutation"));
+            return Err(transaction_error(
+                "pending recovery retained; read/recover original state before a new mutation",
+            ));
         }
         Ok(())
     }
     /// Only a known before/after tuple may be rolled BACK. Never replay forward.
     fn recover_locked(&self) -> Result<bool, MeshStoreError> {
-        let Some(record) = self.secret_store.load_recovery()? else { return Ok(false); };
+        let Some(record) = self.secret_store.load_recovery()? else {
+            return Ok(false);
+        };
         record.before.config()?;
         record.after.config()?;
         let current = self.pair()?;
         if record.profile != self.profile_binding()?
-            || (current.metadata != record.before.metadata && current.metadata != record.after.metadata)
-            || (current.secret != record.before.secret && current.secret != record.after.secret) {
-            return Err(transaction_error("recovery does not match profile/current tuple; retained without replay"));
+            || (current.metadata != record.before.metadata
+                && current.metadata != record.after.metadata)
+            || (current.secret != record.before.secret && current.secret != record.after.secret)
+        {
+            return Err(transaction_error(
+                "recovery does not match profile/current tuple; retained without replay",
+            ));
         }
         self.write_pair(&record.before)?;
-        if self.pair()? != record.before { return Err(transaction_error("original tuple recovery did not verify")); }
+        if self.pair()? != record.before {
+            return Err(transaction_error("original tuple recovery did not verify"));
+        }
         self.secret_store.delete_recovery()?;
         if self.secret_store.load_recovery()?.is_some() {
-            return Err(transaction_error("original tuple restored but recovery cleanup is pending"));
+            return Err(transaction_error(
+                "original tuple restored but recovery cleanup is pending",
+            ));
         }
         Ok(true)
     }
     fn write_pair(&self, pair: &StoredMeshPair) -> Result<(), MeshStoreError> {
         let current = self.pair()?;
         if current.secret != pair.secret {
-        match &pair.secret {
-            Some(secret) => self.secret_store.save_secret(secret)?,
-            None => self.secret_store.delete_secret()?,
-        }
+            match &pair.secret {
+                Some(secret) => self.secret_store.save_secret(secret)?,
+                None => self.secret_store.delete_secret()?,
+            }
         }
         mesh_boundary("canonical-secret")?;
         if current.metadata != pair.metadata {
-        match &pair.metadata {
-            Some(value) => write_private_file(&self.config_path, value.as_bytes())?,
-            None => remove_file_if_exists(&self.config_path)?,
-        }
+            match &pair.metadata {
+                Some(value) => write_private_file(&self.config_path, value.as_bytes())?,
+                None => remove_file_if_exists(&self.config_path)?,
+            }
         }
         mesh_boundary("canonical-metadata")?;
         Ok(())
@@ -733,16 +819,26 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
         let before = self.pair()?;
         before.config()?;
         after.config()?;
-        if before == after { return Ok(()); }
-        let record = MeshRecoveryRecord { profile: self.profile_binding()?, before, after };
+        if before == after {
+            return Ok(());
+        }
+        let record = MeshRecoveryRecord {
+            profile: self.profile_binding()?,
+            before,
+            after,
+        };
         self.secret_store.save_recovery(&record)?;
         mesh_boundary("recovery-staged")?;
         if self.secret_store.load_recovery()?.as_ref() != Some(&record) {
-            return Err(transaction_error("protected recovery did not verify; nothing replayed"));
+            return Err(transaction_error(
+                "protected recovery did not verify; nothing replayed",
+            ));
         }
         let result = (|| {
             self.write_pair(&record.after)?;
-            if self.pair()? != record.after { return Err(transaction_error("new tuple did not verify")); }
+            if self.pair()? != record.after {
+                return Err(transaction_error("new tuple did not verify"));
+            }
             mesh_boundary("before-commit")?;
             self.secret_store.delete_recovery()?; // Commit point, after both values are durable.
             mesh_boundary("after-commit")?;
@@ -763,7 +859,9 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
                     // failed. Return a typed outcome, never ordinary rollback
                     // failure: callers must read the saved pair and reconcile.
                     return Err(match self.pair() {
-                        Ok(current) if current == record.after => MeshStoreError::CommittedDurabilityUnconfirmed,
+                        Ok(current) if current == record.after => {
+                            MeshStoreError::CommittedDurabilityUnconfirmed
+                        }
                         _ => MeshStoreError::TransactionOutcomeUnknown,
                     });
                 }
@@ -774,17 +872,26 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
     }
     pub fn load(&self) -> Result<Option<MeshConfig>, MeshStoreError> {
         self.validate_access()?;
-        if !self.root_dir.exists() { return Ok(None); }
+        if !self.root_dir.exists() {
+            return Ok(None);
+        }
         let _lock = self.lock()?;
         self.recover_locked()?;
         self.pair()?.config()
     }
-    pub fn load_or_generate(&self, display_name: impl Into<String>) -> Result<MeshConfig, MeshStoreError> {
+    pub fn load_or_generate(
+        &self,
+        display_name: impl Into<String>,
+    ) -> Result<MeshConfig, MeshStoreError> {
         let _lock = self.lock()?;
         let recovered = self.recover_locked()?;
-        if let Some(config) = self.pair()?.config()? { return Ok(config); }
+        if let Some(config) = self.pair()?.config()? {
+            return Ok(config);
+        }
         if recovered {
-            return Err(transaction_error("interrupted initialization rolled back; no new identity generated"));
+            return Err(transaction_error(
+                "interrupted initialization rolled back; no new identity generated",
+            ));
         }
         let config = MeshConfig::generate(display_name);
         self.save_locked(&config)?;
@@ -793,19 +900,29 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
     /// Explicit owner-side name change. Existing labels (including the product
     /// name) are never guessed to be defaults. Only public metadata is replaced;
     /// membership, node identity and the credential file remain untouched.
-    pub fn rename_display_name(&self, expected: &str, name: &str) -> Result<MeshConfig, MeshStoreError> {
-        let name = crate::device_name::valid_name(name).ok_or_else(||
-            MeshStoreError::InvalidMetadata("invalid device display name".into()))?;
+    pub fn rename_display_name(
+        &self,
+        expected: &str,
+        name: &str,
+    ) -> Result<MeshConfig, MeshStoreError> {
+        let name = crate::device_name::valid_name(name)
+            .ok_or_else(|| MeshStoreError::InvalidMetadata("invalid device display name".into()))?;
         let _lock = self.lock()?;
         self.refuse_pending()?;
-        let mut config = self.pair()?.config()?.ok_or_else(||
-            MeshStoreError::InvalidMetadata("device configuration is missing".into()))?;
+        let mut config = self.pair()?.config()?.ok_or_else(|| {
+            MeshStoreError::InvalidMetadata("device configuration is missing".into())
+        })?;
         if config.display_name != expected {
-            return Err(MeshStoreError::InvalidMetadata("device name changed; read current state first".into()));
+            return Err(MeshStoreError::InvalidMetadata(
+                "device name changed; read current state first".into(),
+            ));
         }
         if config.display_name != name {
             config.display_name = name;
-            write_private_file(&self.config_path, encode_mesh_config_metadata(&config).as_bytes())?;
+            write_private_file(
+                &self.config_path,
+                encode_mesh_config_metadata(&config).as_bytes(),
+            )?;
         }
         Ok(config)
     }
@@ -830,7 +947,11 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
     }
 
     /// Join and preserve installation identity under the same profile lock.
-    pub fn join(&self, invite_code: &str, display_name: impl Into<String>) -> Result<(MeshConfig, bool), MeshStoreError> {
+    pub fn join(
+        &self,
+        invite_code: &str,
+        display_name: impl Into<String>,
+    ) -> Result<(MeshConfig, bool), MeshStoreError> {
         let mut joined = MeshConfig::from_invite_code(invite_code, display_name)
             .map_err(MeshStoreError::InvalidMeshConfig)?;
         let _lock = self.lock()?;
@@ -838,26 +959,36 @@ impl<S: MeshSecretStore> AppPrivateMeshConfigStore<S> {
         if let Some(current) = self.pair()?.config()? {
             joined.node_id.clone_from(&current.node_id);
             joined.display_name.clone_from(&current.display_name);
-            if joined == current { return Ok((current, false)); }
+            if joined == current {
+                return Ok((current, false));
+            }
         }
         self.save_locked(&joined)?;
         Ok((joined, true))
     }
     fn save_locked(&self, config: &MeshConfig) -> Result<(), MeshStoreError> {
-        config.validate().map_err(MeshStoreError::InvalidMeshConfig)?;
-        self.transact(StoredMeshPair { metadata: Some(encode_mesh_config_metadata(config)),
-            secret: Some(config.network_secret.clone()) })
+        config
+            .validate()
+            .map_err(MeshStoreError::InvalidMeshConfig)?;
+        self.transact(StoredMeshPair {
+            metadata: Some(encode_mesh_config_metadata(config)),
+            secret: Some(config.network_secret.clone()),
+        })
     }
     pub fn save(&self, config: &MeshConfig) -> Result<(), MeshStoreError> {
-        config.validate().map_err(MeshStoreError::InvalidMeshConfig)?;
+        config
+            .validate()
+            .map_err(MeshStoreError::InvalidMeshConfig)?;
         let _lock = self.lock()?;
         self.save_locked(config)
     }
     pub fn delete(&self) -> Result<(), MeshStoreError> {
         let _lock = self.lock()?;
-        self.transact(StoredMeshPair { metadata: None, secret: None })
+        self.transact(StoredMeshPair {
+            metadata: None,
+            secret: None,
+        })
     }
-
 }
 
 #[derive(Debug)]
@@ -899,9 +1030,12 @@ impl Error for MeshStoreError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::InvalidMeshConfig(err) => Some(err),
-            Self::ProfileBusy | Self::MissingNetworkSecret | Self::CommittedDurabilityUnconfirmed | Self::TransactionOutcomeUnknown | Self::InvalidMetadata(_) | Self::UnsafeProfile { .. } => {
-                None
-            }
+            Self::ProfileBusy
+            | Self::MissingNetworkSecret
+            | Self::CommittedDurabilityUnconfirmed
+            | Self::TransactionOutcomeUnknown
+            | Self::InvalidMetadata(_)
+            | Self::UnsafeProfile { .. } => None,
         }
     }
 }
@@ -1133,8 +1267,8 @@ fn validate_private_dir(path: &Path) -> Result<(), MeshStoreError> {
 /// Root-owned OS ancestry aliases (for example Bazzite /home) retain one identity.
 pub fn canonical_private_mesh_dir(path: &Path) -> Result<PathBuf, MeshStoreError> {
     validate_private_dir(path)?;
-    let canonical = fs::canonicalize(path)
-        .map_err(|source| MeshStoreError::io(path.to_path_buf(), source))?;
+    let canonical =
+        fs::canonicalize(path).map_err(|source| MeshStoreError::io(path.to_path_buf(), source))?;
     validate_private_dir(&canonical)?;
     Ok(canonical)
 }
@@ -1207,11 +1341,16 @@ fn read_private_file(path: &Path) -> Result<Option<String>, MeshStoreError> {
             "profile changed while opening; nothing changed",
         ));
     }
-    if opened.len() > PRIVATE_ENTRY_LIMIT { return Err(transaction_error("profile entry exceeds size limit")); }
+    if opened.len() > PRIVATE_ENTRY_LIMIT {
+        return Err(transaction_error("profile entry exceeds size limit"));
+    }
     let mut text = String::new();
-    file.take(PRIVATE_ENTRY_LIMIT + 1).read_to_string(&mut text)
+    file.take(PRIVATE_ENTRY_LIMIT + 1)
+        .read_to_string(&mut text)
         .map_err(|source| MeshStoreError::io(path.to_path_buf(), source))?;
-    if text.len() as u64 > PRIVATE_ENTRY_LIMIT { return Err(transaction_error("profile entry exceeds size limit")); }
+    if text.len() as u64 > PRIVATE_ENTRY_LIMIT {
+        return Err(transaction_error("profile entry exceeds size limit"));
+    }
     Ok(Some(text))
 }
 pub(crate) fn create_private_dir(path: &Path) -> Result<(), MeshStoreError> {
@@ -1256,8 +1395,10 @@ fn publish_new_private_file(temporary: &Path, path: &Path) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::{ffi::CString, os::unix::ffi::OsStrExt};
-        let source = CString::new(temporary.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let target = CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let source = CString::new(temporary.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let target = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         if unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -1267,15 +1408,29 @@ fn publish_new_private_file(temporary: &Path, path: &Path) -> io::Result<()> {
     {
         use std::os::windows::ffi::OsStrExt;
         #[link(name = "kernel32")]
-        unsafe extern "system" { fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32; }
+        unsafe extern "system" {
+            fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+        }
         let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
         let target: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         // WRITE_THROUGH, deliberately no REPLACE_EXISTING.
-        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 8) } == 0 { return Err(io::Error::last_os_error()); }
+        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 8) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(())
     }
-    #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos", windows)))]
-    { Err(io::Error::new(io::ErrorKind::Unsupported, "atomic private publication is unsupported")) }
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        windows
+    )))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic private publication is unsupported",
+        ))
+    }
 }
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), MeshStoreError> {
     validate_private_parent(path)?;
@@ -1297,9 +1452,11 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), MeshStoreError> {
             .open(&temporary)
             .map_err(|source| MeshStoreError::io(temporary.clone(), source))?;
         mesh_boundary("file-created")?;
-        file.write_all(bytes).map_err(|source| MeshStoreError::io(temporary.clone(), source))?;
+        file.write_all(bytes)
+            .map_err(|source| MeshStoreError::io(temporary.clone(), source))?;
         mesh_boundary("file-written")?;
-        file.sync_all().map_err(|source| MeshStoreError::io(temporary.clone(), source))?;
+        file.sync_all()
+            .map_err(|source| MeshStoreError::io(temporary.clone(), source))?;
         mesh_boundary("file-synced")?;
         if let Some(previous) = &before {
             file.set_permissions(previous.permissions())
@@ -1353,7 +1510,8 @@ fn remove_file_if_exists(path: &Path) -> Result<(), MeshStoreError> {
 fn sync_private_parent(path: &Path) -> Result<(), MeshStoreError> {
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
-        fs::File::open(parent).and_then(|file| file.sync_all())
+        fs::File::open(parent)
+            .and_then(|file| file.sync_all())
             .map_err(|e| MeshStoreError::io(parent.to_path_buf(), e))?;
     }
     Ok(())
@@ -1373,7 +1531,9 @@ fn mesh_boundary(_name: &'static str) -> Result<(), MeshStoreError> {
             if index == state.1.len() {
                 state.0 = None;
                 drop(state);
-                if crash { std::panic::panic_any("synthetic mesh interruption"); }
+                if crash {
+                    std::panic::panic_any("synthetic mesh interruption");
+                }
                 return Err(transaction_error("synthetic mesh write failure"));
             }
         }
@@ -1419,8 +1579,7 @@ mod tests {
     impl TempTree {
         fn new(name: &str) -> Self {
             let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
-            let root =
-                env::temp_dir().join(format!("weavelo-{name}-{}-{id}", std::process::id()));
+            let root = env::temp_dir().join(format!("weavelo-{name}-{}-{id}", std::process::id()));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).unwrap();
             #[cfg(unix)]
@@ -1473,8 +1632,14 @@ mod tests {
                 })
             })
             .collect();
-        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|(result, _)| result.is_ok()).count(), 1);
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            results.iter().filter(|(result, _)| result.is_ok()).count(),
+            1
+        );
         let winner = results.iter().find(|(result, _)| result.is_ok()).unwrap().1;
         assert_eq!(fs::read(&target).unwrap(), winner);
         assert_eq!(fs::read_dir(&temp.root).unwrap().count(), 1);
@@ -1927,7 +2092,10 @@ mod tests {
         assert!(store.load_or_generate("Other").is_err());
         assert_eq!(public_before, profile_snapshot(store.config_path()));
     }
-    fn boundary_run<T>(at: Option<(usize, bool)>, run: impl FnOnce() -> T) -> (T, Vec<&'static str>) {
+    fn boundary_run<T>(
+        at: Option<(usize, bool)>,
+        run: impl FnOnce() -> T,
+    ) -> (T, Vec<&'static str>) {
         MESH_BOUNDARIES.with(|state| *state.borrow_mut() = (at, Vec::new()));
         let result = run();
         let trace = MESH_BOUNDARIES.with(|state| std::mem::take(&mut state.borrow_mut().1));
@@ -1947,7 +2115,9 @@ mod tests {
             let target = MeshConfig::generate("合成目标");
             let baseline = TempTree::new("transaction-baseline");
             let store = AppPrivateMeshConfigStore::new(&baseline.root);
-            if operation != "initialize" { store.save(&seed).unwrap(); }
+            if operation != "initialize" {
+                store.save(&seed).unwrap();
+            }
             let (result, trace) = boundary_run(None, || run(&store, &target));
             result.unwrap();
             assert!(trace.contains(&"file-written") && trace.contains(&"after-commit"));
@@ -1955,21 +2125,36 @@ mod tests {
                 for index in 1..=trace.len() {
                     let temp = TempTree::new("transaction-interrupt");
                     let store = AppPrivateMeshConfigStore::new(&temp.root);
-                    if operation != "initialize" { store.save(&seed).unwrap(); }
-                    let (result, _) = boundary_run(Some((index, crash)), ||
-                        std::panic::catch_unwind(|| run(&store, &target)));
-                    assert!(if crash { result.is_err() } else { result.unwrap().is_err() });
+                    if operation != "initialize" {
+                        store.save(&seed).unwrap();
+                    }
+                    let (result, _) = boundary_run(Some((index, crash)), || {
+                        std::panic::catch_unwind(|| run(&store, &target))
+                    });
+                    assert!(if crash {
+                        result.is_err()
+                    } else {
+                        result.unwrap().is_err()
+                    });
                     let restarted = AppPrivateMeshConfigStore::new(&temp.root);
                     let recovered = restarted.load().unwrap();
                     match operation {
-                        "initialize" => assert!(recovered.is_none() || recovered.as_ref() == Some(&target)),
-                        "delete" => assert!(recovered.is_none() || recovered.as_ref() == Some(&seed)),
+                        "initialize" => {
+                            assert!(recovered.is_none() || recovered.as_ref() == Some(&target))
+                        }
+                        "delete" => {
+                            assert!(recovered.is_none() || recovered.as_ref() == Some(&seed))
+                        }
                         _ => {
                             let config = recovered.unwrap();
                             assert_eq!(config.node_id, seed.node_id);
                             assert_eq!(config.display_name, seed.display_name);
-                            assert!((config.network_name == seed.network_name && config.network_secret == seed.network_secret)
-                                || (config.network_name == target.network_name && config.network_secret == target.network_secret));
+                            assert!(
+                                (config.network_name == seed.network_name
+                                    && config.network_secret == seed.network_secret)
+                                    || (config.network_name == target.network_name
+                                        && config.network_secret == target.network_secret)
+                            );
                         }
                     }
                     assert!(restarted.secret_store.load_recovery().unwrap().is_none());
@@ -1979,14 +2164,27 @@ mod tests {
         }
     }
 
-    fn stage_mixed(store: &AppPrivateMeshConfigStore, before: &MeshConfig, after: &MeshConfig) -> MeshRecoveryRecord {
+    fn stage_mixed(
+        store: &AppPrivateMeshConfigStore,
+        before: &MeshConfig,
+        after: &MeshConfig,
+    ) -> MeshRecoveryRecord {
         let record = MeshRecoveryRecord {
             profile: store.profile_binding().unwrap(),
-            before: StoredMeshPair { metadata: Some(encode_mesh_config_metadata(before)), secret: Some(before.network_secret.clone()) },
-            after: StoredMeshPair { metadata: Some(encode_mesh_config_metadata(after)), secret: Some(after.network_secret.clone()) },
+            before: StoredMeshPair {
+                metadata: Some(encode_mesh_config_metadata(before)),
+                secret: Some(before.network_secret.clone()),
+            },
+            after: StoredMeshPair {
+                metadata: Some(encode_mesh_config_metadata(after)),
+                secret: Some(after.network_secret.clone()),
+            },
         };
         store.secret_store.save_recovery(&record).unwrap();
-        store.secret_store.save_secret(&after.network_secret).unwrap();
+        store
+            .secret_store
+            .save_secret(&after.network_secret)
+            .unwrap();
         record
     }
 
@@ -2006,10 +2204,19 @@ mod tests {
             let record = stage_mixed(&store, &before, &after);
             assert!(store.join(&after.invite_code(), "ignored").is_err());
             assert!(store.save(&after).is_err());
-            assert!(store.rename_display_name(&before.display_name, "changed").is_err());
+            assert!(
+                store
+                    .rename_display_name(&before.display_name, "changed")
+                    .is_err()
+            );
             assert!(store.delete().is_err());
-            assert_eq!(store.secret_store.load_recovery().unwrap().as_ref(), Some(&record));
-            let (result, _) = boundary_run(Some((index, true)), || std::panic::catch_unwind(|| store.load()));
+            assert_eq!(
+                store.secret_store.load_recovery().unwrap().as_ref(),
+                Some(&record)
+            );
+            let (result, _) = boundary_run(Some((index, true)), || {
+                std::panic::catch_unwind(|| store.load())
+            });
             assert!(result.is_err());
             assert_eq!(store.load_or_generate("ignored").unwrap(), before);
         }
@@ -2032,9 +2239,16 @@ mod tests {
         let error = store.load().unwrap_err();
         assert!(!format!("{error:?} {error}").contains(unknown.expose_secret()));
         assert_eq!(fs::read(store.config_path()).unwrap(), metadata);
-        assert_eq!(fs::read(store.secret_store.recovery_path()).unwrap(), recovery);
+        assert_eq!(
+            fs::read(store.secret_store.recovery_path()).unwrap(),
+            recovery
+        );
         assert_eq!(store.secret_store.load_secret().unwrap(), Some(unknown));
-        write_private_file(&store.secret_store.recovery_path(), b"{synthetic-private-payload").unwrap();
+        write_private_file(
+            &store.secret_store.recovery_path(),
+            b"{synthetic-private-payload",
+        )
+        .unwrap();
         assert!(!format!("{:?}", store.load().unwrap_err()).contains("synthetic-private-payload"));
     }
 
@@ -2044,12 +2258,24 @@ mod tests {
         let store = AppPrivateMeshConfigStore::new(&temp.root);
         let after = MeshConfig::generate("Synthetic");
         let lock = store.lock().unwrap();
-        store.secret_store.save_recovery(&MeshRecoveryRecord {
-            profile: store.profile_binding().unwrap(),
-            before: StoredMeshPair { metadata: None, secret: None },
-            after: StoredMeshPair { metadata: Some(encode_mesh_config_metadata(&after)), secret: Some(after.network_secret.clone()) },
-        }).unwrap();
-        store.secret_store.save_secret(&after.network_secret).unwrap();
+        store
+            .secret_store
+            .save_recovery(&MeshRecoveryRecord {
+                profile: store.profile_binding().unwrap(),
+                before: StoredMeshPair {
+                    metadata: None,
+                    secret: None,
+                },
+                after: StoredMeshPair {
+                    metadata: Some(encode_mesh_config_metadata(&after)),
+                    secret: Some(after.network_secret.clone()),
+                },
+            })
+            .unwrap();
+        store
+            .secret_store
+            .save_secret(&after.network_secret)
+            .unwrap();
         drop(lock);
         assert!(store.load_or_generate("must not generate").is_err());
         assert!(store.load().unwrap().is_none());
@@ -2069,7 +2295,9 @@ mod tests {
             assert!(other.save(&target).is_err());
             assert!(other.join(&target.invite_code(), "ignored").is_err());
             assert!(other.delete().is_err());
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
         drop(lock);
         assert_eq!(store.load().unwrap().unwrap(), before);
     }
@@ -2097,22 +2325,34 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct MockKeyring(std::sync::Arc<std::sync::Mutex<(Option<MeshSecret>, Option<MeshRecoveryRecord>)>>);
+    struct MockKeyring(
+        std::sync::Arc<std::sync::Mutex<(Option<MeshSecret>, Option<MeshRecoveryRecord>)>>,
+    );
     impl MeshSecretStore for MockKeyring {
-        fn storage_kind(&self) -> MeshSecretStorageKind { MeshSecretStorageKind::PlatformSecureStore }
-        fn load_secret(&self) -> Result<Option<MeshSecret>, MeshStoreError> { Ok(self.0.lock().unwrap().0.clone()) }
+        fn storage_kind(&self) -> MeshSecretStorageKind {
+            MeshSecretStorageKind::PlatformSecureStore
+        }
+        fn load_secret(&self) -> Result<Option<MeshSecret>, MeshStoreError> {
+            Ok(self.0.lock().unwrap().0.clone())
+        }
         fn save_secret(&self, secret: &MeshSecret) -> Result<(), MeshStoreError> {
-            self.0.lock().unwrap().0 = Some(secret.clone()); mesh_boundary("keyring-secret-saved")
+            self.0.lock().unwrap().0 = Some(secret.clone());
+            mesh_boundary("keyring-secret-saved")
         }
         fn delete_secret(&self) -> Result<(), MeshStoreError> {
-            self.0.lock().unwrap().0 = None; mesh_boundary("keyring-secret-deleted")
+            self.0.lock().unwrap().0 = None;
+            mesh_boundary("keyring-secret-deleted")
         }
-        fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> { Ok(self.0.lock().unwrap().1.clone()) }
+        fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> {
+            Ok(self.0.lock().unwrap().1.clone())
+        }
         fn save_recovery(&self, record: &MeshRecoveryRecord) -> Result<(), MeshStoreError> {
-            self.0.lock().unwrap().1 = Some(record.clone()); mesh_boundary("keyring-recovery-saved")
+            self.0.lock().unwrap().1 = Some(record.clone());
+            mesh_boundary("keyring-recovery-saved")
         }
         fn delete_recovery(&self) -> Result<(), MeshStoreError> {
-            self.0.lock().unwrap().1 = None; mesh_boundary("keyring-recovery-deleted")
+            self.0.lock().unwrap().1 = None;
+            mesh_boundary("keyring-recovery-deleted")
         }
     }
 
@@ -2121,7 +2361,8 @@ mod tests {
         let before = MeshConfig::generate("原名称");
         let after = MeshConfig::generate("Remote");
         let baseline = TempTree::new("keyring-baseline");
-        let store = AppPrivateMeshConfigStore::with_secret_store(&baseline.root, MockKeyring::default());
+        let store =
+            AppPrivateMeshConfigStore::with_secret_store(&baseline.root, MockKeyring::default());
         store.save(&before).unwrap();
         let (result, trace) = boundary_run(None, || store.join(&after.invite_code(), "ignored"));
         result.unwrap();
@@ -2129,16 +2370,22 @@ mod tests {
             for index in 1..=trace.len() {
                 let temp = TempTree::new("keyring-interrupted");
                 let keyring = MockKeyring::default();
-                let store = AppPrivateMeshConfigStore::with_secret_store(&temp.root, keyring.clone());
+                let store =
+                    AppPrivateMeshConfigStore::with_secret_store(&temp.root, keyring.clone());
                 store.save(&before).unwrap();
-                let _ = boundary_run(Some((index, crash)), ||
-                    std::panic::catch_unwind(|| store.join(&after.invite_code(), "ignored")));
+                let _ = boundary_run(Some((index, crash)), || {
+                    std::panic::catch_unwind(|| store.join(&after.invite_code(), "ignored"))
+                });
                 let restarted = AppPrivateMeshConfigStore::with_secret_store(&temp.root, keyring);
                 let config = restarted.load().unwrap().unwrap();
                 assert_eq!(config.node_id, before.node_id);
                 assert_eq!(config.display_name, before.display_name);
-                assert!((config.network_name == before.network_name && config.network_secret == before.network_secret)
-                    || (config.network_name == after.network_name && config.network_secret == after.network_secret));
+                assert!(
+                    (config.network_name == before.network_name
+                        && config.network_secret == before.network_secret)
+                        || (config.network_name == after.network_name
+                            && config.network_secret == after.network_secret)
+                );
                 for entry in fs::read_dir(&temp.root).unwrap() {
                     let bytes = fs::read(entry.unwrap().path()).unwrap();
                     for secret in [&before.network_secret, &after.network_secret] {
@@ -2163,7 +2410,10 @@ mod tests {
         assert!(store.save(&MeshConfig::generate("Remote")).is_err());
         assert!(store.secret_store.load_recovery().unwrap().is_none());
         assert_eq!(fs::read_to_string(store.config_path()).unwrap(), metadata);
-        assert_eq!(fs::read(store.secret_store.path()).unwrap(), original_secret);
+        assert_eq!(
+            fs::read(store.secret_store.path()).unwrap(),
+            original_secret
+        );
         assert_eq!(store.load().unwrap().unwrap(), before);
     }
 
@@ -2175,12 +2425,24 @@ mod tests {
         let before = store.load_or_generate("Local").unwrap();
         let after = MeshConfig::generate("Remote");
         let baseline = TempTree::new("commit-outcome-baseline");
-        let probe = AppPrivateMeshConfigStore::with_secret_store(&baseline.root, MockKeyring::default());
+        let probe =
+            AppPrivateMeshConfigStore::with_secret_store(&baseline.root, MockKeyring::default());
         probe.save(&before).unwrap();
-        let (_, trace) = boundary_run(None, || probe.join(&after.invite_code(), "ignored").unwrap());
-        let index = trace.iter().position(|step| *step == "keyring-recovery-deleted").unwrap() + 1;
-        let (result, _) = boundary_run(Some((index, false)), || store.join(&after.invite_code(), "ignored"));
-        assert!(matches!(result, Err(MeshStoreError::CommittedDurabilityUnconfirmed)));
+        let (_, trace) = boundary_run(None, || {
+            probe.join(&after.invite_code(), "ignored").unwrap()
+        });
+        let index = trace
+            .iter()
+            .position(|step| *step == "keyring-recovery-deleted")
+            .unwrap()
+            + 1;
+        let (result, _) = boundary_run(Some((index, false)), || {
+            store.join(&after.invite_code(), "ignored")
+        });
+        assert!(matches!(
+            result,
+            Err(MeshStoreError::CommittedDurabilityUnconfirmed)
+        ));
         let saved = store.load().unwrap().unwrap();
         assert_eq!(saved.node_id, before.node_id);
         assert_eq!(saved.display_name, before.display_name);
@@ -2196,18 +2458,32 @@ mod tests {
         let after = MeshConfig::generate("Remote");
         let mut record = stage_mixed(&store, &before, &after);
         record.profile.push_str("/different-profile");
-        write_private_file(&store.secret_store.recovery_path(), encode_recovery(&record).unwrap().as_bytes()).unwrap();
+        write_private_file(
+            &store.secret_store.recovery_path(),
+            encode_recovery(&record).unwrap().as_bytes(),
+        )
+        .unwrap();
         let metadata = fs::read(store.config_path()).unwrap();
         assert!(store.load().is_err());
         assert!(store.join(&after.invite_code(), "ignored").is_err());
         assert_eq!(fs::read(store.config_path()).unwrap(), metadata);
         #[cfg(unix)]
         {
-            fs::set_permissions(store.secret_store.recovery_path(), fs::Permissions::from_mode(0o644)).unwrap();
+            fs::set_permissions(
+                store.secret_store.recovery_path(),
+                fs::Permissions::from_mode(0o644),
+            )
+            .unwrap();
             assert!(store.load().is_err());
             assert!(store.delete().is_err());
             assert_eq!(fs::read(store.config_path()).unwrap(), metadata);
-            assert_eq!(fs::metadata(store.secret_store.recovery_path()).unwrap().mode() & 0o777, 0o644);
+            assert_eq!(
+                fs::metadata(store.secret_store.recovery_path())
+                    .unwrap()
+                    .mode()
+                    & 0o777,
+                0o644
+            );
         }
     }
 
@@ -2215,10 +2491,18 @@ mod tests {
     fn unsupported_secure_backend_refuses_without_downgrading_or_changing_pair() {
         struct Unsupported(MockKeyring);
         impl MeshSecretStore for Unsupported {
-            fn storage_kind(&self) -> MeshSecretStorageKind { MeshSecretStorageKind::PlatformSecureStore }
-            fn load_secret(&self) -> Result<Option<MeshSecret>, MeshStoreError> { self.0.load_secret() }
-            fn save_secret(&self, secret: &MeshSecret) -> Result<(), MeshStoreError> { self.0.save_secret(secret) }
-            fn delete_secret(&self) -> Result<(), MeshStoreError> { self.0.delete_secret() }
+            fn storage_kind(&self) -> MeshSecretStorageKind {
+                MeshSecretStorageKind::PlatformSecureStore
+            }
+            fn load_secret(&self) -> Result<Option<MeshSecret>, MeshStoreError> {
+                self.0.load_secret()
+            }
+            fn save_secret(&self, secret: &MeshSecret) -> Result<(), MeshStoreError> {
+                self.0.save_secret(secret)
+            }
+            fn delete_secret(&self) -> Result<(), MeshStoreError> {
+                self.0.delete_secret()
+            }
         }
         let temp = TempTree::new("recovery-unsupported");
         let keyring = MockKeyring::default();
@@ -2229,7 +2513,10 @@ mod tests {
         assert!(store.save(&MeshConfig::generate("Remote")).is_err());
         assert_eq!(store.load().unwrap().unwrap(), before);
         assert_eq!(fs::read(store.config_path()).unwrap(), metadata);
-        assert_eq!(fs::read_dir(&temp.root).unwrap().count(), if cfg!(unix) { 1 } else { 2 }); // No file credential fallback.
+        assert_eq!(
+            fs::read_dir(&temp.root).unwrap().count(),
+            if cfg!(unix) { 1 } else { 2 }
+        ); // No file credential fallback.
     }
 
     #[cfg(unix)]
@@ -2239,11 +2526,21 @@ mod tests {
         let store = AppPrivateMeshConfigStore::new(&temp.root);
         let before = store.load_or_generate("Original").unwrap();
         let after = MeshConfig::generate("Remote");
-        let (result, _) = boundary_run(Some((2, true)), || std::panic::catch_unwind(|| store.save(&after)));
+        let (result, _) = boundary_run(Some((2, true)), || {
+            std::panic::catch_unwind(|| store.save(&after))
+        });
         assert!(result.is_err());
         assert_eq!(store.load().unwrap().unwrap(), before);
-        let pending: Vec<_> = fs::read_dir(&temp.root).unwrap().map(|entry| entry.unwrap().path())
-            .filter(|path| path.file_name().unwrap().to_string_lossy().contains(".tmp-")).collect();
+        let pending: Vec<_> = fs::read_dir(&temp.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".tmp-")
+            })
+            .collect();
         assert_eq!(pending.len(), 1);
         let path = &pending[0];
         let metadata = fs::metadata(path).unwrap();
@@ -2268,17 +2565,30 @@ mod tests {
         let temp = TempTree::new("readonly-upgrade");
         let store = AppPrivateMeshConfigStore::new(&temp.root);
         let config = MeshConfig::generate("Legacy");
-        let metadata = encode_mesh_config_metadata(&config).replace(MESH_CONFIG_METADATA_VERSION, LEGACY_METADATA_VERSION);
+        let metadata = encode_mesh_config_metadata(&config)
+            .replace(MESH_CONFIG_METADATA_VERSION, LEGACY_METADATA_VERSION);
         write_private_file(store.config_path(), metadata.as_bytes()).unwrap();
-        store.secret_store.save_secret(&config.network_secret).unwrap();
+        store
+            .secret_store
+            .save_secret(&config.network_secret)
+            .unwrap();
         assert_eq!(fs::read_dir(&temp.root).unwrap().count(), 2);
         fs::set_permissions(store.config_path(), fs::Permissions::from_mode(0o400)).unwrap();
         fs::set_permissions(store.secret_store.path(), fs::Permissions::from_mode(0o400)).unwrap();
         fs::set_permissions(&temp.root, fs::Permissions::from_mode(0o500)).unwrap();
-        let before = (profile_snapshot(store.config_path()), profile_snapshot(store.secret_store.path()));
+        let before = (
+            profile_snapshot(store.config_path()),
+            profile_snapshot(store.secret_store.path()),
+        );
         assert_eq!(store.load().unwrap().unwrap(), config);
         assert_eq!(store.load_or_generate("Ignored").unwrap(), config);
-        assert_eq!(before, (profile_snapshot(store.config_path()), profile_snapshot(store.secret_store.path())));
+        assert_eq!(
+            before,
+            (
+                profile_snapshot(store.config_path()),
+                profile_snapshot(store.secret_store.path())
+            )
+        );
         assert_eq!(fs::read_dir(&temp.root).unwrap().count(), 2);
         assert_eq!(fs::metadata(&temp.root).unwrap().mode() & 0o777, 0o500);
         fs::set_permissions(&temp.root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -2288,8 +2598,12 @@ mod tests {
     fn unknown_after_credential_write_retains_record_and_refuses_forward_replay() {
         struct Unknown(MockKeyring, std::sync::atomic::AtomicBool);
         impl MeshSecretStore for Unknown {
-            fn storage_kind(&self) -> MeshSecretStorageKind { MeshSecretStorageKind::PlatformSecureStore }
-            fn load_secret(&self) -> Result<Option<MeshSecret>, MeshStoreError> { self.0.load_secret() }
+            fn storage_kind(&self) -> MeshSecretStorageKind {
+                MeshSecretStorageKind::PlatformSecureStore
+            }
+            fn load_secret(&self) -> Result<Option<MeshSecret>, MeshStoreError> {
+                self.0.load_secret()
+            }
             fn save_secret(&self, secret: &MeshSecret) -> Result<(), MeshStoreError> {
                 if self.1.swap(false, Ordering::Relaxed) {
                     self.0.save_secret(&MeshSecret::generate())?;
@@ -2297,63 +2611,89 @@ mod tests {
                 }
                 self.0.save_secret(secret)
             }
-            fn delete_secret(&self) -> Result<(), MeshStoreError> { self.0.delete_secret() }
-            fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> { self.0.load_recovery() }
-            fn save_recovery(&self, record: &MeshRecoveryRecord) -> Result<(), MeshStoreError> { self.0.save_recovery(record) }
-            fn delete_recovery(&self) -> Result<(), MeshStoreError> { self.0.delete_recovery() }
+            fn delete_secret(&self) -> Result<(), MeshStoreError> {
+                self.0.delete_secret()
+            }
+            fn load_recovery(&self) -> Result<Option<MeshRecoveryRecord>, MeshStoreError> {
+                self.0.load_recovery()
+            }
+            fn save_recovery(&self, record: &MeshRecoveryRecord) -> Result<(), MeshStoreError> {
+                self.0.save_recovery(record)
+            }
+            fn delete_recovery(&self) -> Result<(), MeshStoreError> {
+                self.0.delete_recovery()
+            }
         }
         let temp = TempTree::new("unknown-write");
-        let backend = Unknown(MockKeyring::default(), std::sync::atomic::AtomicBool::new(false));
+        let backend = Unknown(
+            MockKeyring::default(),
+            std::sync::atomic::AtomicBool::new(false),
+        );
         let store = AppPrivateMeshConfigStore::with_secret_store(&temp.root, backend);
         let before = store.load_or_generate("Original").unwrap();
         store.secret_store.1.store(true, Ordering::Relaxed);
         let after = MeshConfig::generate("Remote");
-        assert!(matches!(store.join(&after.invite_code(), "ignored"), Err(MeshStoreError::TransactionOutcomeUnknown)));
+        assert!(matches!(
+            store.join(&after.invite_code(), "ignored"),
+            Err(MeshStoreError::TransactionOutcomeUnknown)
+        ));
         let retained = store.secret_store.load_recovery().unwrap();
         assert!(retained.is_some());
         assert!(store.join(&after.invite_code(), "ignored").is_err());
         assert!(store.load().is_err());
         assert_eq!(store.secret_store.load_recovery().unwrap(), retained);
-        assert_eq!(fs::read_to_string(store.config_path()).unwrap(), encode_mesh_config_metadata(&before));
+        assert_eq!(
+            fs::read_to_string(store.config_path()).unwrap(),
+            encode_mesh_config_metadata(&before)
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn protected_checkpoint_helper_stages_existing_core_backward_recovery() {
         for marker in ["", "\u{001c}", "\u{001d}", "\u{001e}", "\u{001f}"] {
-        let temp = TempTree::new("checkpoint-core-wire");
-        let root = fs::canonicalize(&temp.root).unwrap();
-        let store = AppPrivateMeshConfigStore::new(&root);
-        let mut before = MeshConfig::generate("原名称");
-        before.network_secret = MeshSecret::new(format!("{marker}synthetic-original-secret{marker}")).unwrap();
-        store.save(&before).unwrap();
-        create_private_dir(&root.join("gui-state")).unwrap();
-        write_private_file(&root.join("desktop-instance.lock"), b"").unwrap();
-        write_private_file(&root.join("gui-state/desktop-instance.lock"), b"").unwrap();
-        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("scripts");
-        let helper = |action: &str, identifier: &str| {
-            let output = std::process::Command::new("python3").args(["-B", "-c",
+            let temp = TempTree::new("checkpoint-core-wire");
+            let root = fs::canonicalize(&temp.root).unwrap();
+            let store = AppPrivateMeshConfigStore::new(&root);
+            let mut before = MeshConfig::generate("原名称");
+            before.network_secret =
+                MeshSecret::new(format!("{marker}synthetic-original-secret{marker}")).unwrap();
+            store.save(&before).unwrap();
+            create_private_dir(&root.join("gui-state")).unwrap();
+            write_private_file(&root.join("desktop-instance.lock"), b"").unwrap();
+            write_private_file(&root.join("gui-state/desktop-instance.lock"), b"").unwrap();
+            let scripts = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("scripts");
+            let helper = |action: &str, identifier: &str| {
+                let output = std::process::Command::new("python3").args(["-B", "-c",
                 "import sys,pathlib,json;sys.path.insert(0,sys.argv[1]);import mesh_profile_checkpoint as m;m.no_extra_acl=(lambda _p:None) if sys.platform=='darwin' else m.no_extra_acl;p=pathlib.Path(sys.argv[2]);expected=m.public(m.read(p/'mesh.conf'));r=m.create(p,expected) if sys.argv[3]=='create' else m.stage_restore(p,sys.argv[4],expected);print(json.dumps(r))"])
                 .arg(&scripts).arg(&root).arg(action).arg(identifier).output().unwrap();
-            assert!(output.status.success(), "checkpoint helper refused synthetic fixture");
-            let text = String::from_utf8(output.stdout).unwrap();
-            assert!(!text.contains(before.network_secret.expose_secret()));
-            serde_json::from_str::<serde_json::Value>(&text).unwrap()
-        };
-        let created = helper("create", "");
-        let after = MeshConfig::generate("Remote");
-        store.join(&after.invite_code(), "ignored").unwrap();
-        let staged = helper("restore", created["checkpoint_id"].as_str().unwrap());
-        assert_eq!(staged["core_startup_required"], true);
-        assert_eq!(store.secret_store.load_secret().unwrap(), Some(after.network_secret));
-        // On macOS only the Linux ACL query is mocked for this wire fixture;
-        // it does not certify a macOS credential protection adapter.
-        // The unchanged production recovery implementation consumes the helper's
-        // exact wire record and restores both original values without replay.
-        assert_eq!(store.load().unwrap().unwrap(), before);
-        assert!(store.secret_store.load_recovery().unwrap().is_none());
-        assert!(root.join("mesh.secret-checkpoint").is_file());
+                assert!(
+                    output.status.success(),
+                    "checkpoint helper refused synthetic fixture"
+                );
+                let text = String::from_utf8(output.stdout).unwrap();
+                assert!(!text.contains(before.network_secret.expose_secret()));
+                serde_json::from_str::<serde_json::Value>(&text).unwrap()
+            };
+            let created = helper("create", "");
+            let after = MeshConfig::generate("Remote");
+            store.join(&after.invite_code(), "ignored").unwrap();
+            let staged = helper("restore", created["checkpoint_id"].as_str().unwrap());
+            assert_eq!(staged["core_startup_required"], true);
+            assert_eq!(
+                store.secret_store.load_secret().unwrap(),
+                Some(after.network_secret)
+            );
+            // On macOS only the Linux ACL query is mocked for this wire fixture;
+            // it does not certify a macOS credential protection adapter.
+            // The unchanged production recovery implementation consumes the helper's
+            // exact wire record and restores both original values without replay.
+            assert_eq!(store.load().unwrap().unwrap(), before);
+            assert!(store.secret_store.load_recovery().unwrap().is_none());
+            assert!(root.join("mesh.secret-checkpoint").is_file());
         }
     }
-
 }

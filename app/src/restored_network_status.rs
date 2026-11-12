@@ -1,4 +1,5 @@
-//! Session telemetry stays available when the remote-control toolbar is hidden.
+//! Session telemetry lives as a minimalist signal-only icon in the stream header,
+//! expanding into a floating diagnostic popover on click.
 use super::*;
 
 fn localized_route_label(route: &str) -> String {
@@ -19,10 +20,15 @@ impl RestoredDashboard {
         let quality = UiHostStats::network_quality(role.kind(), stats);
         let live = stats.filter(|s| {
             role.kind() == remote_core::role::RoleKind::Viewing
-                && s.updated_at.is_some_and(|at| at.elapsed() <= Duration::from_secs(5))
+                && s.updated_at
+                    .is_some_and(|at| at.elapsed() <= Duration::from_secs(5))
         });
-        let rtt = live.and_then(|s| s.rtt).map(|rtt| format!("{:.0} ms", rtt.latest_ms));
-        let route_text = route.filter(|r| !r.trim().is_empty()).map(localized_route_label);
+        let rtt = live
+            .and_then(|s| s.rtt)
+            .map(|rtt| format!("{:.0} ms", rtt.latest_ms));
+        let route_text = route
+            .filter(|r| !r.trim().is_empty())
+            .map(localized_route_label);
         let base_label = rtt.clone().unwrap_or_else(|| quality.label().into());
         let label = match (&route_text, role.kind()) {
             (Some(r), remote_core::role::RoleKind::Viewing) => format!("{r} · {base_label}"),
@@ -34,16 +40,33 @@ impl RestoredDashboard {
                 crate::i18n::tr("Route").into(),
                 route_text.unwrap_or_else(|| "—".into()),
             ),
-            (crate::i18n::tr("Network RTT").into(), rtt.unwrap_or_else(|| "—".into())),
             (
-                crate::i18n::tr("Packet loss rate").into(),
-                live.filter(|s| s.packet_loss_rate.is_finite() && (0.0..=100.0).contains(&s.packet_loss_rate))
-                    .map(|s| format!("{:.1}%", s.packet_loss_rate))
+                crate::i18n::tr("Capture → UI").into(),
+                live.map(|s| s.capture_submit.compact_value())
                     .unwrap_or_else(|| "—".into()),
             ),
             (
+                crate::i18n::tr("Network RTT").into(),
+                rtt.unwrap_or_else(|| "—".into()),
+            ),
+            (
+                crate::i18n::tr("Frame rate").into(),
+                live.filter(|s| s.fps.is_finite() && s.fps > 0.0)
+                    .map(|s| format!("{:.0} FPS", s.fps))
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            (
+                crate::i18n::tr("Packet loss rate").into(),
+                live.filter(|s| {
+                    s.packet_loss_rate.is_finite() && (0.0..=100.0).contains(&s.packet_loss_rate)
+                })
+                .map(|s| format!("{:.1}%", s.packet_loss_rate))
+                .unwrap_or_else(|| "—".into()),
+            ),
+            (
                 crate::i18n::tr("Bitrate").into(),
-                live.map(|s| format_bitrate(s.bitrate_kbps)).unwrap_or_else(|| "—".into()),
+                live.map(|s| format_bitrate(s.bitrate_kbps))
+                    .unwrap_or_else(|| "—".into()),
             ),
         ];
         (label, quality, rows)
@@ -54,43 +77,52 @@ impl RestoredDashboard {
         role: &RoleState,
         route: Option<&str>,
         stats: Option<&UiHostStats>,
+        tiny: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (label, quality, _) = Self::network_status_details(role, route, stats);
-        let chip_bg = crate::design_system::theme_glass_floating(cx);
-        let chip_border = crate::design_system::theme_border_fine(cx);
+        let button_size = if tiny { 20.0 } else { 26.0 };
+        let icon_size = if tiny { 11.0 } else { 13.0 };
         div()
             .id("network-status-hit-area")
             .occlude()
+            .flex_none()
             .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
-                command_button("network-status-chip", ActionVariantKind::Neutral, cx)
-                    .h(px(28.))
-                    .px_2p5()
-                    .rounded_full()
-                    .flex_none()
-                    .bg(chip_bg)
-                    .border_1()
-                    .border_color(chip_border)
-                    .shadow_sm()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.network_details_open = !this.network_details_open;
-                        this.reset_pointer_scroll();
-                        this.owner.release_input();
-                        this.pointer_input = PointerInputTracker::default();
-                        window.focus(&this.root_focus);
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .text_size(px(11.))
-                            .whitespace_nowrap()
-                            .child(network_quality_icon(quality, &cx.theme()).size(px(12.)))
-                            .child(label),
-                    ),
+                command_button(
+                    "network-status-chip",
+                    if self.network_details_open {
+                        ActionVariantKind::Primary
+                    } else {
+                        ActionVariantKind::Neutral
+                    },
+                    cx,
+                )
+                .size(px(button_size))
+                .rounded_full()
+                .p_0()
+                .tooltip(
+                    tooltip(format!(
+                        "{} · {}",
+                        crate::i18n::tr("Network details"),
+                        label
+                    ))
+                    .build(),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.network_details_open = !this.network_details_open;
+                    if this.network_details_open {
+                        this.drawer_open = false;
+                        this.show_apps_menu = false;
+                    }
+                    this.reset_pointer_scroll();
+                    this.owner.release_input();
+                    this.pointer_input = PointerInputTracker::default();
+                    this.last_toolbar_activity = Instant::now();
+                    window.focus(&this.root_focus);
+                    cx.notify();
+                }))
+                .child(network_quality_icon(quality, &cx.theme()).size(px(icon_size))),
             )
     }
 
@@ -99,6 +131,7 @@ impl RestoredDashboard {
         role: &RoleState,
         route: Option<&str>,
         stats: Option<&UiHostStats>,
+        fullscreen: bool,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (_, _, rows) = Self::network_status_details(role, route, stats);
@@ -106,11 +139,17 @@ impl RestoredDashboard {
         let card_border = crate::design_system::theme_border_fine(cx);
         let divider = cx.theme().border.divider;
         let secondary = cx.theme().content.secondary;
+        let top_offset = if fullscreen {
+            46.0
+        } else {
+            window_fit::STREAM_HEADER_HEIGHT_PX + 6.0
+        };
         div()
             .id("network-status-details")
             .absolute()
-            .right(px(12.))
-            .bottom(px(44.))
+            .top(px(top_offset))
+            .right(px(10.))
+            .min_w(px(216.))
             .max_w(relative(0.95))
             .flex()
             .flex_col()
@@ -175,5 +214,36 @@ impl RestoredDashboard {
                             .child(value),
                     )
             }))
+            .child(
+                div()
+                    .pt_1()
+                    .mt_0p5()
+                    .border_t_1()
+                    .border_color(divider)
+                    .child(
+                        command_button(
+                            "network-open-display-settings",
+                            ActionVariantKind::Neutral,
+                            cx,
+                        )
+                        .w_full()
+                        .h(px(24.))
+                        .rounded(px(7.))
+                        .text_size(px(11.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap_1()
+                                .child(icon(IconName::Display).size(px(12.)))
+                                .child(crate::i18n::tr("Display")),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.network_details_open = false;
+                            this.open_stream_panel(StreamPanel::Display, cx);
+                        })),
+                    ),
+            )
     }
 }

@@ -88,17 +88,30 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         let needed = AtomicBool::new(false);
         let saved = MeshConfig::generate("Synthetic saved group");
-        let failed = crate::pairing_change_outcome(Err(MeshStoreError::CommittedDurabilityUnconfirmed), &needed,
-            || Err(MeshStoreError::InvalidMetadata("synthetic busy read".into())));
+        let failed = crate::pairing_change_outcome(
+            Err(MeshStoreError::CommittedDurabilityUnconfirmed),
+            &needed,
+            || {
+                Err(MeshStoreError::InvalidMetadata(
+                    "synthetic busy read".into(),
+                ))
+            },
+        );
         assert!(failed.is_err());
         assert!(needed.load(Ordering::Relaxed));
-        let (config, changed, warning) = crate::pairing_change_outcome(Ok((saved.clone(), false)), &needed,
-            || panic!("no extra read or replay on an already verified no-op")).unwrap();
+        let (config, changed, warning) =
+            crate::pairing_change_outcome(Ok((saved.clone(), false)), &needed, || {
+                panic!("no extra read or replay on an already verified no-op")
+            })
+            .unwrap();
         assert_eq!(config, saved);
         assert!(changed && warning);
         needed.store(false, Ordering::Relaxed); // Caller reconciles once, then clears.
-        let (_, changed, warning) = crate::pairing_change_outcome(Ok((saved, false)), &needed,
-            || panic!("already verified no-op")).unwrap();
+        let (_, changed, warning) =
+            crate::pairing_change_outcome(Ok((saved, false)), &needed, || {
+                panic!("already verified no-op")
+            })
+            .unwrap();
         assert!(!changed && !warning);
     }
 
@@ -107,14 +120,30 @@ mod tests {
         use remote_core::mesh::MeshStoreError;
         use std::sync::atomic::AtomicBool;
         let needed = AtomicBool::new(false);
-        assert!(crate::pairing_change_outcome(Err(MeshStoreError::CommittedDurabilityUnconfirmed), &needed,
-            || Ok(None)).is_err());
+        assert!(
+            crate::pairing_change_outcome(
+                Err(MeshStoreError::CommittedDurabilityUnconfirmed),
+                &needed,
+                || Ok(None)
+            )
+            .is_err()
+        );
         assert!(needed.load(Ordering::Relaxed));
-        assert!(crate::pairing_change_outcome(Err(MeshStoreError::TransactionOutcomeUnknown), &needed,
-            || panic!("unknown must not be replayed or treated as committed")).is_err());
+        assert!(
+            crate::pairing_change_outcome(
+                Err(MeshStoreError::TransactionOutcomeUnknown),
+                &needed,
+                || panic!("unknown must not be replayed or treated as committed")
+            )
+            .is_err()
+        );
         let config = MeshConfig::generate("Synthetic");
         let (actual, changed, warning) = crate::pairing_change_outcome(
-            Err(MeshStoreError::CommittedDurabilityUnconfirmed), &needed, || Ok(Some(config.clone()))).unwrap();
+            Err(MeshStoreError::CommittedDurabilityUnconfirmed),
+            &needed,
+            || Ok(Some(config.clone())),
+        )
+        .unwrap();
         assert_eq!(actual, config);
         assert!(changed && warning);
     }
@@ -129,8 +158,10 @@ mod tests {
         assert!(needed.load(Ordering::Relaxed));
         assert!(error.contains("is saved") && error.contains("refresh is unavailable"));
         let saved = MeshConfig::generate("Synthetic");
-        let (_, changed, _) = crate::pairing_change_outcome(Ok((saved, false)), &needed,
-            || panic!("known state must not be replayed")).unwrap();
+        let (_, changed, _) = crate::pairing_change_outcome(Ok((saved, false)), &needed, || {
+            panic!("known state must not be replayed")
+        })
+        .unwrap();
         assert!(changed);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         crate::finish_pairing_reconcile(tx.send(()).is_ok(), &needed).unwrap();
@@ -138,5 +169,4 @@ mod tests {
         rx.try_recv().unwrap();
         assert!(rx.try_recv().is_err());
     }
-
 }

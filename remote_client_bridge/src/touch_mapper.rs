@@ -1,4 +1,6 @@
-use protocol::{InputEvent, MomentumPhase, ScrollGesture, ScrollPhase, TouchAction, input_modifiers};
+use protocol::{
+    InputEvent, MomentumPhase, ScrollGesture, ScrollPhase, TouchAction, input_modifiers,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -126,11 +128,21 @@ impl TouchStateTracker {
 
     pub fn cancel_all(&mut self) -> Vec<InputEvent> {
         let releases = if self.mode == TouchMode::NativeTouch && !self.active_pointers.is_empty() {
-            vec![InputEvent::TouchFrame(self.active_pointers.iter().map(|id| {
-                let (x,y) = self.pointer_positions.get(id).copied().unwrap_or((0.,0.));
-                protocol::touch::Contact { action:TouchAction::Cancel, pointer_id:*id,
-                    normalized_x:x, normalized_y:y, pressure:0. }
-            }).collect())]
+            vec![InputEvent::TouchFrame(
+                self.active_pointers
+                    .iter()
+                    .map(|id| {
+                        let (x, y) = self.pointer_positions.get(id).copied().unwrap_or((0., 0.));
+                        protocol::touch::Contact {
+                            action: TouchAction::Cancel,
+                            pointer_id: *id,
+                            normalized_x: x,
+                            normalized_y: y,
+                            pressure: 0.,
+                        }
+                    })
+                    .collect(),
+            )]
         } else {
             let mut out = Vec::new();
             if self.is_left_down {
@@ -210,20 +222,35 @@ impl TouchStateTracker {
                 }
                 match action {
                     TouchAction::Down => {
-                        if self.active_pointers.contains(&pointer_id) { return events; }
-                        if self.active_pointers.len() >= protocol::touch::MAX_CONTACTS { return self.cancel_all(); }
+                        if self.active_pointers.contains(&pointer_id) {
+                            return events;
+                        }
+                        if self.active_pointers.len() >= protocol::touch::MAX_CONTACTS {
+                            return self.cancel_all();
+                        }
                         self.active_pointers.push(pointer_id);
-                        self.pointer_positions.insert(pointer_id,(clamped_x,clamped_y));
+                        self.pointer_positions
+                            .insert(pointer_id, (clamped_x, clamped_y));
                     }
-                    TouchAction::Move => { self.pointer_positions.insert(pointer_id,(clamped_x,clamped_y)); }
+                    TouchAction::Move => {
+                        self.pointer_positions
+                            .insert(pointer_id, (clamped_x, clamped_y));
+                    }
                     TouchAction::Up | TouchAction::Cancel => {
                         self.active_pointers.retain(|id| *id != pointer_id);
                         self.pointer_positions.remove(&pointer_id);
                     }
                 }
                 events.push(InputEvent::TouchFrame(vec![protocol::touch::Contact {
-                    action, pointer_id, normalized_x:clamped_x, normalized_y:clamped_y,
-                    pressure:if matches!(action,TouchAction::Up|TouchAction::Cancel) {0.}else{pressure},
+                    action,
+                    pointer_id,
+                    normalized_x: clamped_x,
+                    normalized_y: clamped_y,
+                    pressure: if matches!(action, TouchAction::Up | TouchAction::Cancel) {
+                        0.
+                    } else {
+                        pressure
+                    },
                 }]));
             }
             TouchMode::DirectTouch => {
@@ -322,10 +349,8 @@ impl TouchStateTracker {
                                         });
                                     }
                                 } else {
-                                    events.push(InputEvent::MouseMoveAbsolute {
-                                        x: abs_x,
-                                        y: abs_y,
-                                    });
+                                    events
+                                        .push(InputEvent::MouseMoveAbsolute { x: abs_x, y: abs_y });
                                 }
                             } else {
                                 events.push(InputEvent::MouseMoveAbsolute { x: abs_x, y: abs_y });
@@ -363,10 +388,12 @@ impl TouchStateTracker {
                                             self.two_finger_scroll_positioned = true;
                                             let cx = (cur_centroid.0.clamp(0.0, 1.0)
                                                 * f32::from(u16::MAX))
-                                                .round() as u16;
+                                            .round()
+                                                as u16;
                                             let cy = (cur_centroid.1.clamp(0.0, 1.0)
                                                 * f32::from(u16::MAX))
-                                                .round() as u16;
+                                            .round()
+                                                as u16;
                                             events.push(InputEvent::MouseMoveAbsolute {
                                                 x: cx,
                                                 y: cy,
@@ -374,9 +401,17 @@ impl TouchStateTracker {
                                         }
                                         if !self.two_finger_scrolling {
                                             self.two_finger_scrolling = true;
-                                            events.push(Self::scroll_phase_event(0, 0, ScrollPhase::Began));
+                                            events.push(Self::scroll_phase_event(
+                                                0,
+                                                0,
+                                                ScrollPhase::Began,
+                                            ));
                                         }
-                                        events.push(Self::scroll_phase_event(delta_x, delta_y, ScrollPhase::Changed));
+                                        events.push(Self::scroll_phase_event(
+                                            delta_x,
+                                            delta_y,
+                                            ScrollPhase::Changed,
+                                        ));
                                     }
                                 }
                                 self.last_two_finger_centroid = Some(cur_centroid);
@@ -546,7 +581,10 @@ impl TouchStateTracker {
                                     self.has_dragged = true;
                                 }
 
-                                if self.has_dragged && self.trackpad_drag_armed && !self.is_left_down {
+                                if self.has_dragged
+                                    && self.trackpad_drag_armed
+                                    && !self.is_left_down
+                                {
                                     events.push(InputEvent::MouseDown(0));
                                     self.is_left_down = true;
                                 }
@@ -555,7 +593,7 @@ impl TouchStateTracker {
                                 // subpixel sample away on a high-DPI phone.
                                 let dx = raw_dx + self.relative_remainder.0;
                                 let dy = raw_dy + self.relative_remainder.1;
-                                self.relative_remainder = (dx-dx.round(),dy-dy.round());
+                                self.relative_remainder = (dx - dx.round(), dy - dy.round());
                                 events.push(InputEvent::MouseMove {
                                     dx: dx.round() as i32,
                                     dy: dy.round() as i32,
@@ -592,9 +630,17 @@ impl TouchStateTracker {
                                         self.has_dragged = true;
                                         if !self.two_finger_scrolling {
                                             self.two_finger_scrolling = true;
-                                            events.push(Self::scroll_phase_event(0, 0, ScrollPhase::Began));
+                                            events.push(Self::scroll_phase_event(
+                                                0,
+                                                0,
+                                                ScrollPhase::Began,
+                                            ));
                                         }
-                                        events.push(Self::scroll_phase_event(delta_x, delta_y, ScrollPhase::Changed));
+                                        events.push(Self::scroll_phase_event(
+                                            delta_x,
+                                            delta_y,
+                                            ScrollPhase::Changed,
+                                        ));
                                     }
                                 }
                                 self.last_two_finger_centroid = Some(cur_centroid);
@@ -606,10 +652,19 @@ impl TouchStateTracker {
                         // Android can put the final movement in Up. Translate
                         // it through the same pointer/scroll path before tap
                         // classification; Cancel must never synthesize motion.
-                        if self.pointer_positions.get(&pointer_id)
-                            .is_some_and(|point|*point != (clamped_x,clamped_y)) {
-                            events.extend(self.process_touch(TouchAction::Move,pointer_id,
-                                clamped_x,clamped_y,pressure,now));
+                        if self
+                            .pointer_positions
+                            .get(&pointer_id)
+                            .is_some_and(|point| *point != (clamped_x, clamped_y))
+                        {
+                            events.extend(self.process_touch(
+                                TouchAction::Move,
+                                pointer_id,
+                                clamped_x,
+                                clamped_y,
+                                pressure,
+                                now,
+                            ));
                         }
                         if self.is_left_down {
                             events.push(InputEvent::MouseUp(0));
@@ -992,39 +1047,81 @@ mod tests {
     use super::*;
     #[test]
     fn virtual_trackpad_preserves_subpixel_motion_and_drops_cancelled_remainders() {
-        let mut tracker=TouchStateTracker::new(TouchMode::VirtualTrackpad,
-            RemoteScreenBounds {width:640,height:420});
-        let now=Instant::now();tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
-        let dx:i32=[0.1004,0.1008,0.1012].into_iter().flat_map(|x|
-            tracker.process_touch(TouchAction::Move,0,x,0.5,1.,now)).map(|event|
-                if let InputEvent::MouseMove {dx,..}=event {dx}else{0}).sum();
-        assert_eq!(dx,1);
-        tracker.cancel_all();tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
-        assert!(tracker.process_touch(TouchAction::Move,0,0.1004,0.5,1.,now).iter()
-            .all(|event|!matches!(event,InputEvent::MouseMove {dx,..} if *dx!=0)));
+        let mut tracker = TouchStateTracker::new(
+            TouchMode::VirtualTrackpad,
+            RemoteScreenBounds {
+                width: 640,
+                height: 420,
+            },
+        );
+        let now = Instant::now();
+        tracker.process_touch(TouchAction::Down, 0, 0.1, 0.5, 1., now);
+        let dx: i32 = [0.1004, 0.1008, 0.1012]
+            .into_iter()
+            .flat_map(|x| tracker.process_touch(TouchAction::Move, 0, x, 0.5, 1., now))
+            .map(|event| {
+                if let InputEvent::MouseMove { dx, .. } = event {
+                    dx
+                } else {
+                    0
+                }
+            })
+            .sum();
+        assert_eq!(dx, 1);
+        tracker.cancel_all();
+        tracker.process_touch(TouchAction::Down, 0, 0.1, 0.5, 1., now);
+        assert!(
+            tracker
+                .process_touch(TouchAction::Move, 0, 0.1004, 0.5, 1., now)
+                .iter()
+                .all(|event| !matches!(event,InputEvent::MouseMove {dx,..} if *dx!=0))
+        );
     }
 
     #[test]
     fn virtual_trackpad_includes_lift_motion_without_turning_a_swipe_into_a_tap() {
-        let mut tracker=TouchStateTracker::new(TouchMode::VirtualTrackpad,
-            RemoteScreenBounds {width:640,height:420});
-        let now=Instant::now();
-        tracker.process_touch(TouchAction::Down,0,0.1,0.5,1.,now);
-        let mut events=tracker.process_touch(TouchAction::Move,0,0.15,0.55,1.,now);
-        events.extend(tracker.process_touch(TouchAction::Up,0,0.2,0.6,0.,now));
-        let (mut x,mut y)=(0,0);
+        let mut tracker = TouchStateTracker::new(
+            TouchMode::VirtualTrackpad,
+            RemoteScreenBounds {
+                width: 640,
+                height: 420,
+            },
+        );
+        let now = Instant::now();
+        tracker.process_touch(TouchAction::Down, 0, 0.1, 0.5, 1., now);
+        let mut events = tracker.process_touch(TouchAction::Move, 0, 0.15, 0.55, 1., now);
+        events.extend(tracker.process_touch(TouchAction::Up, 0, 0.2, 0.6, 0., now));
+        let (mut x, mut y) = (0, 0);
         for event in events {
-            let InputEvent::MouseMove {dx,dy}=event else {panic!("a moved finger must not click")};
-            x+=dx;y+=dy;
+            let InputEvent::MouseMove { dx, dy } = event else {
+                panic!("a moved finger must not click")
+            };
+            x += dx;
+            y += dy;
         }
-        assert_eq!((x,y),(96,63));
-        assert!(tracker.process_touch(TouchAction::Up,0,0.9,0.9,0.,now).is_empty());
-        tracker.process_touch(TouchAction::Down,1,0.1,0.5,1.,now);
-        assert!(tracker.process_touch(TouchAction::Cancel,1,0.9,0.9,0.,now).is_empty());
-        assert!(tracker.process_touch(TouchAction::Up,1,0.9,0.9,0.,now).is_empty());
-        tracker.process_touch(TouchAction::Down,2,0.1,0.5,1.,now);
-        let lifted=tracker.process_touch(TouchAction::Up,2,0.2,0.5,0.,now);
-        assert!(matches!(lifted.as_slice(),[InputEvent::MouseMove {dx:96,dy:0}]));
+        assert_eq!((x, y), (96, 63));
+        assert!(
+            tracker
+                .process_touch(TouchAction::Up, 0, 0.9, 0.9, 0., now)
+                .is_empty()
+        );
+        tracker.process_touch(TouchAction::Down, 1, 0.1, 0.5, 1., now);
+        assert!(
+            tracker
+                .process_touch(TouchAction::Cancel, 1, 0.9, 0.9, 0., now)
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .process_touch(TouchAction::Up, 1, 0.9, 0.9, 0., now)
+                .is_empty()
+        );
+        tracker.process_touch(TouchAction::Down, 2, 0.1, 0.5, 1., now);
+        let lifted = tracker.process_touch(TouchAction::Up, 2, 0.2, 0.5, 0., now);
+        assert!(matches!(
+            lifted.as_slice(),
+            [InputEvent::MouseMove { dx: 96, dy: 0 }]
+        ));
     }
 
     #[test]
@@ -1041,12 +1138,26 @@ mod tests {
         // First tap
         tracker.process_touch(TouchAction::Down, 0, 0.5, 0.5, 1.0, now);
         assert_eq!(
-            tracker.process_touch(TouchAction::Up, 0, 0.5, 0.5, 0.0, now + Duration::from_millis(40)),
+            tracker.process_touch(
+                TouchAction::Up,
+                0,
+                0.5,
+                0.5,
+                0.0,
+                now + Duration::from_millis(40)
+            ),
             vec![InputEvent::MouseDown(0), InputEvent::MouseUp(0)]
         );
 
         // Second Down within 320ms + glide -> holds MouseDown(0) while moving, releases on Up
-        tracker.process_touch(TouchAction::Down, 0, 0.51, 0.5, 1.0, now + Duration::from_millis(140));
+        tracker.process_touch(
+            TouchAction::Down,
+            0,
+            0.51,
+            0.5,
+            1.0,
+            now + Duration::from_millis(140),
+        );
         let drag_events = tracker.process_touch(
             TouchAction::Move,
             0,
@@ -1056,9 +1167,18 @@ mod tests {
             now + Duration::from_millis(160),
         );
         assert_eq!(drag_events.first(), Some(&InputEvent::MouseDown(0)));
-        assert!(matches!(drag_events.get(1), Some(InputEvent::MouseMove { dx, dy }) if *dx > 0 && *dy > 0));
+        assert!(
+            matches!(drag_events.get(1), Some(InputEvent::MouseMove { dx, dy }) if *dx > 0 && *dy > 0)
+        );
         assert_eq!(
-            tracker.process_touch(TouchAction::Up, 0, 0.55, 0.52, 0.0, now + Duration::from_millis(220)),
+            tracker.process_touch(
+                TouchAction::Up,
+                0,
+                0.55,
+                0.52,
+                0.0,
+                now + Duration::from_millis(220)
+            ),
             vec![InputEvent::MouseUp(0)]
         );
 
@@ -1066,12 +1186,33 @@ mod tests {
         let later = now + Duration::from_millis(1000);
         tracker.process_touch(TouchAction::Down, 1, 0.4, 0.4, 1.0, later);
         assert_eq!(
-            tracker.process_touch(TouchAction::Up, 1, 0.4, 0.4, 0.0, later + Duration::from_millis(30)),
+            tracker.process_touch(
+                TouchAction::Up,
+                1,
+                0.4,
+                0.4,
+                0.0,
+                later + Duration::from_millis(30)
+            ),
             vec![InputEvent::MouseDown(0), InputEvent::MouseUp(0)]
         );
-        tracker.process_touch(TouchAction::Down, 1, 0.4, 0.4, 1.0, later + Duration::from_millis(110));
+        tracker.process_touch(
+            TouchAction::Down,
+            1,
+            0.4,
+            0.4,
+            1.0,
+            later + Duration::from_millis(110),
+        );
         assert_eq!(
-            tracker.process_touch(TouchAction::Up, 1, 0.4, 0.4, 0.0, later + Duration::from_millis(140)),
+            tracker.process_touch(
+                TouchAction::Up,
+                1,
+                0.4,
+                0.4,
+                0.0,
+                later + Duration::from_millis(140)
+            ),
             vec![InputEvent::MouseDown(0), InputEvent::MouseUp(0)]
         );
     }
@@ -1264,10 +1405,13 @@ mod tests {
             0.0,
             now + Duration::from_millis(100),
         );
-        assert_eq!(events_up, vec![
-            InputEvent::MouseMoveAbsolute { x: 13107, y: 9830 },
-            InputEvent::MouseUp(0),
-        ]);
+        assert_eq!(
+            events_up,
+            vec![
+                InputEvent::MouseMoveAbsolute { x: 13107, y: 9830 },
+                InputEvent::MouseUp(0),
+            ]
+        );
     }
 
     #[test]
@@ -1370,8 +1514,22 @@ mod tests {
 
         // Toggling natural_scroll = false flips direction for reverse-wheel preference
         tracker.set_natural_scroll(false);
-        tracker.process_touch(TouchAction::Down, 0, 0.4, 0.6, 1.0, now + Duration::from_millis(60));
-        tracker.process_touch(TouchAction::Down, 1, 0.6, 0.6, 1.0, now + Duration::from_millis(70));
+        tracker.process_touch(
+            TouchAction::Down,
+            0,
+            0.4,
+            0.6,
+            1.0,
+            now + Duration::from_millis(60),
+        );
+        tracker.process_touch(
+            TouchAction::Down,
+            1,
+            0.6,
+            0.6,
+            1.0,
+            now + Duration::from_millis(70),
+        );
         let classic_scroll = tracker.process_touch(
             TouchAction::Move,
             0,
@@ -1597,11 +1755,18 @@ impl VirtualKeyboard {
     pub fn holds_modifiers_for(&self, grant: protocol::realtime_input::InputBinding) -> bool {
         self.grant == Some(grant) && self.held_modifiers != 0
     }
-    pub fn event_for_grant(&mut self, grant: protocol::realtime_input::InputBinding, name: &str, pressed: bool) -> Vec<InputEvent> {
+    pub fn event_for_grant(
+        &mut self,
+        grant: protocol::realtime_input::InputBinding,
+        name: &str,
+        pressed: bool,
+    ) -> Vec<InputEvent> {
         if self.grant != Some(grant) {
             *self = Self::default();
             self.grant = Some(grant);
-            if !pressed { return Vec::new(); }
+            if !pressed {
+                return Vec::new();
+            }
         }
         self.event(name, pressed)
     }
@@ -1652,13 +1817,35 @@ mod virtual_keyboard_tests {
     use super::*;
     #[test]
     fn renewed_grant_never_replays_modifiers_or_a_late_key_release() {
-        let mut keys=VirtualKeyboard::default();
-        let old=protocol::realtime_input::InputBinding{connection_id:1,subscription_id:7,source_revision:0,epoch:[1;16]};
-        let new=protocol::realtime_input::InputBinding{epoch:[2;16],..old};
-        keys.event_for_grant(old,"ctrl",true);
-        assert!(keys.event_for_grant(new,"ctrl",false).is_empty());
-        assert!(matches!(keys.event_for_grant(new,"enter",true).as_slice(),[InputEvent::Key{modifiers:0,pressed:true,..}]));
-        assert!(matches!(keys.event_for_grant(new,"enter",false).as_slice(),[InputEvent::Key{modifiers:0,pressed:false,..}]));
+        let mut keys = VirtualKeyboard::default();
+        let old = protocol::realtime_input::InputBinding {
+            connection_id: 1,
+            subscription_id: 7,
+            source_revision: 0,
+            epoch: [1; 16],
+        };
+        let new = protocol::realtime_input::InputBinding {
+            epoch: [2; 16],
+            ..old
+        };
+        keys.event_for_grant(old, "ctrl", true);
+        assert!(keys.event_for_grant(new, "ctrl", false).is_empty());
+        assert!(matches!(
+            keys.event_for_grant(new, "enter", true).as_slice(),
+            [InputEvent::Key {
+                modifiers: 0,
+                pressed: true,
+                ..
+            }]
+        ));
+        assert!(matches!(
+            keys.event_for_grant(new, "enter", false).as_slice(),
+            [InputEvent::Key {
+                modifiers: 0,
+                pressed: false,
+                ..
+            }]
+        ));
     }
     #[test]
     fn held_ctrl_survives_a_key_pair() {

@@ -57,14 +57,19 @@ impl TextOutbox {
             // Merge only adjacent, unsent commits to this exact wire owner.
             // The first ID is retained (IDs may have gaps); a sent request and
             // its retries are immutable. Input items remain ordering barriers.
-            if let Some(Item::Text { request: tail, queued: oldest, sent: None }) = self.items.back_mut()
+            if let Some(Item::Text {
+                request: tail,
+                queued: oldest,
+                sent: None,
+            }) = self.items.back_mut()
                 && tail.binding == request.binding
                 && tail.request_id < request.request_id
                 && tail.text.as_str().len() + request.text.as_str().len()
                     <= protocol::interaction::MAX_COMMITTED_TEXT_BYTES
             {
                 let text = format!("{}{}", tail.text.as_str(), request.text.as_str());
-                tail.text = protocol::interaction::CommittedText::new(text).expect("bounded valid text concatenation");
+                tail.text = protocol::interaction::CommittedText::new(text)
+                    .expect("bounded valid text concatenation");
                 tail.created_host_ms = tail.created_host_ms.min(request.created_host_ms);
                 *oldest = (*oldest).min(queued);
                 self.pending.fetch_sub(1, Ordering::AcqRel);
@@ -80,10 +85,22 @@ impl TextOutbox {
     pub fn input(&mut self, packet: RealtimeInput, queued: Instant) -> bool {
         // Only an unsent, adjacent absolute position can be superseded.
         // Clicks, relative deltas, text and grant changes remain barriers.
-        if matches!(packet.payload, protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { .. }))
-            && let Some(Item::Input { packet: tail, queued: at }) = self.items.back_mut()
+        if matches!(
+            packet.payload,
+            protocol::realtime_input::InputPayload::Event(
+                protocol::InputEvent::MouseMoveAbsolute { .. }
+            )
+        ) && let Some(Item::Input {
+            packet: tail,
+            queued: at,
+        }) = self.items.back_mut()
             && tail.binding == packet.binding
-            && matches!(tail.payload, protocol::realtime_input::InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { .. }))
+            && matches!(
+                tail.payload,
+                protocol::realtime_input::InputPayload::Event(
+                    protocol::InputEvent::MouseMoveAbsolute { .. }
+                )
+            )
         {
             *tail = packet;
             *at = queued;
@@ -254,11 +271,15 @@ mod tests {
             out.text(vec![next], now + Duration::from_millis(i as u64 + 1));
         }
         assert_eq!(out.pending.load(Ordering::Acquire), 2);
-        assert!(matches!(&out.advance(now+Duration::from_millis(60), |_|true)[0],
-            Action::Send(SessionCommand::CommitText(r)) if r==&first));
+        assert!(
+            matches!(&out.advance(now+Duration::from_millis(60), |_|true)[0],
+            Action::Send(SessionCommand::CommitText(r)) if r==&first)
+        );
         assert!(out.acknowledge(first.binding, first.request_id));
         let actions = out.advance(now + Duration::from_millis(80), |_| true);
-        let Action::Send(SessionCommand::CommitText(batch)) = &actions[0] else { panic!() };
+        let Action::Send(SessionCommand::CommitText(batch)) = &actions[0] else {
+            panic!()
+        };
         assert_eq!(batch.text.as_str(), "eavelo42");
         assert_eq!(batch.request_id, first.request_id + 1);
         assert_eq!(batch.created_host_ms, first.created_host_ms + 1);
@@ -270,22 +291,30 @@ mod tests {
     fn batching_preserves_click_order_and_exact_source_ownership() {
         let now = Instant::now();
         let first = request();
-        let mut next = first.clone(); next.request_id += 1;
-        let mut other = next.clone(); other.binding.source_revision += 1;
+        let mut next = first.clone();
+        next.request_id += 1;
+        let mut other = next.clone();
+        other.binding.source_revision += 1;
         let mut out = TextOutbox::default();
         out.pending.store(3, Ordering::Release);
         out.text(vec![first.clone()], now);
-        let packet = RealtimeInput {binding:first.binding,sequence:8,created_host_ms:100,
-            payload:InputPayload::Event(protocol::InputEvent::MouseDown(0))};
+        let packet = RealtimeInput {
+            binding: first.binding,
+            sequence: 8,
+            created_host_ms: 100,
+            payload: InputPayload::Event(protocol::InputEvent::MouseDown(0)),
+        };
         assert!(out.input(packet.clone(), now));
         out.text(vec![next.clone(), other.clone()], now);
         out.advance(now, |_| true);
         out.acknowledge(first.binding, first.request_id);
         let actions = out.advance(now, |_| true);
-        assert!(matches!(&actions[..], [Action::Send(SessionCommand::RealtimeInput(p)),
+        assert!(
+            matches!(&actions[..], [Action::Send(SessionCommand::RealtimeInput(p)),
             Action::Send(SessionCommand::CommitText(r))] if p.sequence==packet.sequence
                 && p.binding==packet.binding && p.created_host_ms==packet.created_host_ms
-                && matches!(p.payload,InputPayload::Event(protocol::InputEvent::MouseDown(0))) && r==&next));
+                && matches!(p.payload,InputPayload::Event(protocol::InputEvent::MouseDown(0))) && r==&next)
+        );
         out.acknowledge(next.binding, next.request_id);
         assert!(matches!(&out.advance(now, |_|true)[0],
             Action::Send(SessionCommand::CommitText(r)) if r==&other));
@@ -299,29 +328,51 @@ mod tests {
         out.pending.store(1, Ordering::Release);
         out.text(vec![text.clone()], now);
         let packet = |sequence, payload| RealtimeInput {
-            binding: text.binding, sequence, created_host_ms: 100 + sequence, payload,
+            binding: text.binding,
+            sequence,
+            created_host_ms: 100 + sequence,
+            payload,
         };
         for sequence in 0..1024 {
-            assert!(out.input(packet(sequence, InputPayload::Event(
-                protocol::InputEvent::MouseMoveAbsolute { x: sequence as u16, y: 3 }
-            )), now + Duration::from_micros(sequence)), "motion {sequence} rejected");
+            assert!(
+                out.input(
+                    packet(
+                        sequence,
+                        InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute {
+                            x: sequence as u16,
+                            y: 3
+                        })
+                    ),
+                    now + Duration::from_micros(sequence)
+                ),
+                "motion {sequence} rejected"
+            );
         }
-        let down = packet(1024, InputPayload::Event(protocol::InputEvent::MouseDown(0)));
+        let down = packet(
+            1024,
+            InputPayload::Event(protocol::InputEvent::MouseDown(0)),
+        );
         assert!(out.input(down, now));
-        assert!(out.input(packet(1025, InputPayload::Event(
-            protocol::InputEvent::MouseMoveAbsolute { x: 99, y: 4 }
-        )), now));
+        assert!(out.input(
+            packet(
+                1025,
+                InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { x: 99, y: 4 })
+            ),
+            now
+        ));
         assert_eq!(out.items.len(), 4);
         assert!(matches!(&out.items[1], Item::Input { queued, .. }
             if *queued == now + Duration::from_micros(1023)));
         assert!(out.acknowledge(text.binding, text.request_id));
         let actions = out.advance(now + Duration::from_millis(2), |_| true);
-        assert!(matches!(&actions[..], [Action::Send(SessionCommand::RealtimeInput(a)),
+        assert!(
+            matches!(&actions[..], [Action::Send(SessionCommand::RealtimeInput(a)),
             Action::Send(SessionCommand::RealtimeInput(b)), Action::Send(SessionCommand::RealtimeInput(c))]
             if a.sequence == 1023 && a.created_host_ms == 1123
                 && matches!(a.payload, InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { x: 1023, .. }))
                 && matches!(b.payload, InputPayload::Event(protocol::InputEvent::MouseDown(0)))
-                && c.sequence == 1025));
+                && c.sequence == 1025)
+        );
     }
 
     #[test]
@@ -329,11 +380,14 @@ mod tests {
         let now = Instant::now();
         let text = request();
         let motion = |binding, sequence| RealtimeInput {
-            binding, sequence, created_host_ms: 100,
+            binding,
+            sequence,
+            created_host_ms: 100,
             payload: InputPayload::Event(protocol::InputEvent::MouseMoveAbsolute { x: 1, y: 2 }),
         };
         let mut out = TextOutbox::default();
-        let mut other = text.binding; other.epoch = [9; 16];
+        let mut other = text.binding;
+        other.epoch = [9; 16];
         assert!(out.input(motion(text.binding, 1), now));
         assert!(out.input(motion(other, 2), now));
         let mut relative = motion(other, 3);
@@ -351,21 +405,33 @@ mod tests {
         let now = Instant::now();
         let mut first = request();
         first.text = CommittedText::new("a".repeat(1020)).unwrap();
-        let mut emoji = first.clone(); emoji.request_id += 1; emoji.created_host_ms -= 20;
+        let mut emoji = first.clone();
+        emoji.request_id += 1;
+        emoji.created_host_ms -= 20;
         emoji.text = CommittedText::new("😀".into()).unwrap();
-        let mut after = emoji.clone(); after.request_id += 1;
+        let mut after = emoji.clone();
+        after.request_id += 1;
         after.text = CommittedText::new("x".into()).unwrap();
-        let mut out = TextOutbox::default();out.pending.store(3, Ordering::Release);
+        let mut out = TextOutbox::default();
+        out.pending.store(3, Ordering::Release);
         out.text(vec![first], now);
-        out.text(vec![emoji], now-Duration::from_millis(20));
+        out.text(vec![emoji], now - Duration::from_millis(20));
         out.text(vec![after], now);
         assert_eq!(out.pending.load(Ordering::Acquire), 2);
-        let Item::Text {request,queued,..} = out.items.front().unwrap() else {panic!()};
+        let Item::Text {
+            request, queued, ..
+        } = out.items.front().unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(request.text.as_str().len(), 1024);
         assert!(request.text.as_str().ends_with('😀'));
         assert_eq!(request.created_host_ms, 80);
-        assert_eq!(*queued, now-Duration::from_millis(20));
-        assert!(matches!(&out.advance(now+Duration::from_millis(231), |_|true)[0],Action::Failed{..}));
+        assert_eq!(*queued, now - Duration::from_millis(20));
+        assert!(matches!(
+            &out.advance(now + Duration::from_millis(231), |_| true)[0],
+            Action::Failed { .. }
+        ));
         assert_eq!(out.pending.load(Ordering::Acquire), 0);
     }
 }

@@ -27,4 +27,14 @@ class NetworkStatusTest {
         assertEquals(NetworkTone.ERROR, networkIndicator(SessionState.STREAMING, measured.copy(packetLossPercent = 5f), 1500).tone)
         assertEquals(NetworkTone.NEUTRAL, networkIndicator(SessionState.STREAMING, measured.copy(packetLossPercent = Float.NaN), 1500).tone)
     }
+    @Test fun signalBarsReflectStreamingHealthWithoutTextNoise() {
+        assertEquals(0, signalBarsLevel(SessionState.DISCONNECTED, measured, 1500))
+        assertEquals(0, signalBarsLevel(SessionState.CONNECTING, measured, 1500))
+        assertEquals(0, signalBarsLevel(SessionState.RECONNECTING, measured, 1500))
+        assertEquals(4, signalBarsLevel(SessionState.STREAMING, measured, 1500))
+        assertEquals(3, signalBarsLevel(SessionState.STREAMING, measured.copy(networkRttMs = 55.0), 1500))
+        assertEquals(2, signalBarsLevel(SessionState.STREAMING, measured.copy(networkRttMs = 95.0), 1500))
+        assertEquals(2, signalBarsLevel(SessionState.STREAMING, TelemetrySnapshot(), 1500))
+        assertEquals(1, signalBarsLevel(SessionState.STREAMING, measured.copy(networkRttMs = 160.0), 1500))
+    }
 }

@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Inspect the first HEVC VCL NAL; normal P frames return after their header.
 pub fn is_hevc_keyframe(data: &[u8]) -> bool {
-    let Ok((_,data))=protocol::viewport::split_frame(data) else {return false;};
+    let Ok((_, data)) = protocol::viewport::split_frame(data) else {
+        return false;
+    };
     data.windows(5)
         .find_map(|w| {
             if w[..3] != [0, 0, 1] || w[3] & 0x80 != 0 || w[4] & 7 == 0 {
@@ -328,8 +330,14 @@ mod tests {
             let wire = envelope.encode_compact_realtime().unwrap();
             let decoded = DataEnvelope::decode_compact_realtime(&wire).unwrap();
             assert_eq!(decoded.header.deadline_ms, None);
-            assert_eq!(scheduler.push(decoded, now + 100), SchedulerPushResult::Queued);
-            assert_eq!(realtime_data_to_rtp(scheduler.pop_next(now + 200).unwrap()).unwrap(), rtp);
+            assert_eq!(
+                scheduler.push(decoded, now + 100),
+                SchedulerPushResult::Queued
+            );
+            assert_eq!(
+                realtime_data_to_rtp(scheduler.pop_next(now + 200).unwrap()).unwrap(),
+                rtp
+            );
         }
         assert_eq!(scheduler.stats().dropped_stale_realtime, 0);
     }

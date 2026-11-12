@@ -1,7 +1,9 @@
 //! Bounded, in-memory directed intent. Wire identity always comes from the
 //! authenticated host connection; a ticket is not a node-ID assertion.
-use protocol::session::{CaptureSource, DeliveryState, SessionCommand, validate_delivery_sources};
 use crate::shared_files::ShareScope;
+use crate::workspace_session::{WorkspaceConnection, WorkspaceEvents};
+use protocol::session::DeliveryClaimProof;
+use protocol::session::{CaptureSource, DeliveryState, SessionCommand, validate_delivery_sources};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -10,9 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
-use protocol::session::DeliveryClaimProof;
-use crate::workspace_session::{WorkspaceConnection,WorkspaceEvents};
-type Error=Box<dyn std::error::Error+Send+Sync>;
+type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Scalar failure evidence. Queue admission is not a claim of wire delivery.
 #[derive(Clone, Debug, Serialize)]
@@ -44,11 +44,16 @@ fn record_confirmation_timeout(timeout: &ConfirmationTimeout) {
         // a failed real-device run remains inspectable without another build.
         #[link(name = "log")]
         unsafe extern "C" {
-            fn __android_log_write(priority: i32, tag: *const std::ffi::c_char,
-                message: *const std::ffi::c_char) -> i32;
+            fn __android_log_write(
+                priority: i32,
+                tag: *const std::ffi::c_char,
+                message: *const std::ffi::c_char,
+            ) -> i32;
         }
         let message = std::ffi::CString::new(message).expect("Scalar JSON has no NUL");
-        unsafe { __android_log_write(6, c"WeaveloDelivery".as_ptr(), message.as_ptr()); }
+        unsafe {
+            __android_log_write(6, c"WeaveloDelivery".as_ptr(), message.as_ptr());
+        }
     }
     #[cfg(not(target_os = "android"))]
     eprintln!("WEAVELO_DELIVERY_CONFIRMATION_TIMEOUT {message}");
@@ -80,7 +85,10 @@ pub async fn exchange(
                         reason,
                     })) if request_id == request
                         && (got == revision
-                            || matches!(state, DeliveryState::Cancelled | DeliveryState::Rejected)) =>
+                            || matches!(
+                                state,
+                                DeliveryState::Cancelled | DeliveryState::Rejected
+                            )) =>
                     {
                         if state == DeliveryState::Rejected {
                             return Err(format!("Delivery failed at receiver: {reason}").into());
@@ -98,10 +106,16 @@ pub async fn exchange(
     };
     let confirmed = tokio::time::timeout(Duration::from_secs(8), confirmation).await;
     confirmed.map_err(|_| -> Error {
-        let timeout = ConfirmationTimeout { connection_id: conn.id, target: conn.target,
-            request_id: request, revision, queued_commands,
+        let timeout = ConfirmationTimeout {
+            connection_id: conn.id,
+            target: conn.target,
+            request_id: request,
+            revision,
+            queued_commands,
             control_queue_depth: conn.control_queue_depth(),
-            peer_response_age_ms: conn.peer_response_age_ms(), peer_responsive: conn.peer_is_responsive() };
+            peer_response_age_ms: conn.peer_response_age_ms(),
+            peer_responsive: conn.peer_is_responsive(),
+        };
         record_confirmation_timeout(&timeout);
         Box::new(timeout)
     })?
@@ -143,8 +157,13 @@ pub struct OutgoingOffer {
 /// Desktop and mobile use the same retry, revision, expiry and receipt rules.
 /// The source adapter owns registration/revocation and its native capture grant.
 pub async fn maintain_offer<R, F, A, S>(
-    conn: &WorkspaceConnection, events: &mut WorkspaceEvents, offer: OutgoingOffer,
-    cancelled: &mut tokio::sync::watch::Receiver<bool>, alive: A, mut renew: R, mut status: S,
+    conn: &WorkspaceConnection,
+    events: &mut WorkspaceEvents,
+    offer: OutgoingOffer,
+    cancelled: &mut tokio::sync::watch::Receiver<bool>,
+    alive: A,
+    mut renew: R,
+    mut status: S,
 ) -> Result<(), Error>
 where
     R: FnMut(u64) -> F,
@@ -158,24 +177,43 @@ where
         let mut revision = 1;
         loop {
             let next_offer = tokio::time::Instant::now() + Duration::from_secs(5);
-            if *cancellation.borrow() { return Ok(()); }
+            if *cancellation.borrow() {
+                return Ok(());
+            }
             if !alive() || offer.scope != crate::shared_files::current_share_scope() {
                 return Err("Screen sharing or device network changed".into());
             }
-            if revision > 1 { renew(revision).await?; }
-            let state = exchange(conn, events, SessionCommand::DeliveryOffer {
-                request_id: offer.request, source_device_id: offer.source.clone(), target_device_id: offer.target.clone(),
-                ticket: offer.ticket, revision, sources: offer.sources.clone(),
-            }, offer.request, revision).await?;
+            if revision > 1 {
+                renew(revision).await?;
+            }
+            let state = exchange(
+                conn,
+                events,
+                SessionCommand::DeliveryOffer {
+                    request_id: offer.request,
+                    source_device_id: offer.source.clone(),
+                    target_device_id: offer.target.clone(),
+                    ticket: offer.ticket,
+                    revision,
+                    sources: offer.sources.clone(),
+                },
+                offer.request,
+                revision,
+            )
+            .await?;
             match state {
-                DeliveryState::Pending | DeliveryState::Accepted | DeliveryState::Receiving => status(state),
+                DeliveryState::Pending | DeliveryState::Accepted | DeliveryState::Receiving => {
+                    status(state)
+                }
                 DeliveryState::Cancelled | DeliveryState::Rejected => return Ok(()),
                 _ => return Err("Unexpected delivery receipt".into()),
             }
             // Receipt latency consumes this interval; never add another five
             // seconds after a delayed confirmation and drift past the lease.
             tokio::time::sleep_until(next_offer).await;
-            revision = revision.checked_add(1).ok_or("Sending revision exhausted")?;
+            revision = revision
+                .checked_add(1)
+                .ok_or("Sending revision exhausted")?;
         }
     };
     tokio::select! {biased; _=cancelled.changed()=>Ok(()), result=sending=>result}
@@ -189,7 +227,6 @@ pub fn sending_status(state: DeliveryState) -> &'static str {
         _ => "Sending stopped",
     }
 }
-
 
 pub const LEASE: Duration = Duration::from_secs(15);
 const LIMIT: usize = 16;
@@ -267,7 +304,7 @@ struct IncomingState {
 }
 impl Incoming {
     pub fn mark_receiver_stage(&self, stage: &'static str) {
-        self.inner.lock().unwrap().stage=stage;
+        self.inner.lock().unwrap().stage = stage;
     }
     pub fn snapshot(&self) -> (u64, Instant, DeliveryState) {
         let s = self.inner.lock().unwrap();
@@ -289,7 +326,9 @@ impl Incoming {
         ) {
             s.state = state;
             s.reason = reason.into();
-            if state == DeliveryState::Receiving { s.stage = "receiving"; }
+            if state == DeliveryState::Receiving {
+                s.stage = "receiving";
+            }
         }
     }
     fn receipt(&self) -> SessionCommand {
@@ -314,7 +353,9 @@ impl Broker {
     pub fn new_parallel() -> (Arc<Self>, mpsc::Receiver<Arc<Incoming>>) {
         Self::with_receiver_capacity(LIMIT)
     }
-    fn with_receiver_capacity(receiver_capacity: usize) -> (Arc<Self>, mpsc::Receiver<Arc<Incoming>>) {
+    fn with_receiver_capacity(
+        receiver_capacity: usize,
+    ) -> (Arc<Self>, mpsc::Receiver<Arc<Incoming>>) {
         let (tx, rx) = mpsc::channel(8);
         let broker = Arc::new(Self {
             state: Mutex::new(State {
@@ -334,10 +375,7 @@ impl Broker {
                 let Some(broker) = weak.upgrade() else {
                     break;
                 };
-                broker.expire_tickets(
-                    Instant::now(),
-                    crate::shared_files::current_share_scope(),
-                );
+                broker.expire_tickets(Instant::now(), crate::shared_files::current_share_scope());
             }
         });
         (broker, rx)
@@ -355,12 +393,12 @@ impl Broker {
         }
     }
     pub fn upgrade_busy(&self) -> bool {
-        let state=self.state.lock().unwrap();
-        !state.tickets.is_empty() || state.incoming.values().any(|offer|offer.alive())
+        let state = self.state.lock().unwrap();
+        !state.tickets.is_empty() || state.incoming.values().any(|offer| offer.alive())
     }
     /// Scalar same-user diagnostics. Tickets and private source paths stay private.
     pub fn diagnostics(&self) -> serde_json::Value {
-        let state=self.state.lock().unwrap();
+        let state = self.state.lock().unwrap();
         let incoming=state.incoming.values().map(|offer| {
             let current=offer.inner.lock().unwrap();
             serde_json::json!({"connection":offer.peer.connection,"request":offer.request,"revision":current.revision,
@@ -432,7 +470,11 @@ impl Broker {
         let mut s = self.state.lock().unwrap();
         let key = (peer, request);
         if let Some(offer) = s.incoming.get(&key) {
-            if offer.source != source || offer.target != target || offer.ticket != ticket || offer.sources != sources {
+            if offer.source != source
+                || offer.target != target
+                || offer.ticket != ticket
+                || offer.sources != sources
+            {
                 return receipt(
                     request,
                     revision,
@@ -486,7 +528,7 @@ impl Broker {
                 expires: Instant::now() + LEASE,
                 state: DeliveryState::Pending,
                 reason: String::new(),
-                stage:"queued",
+                stage: "queued",
             }),
         });
         if self.tx.try_send(offer.clone()).is_err() {
@@ -529,10 +571,16 @@ impl Broker {
                 if t.target != target
                     || t.scope != peer.scope
                     || Instant::now() >= t.expires
-                    || sources.iter().any(|source|!t.sources.contains(source))
-                    || t.claimed.get(&peer).is_some_and(|selected| *selected != sources)
-                    || t.claimed_requests.get(&peer).is_some_and(|claimed_request| *claimed_request != request)
-                    || t.claimed.iter().any(|(p, selected)| *p != peer && selected.iter().any(|source|sources.contains(source)))
+                    || sources.iter().any(|source| !t.sources.contains(source))
+                    || t.claimed
+                        .get(&peer)
+                        .is_some_and(|selected| *selected != sources)
+                    || t.claimed_requests
+                        .get(&peer)
+                        .is_some_and(|claimed_request| *claimed_request != request)
+                    || t.claimed.iter().any(|(p, selected)| {
+                        *p != peer && selected.iter().any(|source| sources.contains(source))
+                    })
                 {
                     return false;
                 }
@@ -589,17 +637,32 @@ impl Broker {
             })
     }
     pub fn allows_source(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource) -> bool {
-        self.allows_source_in_scope(peer, ticket, source, crate::shared_files::current_share_scope())
+        self.allows_source_in_scope(
+            peer,
+            ticket,
+            source,
+            crate::shared_files::current_share_scope(),
+        )
     }
     pub fn claimed_request_id(&self, peer: Peer, ticket: [u8; 32]) -> Option<u64> {
         self.claimed_request_id_in_scope(peer, ticket, crate::shared_files::current_share_scope())
     }
-    fn claimed_request_id_in_scope(&self, peer: Peer, ticket: [u8; 32], scope: ShareScope) -> Option<u64> {
-        self.state.lock().unwrap().tickets.get(&ticket).and_then(|t| {
-            (t.scope == scope && Instant::now() < t.expires)
-                .then(|| t.claimed_requests.get(&peer).copied())
-                .flatten()
-        })
+    fn claimed_request_id_in_scope(
+        &self,
+        peer: Peer,
+        ticket: [u8; 32],
+        scope: ShareScope,
+    ) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .tickets
+            .get(&ticket)
+            .and_then(|t| {
+                (t.scope == scope && Instant::now() < t.expires)
+                    .then(|| t.claimed_requests.get(&peer).copied())
+                    .flatten()
+            })
     }
     pub fn switch_camera_source(
         &self,
@@ -627,7 +690,10 @@ impl Broker {
         target: CaptureSource,
         scope: ShareScope,
     ) -> Result<(), &'static str> {
-        if !matches!((from, target), (CaptureSource::Camera(_), CaptureSource::Camera(_))) {
+        if !matches!(
+            (from, target),
+            (CaptureSource::Camera(_), CaptureSource::Camera(_))
+        ) {
             return Err("Only camera sources can switch in place");
         }
         let mut s = self.state.lock().unwrap();
@@ -654,18 +720,35 @@ impl Broker {
         let Some(claimed_idx) = selected.iter().position(|source| *source == from) else {
             return Err("Camera view changed before switching");
         };
-        if selected.iter().enumerate().any(|(idx, source)| idx != claimed_idx && *source == target) {
+        if selected
+            .iter()
+            .enumerate()
+            .any(|(idx, source)| idx != claimed_idx && *source == target)
+        {
             return Err("Target camera is already selected in this sending intention");
         }
         selected[claimed_idx] = target;
         Ok(())
     }
-    fn allows_source_in_scope(&self, peer: Peer, ticket: [u8; 32], source: CaptureSource, scope: ShareScope) -> bool {
-        self.state.lock().unwrap().tickets.get(&ticket).is_some_and(|t| {
-            t.claimed.get(&peer).is_some_and(|sources|sources.contains(&source))
-                && t.scope == scope
-                && Instant::now() < t.expires
-        })
+    fn allows_source_in_scope(
+        &self,
+        peer: Peer,
+        ticket: [u8; 32],
+        source: CaptureSource,
+        scope: ShareScope,
+    ) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .tickets
+            .get(&ticket)
+            .is_some_and(|t| {
+                t.claimed
+                    .get(&peer)
+                    .is_some_and(|sources| sources.contains(&source))
+                    && t.scope == scope
+                    && Instant::now() < t.expires
+            })
     }
     pub fn reconcile(&self, live: impl Fn(Peer) -> bool) {
         self.reconcile_in_scope(live, crate::shared_files::current_share_scope());
@@ -687,9 +770,7 @@ impl Broker {
         let expired = s
             .tickets
             .iter()
-            .filter(|(_, t)| {
-                now >= t.expires || t.scope != scope
-            })
+            .filter(|(_, t)| now >= t.expires || t.scope != scope)
             .map(|(k, _)| *k)
             .collect::<Vec<_>>();
         for k in expired {
@@ -782,38 +863,91 @@ mod tests {
         let peer = tokio::spawn(async move {
             loop {
                 let (reply, addr) = match receiver.recv().await.unwrap() {
-                    MultiplexedPacket::Control(ControlMessage::Session(command), addr) => match *command {
-                        SessionCommand::Open { connection_id, version } => (ControlMessage::Session(Box::new(
-                            SessionCommand::Opened { connection_id, version, max_subscriptions: 8,
-                                files: false, clipboard: false, window_capture: false })), addr),
-                        SessionCommand::DeliveryOffer { request_id, revision, .. } => {
-                            assert_eq!((request_id, revision), (request, 1));
-                            received.fetch_add(1, Ordering::SeqCst);
-                            continue; // Lose receipts while normal heartbeat traffic still works.
+                    MultiplexedPacket::Control(ControlMessage::Session(command), addr) => {
+                        match *command {
+                            SessionCommand::Open {
+                                connection_id,
+                                version,
+                            } => (
+                                ControlMessage::Session(Box::new(SessionCommand::Opened {
+                                    connection_id,
+                                    version,
+                                    max_subscriptions: 8,
+                                    files: false,
+                                    clipboard: false,
+                                    window_capture: false,
+                                })),
+                                addr,
+                            ),
+                            SessionCommand::DeliveryOffer {
+                                request_id,
+                                revision,
+                                ..
+                            } => {
+                                assert_eq!((request_id, revision), (request, 1));
+                                received.fetch_add(1, Ordering::SeqCst);
+                                continue; // Lose receipts while normal heartbeat traffic still works.
+                            }
+                            _ => continue,
                         }
-                        _ => continue,
-                    },
+                    }
                     MultiplexedPacket::Control(ControlMessage::Ping { client_send_ts }, addr) => (
-                        ControlMessage::Pong { client_send_ts, host_recv_ts: 0, host_send_ts: 0 }, addr),
+                        ControlMessage::Pong {
+                            client_send_ts,
+                            host_recv_ts: 0,
+                            host_send_ts: 0,
+                        },
+                        addr,
+                    ),
                     _ => continue,
                 };
                 sender.send_control(&reply, addr).await.unwrap();
             }
         });
         let (connection, mut events) = WorkspaceConnection::connect_media(target).await.unwrap();
-        let error = exchange(&connection, &mut events, SessionCommand::DeliveryOffer {
-            request_id: request, source_device_id: "source".into(), target_device_id: "target".into(),
-            ticket: [4; 32], revision: 1, sources: vec![CaptureSource::MainDisplay],
-        }, request, 1).await.unwrap_err();
-        let evidence = error.downcast_ref::<ConfirmationTimeout>().expect("typed timeout evidence");
-        assert_eq!((evidence.connection_id, evidence.request_id, evidence.revision), (connection.id, request, 1));
+        let error = exchange(
+            &connection,
+            &mut events,
+            SessionCommand::DeliveryOffer {
+                request_id: request,
+                source_device_id: "source".into(),
+                target_device_id: "target".into(),
+                ticket: [4; 32],
+                revision: 1,
+                sources: vec![CaptureSource::MainDisplay],
+            },
+            request,
+            1,
+        )
+        .await
+        .unwrap_err();
+        let evidence = error
+            .downcast_ref::<ConfirmationTimeout>()
+            .expect("typed timeout evidence");
+        assert_eq!(
+            (
+                evidence.connection_id,
+                evidence.request_id,
+                evidence.revision
+            ),
+            (connection.id, request, 1)
+        );
         assert_eq!(evidence.target, target);
         assert!(evidence.queued_commands >= 8 && seen.load(Ordering::SeqCst) >= 8);
-        assert_eq!(evidence.control_queue_depth, 0, "the socket actor drained the admitted offers");
+        assert_eq!(
+            evidence.control_queue_depth, 0,
+            "the socket actor drained the admitted offers"
+        );
         assert!(evidence.peer_response_age_ms <= 6_000);
-        assert!(evidence.peer_responsive, "a missing receipt must not be reported as a dead heartbeat");
+        assert!(
+            evidence.peer_responsive,
+            "a missing receipt must not be reported as a dead heartbeat"
+        );
         assert_eq!(error.to_string(), "Device response timed out");
-        let disconnected = ConfirmationTimeout { peer_responsive: false, ..evidence.clone() };
+        let disconnected = ConfirmationTimeout {
+            peer_responsive: false,
+            ..evidence.clone()
+        };
         assert_eq!(disconnected.to_string(), "Connection lost");
         connection.close().await;
         peer.abort();
@@ -822,7 +956,10 @@ mod tests {
     async fn delivery_survives_lost_receipts_without_accepting_a_stale_revision() {
         use crate::net::{MultiplexedPacket, UdpMultiplexer};
         use protocol::ControlMessage;
-        assert!(crate::session_crypto::load_session_psk().is_none(), "Use only the isolated synthetic peer");
+        assert!(
+            crate::session_crypto::load_session_psk().is_none(),
+            "Use only the isolated synthetic peer"
+        );
         let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
         let target = server.local_addr().unwrap();
         let (sender, receiver) = server.split();
@@ -835,10 +972,23 @@ mod tests {
                 let reply = match receiver.recv().await.unwrap() {
                     MultiplexedPacket::Control(ControlMessage::Session(command), addr) => {
                         let reply = match *command {
-                            SessionCommand::Open { connection_id, version } => SessionCommand::Opened {
-                                connection_id, version, max_subscriptions: 8, files: false, clipboard: false, window_capture: false,
+                            SessionCommand::Open {
+                                connection_id,
+                                version,
+                            } => SessionCommand::Opened {
+                                connection_id,
+                                version,
+                                max_subscriptions: 8,
+                                files: false,
+                                clipboard: false,
+                                window_capture: false,
                             },
-                            SessionCommand::DeliveryOffer { request_id, revision, sources, .. } => {
+                            SessionCommand::DeliveryOffer {
+                                request_id,
+                                revision,
+                                sources,
+                                ..
+                            } => {
                                 assert_eq!(request_id, request);
                                 assert_eq!(sources, vec![CaptureSource::MainDisplay]);
                                 if revision == 1 {
@@ -846,11 +996,21 @@ mod tests {
                                     attempts += 1;
                                     // Four lost current receipts must not terminate
                                     // this live lease or accept a stale revision.
-                                    receipt(request, if attempts <= 4 { 0 } else { revision }, DeliveryState::Receiving, "")
+                                    receipt(
+                                        request,
+                                        if attempts <= 4 { 0 } else { revision },
+                                        DeliveryState::Receiving,
+                                        "",
+                                    )
                                 } else {
                                     assert_eq!(revision, 2);
                                     finished = true;
-                                    receipt(request, revision, DeliveryState::Cancelled, "Fixture receiver stopped")
+                                    receipt(
+                                        request,
+                                        revision,
+                                        DeliveryState::Cancelled,
+                                        "Fixture receiver stopped",
+                                    )
                                 }
                             }
                             _ => continue,
@@ -858,26 +1018,57 @@ mod tests {
                         (ControlMessage::Session(Box::new(reply)), addr)
                     }
                     MultiplexedPacket::Control(ControlMessage::Ping { client_send_ts }, addr) => (
-                        ControlMessage::Pong { client_send_ts, host_recv_ts: 0, host_send_ts: 0 }, addr),
+                        ControlMessage::Pong {
+                            client_send_ts,
+                            host_recv_ts: 0,
+                            host_send_ts: 0,
+                        },
+                        addr,
+                    ),
                     _ => continue,
                 };
                 sender.send_control(&reply.0, reply.1).await.unwrap();
-                if finished { break first_offer.unwrap().elapsed(); }
+                if finished {
+                    break first_offer.unwrap().elapsed();
+                }
             }
         });
         let (connection, mut events) = WorkspaceConnection::connect_media(target).await.unwrap();
         let (_stop, mut cancelled) = tokio::sync::watch::channel(false);
         let mut progress = Vec::new();
         let mut renewals = Vec::new();
-        tokio::time::timeout(Duration::from_secs(9), maintain_offer(&connection, &mut events,
-            OutgoingOffer { source: "fixture-source".into(), target: "fixture-target".into(), ticket: [7;32],
-                request, sources: vec![CaptureSource::MainDisplay], scope: crate::shared_files::current_share_scope() },
-            &mut cancelled, ||true, |revision| { renewals.push(revision); async { Ok(()) } },
-            |state|progress.push(state))).await.unwrap().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(9),
+            maintain_offer(
+                &connection,
+                &mut events,
+                OutgoingOffer {
+                    source: "fixture-source".into(),
+                    target: "fixture-target".into(),
+                    ticket: [7; 32],
+                    request,
+                    sources: vec![CaptureSource::MainDisplay],
+                    scope: crate::shared_files::current_share_scope(),
+                },
+                &mut cancelled,
+                || true,
+                |revision| {
+                    renewals.push(revision);
+                    async { Ok(()) }
+                },
+                |state| progress.push(state),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let elapsed = peer.await.unwrap();
         // Retrying for 3s consumes the 5s cadence, rather than adding a new 5s
         // sleep. Cancel remains terminal and renews only the exact next revision.
-        assert!(elapsed >= Duration::from_secs(4) && elapsed < Duration::from_secs(7), "renewal drifted: {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_secs(4) && elapsed < Duration::from_secs(7),
+            "renewal drifted: {elapsed:?}"
+        );
         assert_eq!(progress, vec![DeliveryState::Receiving]);
         assert_eq!(renewals, vec![2]);
     }
@@ -923,7 +1114,14 @@ mod tests {
         let token = [8; 32];
         b.state.lock().unwrap().tickets.insert(token, ticket());
         assert!(matches!(
-            b.claim_in_scope(peer(), 1, "receiver", token, vec![CaptureSource::MainDisplay], peer().scope),
+            b.claim_in_scope(
+                peer(),
+                1,
+                "receiver",
+                token,
+                vec![CaptureSource::MainDisplay],
+                peer().scope
+            ),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Claimed,
                 ..
@@ -933,7 +1131,14 @@ mod tests {
         let mut other = peer();
         other.nonce = [9; 16];
         assert!(matches!(
-            b.claim_in_scope(other, 1, "receiver", token, vec![CaptureSource::MainDisplay], peer().scope),
+            b.claim_in_scope(
+                other,
+                1,
+                "receiver",
+                token,
+                vec![CaptureSource::MainDisplay],
+                peer().scope
+            ),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Rejected,
                 ..
@@ -952,12 +1157,23 @@ mod tests {
     #[tokio::test]
     async fn delivery_windows_have_distinct_sources_and_close_independently() {
         let (broker, _) = Broker::new();
-        let token = [8; 32]; let first = peer();
-        let mut second = first; second.connection += 1; second.nonce = [9; 16];
-        let mut item = ticket(); item.sources = vec![CaptureSource::Window(11), CaptureSource::Display(22)];
+        let token = [8; 32];
+        let first = peer();
+        let mut second = first;
+        second.connection += 1;
+        second.nonce = [9; 16];
+        let mut item = ticket();
+        item.sources = vec![CaptureSource::Window(11), CaptureSource::Display(22)];
         broker.state.lock().unwrap().tickets.insert(token, item);
-        let claim = |peer, source| matches!(broker.claim_in_scope(peer, 1, "receiver", token, vec![source], first.scope),
-            SessionCommand::DeliveryReceipt { state: DeliveryState::Claimed, .. });
+        let claim = |peer, source| {
+            matches!(
+                broker.claim_in_scope(peer, 1, "receiver", token, vec![source], first.scope),
+                SessionCommand::DeliveryReceipt {
+                    state: DeliveryState::Claimed,
+                    ..
+                }
+            )
+        };
         assert!(claim(first, CaptureSource::Window(11)));
         assert!(claim(first, CaptureSource::Window(11))); // Retry keeps the exact binding.
         assert!(!claim(first, CaptureSource::Display(22)));
@@ -967,43 +1183,125 @@ mod tests {
         let mut cancel = broker.claim_cancel(second, token).unwrap();
         broker.reconcile_in_scope(|p| p == second, first.scope);
         assert!(!*cancel.borrow());
-        assert!(broker.allows_source_in_scope(second, token, CaptureSource::Display(22), first.scope));
-        assert!(!broker.allows_source_in_scope(second, token, CaptureSource::Window(11), first.scope));
+        assert!(broker.allows_source_in_scope(
+            second,
+            token,
+            CaptureSource::Display(22),
+            first.scope
+        ));
+        assert!(!broker.allows_source_in_scope(
+            second,
+            token,
+            CaptureSource::Window(11),
+            first.scope
+        ));
         // A closed window's source cannot be reclaimed by another connection.
-        let mut third = second; third.connection += 1;
+        let mut third = second;
+        third.connection += 1;
         assert!(!claim(third, CaptureSource::Window(11)));
         broker.reconcile_in_scope(|_| true, Some([6; 32]));
-        cancel.changed().await.unwrap(); assert!(*cancel.borrow());
+        cancel.changed().await.unwrap();
+        assert!(*cancel.borrow());
     }
     #[tokio::test]
     async fn one_connection_can_claim_a_bounded_source_set_without_overlapping_other_windows() {
-        let (broker,_)=Broker::new();
-        let token=[8;32];let mut item=ticket();
-        item.sources=vec![CaptureSource::Window(11),CaptureSource::Display(22),CaptureSource::Window(33)];
-        broker.state.lock().unwrap().tickets.insert(token,item);
-        let first=peer();let mut second=first;second.connection+=1;
-        let claim=|peer,sources|matches!(broker.claim_in_scope(peer,1,"receiver",token,sources,peer.scope),SessionCommand::DeliveryReceipt{state:DeliveryState::Claimed,..});
-        let selected=vec![CaptureSource::Window(11),CaptureSource::Display(22)];
-        assert!(claim(first,selected.clone()));assert!(claim(first,selected));
-        assert!(broker.allows_source_in_scope(first,token,CaptureSource::Window(11),first.scope));
-        assert!(broker.allows_source_in_scope(first,token,CaptureSource::Display(22),first.scope));
-        assert!(!claim(first,vec![CaptureSource::Window(11)]));
-        assert!(!claim(second,vec![CaptureSource::Display(22)]));
-        assert!(!claim(second,vec![]));assert!(!claim(second,vec![CaptureSource::Window(33);2]));
-        assert!(claim(second,vec![CaptureSource::Window(33)]));
-        assert!(!broker.allows_source_in_scope(second,token,CaptureSource::Window(11),second.scope));
+        let (broker, _) = Broker::new();
+        let token = [8; 32];
+        let mut item = ticket();
+        item.sources = vec![
+            CaptureSource::Window(11),
+            CaptureSource::Display(22),
+            CaptureSource::Window(33),
+        ];
+        broker.state.lock().unwrap().tickets.insert(token, item);
+        let first = peer();
+        let mut second = first;
+        second.connection += 1;
+        let claim = |peer, sources| {
+            matches!(
+                broker.claim_in_scope(peer, 1, "receiver", token, sources, peer.scope),
+                SessionCommand::DeliveryReceipt {
+                    state: DeliveryState::Claimed,
+                    ..
+                }
+            )
+        };
+        let selected = vec![CaptureSource::Window(11), CaptureSource::Display(22)];
+        assert!(claim(first, selected.clone()));
+        assert!(claim(first, selected));
+        assert!(broker.allows_source_in_scope(
+            first,
+            token,
+            CaptureSource::Window(11),
+            first.scope
+        ));
+        assert!(broker.allows_source_in_scope(
+            first,
+            token,
+            CaptureSource::Display(22),
+            first.scope
+        ));
+        assert!(!claim(first, vec![CaptureSource::Window(11)]));
+        assert!(!claim(second, vec![CaptureSource::Display(22)]));
+        assert!(!claim(second, vec![]));
+        assert!(!claim(second, vec![CaptureSource::Window(33); 2]));
+        assert!(claim(second, vec![CaptureSource::Window(33)]));
+        assert!(!broker.allows_source_in_scope(
+            second,
+            token,
+            CaptureSource::Window(11),
+            second.scope
+        ));
     }
     #[tokio::test]
     async fn offer_renewal_cannot_replace_its_source_selection() {
-        let (broker, mut rx) = Broker::new(); broker.set_identity("receiver".into());
-        let offer = |revision, sources| broker.offer(peer(), 1, "source".into(), "receiver".into(), [8;32], revision, sources);
-        assert!(matches!(offer(1, vec![]), SessionCommand::DeliveryReceipt {state:DeliveryState::Rejected,..}));
-        assert!(matches!(offer(1, vec![CaptureSource::Window(1);2]), SessionCommand::DeliveryReceipt {state:DeliveryState::Rejected,..}));
-        assert!(matches!(offer(1, vec![CaptureSource::Window(1),CaptureSource::Window(2)]), SessionCommand::DeliveryReceipt {state:DeliveryState::Pending,..}));
-        let incoming=rx.recv().await.unwrap(); let deadline=incoming.snapshot().1;
-        assert!(matches!(offer(2, vec![CaptureSource::Window(2),CaptureSource::Window(1)]), SessionCommand::DeliveryReceipt {state:DeliveryState::Rejected,..}));
-        assert_eq!(incoming.snapshot().1, deadline); assert_eq!(incoming.snapshot().0, 1);
-        assert!(incoming.alive()); assert!(rx.try_recv().is_err());
+        let (broker, mut rx) = Broker::new();
+        broker.set_identity("receiver".into());
+        let offer = |revision, sources| {
+            broker.offer(
+                peer(),
+                1,
+                "source".into(),
+                "receiver".into(),
+                [8; 32],
+                revision,
+                sources,
+            )
+        };
+        assert!(matches!(
+            offer(1, vec![]),
+            SessionCommand::DeliveryReceipt {
+                state: DeliveryState::Rejected,
+                ..
+            }
+        ));
+        assert!(matches!(
+            offer(1, vec![CaptureSource::Window(1); 2]),
+            SessionCommand::DeliveryReceipt {
+                state: DeliveryState::Rejected,
+                ..
+            }
+        ));
+        assert!(matches!(
+            offer(1, vec![CaptureSource::Window(1), CaptureSource::Window(2)]),
+            SessionCommand::DeliveryReceipt {
+                state: DeliveryState::Pending,
+                ..
+            }
+        ));
+        let incoming = rx.recv().await.unwrap();
+        let deadline = incoming.snapshot().1;
+        assert!(matches!(
+            offer(2, vec![CaptureSource::Window(2), CaptureSource::Window(1)]),
+            SessionCommand::DeliveryReceipt {
+                state: DeliveryState::Rejected,
+                ..
+            }
+        ));
+        assert_eq!(incoming.snapshot().1, deadline);
+        assert_eq!(incoming.snapshot().0, 1);
+        assert!(incoming.alive());
+        assert!(rx.try_recv().is_err());
     }
     #[tokio::test]
     async fn terminal_offer_is_not_resurrected_by_retry_or_new_revision() {
@@ -1067,10 +1365,26 @@ mod tests {
     async fn another_offer_cannot_displace_current_receiver() {
         let (b, mut rx) = Broker::new();
         b.set_identity("receiver".into());
-        b.offer(peer(), 1, "source".into(), "receiver".into(), [8; 32], 1, vec![CaptureSource::MainDisplay]);
+        b.offer(
+            peer(),
+            1,
+            "source".into(),
+            "receiver".into(),
+            [8; 32],
+            1,
+            vec![CaptureSource::MainDisplay],
+        );
         let first = rx.recv().await.unwrap();
         assert!(matches!(
-            b.offer(peer(), 2, "other".into(), "receiver".into(), [9; 32], 1, vec![CaptureSource::MainDisplay]),
+            b.offer(
+                peer(),
+                2,
+                "other".into(),
+                "receiver".into(),
+                [9; 32],
+                1,
+                vec![CaptureSource::MainDisplay]
+            ),
             SessionCommand::DeliveryReceipt {
                 state: DeliveryState::Rejected,
                 ..
@@ -1091,8 +1405,21 @@ mod tests {
         second_peer.connection += 1;
         second_peer.nonce = [9; 16];
         for (owner, request, ticket) in [(first_peer, 1, [8; 32]), (second_peer, 2, [9; 32])] {
-            assert!(matches!(b.offer(owner, request, "source".into(), "receiver".into(), ticket, 1,
-                vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {state: DeliveryState::Pending, ..}));
+            assert!(matches!(
+                b.offer(
+                    owner,
+                    request,
+                    "source".into(),
+                    "receiver".into(),
+                    ticket,
+                    1,
+                    vec![CaptureSource::MainDisplay]
+                ),
+                SessionCommand::DeliveryReceipt {
+                    state: DeliveryState::Pending,
+                    ..
+                }
+            ));
         }
         let first = rx.recv().await.unwrap();
         let second = rx.recv().await.unwrap();
@@ -1103,8 +1430,22 @@ mod tests {
         b.cancel(second_peer, 2);
         assert!(first.alive());
         assert!(!second.alive());
-        assert!(matches!(b.offer(first_peer, 1, "source".into(), "receiver".into(), [8; 32], 2,
-            vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {revision: 2, state: DeliveryState::Receiving, ..}));
+        assert!(matches!(
+            b.offer(
+                first_peer,
+                1,
+                "source".into(),
+                "receiver".into(),
+                [8; 32],
+                2,
+                vec![CaptureSource::MainDisplay]
+            ),
+            SessionCommand::DeliveryReceipt {
+                revision: 2,
+                state: DeliveryState::Receiving,
+                ..
+            }
+        ));
         assert_eq!(first.snapshot().0, 2);
         assert_eq!(second.snapshot().0, 1);
     }
@@ -1113,12 +1454,38 @@ mod tests {
         let (b, mut rx) = Broker::new_parallel();
         b.set_identity("receiver".into());
         for request in 1..=LIMIT as u64 {
-            assert!(matches!(b.offer(peer(), request, "source".into(), "receiver".into(), [8; 32], 1,
-                vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {state: DeliveryState::Pending, ..}));
+            assert!(matches!(
+                b.offer(
+                    peer(),
+                    request,
+                    "source".into(),
+                    "receiver".into(),
+                    [8; 32],
+                    1,
+                    vec![CaptureSource::MainDisplay]
+                ),
+                SessionCommand::DeliveryReceipt {
+                    state: DeliveryState::Pending,
+                    ..
+                }
+            ));
             assert_eq!(rx.recv().await.unwrap().request, request);
         }
-        assert!(matches!(b.offer(peer(), LIMIT as u64 + 1, "source".into(), "receiver".into(), [8; 32], 1,
-            vec![CaptureSource::MainDisplay]), SessionCommand::DeliveryReceipt {state: DeliveryState::Rejected, ..}));
+        assert!(matches!(
+            b.offer(
+                peer(),
+                LIMIT as u64 + 1,
+                "source".into(),
+                "receiver".into(),
+                [8; 32],
+                1,
+                vec![CaptureSource::MainDisplay]
+            ),
+            SessionCommand::DeliveryReceipt {
+                state: DeliveryState::Rejected,
+                ..
+            }
+        ));
         assert!(rx.try_recv().is_err());
     }
     #[tokio::test]
@@ -1200,32 +1567,100 @@ mod tests {
         item.sources = vec![CaptureSource::Camera(1)];
         broker.state.lock().unwrap().tickets.insert(token, item);
         assert!(matches!(
-            broker.claim_in_scope(first, 42, "receiver", token, vec![CaptureSource::Camera(1)], first.scope),
-            SessionCommand::DeliveryReceipt { state: DeliveryState::Claimed, .. }
+            broker.claim_in_scope(
+                first,
+                42,
+                "receiver",
+                token,
+                vec![CaptureSource::Camera(1)],
+                first.scope
+            ),
+            SessionCommand::DeliveryReceipt {
+                state: DeliveryState::Claimed,
+                ..
+            }
         ));
-        assert_eq!(broker.claimed_request_id_in_scope(first, token, first.scope), Some(42));
-        assert!(broker.switch_camera_source_in_scope(
-            first, token, 99, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
-        ).is_err());
-        assert!(broker.switch_camera_source_in_scope(
-            first, token, 42, CaptureSource::Camera(1), CaptureSource::MainDisplay, first.scope
-        ).is_err());
+        assert_eq!(
+            broker.claimed_request_id_in_scope(first, token, first.scope),
+            Some(42)
+        );
+        assert!(
+            broker
+                .switch_camera_source_in_scope(
+                    first,
+                    token,
+                    99,
+                    CaptureSource::Camera(1),
+                    CaptureSource::Camera(2),
+                    first.scope
+                )
+                .is_err()
+        );
+        assert!(
+            broker
+                .switch_camera_source_in_scope(
+                    first,
+                    token,
+                    42,
+                    CaptureSource::Camera(1),
+                    CaptureSource::MainDisplay,
+                    first.scope
+                )
+                .is_err()
+        );
         let expires = broker.state.lock().unwrap().tickets[&token].expires;
-        assert!(broker.switch_camera_source_in_scope(
-            first, token, 42, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
-        ).is_err());
+        assert!(
+            broker
+                .switch_camera_source_in_scope(
+                    first,
+                    token,
+                    42,
+                    CaptureSource::Camera(1),
+                    CaptureSource::Camera(2),
+                    first.scope
+                )
+                .is_err()
+        );
         assert!(broker.allows_source_in_scope(first, token, CaptureSource::Camera(1), first.scope));
-        assert!(!broker.allows_source_in_scope(first, token, CaptureSource::Camera(2), first.scope));
+        assert!(!broker.allows_source_in_scope(
+            first,
+            token,
+            CaptureSource::Camera(2),
+            first.scope
+        ));
         // A source owner may originally authorize both cameras. The receiver
         // can move its own claim within that fixed set, never enlarge it.
-        broker.state.lock().unwrap().tickets.get_mut(&token).unwrap().sources.push(CaptureSource::Camera(2));
-        broker.switch_camera_source_in_scope(
-            first, token, 42, CaptureSource::Camera(1), CaptureSource::Camera(2), first.scope
-        ).unwrap();
-        assert!(!broker.allows_source_in_scope(first, token, CaptureSource::Camera(1), first.scope));
+        broker
+            .state
+            .lock()
+            .unwrap()
+            .tickets
+            .get_mut(&token)
+            .unwrap()
+            .sources
+            .push(CaptureSource::Camera(2));
+        broker
+            .switch_camera_source_in_scope(
+                first,
+                token,
+                42,
+                CaptureSource::Camera(1),
+                CaptureSource::Camera(2),
+                first.scope,
+            )
+            .unwrap();
+        assert!(!broker.allows_source_in_scope(
+            first,
+            token,
+            CaptureSource::Camera(1),
+            first.scope
+        ));
         assert!(broker.allows_source_in_scope(first, token, CaptureSource::Camera(2), first.scope));
         let state = broker.state.lock().unwrap();
-        assert_eq!(state.tickets[&token].sources, vec![CaptureSource::Camera(1), CaptureSource::Camera(2)]);
+        assert_eq!(
+            state.tickets[&token].sources,
+            vec![CaptureSource::Camera(1), CaptureSource::Camera(2)]
+        );
         assert_eq!(state.tickets[&token].expires, expires);
     }
 }

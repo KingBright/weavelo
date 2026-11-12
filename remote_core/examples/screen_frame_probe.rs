@@ -7,19 +7,32 @@ use std::{io::Write, sync::Arc, time::Duration};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(2..=4).contains(&args.len()) || (args.len()==4 && args[3]!="--artwork") {
-        return Err("screen_frame_probe LAN_ENDPOINT NEW_OUTPUT.hevc [WINDOW_ID [--artwork]]".into());
+    if !(2..=4).contains(&args.len()) || (args.len() == 4 && args[3] != "--artwork") {
+        return Err(
+            "screen_frame_probe LAN_ENDPOINT NEW_OUTPUT.hevc [WINDOW_ID [--artwork]]".into(),
+        );
     }
-    let inspect_artwork=args.len()==4;
-    let setting=|name:&str,default:u32| -> Result<u32,Box<dyn std::error::Error+Send+Sync>> {
-        Ok(std::env::var(name).ok().map(|value|value.parse()).transpose()?.unwrap_or(default))
-    };
-    let fps=setting("WEAVELO_PROBE_FPS",30)?;
-    let bitrate_kbps=setting("WEAVELO_PROBE_BITRATE_KBPS",4000)?;
-    let seconds=setting("WEAVELO_PROBE_SECONDS",0)?;
-    protocol::validate_video_settings(1280,720,fps,bitrate_kbps)?;
-    if seconds>30 {return Err("Measurement is limited to 30 seconds".into());}
-    let source = args.get(2).map(|id| id.parse().map(CaptureSource::Window)).transpose()?.unwrap_or(CaptureSource::MainDisplay);
+    let inspect_artwork = args.len() == 4;
+    let setting =
+        |name: &str, default: u32| -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(std::env::var(name)
+                .ok()
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(default))
+        };
+    let fps = setting("WEAVELO_PROBE_FPS", 30)?;
+    let bitrate_kbps = setting("WEAVELO_PROBE_BITRATE_KBPS", 4000)?;
+    let seconds = setting("WEAVELO_PROBE_SECONDS", 0)?;
+    protocol::validate_video_settings(1280, 720, fps, bitrate_kbps)?;
+    if seconds > 30 {
+        return Err("Measurement is limited to 30 seconds".into());
+    }
+    let source = args
+        .get(2)
+        .map(|id| id.parse().map(CaptureSource::Window))
+        .transpose()?
+        .unwrap_or(CaptureSource::MainDisplay);
     let target: std::net::SocketAddr = args[0].parse()?;
     if !matches!(target.ip(), std::net::IpAddr::V4(ip) if ip.is_private() || ip.is_loopback()) {
         return Err("Use the paired device's LAN endpoint or existing loopback relay".into());

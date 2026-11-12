@@ -11,11 +11,15 @@ use std::{sync::Arc, time::Duration};
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(args.len()==2 || (args.len()==3 && matches!(args[2].as_str(),"mouse"|"application"))) {
-        return Err("private-phone-ip:port current-fixture-ready.json [mouse|application] required".into());
+    if !(args.len() == 2
+        || (args.len() == 3 && matches!(args[2].as_str(), "mouse" | "application")))
+    {
+        return Err(
+            "private-phone-ip:port current-fixture-ready.json [mouse|application] required".into(),
+        );
     }
-    let mouse=args.get(2).is_some_and(|mode|mode=="mouse");
-    let application=args.get(2).is_some_and(|mode|mode=="application");
+    let mouse = args.get(2).is_some_and(|mode| mode == "mouse");
+    let application = args.get(2).is_some_and(|mode| mode == "application");
     let target: std::net::SocketAddr = args[0].parse().map_err(|_| "Invalid fixture endpoint")?;
     if !matches!(target.ip(),std::net::IpAddr::V4(ip) if ip.is_private()) {
         return Err("Owned LAN fixture only".into());
@@ -27,7 +31,9 @@ async fn main() -> Result<(), String> {
         .filter(|s| s.len() == 36)
         .ok_or("Missing fixture nonce")?;
     if application {
-        if ready["package"]!="fun.hackerlife.weavelo.test" || ready["display"].as_u64().unwrap_or(0)==0 {
+        if ready["package"] != "fun.hackerlife.weavelo.test"
+            || ready["display"].as_u64().unwrap_or(0) == 0
+        {
             return Err("Expected the standalone fixture on its owned virtual display".into());
         }
     } else if ready["capture"] != mouse || (mouse && ready["mouse"] != true) {
@@ -43,8 +49,10 @@ async fn main() -> Result<(), String> {
         .ok_or("Invalid height")? as u32;
     let identity = remote_core::mesh::AppPrivateMeshConfigStore::new(
         remote_core::mesh::default_app_private_mesh_dir(),
-    ).load().map_err(|_| "Existing paired profile unavailable")?
-        .ok_or("Existing paired profile required")?;
+    )
+    .load()
+    .map_err(|_| "Existing paired profile unavailable")?
+    .ok_or("Existing paired profile required")?;
     remote_core::init_crypto_provider();
     remote_core::session_crypto::use_paired_session_secret(identity.network_secret.expose_secret());
     let (connection, mut events) = WorkspaceConnection::connect_media(target).await?;
@@ -54,7 +62,11 @@ async fn main() -> Result<(), String> {
             .subscribe(
                 SubscriptionRequest {
                     id: 83,
-                    source: if application { CaptureSource::Window(3_477_149_650) } else { CaptureSource::MainDisplay },
+                    source: if application {
+                        CaptureSource::Window(3_477_149_650)
+                    } else {
+                        CaptureSource::MainDisplay
+                    },
                     width,
                     height,
                     fps: 10,
@@ -107,10 +119,16 @@ async fn main() -> Result<(), String> {
             vec![point(7, Move, 0.45, 0.55)],
             vec![point(7, Up, 0.45, 0.55)],
         ];
-        let samples:Vec<InputEvent>=if mouse {vec![
-            InputEvent::MouseMoveAbsolute{x:19661,y:26214},InputEvent::MouseDown(0),
-            InputEvent::MouseMoveAbsolute{x:19661,y:26214},InputEvent::MouseUp(0),
-        ]} else {samples.into_iter().map(InputEvent::TouchFrame).collect()};
+        let samples: Vec<InputEvent> = if mouse {
+            vec![
+                InputEvent::MouseMoveAbsolute { x: 19661, y: 26214 },
+                InputEvent::MouseDown(0),
+                InputEvent::MouseMoveAbsolute { x: 19661, y: 26214 },
+                InputEvent::MouseUp(0),
+            ]
+        } else {
+            samples.into_iter().map(InputEvent::TouchFrame).collect()
+        };
         for event in samples {
             if !connection.refresh_bound_input(binding)
                 || !connection.try_bound_input(binding, Some(event))

@@ -74,7 +74,9 @@ impl InterleavedAudioFrameChunker {
         self.buffered_samples.len()
     }
 
-    pub fn clear(&mut self) { self.buffered_samples.clear(); }
+    pub fn clear(&mut self) {
+        self.buffered_samples.clear();
+    }
 
     pub fn push(&mut self, samples: &[f32]) -> Vec<Vec<f32>> {
         self.buffered_samples.extend_from_slice(samples);
@@ -147,10 +149,14 @@ impl AudioMixer {
     }
 
     pub fn clear(&mut self) {
-        for lane in &mut self.lanes { lane.samples.clear(); }
+        for lane in &mut self.lanes {
+            lane.samples.clear();
+        }
     }
 
-    pub fn clear_lane(&mut self, lane: usize) { self.lanes[lane].samples.clear(); }
+    pub fn clear_lane(&mut self, lane: usize) {
+        self.lanes[lane].samples.clear();
+    }
 
     pub fn clear_stream(&mut self, stream_id: u32) {
         for lane in &mut self.lanes {

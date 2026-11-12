@@ -108,10 +108,20 @@ impl PublisherInput {
         connection_id: u32,
         subscription_id: u32,
     ) -> Option<InputBinding> {
-        self.grant_source(addr, connection_id, subscription_id, protocol::session::CaptureSource::MainDisplay)
+        self.grant_source(
+            addr,
+            connection_id,
+            subscription_id,
+            protocol::session::CaptureSource::MainDisplay,
+        )
     }
-    pub fn grant_source(&mut self, addr:SocketAddr, connection_id:u32, subscription_id:u32,
-        source:protocol::session::CaptureSource) -> Option<InputBinding> {
+    pub fn grant_source(
+        &mut self,
+        addr: SocketAddr,
+        connection_id: u32,
+        subscription_id: u32,
+        source: protocol::session::CaptureSource,
+    ) -> Option<InputBinding> {
         if !self.ready() {
             return None;
         }
@@ -173,11 +183,20 @@ impl PublisherInput {
             self.revoke();
             return;
         }
-        if events.is_empty() { return; }
+        if events.is_empty() {
+            return;
+        }
         // Android implements wheel deltas as finite touch swipes. A phase-only
         // marker has no displacement: dispatching its stationary path would
         // synthesize a tap (also for managed application displays).
-        if matches!(events.as_slice(), [InputEvent::MouseScroll { delta_x: 0, delta_y: 0, .. }]) {
+        if matches!(
+            events.as_slice(),
+            [InputEvent::MouseScroll {
+                delta_x: 0,
+                delta_y: 0,
+                ..
+            }]
+        ) {
             return;
         }
         // The accessibility consumer waits for each native gesture callback.
@@ -187,7 +206,10 @@ impl PublisherInput {
         // Never cross a button, relative motion, text or other ordered edge.
         if matches!(events.as_slice(), [InputEvent::MouseMoveAbsolute { .. }])
             && let Some(previous) = self.queued.back_mut()
-            && matches!(previous.events.as_slice(), [InputEvent::MouseMoveAbsolute { .. }])
+            && matches!(
+                previous.events.as_slice(),
+                [InputEvent::MouseMoveAbsolute { .. }]
+            )
         {
             previous.events = events;
             previous.sequence = packet.sequence;
@@ -200,10 +222,13 @@ impl PublisherInput {
         // for superseded work.
         if let Some(next) = protocol::touch::only_moves(&events)
             && let Some(previous) = self.queued.back_mut()
-            && let Some(old) = protocol::touch::only_moves(&previous.events) {
-            let mut contacts: std::collections::BTreeMap<_,_> = old.iter()
-                .map(|contact| (contact.pointer_id,*contact)).collect();
-            contacts.extend(next.iter().map(|contact| (contact.pointer_id,*contact)));
+            && let Some(old) = protocol::touch::only_moves(&previous.events)
+        {
+            let mut contacts: std::collections::BTreeMap<_, _> = old
+                .iter()
+                .map(|contact| (contact.pointer_id, *contact))
+                .collect();
+            contacts.extend(next.iter().map(|contact| (contact.pointer_id, *contact)));
             let contacts: Vec<_> = contacts.into_values().collect();
             if protocol::touch::valid_frame(&contacts) {
                 previous.events = vec![InputEvent::TouchFrame(contacts)];
@@ -229,32 +254,59 @@ impl PublisherInput {
             events,
         });
     }
-    pub fn admit_text(&mut self, addr: SocketAddr, request: &protocol::interaction::TextCommit) -> Option<protocol::session::SessionCommand> {
+    pub fn admit_text(
+        &mut self,
+        addr: SocketAddr,
+        request: &protocol::interaction::TextCommit,
+    ) -> Option<protocol::session::SessionCommand> {
         use protocol::{interaction::TextAdmission, session::SessionCommand};
         self.tick();
-        let result=(|| {
-            if !self.ready() {return Err("Android screen control is unavailable");}
-            let owner=self.owner.as_mut().filter(|owner|owner.addr==addr).ok_or("text input owner changed")?;
-            owner.text.begin(request,&mut owner.lease,now_ms())
+        let result = (|| {
+            if !self.ready() {
+                return Err("Android screen control is unavailable");
+            }
+            let owner = self
+                .owner
+                .as_mut()
+                .filter(|owner| owner.addr == addr)
+                .ok_or("text input owner changed")?;
+            owner.text.begin(request, &mut owner.lease, now_ms())
         })();
         let error = match result {
-            Ok(TextAdmission::Accepted)=>return Some(SessionCommand::TextCommitted {binding:request.binding,request_id:request.request_id}),
-            Ok(TextAdmission::Pending)=>return None,
-            Err(error)=>Some(error),
-            Ok(TextAdmission::New)=> {
-                if self.queued.len()+usize::from(self.executing.is_some())>=MAX_PENDING {Some("Android input queue is full")}
-                else if let Some(token)=self.next_token.checked_add(1) {
-                    self.next_token=token;
-                    self.queued.push_back(Pending {token,sequence:0,text_id:Some(request.request_id),
-                        created:request.created_host_ms,events:vec![InputEvent::Text(request.text.clone())]});
+            Ok(TextAdmission::Accepted) => {
+                return Some(SessionCommand::TextCommitted {
+                    binding: request.binding,
+                    request_id: request.request_id,
+                });
+            }
+            Ok(TextAdmission::Pending) => return None,
+            Err(error) => Some(error),
+            Ok(TextAdmission::New) => {
+                if self.queued.len() + usize::from(self.executing.is_some()) >= MAX_PENDING {
+                    Some("Android input queue is full")
+                } else if let Some(token) = self.next_token.checked_add(1) {
+                    self.next_token = token;
+                    self.queued.push_back(Pending {
+                        token,
+                        sequence: 0,
+                        text_id: Some(request.request_id),
+                        created: request.created_host_ms,
+                        events: vec![InputEvent::Text(request.text.clone())],
+                    });
                     return None;
-                } else {Some("Android input sequence exhausted")}
+                } else {
+                    Some("Android input sequence exhausted")
+                }
             }
         };
-        if let Some(owner)=self.owner.as_mut().filter(|owner|owner.addr==addr) {
-            owner.text.complete(request.request_id,false);
+        if let Some(owner) = self.owner.as_mut().filter(|owner| owner.addr == addr) {
+            owner.text.complete(request.request_id, false);
         }
-        Some(SessionCommand::TextRejected {binding:request.binding,request_id:request.request_id,reason:error.unwrap().into()})
+        Some(SessionCommand::TextRejected {
+            binding: request.binding,
+            request_id: request.request_id,
+            reason: error.unwrap().into(),
+        })
     }
     pub fn poll(&mut self) -> Option<Dispatch> {
         self.tick();
@@ -298,15 +350,25 @@ impl PublisherInput {
             return;
         }
         let job = self.executing.take().unwrap();
-        let accepted=accepted && self.ready() && self.handled.len()<MAX_PENDING;
-        let receipt=self.owner.as_mut().map(|owner| {
-            if let Some(id)=job.text_id {owner.text.complete(id,accepted);}
-            Handled {addr:owner.addr,binding:owner.lease.binding,sequence:job.sequence,
-                text:job.text_id.map(|id|(id,accepted))}
+        let accepted = accepted && self.ready() && self.handled.len() < MAX_PENDING;
+        let receipt = self.owner.as_mut().map(|owner| {
+            if let Some(id) = job.text_id {
+                owner.text.complete(id, accepted);
+            }
+            Handled {
+                addr: owner.addr,
+                binding: owner.lease.binding,
+                sequence: job.sequence,
+                text: job.text_id.map(|id| (id, accepted)),
+            }
         });
-        if !accepted {self.revoke();}
-        if let Some(receipt)=receipt {
-            if accepted || receipt.text.is_some() {self.handled.push_back(receipt);}
+        if !accepted {
+            self.revoke();
+        }
+        if let Some(receipt) = receipt {
+            if accepted || receipt.text.is_some() {
+                self.handled.push_back(receipt);
+            }
         }
     }
     pub fn take_handled(&mut self) -> Vec<Handled> {
@@ -321,18 +383,40 @@ mod tests {
     use protocol::realtime_input::InputPayload;
     #[test]
     fn changing_app_source_revokes_the_old_input_owner() {
-        let (mut input,addr,old)=fixture();
-        let source=protocol::session::CaptureSource::Window(42);
-        let next=input.grant_source(addr,old.connection_id,old.subscription_id,source).unwrap();
-        assert_ne!(old.epoch,next.epoch);
-        assert_eq!(input.owner.as_ref().unwrap().source,source);
-        assert!(matches!(input.poll(),Some(Dispatch::Reset{..})));
-        input.admit(addr,&RealtimeInput{binding:old,sequence:1,created_host_ms:now_ms(),
-            payload:InputPayload::Event(InputEvent::MouseMoveAbsolute{x:10,y:20})});
+        let (mut input, addr, old) = fixture();
+        let source = protocol::session::CaptureSource::Window(42);
+        let next = input
+            .grant_source(addr, old.connection_id, old.subscription_id, source)
+            .unwrap();
+        assert_ne!(old.epoch, next.epoch);
+        assert_eq!(input.owner.as_ref().unwrap().source, source);
+        assert!(matches!(input.poll(), Some(Dispatch::Reset { .. })));
+        input.admit(
+            addr,
+            &RealtimeInput {
+                binding: old,
+                sequence: 1,
+                created_host_ms: now_ms(),
+                payload: InputPayload::Event(InputEvent::MouseMoveAbsolute { x: 10, y: 20 }),
+            },
+        );
         assert!(input.poll().is_none());
-        input.admit(addr,&RealtimeInput{binding:next,sequence:1,created_host_ms:now_ms(),
-            payload:InputPayload::Event(InputEvent::MouseMoveAbsolute{x:10,y:20})});
-        assert!(matches!(input.poll(),Some(Dispatch::Events{source:protocol::session::CaptureSource::Window(42),..})));
+        input.admit(
+            addr,
+            &RealtimeInput {
+                binding: next,
+                sequence: 1,
+                created_host_ms: now_ms(),
+                payload: InputPayload::Event(InputEvent::MouseMoveAbsolute { x: 10, y: 20 }),
+            },
+        );
+        assert!(matches!(
+            input.poll(),
+            Some(Dispatch::Events {
+                source: protocol::session::CaptureSource::Window(42),
+                ..
+            })
+        ));
     }
     fn fixture() -> (PublisherInput, SocketAddr, InputBinding) {
         let mut input = PublisherInput::default();
@@ -346,23 +430,61 @@ mod tests {
     #[test]
     fn consecutive_native_moves_coalesce_without_crossing_contact_edges() {
         use protocol::TouchAction::*;
-        let (mut input,addr,binding)=fixture();
-        let point=|id,action,x|protocol::touch::Contact{pointer_id:id,action,normalized_x:x,normalized_y:0.5,pressure:1.};
-        let packet=|sequence,contacts|RealtimeInput{binding,sequence,created_host_ms:now_ms(),payload:InputPayload::Event(InputEvent::TouchFrame(contacts))};
-        input.admit(addr,&packet(1,vec![point(1,Down,0.1),point(2,Down,0.2)]));
-        input.admit(addr,&packet(2,vec![point(1,Move,0.3)]));
-        input.admit(addr,&packet(3,vec![point(2,Move,0.4)]));
-        input.admit(addr,&packet(4,vec![point(1,Move,0.5)]));
-        input.admit(addr,&packet(5,vec![point(2,Up,0.4)]));
-        assert_eq!(input.queued.len(),3);
-        let Dispatch::Events{generation,token,events,..}=input.poll().unwrap() else{panic!()};
-        assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==2 && c.iter().all(|p|p.action==Down)));
-        input.complete(generation,token,true);
-        let Dispatch::Events{generation,token,events,..}=input.poll().unwrap() else{panic!()};
-        assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c==&vec![point(1,Move,0.5),point(2,Move,0.4)]));
-        input.complete(generation,token,true);
-        let Dispatch::Events{events,..}=input.poll().unwrap() else{panic!()};
-        assert!(matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==1 && c[0].action==Up));
+        let (mut input, addr, binding) = fixture();
+        let point = |id, action, x| protocol::touch::Contact {
+            pointer_id: id,
+            action,
+            normalized_x: x,
+            normalized_y: 0.5,
+            pressure: 1.,
+        };
+        let packet = |sequence, contacts| RealtimeInput {
+            binding,
+            sequence,
+            created_host_ms: now_ms(),
+            payload: InputPayload::Event(InputEvent::TouchFrame(contacts)),
+        };
+        input.admit(
+            addr,
+            &packet(1, vec![point(1, Down, 0.1), point(2, Down, 0.2)]),
+        );
+        input.admit(addr, &packet(2, vec![point(1, Move, 0.3)]));
+        input.admit(addr, &packet(3, vec![point(2, Move, 0.4)]));
+        input.admit(addr, &packet(4, vec![point(1, Move, 0.5)]));
+        input.admit(addr, &packet(5, vec![point(2, Up, 0.4)]));
+        assert_eq!(input.queued.len(), 3);
+        let Dispatch::Events {
+            generation,
+            token,
+            events,
+            ..
+        } = input.poll().unwrap()
+        else {
+            panic!()
+        };
+        assert!(
+            matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==2 && c.iter().all(|p|p.action==Down))
+        );
+        input.complete(generation, token, true);
+        let Dispatch::Events {
+            generation,
+            token,
+            events,
+            ..
+        } = input.poll().unwrap()
+        else {
+            panic!()
+        };
+        assert!(
+            matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c==&vec![point(1,Move,0.5),point(2,Move,0.4)])
+        );
+        input.complete(generation, token, true);
+        let Dispatch::Events { events, .. } = input.poll().unwrap() else {
+            panic!()
+        };
+        assert!(
+            matches!(events.as_slice(),[InputEvent::TouchFrame(c)] if c.len()==1 && c[0].action==Up)
+        );
     }
     fn movement(binding: InputBinding, sequence: u64) -> RealtimeInput {
         RealtimeInput {
@@ -374,61 +496,135 @@ mod tests {
     }
     #[test]
     fn mouse_burst_during_native_callback_preserves_drag_and_latest_position() {
-        let (mut input,addr,binding)=fixture();
-        let packet=|sequence,event|RealtimeInput{binding,sequence,created_host_ms:now_ms(),payload:InputPayload::Event(event)};
-        input.admit(addr,&packet(1,InputEvent::MouseDown(0)));
-        let (generation,token)=take(&mut input);
+        let (mut input, addr, binding) = fixture();
+        let packet = |sequence, event| RealtimeInput {
+            binding,
+            sequence,
+            created_host_ms: now_ms(),
+            payload: InputPayload::Event(event),
+        };
+        input.admit(addr, &packet(1, InputEvent::MouseDown(0)));
+        let (generation, token) = take(&mut input);
         for sequence in 2..502 {
-            input.admit(addr,&packet(sequence,InputEvent::MouseMoveAbsolute{x:sequence as u16,y:200}));
+            input.admit(
+                addr,
+                &packet(
+                    sequence,
+                    InputEvent::MouseMoveAbsolute {
+                        x: sequence as u16,
+                        y: 200,
+                    },
+                ),
+            );
         }
-        input.admit(addr,&packet(502,InputEvent::MouseUp(0)));
-        assert!(input.execution_valid(generation,token),"mouse samples must not overflow and cancel the held drag");
-        assert_eq!(input.queued.len(),2);
+        input.admit(addr, &packet(502, InputEvent::MouseUp(0)));
+        assert!(
+            input.execution_valid(generation, token),
+            "mouse samples must not overflow and cancel the held drag"
+        );
+        assert_eq!(input.queued.len(), 2);
         assert!(input.take_handled().is_empty());
-        input.complete(generation,token,true);
+        input.complete(generation, token, true);
         input.take_handled();
-        let Dispatch::Events{generation,token,events,..}=input.poll().unwrap() else{panic!()};
-        assert!(matches!(events.as_slice(),[InputEvent::MouseMoveAbsolute{x:501,y:200}]));
-        input.complete(generation,token,true);
-        assert_eq!(input.take_handled()[0].sequence,501);
-        let Dispatch::Events{events,..}=input.poll().unwrap() else{panic!()};
-        assert!(matches!(events.as_slice(),[InputEvent::MouseUp(0)]));
+        let Dispatch::Events {
+            generation,
+            token,
+            events,
+            ..
+        } = input.poll().unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            events.as_slice(),
+            [InputEvent::MouseMoveAbsolute { x: 501, y: 200 }]
+        ));
+        input.complete(generation, token, true);
+        assert_eq!(input.take_handled()[0].sequence, 501);
+        let Dispatch::Events { events, .. } = input.poll().unwrap() else {
+            panic!()
+        };
+        assert!(matches!(events.as_slice(), [InputEvent::MouseUp(0)]));
     }
     #[test]
     fn mouse_coalescing_preserves_ordered_barriers_and_oldest_deadline() {
-        let (mut input,addr,binding)=fixture();
-        input.admit(addr,&movement(binding,1));
-        let oldest=now_ms().saturating_sub(20);
-        input.queued.back_mut().unwrap().created=oldest;
-        input.admit(addr,&movement(binding,2));
-        assert_eq!(input.queued.len(),1);
-        assert_eq!(input.queued[0].created,oldest);
-        for (sequence,event) in [(3,InputEvent::MouseDown(0)),(5,InputEvent::MouseMove{dx:1,dy:2}),
-            (7,InputEvent::MouseUp(0))] {
-            input.admit(addr,&RealtimeInput{binding,sequence,created_host_ms:now_ms(),payload:InputPayload::Event(event)});
-            input.admit(addr,&movement(binding,sequence+1));
+        let (mut input, addr, binding) = fixture();
+        input.admit(addr, &movement(binding, 1));
+        let oldest = now_ms().saturating_sub(20);
+        input.queued.back_mut().unwrap().created = oldest;
+        input.admit(addr, &movement(binding, 2));
+        assert_eq!(input.queued.len(), 1);
+        assert_eq!(input.queued[0].created, oldest);
+        for (sequence, event) in [
+            (3, InputEvent::MouseDown(0)),
+            (5, InputEvent::MouseMove { dx: 1, dy: 2 }),
+            (7, InputEvent::MouseUp(0)),
+        ] {
+            input.admit(
+                addr,
+                &RealtimeInput {
+                    binding,
+                    sequence,
+                    created_host_ms: now_ms(),
+                    payload: InputPayload::Event(event),
+                },
+            );
+            input.admit(addr, &movement(binding, sequence + 1));
         }
-        input.admit_text(addr,&text(binding));
-        input.admit(addr,&movement(binding,9));
-        assert_eq!(input.queued.len(),9);
-        input.queued.front_mut().unwrap().created=now_ms().saturating_sub(MAX_INPUT_AGE_MS+1);
-        assert!(matches!(input.poll(),Some(Dispatch::Reset{..})));
+        input.admit_text(addr, &text(binding));
+        input.admit(addr, &movement(binding, 9));
+        assert_eq!(input.queued.len(), 9);
+        input.queued.front_mut().unwrap().created = now_ms().saturating_sub(MAX_INPUT_AGE_MS + 1);
+        assert!(matches!(input.poll(), Some(Dispatch::Reset { .. })));
         assert!(input.owner.is_none());
     }
     #[test]
     fn scroll_phase_markers_never_become_android_taps() {
-        let (mut input,addr,binding)=fixture();
-        for (i,phase) in [protocol::ScrollPhase::MayBegin,protocol::ScrollPhase::Began,
-            protocol::ScrollPhase::Changed,protocol::ScrollPhase::Ended,protocol::ScrollPhase::Cancelled].into_iter().enumerate() {
-            input.admit(addr,&RealtimeInput{binding,sequence:i as u64+1,created_host_ms:now_ms(),
-                payload:InputPayload::Event(InputEvent::MouseScroll{delta_x:0,delta_y:0,
-                    gesture:protocol::ScrollGesture{phase,momentum:protocol::MomentumPhase::None}})});
+        let (mut input, addr, binding) = fixture();
+        for (i, phase) in [
+            protocol::ScrollPhase::MayBegin,
+            protocol::ScrollPhase::Began,
+            protocol::ScrollPhase::Changed,
+            protocol::ScrollPhase::Ended,
+            protocol::ScrollPhase::Cancelled,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            input.admit(
+                addr,
+                &RealtimeInput {
+                    binding,
+                    sequence: i as u64 + 1,
+                    created_host_ms: now_ms(),
+                    payload: InputPayload::Event(InputEvent::MouseScroll {
+                        delta_x: 0,
+                        delta_y: 0,
+                        gesture: protocol::ScrollGesture {
+                            phase,
+                            momentum: protocol::MomentumPhase::None,
+                        },
+                    }),
+                },
+            );
         }
-        assert!(input.poll().is_none(),"a phase-only marker must not dispatch a zero-length touch stroke");
-        assert_eq!(input.owner.as_ref().unwrap().lease.binding,binding);
-        input.admit(addr,&RealtimeInput{binding,sequence:6,created_host_ms:now_ms(),
-            payload:InputPayload::Event(InputEvent::scroll(0,-1))});
-        assert!(matches!(input.poll(),Some(Dispatch::Events{events,..}) if matches!(events.as_slice(),[InputEvent::MouseScroll{delta_y:-1,..}])));
+        assert!(
+            input.poll().is_none(),
+            "a phase-only marker must not dispatch a zero-length touch stroke"
+        );
+        assert_eq!(input.owner.as_ref().unwrap().lease.binding, binding);
+        input.admit(
+            addr,
+            &RealtimeInput {
+                binding,
+                sequence: 6,
+                created_host_ms: now_ms(),
+                payload: InputPayload::Event(InputEvent::scroll(0, -1)),
+            },
+        );
+        assert!(
+            matches!(input.poll(),Some(Dispatch::Events{events,..}) if matches!(events.as_slice(),[InputEvent::MouseScroll{delta_y:-1,..}]))
+        );
     }
     fn take(input: &mut PublisherInput) -> (u64, u64) {
         let Some(Dispatch::Events {
@@ -439,37 +635,57 @@ mod tests {
         };
         (generation, token)
     }
-    fn text(binding:InputBinding)->protocol::interaction::TextCommit {
-        protocol::interaction::TextCommit {binding,request_id:70,created_host_ms:now_ms(),
-            text:protocol::interaction::CommittedText::new("你好👨‍👩‍👧‍👦".into()).unwrap()}
+    fn text(binding: InputBinding) -> protocol::interaction::TextCommit {
+        protocol::interaction::TextCommit {
+            binding,
+            request_id: 70,
+            created_host_ms: now_ms(),
+            text: protocol::interaction::CommittedText::new("你好👨‍👩‍👧‍👦".into()).unwrap(),
+        }
     }
     #[test]
     fn text_receipt_waits_for_os_and_lost_receipt_never_reinjects() {
         use protocol::session::SessionCommand;
-        let (mut input,addr,binding)=fixture();let request=text(binding);
-        assert!(input.admit_text(addr,&request).is_none());
-        assert!(input.admit_text(addr,&request).is_none());
-        assert_eq!(input.queued.len(),1);
-        let (generation,token)=take(&mut input);
+        let (mut input, addr, binding) = fixture();
+        let request = text(binding);
+        assert!(input.admit_text(addr, &request).is_none());
+        assert!(input.admit_text(addr, &request).is_none());
+        assert_eq!(input.queued.len(), 1);
+        let (generation, token) = take(&mut input);
         assert!(input.take_handled().is_empty());
-        input.complete(generation,token,true);
-        assert_eq!(input.take_handled()[0].text,Some((70,true)));
-        assert!(matches!(input.admit_text(addr,&request),Some(SessionCommand::TextCommitted {request_id:70,..})));
+        input.complete(generation, token, true);
+        assert_eq!(input.take_handled()[0].text, Some((70, true)));
+        assert!(matches!(
+            input.admit_text(addr, &request),
+            Some(SessionCommand::TextCommitted { request_id: 70, .. })
+        ));
         assert!(input.poll().is_none());
-        let mut altered=request.clone();altered.text=protocol::interaction::CommittedText::new("different".into()).unwrap();
-        assert!(matches!(input.admit_text(addr,&altered),Some(SessionCommand::TextRejected {..})));
+        let mut altered = request.clone();
+        altered.text = protocol::interaction::CommittedText::new("different".into()).unwrap();
+        assert!(matches!(
+            input.admit_text(addr, &altered),
+            Some(SessionCommand::TextRejected { .. })
+        ));
         assert!(input.poll().is_none());
     }
     #[test]
     fn failed_or_changed_android_text_target_is_never_acknowledged_or_replayed() {
         use protocol::session::SessionCommand;
-        let (mut input,addr,binding)=fixture();let request=text(binding);
-        input.admit_text(addr,&request);let (generation,token)=take(&mut input);
-        input.complete(generation,token,false);
-        assert_eq!(input.take_handled()[0].text,Some((70,false)));
-        input.poll();let next=input.grant(addr,1,256).unwrap();assert_ne!(next,binding);
-        assert!(matches!(input.admit_text(addr,&request),Some(SessionCommand::TextRejected {..})));
-        input.poll();assert!(input.poll().is_none());
+        let (mut input, addr, binding) = fixture();
+        let request = text(binding);
+        input.admit_text(addr, &request);
+        let (generation, token) = take(&mut input);
+        input.complete(generation, token, false);
+        assert_eq!(input.take_handled()[0].text, Some((70, false)));
+        input.poll();
+        let next = input.grant(addr, 1, 256).unwrap();
+        assert_ne!(next, binding);
+        assert!(matches!(
+            input.admit_text(addr, &request),
+            Some(SessionCommand::TextRejected { .. })
+        ));
+        input.poll();
+        assert!(input.poll().is_none());
     }
     #[test]
     fn requires_both_os_service_and_explicit_capture_control() {

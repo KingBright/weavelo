@@ -14,18 +14,25 @@ pub struct Contact {
 }
 
 pub fn valid_frame(contacts: &[Contact]) -> bool {
-    !contacts.is_empty() && contacts.len() <= MAX_CONTACTS
+    !contacts.is_empty()
+        && contacts.len() <= MAX_CONTACTS
         && contacts.iter().enumerate().all(|(index, contact)| {
-            contacts[..index].iter().all(|other| other.pointer_id != contact.pointer_id)
+            contacts[..index]
+                .iter()
+                .all(|other| other.pointer_id != contact.pointer_id)
                 && [contact.normalized_x, contact.normalized_y, contact.pressure]
-                    .into_iter().all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+                    .into_iter()
+                    .all(|value| value.is_finite() && (0.0..=1.0).contains(&value))
         })
 }
 
 pub fn only_moves(events: &[crate::InputEvent]) -> Option<&[Contact]> {
     match events {
         [crate::InputEvent::TouchFrame(contacts)]
-            if valid_frame(contacts) && contacts.iter().all(|c| c.action == TouchAction::Move) => Some(contacts),
+            if valid_frame(contacts) && contacts.iter().all(|c| c.action == TouchAction::Move) =>
+        {
+            Some(contacts)
+        }
         _ => None,
     }
 }
@@ -35,16 +42,36 @@ mod tests {
     use super::*;
     #[test]
     fn samples_are_bounded_unique_and_finite() {
-        let contact = Contact { action: TouchAction::Down, pointer_id: 7,
-            normalized_x: 0.2, normalized_y: 0.8, pressure: 1.0 };
+        let contact = Contact {
+            action: TouchAction::Down,
+            pointer_id: 7,
+            normalized_x: 0.2,
+            normalized_y: 0.8,
+            pressure: 1.0,
+        };
         assert!(valid_frame(&[contact]));
         assert!(!valid_frame(&[]));
         assert!(!valid_frame(&[contact, contact]));
-        assert!(!valid_frame(&[Contact { normalized_x: f32::NAN, ..contact }]));
-        assert!(!valid_frame(&[Contact { pressure: 1.1, ..contact }]));
-        let ten: Vec<_> = (0..MAX_CONTACTS).map(|id| Contact { pointer_id: id as u32, ..contact }).collect();
+        assert!(!valid_frame(&[Contact {
+            normalized_x: f32::NAN,
+            ..contact
+        }]));
+        assert!(!valid_frame(&[Contact {
+            pressure: 1.1,
+            ..contact
+        }]));
+        let ten: Vec<_> = (0..MAX_CONTACTS)
+            .map(|id| Contact {
+                pointer_id: id as u32,
+                ..contact
+            })
+            .collect();
         assert!(valid_frame(&ten));
-        let mut eleven = ten; eleven.push(Contact { pointer_id: 99, ..contact });
+        let mut eleven = ten;
+        eleven.push(Contact {
+            pointer_id: 99,
+            ..contact
+        });
         assert!(!valid_frame(&eleven));
     }
 }

@@ -440,6 +440,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                     selectedPaneId = state.selected,
                                                     deviceName = remoteDevice?.name ?: tr("Remote device"),
                                                     routeBadge = routeBadge,
+                                                    routeScope = remoteDevice?.scope,
                                                     sessionKey = state.sessionKey,
                                                     generation = state.connectionGeneration,
                                                     portraitViewport = portraitViewport,
@@ -479,11 +480,14 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                     }
                                                 )
                                             }
-                                            NetworkStatusChip(
-                                                if (!state.connected) SessionState.DISCONNECTED else if (pane.accepted) SessionState.STREAMING else SessionState.CONNECTING,
-                                                pane.telemetry, route = remoteDevice?.scope,
-                                                modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp)
-                                            )
+                                            if (!(foreground && state.connected && pane.videoError == null && !(pane.source.isCamera && !pane.accepted))) {
+                                                NetworkStatusChip(
+                                                    if (!state.connected) SessionState.DISCONNECTED else if (pane.accepted) SessionState.STREAMING else SessionState.CONNECTING,
+                                                    pane.telemetry,
+                                                    route = remoteDevice?.scope,
+                                                    modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1128,6 +1132,7 @@ private fun WorkspaceVideo(
     selectedPaneId: Int,
     deviceName: String,
     routeBadge: String?,
+    routeScope: String? = null,
     sessionKey: String,
     generation: Long,
     portraitViewport: Boolean,
@@ -1632,7 +1637,7 @@ private fun WorkspaceVideo(
             }
         )
 
-        // Minimalist video-player-style corner orientation toggle icon (zero text)
+        // Minimalist video-player-style corner orientation & signal icons (zero text)
         if (!imeVisible) {
             val orientationAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = imeVisible)
             StreamOrientationToggleButton(
@@ -1643,6 +1648,16 @@ private fun WorkspaceVideo(
                     .safeDrawingPadding()
                     .padding(8.dp),
                 onClick = onToggleLandscape
+            )
+            NetworkStatusChip(
+                session = if (pane.accepted) SessionState.STREAMING else SessionState.CONNECTING,
+                telemetry = pane.telemetry,
+                route = routeScope,
+                alpha = orientationAlpha,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .safeDrawingPadding()
+                    .padding(8.dp)
             )
         }
 

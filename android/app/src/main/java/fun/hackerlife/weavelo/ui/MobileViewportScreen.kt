@@ -435,9 +435,6 @@ fun MobileViewportScreen(
                 }
             }
 
-            NetworkStatusChip(sessionState, telemetry,
-                modifier = Modifier.align(Alignment.BottomEnd).safeDrawingPadding().padding(8.dp))
-
             if (!isModifierBarVisible) {
                 val orientationAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = false)
                 StreamOrientationToggleButton(
@@ -450,6 +447,15 @@ fun MobileViewportScreen(
                     onClick = {
                         landscapeOverride = if (!portraitViewport) false else true
                     }
+                )
+                NetworkStatusChip(
+                    session = sessionState,
+                    telemetry = telemetry,
+                    alpha = orientationAlpha,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .safeDrawingPadding()
+                        .padding(8.dp)
                 )
             }
 

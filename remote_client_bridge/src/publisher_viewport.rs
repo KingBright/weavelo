@@ -1,5 +1,8 @@
 //! Per-subscription screen geometry; camera encoders keep their source fanout.
-use protocol::{session::SubscriptionRequest, viewport::{FrameGeometry, ViewportDemand}};
+use protocol::{
+    session::SubscriptionRequest,
+    viewport::{FrameGeometry, ViewportDemand},
+};
 use remote_core::viewport::{ViewportPlanner, bitrate_for_pixels};
 use std::time::Instant;
 
@@ -27,29 +30,72 @@ pub struct ScreenViewDemand {
 }
 
 impl ScreenView {
-    pub fn new(grant:u64,request:SubscriptionRequest)->Self {
-        Self{grant,planner:ViewportPlanner::for_source(request.source),request,active:true,keyframe:0,geometry_floor:1,latest_geometry:0}
+    pub fn new(grant: u64, request: SubscriptionRequest) -> Self {
+        Self {
+            grant,
+            planner: ViewportPlanner::for_source(request.source),
+            request,
+            active: true,
+            keyframe: 0,
+            geometry_floor: 1,
+            latest_geometry: 0,
+        }
     }
     pub fn invalidate_geometry(&mut self) {
-        self.geometry_floor=self.planner.invalidate_current().unwrap_or(u64::MAX);
-        self.latest_geometry=0;
+        self.geometry_floor = self.planner.invalidate_current().unwrap_or(u64::MAX);
+        self.latest_geometry = 0;
     }
-    pub fn accepts_geometry(&self,revision:u64)->bool {
-        revision>=self.geometry_floor && revision<=self.latest_geometry
+    pub fn accepts_geometry(&self, revision: u64) -> bool {
+        revision >= self.geometry_floor && revision <= self.latest_geometry
     }
-    pub fn viewport(&mut self,demand:ViewportDemand)->Result<u64,String> {
-        if demand.id!=self.request.id || demand.source_revision!=0 {
+    pub fn viewport(&mut self, demand: ViewportDemand) -> Result<u64, String> {
+        if demand.id != self.request.id || demand.source_revision != 0 {
             return Err("Viewport belongs to another screen subscription".into());
         }
-        self.planner.update(demand,Instant::now()).map_err(str::to_owned)?;
-        Ok(self.planner.demand().map_or(0,|demand|demand.revision))
+        self.planner
+            .update(demand, Instant::now())
+            .map_err(str::to_owned)?;
+        Ok(self.planner.demand().map_or(0, |demand| demand.revision))
     }
-    pub fn demand_with_mode(&mut self,stream:u64,source:[u32;2],direct_quality:bool)->Option<ScreenViewDemand> {
-        if !self.active{return None;}
-        let geometry=self.planner.plan_with_receiver_density(source,[self.request.width,self.request.height],0,Instant::now(),!direct_quality).ok()?;
-        self.latest_geometry=geometry.revision;
-        Some(ScreenViewDemand{stream,grant:self.grant,keyframe:self.keyframe,fps:self.request.fps,
-            bitrate_kbps:if direct_quality {self.request.bitrate_kbps} else {bitrate_for_pixels(geometry.width,geometry.height,self.request.fps,self.request.bitrate_kbps)},geometry,
-            delivery_id:0,quality_revision:0,quality_pending:false})
+    pub fn demand_with_mode(
+        &mut self,
+        stream: u64,
+        source: [u32; 2],
+        direct_quality: bool,
+    ) -> Option<ScreenViewDemand> {
+        if !self.active {
+            return None;
+        }
+        let geometry = self
+            .planner
+            .plan_with_receiver_density(
+                source,
+                [self.request.width, self.request.height],
+                0,
+                Instant::now(),
+                !direct_quality,
+            )
+            .ok()?;
+        self.latest_geometry = geometry.revision;
+        Some(ScreenViewDemand {
+            stream,
+            grant: self.grant,
+            keyframe: self.keyframe,
+            fps: self.request.fps,
+            bitrate_kbps: if direct_quality {
+                self.request.bitrate_kbps
+            } else {
+                bitrate_for_pixels(
+                    geometry.width,
+                    geometry.height,
+                    self.request.fps,
+                    self.request.bitrate_kbps,
+                )
+            },
+            geometry,
+            delivery_id: 0,
+            quality_revision: 0,
+            quality_pending: false,
+        })
     }
 }

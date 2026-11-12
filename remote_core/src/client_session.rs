@@ -331,16 +331,23 @@ impl SharedHostStats {
         if let Ok(mut extra) = self.extra.lock() {
             if let Some(estimate) = estimate {
                 let sample = estimate.latest_sample;
-                let distinct = extra.rtt_samples.back().is_none_or(|last|
-                    (last.probe_id, last.client_send_us) != (sample.probe_id, sample.client_send_us));
+                let distinct = extra.rtt_samples.back().is_none_or(|last| {
+                    (last.probe_id, last.client_send_us) != (sample.probe_id, sample.client_send_us)
+                });
                 if (distinct && estimate.sample_count == 1)
-                    || extra.rtt_samples.back().is_some_and(|last| sample.client_recv_us < last.client_recv_us) {
+                    || extra
+                        .rtt_samples
+                        .back()
+                        .is_some_and(|last| sample.client_recv_us < last.client_recv_us)
+                {
                     extra.rtt_samples.clear();
                     extra.latest_ui_submission = None;
                 }
                 if distinct {
                     extra.rtt_samples.push_back(sample);
-                    while extra.rtt_samples.len() > 5 { extra.rtt_samples.pop_front(); }
+                    while extra.rtt_samples.len() > 5 {
+                        extra.rtt_samples.pop_front();
+                    }
                 }
             } else {
                 extra.rtt_samples.clear();
@@ -363,16 +370,26 @@ impl SharedHostStats {
 
     fn rtt_summary_at(&self, now_us: u64) -> Option<RttSummary> {
         let extra = self.extra.lock().unwrap_or_else(|error| error.into_inner());
-        let mut values = extra.rtt_samples.iter()
-            .filter(|sample| now_us >= sample.client_recv_us
-                && now_us - sample.client_recv_us <= MAX_CLOCK_SAMPLE_AGE_US)
+        let mut values = extra
+            .rtt_samples
+            .iter()
+            .filter(|sample| {
+                now_us >= sample.client_recv_us
+                    && now_us - sample.client_recv_us <= MAX_CLOCK_SAMPLE_AGE_US
+            })
             .map(|sample| sample.network_rtt_us as f32 / 1000.0)
             .collect::<Vec<_>>();
         let latest_ms = *values.last()?;
         values.sort_by(f32::total_cmp);
         let n = values.len();
-        let median_ms = (values[(n-1)/2] + values[n/2]) / 2.0;
-        Some(RttSummary { median_ms, latest_ms, min_ms: values[0], max_ms: values[n-1], samples: n })
+        let median_ms = (values[(n - 1) / 2] + values[n / 2]) / 2.0;
+        Some(RttSummary {
+            median_ms,
+            latest_ms,
+            min_ms: values[0],
+            max_ms: values[n - 1],
+            samples: n,
+        })
     }
 
     /// Cross-machine latency is always an estimate, and unavailable without a
@@ -417,7 +434,8 @@ impl SharedHostStats {
             extra.latest_timing = Some(timing);
             // Decode updates and paint acknowledgements arrive independently.
             // A newer decoded frame must not erase the last measured submission.
-            if timing.capture_ts_us > 0 && timing.recv_ts_us > 0
+            if timing.capture_ts_us > 0
+                && timing.recv_ts_us > 0
                 && timing.decode_done_ts_us >= timing.recv_ts_us
                 && timing.render_submit_ts_us >= timing.decode_done_ts_us
                 && timing.render_submit_ts_us > 0
@@ -675,7 +693,9 @@ pub fn spawn_client_session_receiver(
                         jitter_ms,
                         bitrate_kbps,
                     } => {
-                        if reported_id!=active_session_id.load(Relaxed) {continue;}
+                        if reported_id != active_session_id.load(Relaxed) {
+                            continue;
+                        }
                         host_stats.apply_host_telemetry(
                             fps,
                             encode_latency_ms,
@@ -696,14 +716,17 @@ pub fn spawn_client_session_receiver(
                         }
                     }
                     protocol::ControlMessage::PipelineTelemetry(report) => {
-                        if report.session_id==active_session_id.load(Relaxed) {host_stats.set_pipeline_report(*report);}
+                        if report.session_id == active_session_id.load(Relaxed) {
+                            host_stats.set_pipeline_report(*report);
+                        }
                     }
                     protocol::ControlMessage::Session(command) => {
                         if let Some(tx) = &session_event_tx {
                             match *command {
                                 protocol::session::SessionCommand::Sources {
                                     request_id,
-                                    sources, ..
+                                    sources,
+                                    ..
                                 } => {
                                     let _ = tx.send(ClientSessionEvent::CaptureSources {
                                         request_id,
@@ -724,7 +747,9 @@ pub fn spawn_client_session_receiver(
                                     id,
                                     request_id,
                                     source,
-                                    supports_input, .. } => {
+                                    supports_input,
+                                    ..
+                                } => {
                                     let _ = tx.send(ClientSessionEvent::CaptureSourceSwitched {
                                         id,
                                         request_id,
@@ -945,7 +970,9 @@ impl MediaPacketHandler {
         self.smooth_e2e_ms = 0.0;
         self.needs_keyframe = true;
         self.last_keyframe_request = None;
-        self.stats_net.video_recovery.reset_source(|| self.host_stats.clear_video_timing());
+        self.stats_net
+            .video_recovery
+            .reset_source(|| self.host_stats.clear_video_timing());
     }
 
     fn recovery_wait(&self) -> Option<Duration> {
@@ -1254,11 +1281,15 @@ impl MediaPacketHandler {
             match self.decode_tx.try_send((ordered_pkt, timing, source_epoch)) {
                 Ok(result) => {
                     self.needs_keyframe |= result.needs_keyframe;
-                    self.stats_net.video_decode_queue_dropped.fetch_add(result.dropped, Relaxed);
+                    self.stats_net
+                        .video_decode_queue_dropped
+                        .fetch_add(result.dropped, Relaxed);
                 }
                 Err(_) => {
                     self.needs_keyframe = true;
-                    self.stats_net.video_decode_queue_dropped.fetch_add(1, Relaxed);
+                    self.stats_net
+                        .video_decode_queue_dropped
+                        .fetch_add(1, Relaxed);
                 }
             }
         }
@@ -1482,22 +1513,42 @@ mod tests {
     fn rtt_summary_deduplicates_probes_preserves_spikes_and_expires() {
         let stats = SharedHostStats::default();
         let mut sync = ClockSynchronizer::new();
-        for (index, rtt) in [20_000_u64, 20_000, 60_000, 20_000, 20_000].into_iter().enumerate() {
+        for (index, rtt) in [20_000_u64, 20_000, 60_000, 20_000, 20_000]
+            .into_iter()
+            .enumerate()
+        {
             let id = index as u64 + 1;
             let sent = id * 1_000_000;
             sync.begin_probe(id, sent).unwrap();
-            sync.complete_probe(id, sent, sent + rtt / 2, sent + rtt / 2 + 100, sent + rtt + 100).unwrap();
+            sync.complete_probe(
+                id,
+                sent,
+                sent + rtt / 2,
+                sent + rtt / 2 + 100,
+                sent + rtt + 100,
+            )
+            .unwrap();
             let estimate = sync.estimate(sent + rtt + 100);
             stats.set_clock_estimate(estimate);
             stats.set_clock_estimate(estimate); // heartbeat reads do not add samples
         }
         let summary = stats.rtt_summary_at(5_020_100).unwrap();
-        assert_eq!(summary, RttSummary { median_ms: 20., latest_ms: 20., min_ms: 20., max_ms: 60., samples: 5 });
+        assert_eq!(
+            summary,
+            RttSummary {
+                median_ms: 20.,
+                latest_ms: 20.,
+                min_ms: 20.,
+                max_ms: 60.,
+                samples: 5
+            }
+        );
         assert_eq!(stats.rtt_summary_at(15_020_101), None);
         // A clock/path discontinuity can reacquire without an intermediate None.
         sync.reset();
         sync.begin_probe(9, 6_000_000).unwrap();
-        sync.complete_probe(9, 6_000_000, 6_040_000, 6_040_100, 6_080_100).unwrap();
+        sync.complete_probe(9, 6_000_000, 6_040_000, 6_040_100, 6_080_100)
+            .unwrap();
         stats.set_clock_estimate(sync.estimate(6_080_100));
         assert_eq!(stats.rtt_summary_at(6_080_100).unwrap().samples, 1);
         assert_eq!(stats.rtt_summary_at(6_080_100).unwrap().median_ms, 80.);
@@ -1520,8 +1571,14 @@ mod tests {
         stats.set_latest_timing(decoded);
         assert_eq!(stats.snapshot().latest_timing, Some(decoded));
         assert_eq!(stats.latest_ui_submission_at(sampled_at), Some(submitted));
-        assert_eq!(stats.latest_ui_submission_at(sampled_at + Duration::from_secs(5)), Some(submitted));
-        assert_eq!(stats.latest_ui_submission_at(sampled_at + Duration::from_millis(5001)), None);
+        assert_eq!(
+            stats.latest_ui_submission_at(sampled_at + Duration::from_secs(5)),
+            Some(submitted)
+        );
+        assert_eq!(
+            stats.latest_ui_submission_at(sampled_at + Duration::from_millis(5001)),
+            None
+        );
         decoded.render_submit_ts_us = 19_000;
         stats.set_latest_timing(decoded);
         assert_eq!(stats.latest_ui_submission_at(sampled_at), Some(submitted));

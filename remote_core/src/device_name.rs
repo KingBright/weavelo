@@ -1,13 +1,16 @@
 //! Device labels are host/user data, independent of the application brand.
 /// Validate a user label against the discovery protocol's UTF-8 byte limit.
 pub fn valid_name(value: &str) -> Option<String> {
-    if value.chars().any(char::is_control) { return None; }
+    if value.chars().any(char::is_control) {
+        return None;
+    }
     let value = value.trim();
     (!value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control))
         .then(|| value.to_owned())
 }
 pub fn host_name() -> String {
-    platform_host_name().and_then(|value| valid_name(&value))
+    platform_host_name()
+        .and_then(|value| valid_name(&value))
         .unwrap_or_else(|| "Unnamed computer".to_owned())
 }
 #[cfg(unix)]
@@ -21,9 +24,13 @@ fn platform_host_name() -> Option<String> {
     String::from_utf8(bytes[..end].to_vec()).ok()
 }
 #[cfg(windows)]
-fn platform_host_name() -> Option<String> { std::env::var("COMPUTERNAME").ok() }
+fn platform_host_name() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok()
+}
 #[cfg(not(any(unix, windows)))]
-fn platform_host_name() -> Option<String> { std::env::var("HOSTNAME").ok() }
+fn platform_host_name() -> Option<String> {
+    std::env::var("HOSTNAME").ok()
+}
 
 /// A local edit is only a draft until the owner confirms its version-checked save.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,18 +41,30 @@ pub struct NameEditor {
 impl NameEditor {
     pub fn new(saved: impl Into<String>) -> Self {
         let saved = saved.into();
-        Self { expected: saved.clone(), draft: saved }
+        Self {
+            expected: saved.clone(),
+            draft: saved,
+        }
     }
-    pub fn draft(&self) -> &str { &self.draft }
-    pub fn expected(&self) -> &str { &self.expected }
-    pub fn edit(&mut self, value: impl Into<String>) { self.draft = value.into(); }
-    pub fn use_default(&mut self, host: &str) { self.edit(host); }
+    pub fn draft(&self) -> &str {
+        &self.draft
+    }
+    pub fn expected(&self) -> &str {
+        &self.expected
+    }
+    pub fn edit(&mut self, value: impl Into<String>) {
+        self.draft = value.into();
+    }
+    pub fn use_default(&mut self, host: &str) {
+        self.edit(host);
+    }
     pub fn pending_name(&self) -> Option<String> {
         valid_name(&self.draft).filter(|name| name != &self.expected)
     }
     pub fn validation_error(&self) -> Option<&'static str> {
-        valid_name(&self.draft).is_none().then_some(
-            "Use 1–128 UTF-8 bytes, without line breaks or control characters.")
+        valid_name(&self.draft)
+            .is_none()
+            .then_some("Use 1–128 UTF-8 bytes, without line breaks or control characters.")
     }
     /// Follow owner updates only while the user has no unsaved edit. Keep a
     /// dirty edit's original CAS baseline so an external rename cannot be overwritten.
@@ -54,7 +73,9 @@ impl NameEditor {
             self.accept(saved);
         }
     }
-    pub fn accept(&mut self, saved: impl Into<String>) { *self = Self::new(saved); }
+    pub fn accept(&mut self, saved: impl Into<String>) {
+        *self = Self::new(saved);
+    }
 }
 
 #[cfg(test)]

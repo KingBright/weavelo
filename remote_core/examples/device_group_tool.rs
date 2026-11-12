@@ -25,9 +25,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("device-group invite exported to {}", path.display());
         }
         "join" => {
-            let display_name = args
-                .next()
-                .unwrap_or_else(|| "Weavelo Device".to_string());
+            let display_name = args.next().unwrap_or_else(|| "Weavelo Device".to_string());
             if args.next().is_some() {
                 return Err(usage_error("join accepts path and optional display name"));
             }

@@ -19,37 +19,70 @@ use std::{
 use tokio::sync::mpsc;
 
 fn focus_tap(mode: crate::touch_mapper::TouchMode, events: &[protocol::InputEvent]) -> bool {
-    mode != crate::touch_mapper::TouchMode::NativeTouch && events.len() >= 2
-        && matches!(&events[events.len()-2..], [protocol::InputEvent::MouseDown(0), protocol::InputEvent::MouseUp(0)])
+    mode != crate::touch_mapper::TouchMode::NativeTouch
+        && events.len() >= 2
+        && matches!(
+            &events[events.len() - 2..],
+            [
+                protocol::InputEvent::MouseDown(0),
+                protocol::InputEvent::MouseUp(0)
+            ]
+        )
 }
 
 #[cfg(test)]
 #[test]
 fn editor_probe_only_follows_a_translated_primary_tap() {
-    use protocol::InputEvent::*;
     use crate::touch_mapper::TouchMode::*;
-    assert!(focus_tap(DirectTouch, &[MouseMoveAbsolute{x:1,y:2},MouseDown(0),MouseUp(0)]));
-    assert!(focus_tap(VirtualTrackpad, &[MouseDown(0),MouseUp(0)]));
-    assert!(!focus_tap(DirectTouch, &[MouseMoveAbsolute{x:1,y:2},MouseUp(0)]));
-    assert!(!focus_tap(DirectTouch, &[MouseDown(1),MouseUp(1)]));
-    assert!(!focus_tap(NativeTouch, &[MouseDown(0),MouseUp(0)]));
+    use protocol::InputEvent::*;
+    assert!(focus_tap(
+        DirectTouch,
+        &[MouseMoveAbsolute { x: 1, y: 2 }, MouseDown(0), MouseUp(0)]
+    ));
+    assert!(focus_tap(VirtualTrackpad, &[MouseDown(0), MouseUp(0)]));
+    assert!(!focus_tap(
+        DirectTouch,
+        &[MouseMoveAbsolute { x: 1, y: 2 }, MouseUp(0)]
+    ));
+    assert!(!focus_tap(DirectTouch, &[MouseDown(1), MouseUp(1)]));
+    assert!(!focus_tap(NativeTouch, &[MouseDown(0), MouseUp(0)]));
 }
 
-fn file_status(event:&FileTransferEvent)->String {
-    let progress=|done:u64,total:u64| (u128::from(done.min(total))*100).checked_div(u128::from(total)).unwrap_or(0);
+fn file_status(event: &FileTransferEvent) -> String {
+    let progress = |done: u64, total: u64| {
+        (u128::from(done.min(total)) * 100)
+            .checked_div(u128::from(total))
+            .unwrap_or(0)
+    };
     match event {
-        FileTransferEvent::IncomingProgress {received_bytes,total_size,..}=>format!("Receiving file · {}%",progress(*received_bytes,*total_size)),
-        FileTransferEvent::OutgoingProgress {sent_bytes,total_size,..}=>format!("Sending file · {}%",progress(*sent_bytes,*total_size)),
-        FileTransferEvent::IncomingStarted {..}=>"Receiving file".into(),
-        FileTransferEvent::OutgoingStarted {..}|FileTransferEvent::OutgoingGroupStarted {..}=>"Sending files".into(),
-        FileTransferEvent::IncomingCompleted {..}|FileTransferEvent::IncomingGroupCompleted {..}=>"File received".into(),
-        FileTransferEvent::OutgoingCompleted {..}|FileTransferEvent::OutgoingGroupCompleted {..}=>"File sent".into(),
-        FileTransferEvent::IncomingCancelled {..}|FileTransferEvent::IncomingGroupCancelled {..}
-            |FileTransferEvent::OutgoingCancelled {..}|FileTransferEvent::OutgoingGroupCancelled {..}=>"Transfer cancelled".into(),
-        FileTransferEvent::SharedResponse {..}=>"Shared files updated".into(),
-        FileTransferEvent::IncomingClipboardReady {..}=>"Clipboard updated".into(),
-        FileTransferEvent::Drained=>"Transfers complete".into(),
-        FileTransferEvent::Error {..}=>"File transfer failed".into(),
+        FileTransferEvent::IncomingProgress {
+            received_bytes,
+            total_size,
+            ..
+        } => format!(
+            "Receiving file · {}%",
+            progress(*received_bytes, *total_size)
+        ),
+        FileTransferEvent::OutgoingProgress {
+            sent_bytes,
+            total_size,
+            ..
+        } => format!("Sending file · {}%", progress(*sent_bytes, *total_size)),
+        FileTransferEvent::IncomingStarted { .. } => "Receiving file".into(),
+        FileTransferEvent::OutgoingStarted { .. }
+        | FileTransferEvent::OutgoingGroupStarted { .. } => "Sending files".into(),
+        FileTransferEvent::IncomingCompleted { .. }
+        | FileTransferEvent::IncomingGroupCompleted { .. } => "File received".into(),
+        FileTransferEvent::OutgoingCompleted { .. }
+        | FileTransferEvent::OutgoingGroupCompleted { .. } => "File sent".into(),
+        FileTransferEvent::IncomingCancelled { .. }
+        | FileTransferEvent::IncomingGroupCancelled { .. }
+        | FileTransferEvent::OutgoingCancelled { .. }
+        | FileTransferEvent::OutgoingGroupCancelled { .. } => "Transfer cancelled".into(),
+        FileTransferEvent::SharedResponse { .. } => "Shared files updated".into(),
+        FileTransferEvent::IncomingClipboardReady { .. } => "Clipboard updated".into(),
+        FileTransferEvent::Drained => "Transfers complete".into(),
+        FileTransferEvent::Error { .. } => "File transfer failed".into(),
     }
 }
 
@@ -61,61 +94,122 @@ struct Queues {
     audio: HashMap<u32, VecDeque<EncodedAudioPacket>>,
 }
 impl Queues {
-    fn push_file(&mut self,event:FileTransferEvent) {
-        let detail=match &event {
-            FileTransferEvent::SharedResponse {request_id,response}=>serde_json::json!({"shared_request_id":request_id,"shared_response":response}),
-            FileTransferEvent::IncomingClipboardReady {paths,..}=>serde_json::json!({"clipboard_files":paths}),
-            FileTransferEvent::IncomingStarted {transfer_id,name,size_bytes,path,group,..}=>serde_json::json!({
+    fn push_file(&mut self, event: FileTransferEvent) {
+        let detail = match &event {
+            FileTransferEvent::SharedResponse {
+                request_id,
+                response,
+            } => serde_json::json!({"shared_request_id":request_id,"shared_response":response}),
+            FileTransferEvent::IncomingClipboardReady { paths, .. } => {
+                serde_json::json!({"clipboard_files":paths})
+            }
+            FileTransferEvent::IncomingStarted {
+                transfer_id,
+                name,
+                size_bytes,
+                path,
+                group,
+                ..
+            } => serde_json::json!({
                 "transfer":{"id":transfer_id,"incoming":true,"state":"started","name":name,"done_bytes":0,"total_bytes":size_bytes,"path":path,"group_id":group.as_ref().map(|g|g.group_id)}
             }),
-            FileTransferEvent::OutgoingStarted {transfer_id,name,size_bytes,group,..}=>serde_json::json!({
+            FileTransferEvent::OutgoingStarted {
+                transfer_id,
+                name,
+                size_bytes,
+                group,
+                ..
+            } => serde_json::json!({
                 "transfer":{"id":transfer_id,"incoming":false,"state":"started","name":name,"done_bytes":0,"total_bytes":size_bytes,"group_id":group.as_ref().map(|g|g.group_id)}
             }),
-            FileTransferEvent::OutgoingGroupStarted {group_id,file_count,total_size_bytes}=>serde_json::json!({
+            FileTransferEvent::OutgoingGroupStarted {
+                group_id,
+                file_count,
+                total_size_bytes,
+            } => serde_json::json!({
                 "group":{"group_id":group_id,"state":"started","total_files":file_count,"total_bytes":total_size_bytes}
             }),
-            FileTransferEvent::IncomingCompleted {transfer_id,path,size_bytes,group,..}=>serde_json::json!({
+            FileTransferEvent::IncomingCompleted {
+                transfer_id,
+                path,
+                size_bytes,
+                group,
+                ..
+            } => serde_json::json!({
                 "path":path,
                 "transfer":{"id":transfer_id,"incoming":true,"state":"completed","done_bytes":size_bytes,"total_bytes":size_bytes,"path":path,"group_id":group.as_ref().map(|g|g.group_id)}
             }),
-            FileTransferEvent::OutgoingCompleted {transfer_id,group,..}=>serde_json::json!({
+            FileTransferEvent::OutgoingCompleted {
+                transfer_id, group, ..
+            } => serde_json::json!({
                 "transfer":{"id":transfer_id,"incoming":false,"state":"completed","group_id":group.as_ref().map(|g|g.group_id)}
             }),
-            FileTransferEvent::IncomingCancelled {transfer_id,path,group,..}=>serde_json::json!({
+            FileTransferEvent::IncomingCancelled {
+                transfer_id,
+                path,
+                group,
+                ..
+            } => serde_json::json!({
                 "transfer":{"id":transfer_id,"incoming":true,"state":"cancelled","path":path,"group_id":group.as_ref().map(|g|g.group_id)}
             }),
-            FileTransferEvent::OutgoingCancelled {transfer_id,group,..}=>serde_json::json!({
+            FileTransferEvent::OutgoingCancelled {
+                transfer_id, group, ..
+            } => serde_json::json!({
                 "transfer":{"id":transfer_id,"incoming":false,"state":"cancelled","group_id":group.as_ref().map(|g|g.group_id)}
             }),
-            FileTransferEvent::OutgoingGroupCompleted {group_id,..}=>serde_json::json!({
+            FileTransferEvent::OutgoingGroupCompleted { group_id, .. } => serde_json::json!({
                 "group":{"group_id":group_id,"state":"completed"}
             }),
-            FileTransferEvent::IncomingGroupCompleted {group_id,paths,total_size_bytes}=>serde_json::json!({
+            FileTransferEvent::IncomingGroupCompleted {
+                group_id,
+                paths,
+                total_size_bytes,
+            } => serde_json::json!({
                 "group":{"group_id":group_id,"state":"completed","paths":paths,"total_bytes":total_size_bytes}
             }),
-            FileTransferEvent::IncomingGroupCancelled {group_id}|FileTransferEvent::OutgoingGroupCancelled {group_id}=>serde_json::json!({
+            FileTransferEvent::IncomingGroupCancelled { group_id }
+            | FileTransferEvent::OutgoingGroupCancelled { group_id } => serde_json::json!({
                 "group":{"group_id":group_id,"state":"cancelled"}
             }),
-            FileTransferEvent::Error {transfer_id,message}=>serde_json::json!({"error":message,"transfer_id":transfer_id}),
-            FileTransferEvent::IncomingProgress {transfer_id,received_bytes,total_size,..}=>serde_json::json!({
+            FileTransferEvent::Error {
+                transfer_id,
+                message,
+            } => serde_json::json!({"error":message,"transfer_id":transfer_id}),
+            FileTransferEvent::IncomingProgress {
+                transfer_id,
+                received_bytes,
+                total_size,
+                ..
+            } => serde_json::json!({
                 "progress":{"incoming":true,"id":transfer_id},
                 "done_bytes":received_bytes,
                 "total_bytes":total_size
             }),
-            FileTransferEvent::OutgoingProgress {transfer_id,sent_bytes,total_size,..}=>serde_json::json!({
+            FileTransferEvent::OutgoingProgress {
+                transfer_id,
+                sent_bytes,
+                total_size,
+                ..
+            } => serde_json::json!({
                 "progress":{"incoming":false,"id":transfer_id},
                 "done_bytes":sent_bytes,
                 "total_bytes":total_size
             }),
-            _=>serde_json::Value::Null,
+            _ => serde_json::Value::Null,
         };
-        let coalesce=detail.get("progress").is_some()
-            && self.events.back().is_some_and(|last|{
-                last.get("detail").and_then(|d|d.get("progress")) == detail.get("progress")
+        let coalesce = detail.get("progress").is_some()
+            && self.events.back().is_some_and(|last| {
+                last.get("detail").and_then(|d| d.get("progress")) == detail.get("progress")
             });
-        let value=serde_json::json!({"file":file_status(&event),"detail":detail});
-        if coalesce {*self.events.back_mut().unwrap()=value;}
-        else {if self.events.len()==128 {self.events.pop_front();}self.events.push_back(value);}
+        let value = serde_json::json!({"file":file_status(&event),"detail":detail});
+        if coalesce {
+            *self.events.back_mut().unwrap() = value;
+        } else {
+            if self.events.len() == 128 {
+                self.events.pop_front();
+            }
+            self.events.push_back(value);
+        }
     }
 }
 
@@ -226,15 +320,23 @@ impl Drop for MobileWorkspace {
 
 impl MobileWorkspace {
     pub async fn connect(endpoint: SocketAddr, receive_dir: PathBuf) -> Result<Self, String> {
-        Self::connect_with_claim(endpoint,receive_dir,None).await
+        Self::connect_with_claim(endpoint, receive_dir, None).await
     }
-    pub async fn connect_with_claim(endpoint:SocketAddr,receive_dir:PathBuf,claim:Option<protocol::session::DeliveryClaimProof>)->Result<Self,String> {
+    pub async fn connect_with_claim(
+        endpoint: SocketAddr,
+        receive_dir: PathBuf,
+        claim: Option<protocol::session::DeliveryClaimProof>,
+    ) -> Result<Self, String> {
         let clipboard_directory = receive_dir
             .parent()
             .unwrap_or(&receive_dir)
             .join("clipboard");
         let (connection, mut events) = WorkspaceConnection::connect(endpoint, receive_dir).await?;
-        if let Some(proof)=&claim {remote_core::directed_delivery::claim(&connection,&mut events,proof).await.map_err(|error|error.to_string())?;}
+        if let Some(proof) = &claim {
+            remote_core::directed_delivery::claim(&connection, &mut events, proof)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let connection = Arc::new(connection);
         let queues = Arc::new(Mutex::new(Queues::default()));
         let clipboard = MobileClipboard {
@@ -339,7 +441,10 @@ impl MobileWorkspace {
             }
         });
         connection
-            .control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() })
+            .control(SessionCommand::ListSources {
+                request_id: 1,
+                known_icons: Vec::new(),
+            })
             .await?;
         Ok(Self {
             connection,
@@ -409,18 +514,13 @@ impl MobileWorkspace {
         if self.pumps.lock().unwrap().len() >= protocol::session::MAX_SUBSCRIPTIONS {
             return Err("too many subscriptions".into());
         }
-        let mut touch=WorkspaceTouch::new();
-        touch.source=Some(request.source);
-        self.touches.lock().unwrap().insert(id,touch);
+        let mut touch = WorkspaceTouch::new();
+        touch.source = Some(request.source);
+        self.touches.lock().unwrap().insert(id, touch);
         let (tx, mut rx) = remote_core::video_queue::channel(2);
         let telemetry = Arc::new(SharedHostStats::default());
         self.connection
-            .subscribe(
-                request,
-                tx,
-                Statistics::new(),
-                telemetry.clone(),
-            )
+            .subscribe(request, tx, Statistics::new(), telemetry.clone())
             .await?;
         self.telemetry.lock().unwrap().insert(id, telemetry);
         let state = self.queues.clone();
@@ -429,18 +529,37 @@ impl MobileWorkspace {
             let mut waiting = true;
             while let Some((packet, timing, source_epoch)) = rx.recv().await {
                 let keyframe = hevc_keyframe(&packet.payload);
-                if waiting && !keyframe {continue;}
+                if waiting && !keyframe {
+                    continue;
+                }
                 let (result, discarded) = {
                     let mut state = state.lock().unwrap();
-                    let queue = state.video.entry(id).or_insert_with(||remote_core::video_queue::EncodedQueue::new(2));
-                    queue.push(EncodedVideoNalu {
-                        data: packet.payload, keyframe, pts_us: timing.capture_ts_us as i64,
-                    }, keyframe, source_epoch)
+                    let queue = state
+                        .video
+                        .entry(id)
+                        .or_insert_with(|| remote_core::video_queue::EncodedQueue::new(2));
+                    queue.push(
+                        EncodedVideoNalu {
+                            data: packet.payload,
+                            keyframe,
+                            pts_us: timing.capture_ts_us as i64,
+                        },
+                        keyframe,
+                        source_epoch,
+                    )
                 };
                 drop(discarded);
-                if result.needs_keyframe && !waiting && let Some(connection) = connection.upgrade() {
-                    let _ = connection.sender.send_control(
-                        &ControlMessage::RequestKeyframe { session_id: id }, connection.target).await;
+                if result.needs_keyframe
+                    && !waiting
+                    && let Some(connection) = connection.upgrade()
+                {
+                    let _ = connection
+                        .sender
+                        .send_control(
+                            &ControlMessage::RequestKeyframe { session_id: id },
+                            connection.target,
+                        )
+                        .await;
                 }
                 waiting = result.needs_keyframe;
             }
@@ -467,9 +586,12 @@ impl MobileWorkspace {
         }
         let mut touches = self.touches.lock().unwrap();
         if let Some(touch) = touches.get_mut(&event.id) {
-            let was_current=touch.current_surface(event.token);
+            let was_current = touch.current_surface(event.token);
             let (release, events) = if event.phase == "alive" {
-                (touch.alive(event.token, std::time::Instant::now()), Vec::new())
+                (
+                    touch.alive(event.token, std::time::Instant::now()),
+                    Vec::new(),
+                )
             } else {
                 touch.surface(event.token, &event.phase)
             };
@@ -485,80 +607,173 @@ impl MobileWorkspace {
                     }
                 }
             }
-            if (event.phase=="begin" && touch.current_surface(event.token))
-                || (matches!(event.phase.as_str(),"reset"|"end") && was_current) {
-                self.connection.presented_geometry(event.id,touch.revision,0);
+            if (event.phase == "begin" && touch.current_surface(event.token))
+                || (matches!(event.phase.as_str(), "reset" | "end") && was_current)
+            {
+                self.connection
+                    .presented_geometry(event.id, touch.revision, 0);
             }
-            if event.phase=="alive" {
-                if let Some(binding)=touch.healthy_binding(event.token){
-                    if !self.connection.refresh_bound_input(binding){touch.cancel();self.connection.try_bound_input(binding,None);}
+            if event.phase == "alive" {
+                if let Some(binding) = touch.healthy_binding(event.token) {
+                    if !self.connection.refresh_bound_input(binding) {
+                        touch.cancel();
+                        self.connection.try_bound_input(binding, None);
+                    }
                 }
             }
         }
         Ok(())
     }
-    pub fn presented(&self,json:&str)->Result<(),String> {
-        #[derive(serde::Deserialize)] struct Presented {id:u32,token:u64,geometry:protocol::viewport::FrameGeometry}
-        let event:Presented=serde_json::from_str(json).map_err(|e|e.to_string())?;
+    pub fn presented(&self, json: &str) -> Result<(), String> {
+        #[derive(serde::Deserialize)]
+        struct Presented {
+            id: u32,
+            token: u64,
+            geometry: protocol::viewport::FrameGeometry,
+        }
+        let event: Presented = serde_json::from_str(json).map_err(|e| e.to_string())?;
         event.geometry.validate()?;
-        let mut touches=self.touches.lock().unwrap();
-        if let Some(touch)=touches.get_mut(&event.id).filter(|touch|touch.current_surface(event.token)&&touch.revision==event.geometry.source_revision) {
+        let mut touches = self.touches.lock().unwrap();
+        if let Some(touch) = touches.get_mut(&event.id).filter(|touch| {
+            touch.current_surface(event.token) && touch.revision == event.geometry.source_revision
+        }) {
             touch.presented_geometry(Some(event.geometry));
-            self.connection.presented_geometry(event.id,touch.revision,event.geometry.revision);
+            self.connection
+                .presented_geometry(event.id, touch.revision, event.geometry.revision);
         }
         Ok(())
     }
-    pub fn keyboard_context(&self,json:&str)->Result<String,String> {
-        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,#[serde(default)] focus_binding:Option<protocol::realtime_input::InputBinding>,#[serde(default)] focus_geometry:Option<protocol::viewport::FrameGeometry>}
-        let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
-        let touches=self.touches.lock().unwrap();
-        let touch=touches.get(&request.id).ok_or("video surface is unavailable")?;
-        let current=self.connection.input_binding(request.id,touch.revision);
-        if let Some(reason)=touch.unavailable_reason(request.token,current) {return Err(reason.into());}
-        let binding=touch.keyboard_binding(request.token,current).ok_or("remote keyboard is unavailable")?;
-        if request.focus_binding.is_some_and(|expected| expected != binding) { return Err("remote input binding changed".into()); }
-        if request.focus_binding.is_some() && !request.focus_geometry.is_some_and(|geometry| touch.exact_presented_geometry(geometry)) { return Err("displayed source geometry changed".into()); }
-        let owner=self.connection.text_input_owner_for_binding(binding).ok_or("remote keyboard is unavailable")?;
-        serde_json::to_string(&owner).map_err(|e|e.to_string())
+    pub fn keyboard_context(&self, json: &str) -> Result<String, String> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            id: u32,
+            token: u64,
+            #[serde(default)]
+            focus_binding: Option<protocol::realtime_input::InputBinding>,
+            #[serde(default)]
+            focus_geometry: Option<protocol::viewport::FrameGeometry>,
+        }
+        let request: Request = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let touches = self.touches.lock().unwrap();
+        let touch = touches
+            .get(&request.id)
+            .ok_or("video surface is unavailable")?;
+        let current = self.connection.input_binding(request.id, touch.revision);
+        if let Some(reason) = touch.unavailable_reason(request.token, current) {
+            return Err(reason.into());
+        }
+        let binding = touch
+            .keyboard_binding(request.token, current)
+            .ok_or("remote keyboard is unavailable")?;
+        if request
+            .focus_binding
+            .is_some_and(|expected| expected != binding)
+        {
+            return Err("remote input binding changed".into());
+        }
+        if request.focus_binding.is_some()
+            && !request
+                .focus_geometry
+                .is_some_and(|geometry| touch.exact_presented_geometry(geometry))
+        {
+            return Err("displayed source geometry changed".into());
+        }
+        let owner = self
+            .connection
+            .text_input_owner_for_binding(binding)
+            .ok_or("remote keyboard is unavailable")?;
+        serde_json::to_string(&owner).map_err(|e| e.to_string())
     }
-    pub fn keyboard(&self,json:&str)->Result<(),String> {
-        #[derive(serde::Deserialize)]struct Request {id:u32,token:u64,binding:remote_core::workspace_session::TextInputOwner,
-            text:Option<String>,key:Option<String>,navigation:Option<String>,#[serde(default)]alive:bool,#[serde(default)]pressed:bool,#[serde(default)]age_ms:u64}
-        let request:Request=serde_json::from_str(json).map_err(|e|e.to_string())?;
-        let mut touches=self.touches.lock().unwrap();
-        let touch=touches.get_mut(&request.id).ok_or("video surface is unavailable")?;
-        if request.binding.subscription_id!=request.id || request.binding.source_revision!=touch.revision {
+    pub fn keyboard(&self, json: &str) -> Result<(), String> {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            id: u32,
+            token: u64,
+            binding: remote_core::workspace_session::TextInputOwner,
+            text: Option<String>,
+            key: Option<String>,
+            navigation: Option<String>,
+            #[serde(default)]
+            alive: bool,
+            #[serde(default)]
+            pressed: bool,
+            #[serde(default)]
+            age_ms: u64,
+        }
+        let request: Request = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut touches = self.touches.lock().unwrap();
+        let touch = touches
+            .get_mut(&request.id)
+            .ok_or("video surface is unavailable")?;
+        if request.binding.subscription_id != request.id
+            || request.binding.source_revision != touch.revision
+        {
             return Err("remote keyboard source changed".into());
         }
-        let binding=self.connection.text_input_binding(request.binding).ok_or("remote keyboard source changed")?;
-        if touch.keyboard_binding(request.token,Some(binding))!=Some(binding) {return Err("remote keyboard surface changed".into());}
+        let binding = self
+            .connection
+            .text_input_binding(request.binding)
+            .ok_or("remote keyboard source changed")?;
+        if touch.keyboard_binding(request.token, Some(binding)) != Some(binding) {
+            return Err("remote keyboard surface changed".into());
+        }
         if request.alive {
-            if request.text.is_some() || request.key.is_some() || request.navigation.is_some()
-                || request.age_ms>protocol::realtime_input::MAX_INPUT_AGE_MS {
+            if request.text.is_some()
+                || request.key.is_some()
+                || request.navigation.is_some()
+                || request.age_ms > protocol::realtime_input::MAX_INPUT_AGE_MS
+            {
                 return Err("invalid or expired keyboard activity".into());
             }
-            if !touch.keyboard_holds_modifiers(binding) || !self.connection.refresh_bound_input_with_age(binding,std::time::Duration::from_millis(request.age_ms)) {
+            if !touch.keyboard_holds_modifiers(binding)
+                || !self.connection.refresh_bound_input_with_age(
+                    binding,
+                    std::time::Duration::from_millis(request.age_ms),
+                )
+            {
                 return Err("Held keys expired; select the shortcut again".into());
             }
             Ok(())
-        } else if let Some(action)=request.navigation {
-            if request.text.is_some() || request.key.is_some() || request.age_ms>protocol::realtime_input::MAX_INPUT_AGE_MS {
+        } else if let Some(action) = request.navigation {
+            if request.text.is_some()
+                || request.key.is_some()
+                || request.age_ms > protocol::realtime_input::MAX_INPUT_AGE_MS
+            {
                 return Err("invalid or expired navigation event".into());
             }
-            let source=touch.source.ok_or("remote navigation source changed")?;
-            let button=protocol::session::android_navigation_button(&self.queues.lock().unwrap().sources,source,&action)
-                .ok_or("navigation is unavailable for this source")?;
-            self.connection.try_bound_button_tap(binding,button,std::time::Duration::from_millis(request.age_ms))
-        } else if let Some(text)=request.text {self.connection.try_commit_text_for_owner(request.binding,&text,std::time::Duration::from_millis(request.age_ms))}
-        else if let Some(key)=request.key {
-            for event in touch.key_events(binding,&key,request.pressed) {
-                if !self.connection.try_bound_input(binding,Some(event)) {return Err("remote keyboard queue is full".into());}
+            let source = touch.source.ok_or("remote navigation source changed")?;
+            let button = protocol::session::android_navigation_button(
+                &self.queues.lock().unwrap().sources,
+                source,
+                &action,
+            )
+            .ok_or("navigation is unavailable for this source")?;
+            self.connection.try_bound_button_tap(
+                binding,
+                button,
+                std::time::Duration::from_millis(request.age_ms),
+            )
+        } else if let Some(text) = request.text {
+            self.connection.try_commit_text_for_owner(
+                request.binding,
+                &text,
+                std::time::Duration::from_millis(request.age_ms),
+            )
+        } else if let Some(key) = request.key {
+            for event in touch.key_events(binding, &key, request.pressed) {
+                if !self.connection.try_bound_input(binding, Some(event)) {
+                    return Err("remote keyboard queue is full".into());
+                }
             }
             Ok(())
-        } else {Err("missing remote keyboard event".into())}
+        } else {
+            Err("missing remote keyboard event".into())
+        }
     }
     pub fn touch(&self, json: &str) -> Result<serde_json::Value, String> {
-        fn default_natural_scroll() -> bool { true }
+        fn default_natural_scroll() -> bool {
+            true
+        }
         #[derive(serde::Deserialize)]
         struct Touch {
             id: u32,
@@ -567,11 +782,16 @@ impl MobileWorkspace {
             width: u16,
             height: u16,
             event: protocol::InputEvent,
-            #[serde(default)] geometry:Option<protocol::viewport::FrameGeometry>,
-            #[serde(default = "default_natural_scroll")] natural_scroll: bool,
+            #[serde(default)]
+            geometry: Option<protocol::viewport::FrameGeometry>,
+            #[serde(default = "default_natural_scroll")]
+            natural_scroll: bool,
         }
         let event: Touch = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        if !matches!(event.event, protocol::InputEvent::Touch { .. } | protocol::InputEvent::TouchFrame(_)) {
+        if !matches!(
+            event.event,
+            protocol::InputEvent::Touch { .. } | protocol::InputEvent::TouchFrame(_)
+        ) {
             return Err("expected a local touch gesture".into());
         }
         let mut touches = self.touches.lock().unwrap();
@@ -580,43 +800,79 @@ impl MobileWorkspace {
         };
         // An old surface cannot replace the current frame's geometry or cancel
         // a fresh gesture, even if its delayed payload is malformed.
-        if !touch.current_surface(event.token) { return Ok(serde_json::Value::Null); }
+        if !touch.current_surface(event.token) {
+            return Ok(serde_json::Value::Null);
+        }
         let current = self.connection.input_binding(event.id, touch.revision);
-        if let Some(g)=event.geometry {
+        if let Some(g) = event.geometry {
             g.validate()?;
-            if g.source_revision!=touch.revision || g.source_width!=u32::from(event.width) || g.source_height!=u32::from(event.height) {
-                if let Some(binding)=touch.cancel(){self.connection.try_bound_input(binding,None);}
+            if g.source_revision != touch.revision
+                || g.source_width != u32::from(event.width)
+                || g.source_height != u32::from(event.height)
+            {
+                if let Some(binding) = touch.cancel() {
+                    self.connection.try_bound_input(binding, None);
+                }
                 return Err("The displayed source geometry changed".into());
             }
         }
         if !touch.matches_presented_geometry(event.geometry) {
-            if let Some(binding)=touch.cancel(){self.connection.try_bound_input(binding,None);}
+            if let Some(binding) = touch.cancel() {
+                self.connection.try_bound_input(binding, None);
+            }
             return Err("The displayed source geometry changed".into());
         }
-        let starting=matches!(&event.event,protocol::InputEvent::Touch {action:protocol::TouchAction::Down,..})
-            || matches!(&event.event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action==protocol::TouchAction::Down));
-        let unavailable=touch.unavailable_reason(event.token,current);
-        let mode=match event.mode {
-            0=>crate::touch_mapper::TouchMode::DirectTouch,
-            1=>crate::touch_mapper::TouchMode::VirtualTrackpad,
-            3 if touch.native_touch_points()>0 && matches!(&event.event,protocol::InputEvent::TouchFrame(_)) => crate::touch_mapper::TouchMode::NativeTouch,
-            _=>return Err("unsupported touch mode".into()),
+        let starting = matches!(
+            &event.event,
+            protocol::InputEvent::Touch {
+                action: protocol::TouchAction::Down,
+                ..
+            }
+        ) || matches!(&event.event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action==protocol::TouchAction::Down));
+        let unavailable = touch.unavailable_reason(event.token, current);
+        let mode = match event.mode {
+            0 => crate::touch_mapper::TouchMode::DirectTouch,
+            1 => crate::touch_mapper::TouchMode::VirtualTrackpad,
+            3 if touch.native_touch_points() > 0
+                && matches!(&event.event, protocol::InputEvent::TouchFrame(_)) =>
+            {
+                crate::touch_mapper::TouchMode::NativeTouch
+            }
+            _ => return Err("unsupported touch mode".into()),
         };
         touch.set_natural_scroll(event.natural_scroll);
-        let Some(releases)=touch.select_mode(event.token,mode,
-            crate::touch_mapper::RemoteScreenBounds {width:event.width,height:event.height},starting)
-        else { return if starting {Err(unavailable.unwrap_or("Touch geometry changed").into())}else{Ok(serde_json::Value::Null)}; };
-        if let Some(binding)=touch.binding() {
-            for release in releases {self.connection.try_bound_input(binding,Some(release));}
+        let Some(releases) = touch.select_mode(
+            event.token,
+            mode,
+            crate::touch_mapper::RemoteScreenBounds {
+                width: event.width,
+                height: event.height,
+            },
+            starting,
+        ) else {
+            return if starting {
+                Err(unavailable.unwrap_or("Touch geometry changed").into())
+            } else {
+                Ok(serde_json::Value::Null)
+            };
+        };
+        if let Some(binding) = touch.binding() {
+            for release in releases {
+                self.connection.try_bound_input(binding, Some(release));
+            }
         }
         let (release, events) = match event.event {
-            protocol::InputEvent::TouchFrame(contacts) => touch.touch_frame(event.token,contacts,current,std::time::Instant::now()),
-            event_data => touch.touch(event.token,event_data,current,std::time::Instant::now()),
+            protocol::InputEvent::TouchFrame(contacts) => {
+                touch.touch_frame(event.token, contacts, current, std::time::Instant::now())
+            }
+            event_data => touch.touch(event.token, event_data, current, std::time::Instant::now()),
         };
         if let Some(binding) = release {
             self.connection.try_bound_input(binding, None);
         }
-        if starting && let Some(reason)=unavailable {return Err(reason.into());}
+        if starting && let Some(reason) = unavailable {
+            return Err(reason.into());
+        }
         if let Some(binding) = touch.binding() {
             if event.geometry.is_some_and(|g|events.iter().any(|event|matches!(event,
                 protocol::InputEvent::MouseMoveAbsolute{x,y} if !g.contains_source_point(f32::from(*x)/65535.,f32::from(*y)/65535.))
@@ -630,8 +886,12 @@ impl MobileWorkspace {
             for (index, event) in events.into_iter().enumerate() {
                 if is_tap && index + 1 == event_count {
                     probe = self.connection.try_bound_focus_release(binding);
-                    if probe.is_some() { continue; }
-                    touch.cancel(); self.connection.try_bound_input(binding, None); break;
+                    if probe.is_some() {
+                        continue;
+                    }
+                    touch.cancel();
+                    self.connection.try_bound_input(binding, None);
+                    break;
                 }
                 if !self.connection.try_bound_input(binding, Some(event)) {
                     touch.cancel();
@@ -639,7 +899,9 @@ impl MobileWorkspace {
                     break;
                 }
             }
-            return Ok(serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":probe.map(|sequence|sequence.to_string())}));
+            return Ok(
+                serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":probe.map(|sequence|sequence.to_string())}),
+            );
         }
         Ok(serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":null}))
     }
@@ -785,8 +1047,13 @@ impl MobileWorkspace {
             .collect::<Vec<_>>();
         let mut sent_at = self.telemetry_sent_at.lock().unwrap();
         if sent_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1)) {
-            let telemetry = self.telemetry.lock().unwrap().iter()
-                .map(|(id, stats)| subscription_telemetry(*id, stats)).collect::<Vec<_>>();
+            let telemetry = self
+                .telemetry
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, stats)| subscription_telemetry(*id, stats))
+                .collect::<Vec<_>>();
             events.push(serde_json::json!({"telemetry":telemetry}));
             *sent_at = Some(std::time::Instant::now());
         }
@@ -826,15 +1093,23 @@ impl MobileWorkspace {
 /// Only current measurements from this subscription; never substitute configuration targets.
 fn subscription_telemetry(id: u32, shared: &SharedHostStats) -> serde_json::Value {
     let stats = shared.snapshot();
-    let fresh = stats.updated_at.is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(5));
-    let rtt = shared.rtt_summary().map(|rtt| rtt.latest_ms).filter(|rtt| rtt.is_finite() && *rtt >= 0.0);
+    let fresh = stats
+        .updated_at
+        .is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(5));
+    let rtt = shared
+        .rtt_summary()
+        .map(|rtt| rtt.latest_ms)
+        .filter(|rtt| rtt.is_finite() && *rtt >= 0.0);
     let e2e = shared
         .estimated_e2e_latency_ms()
         .filter(|ms| ms.is_finite() && *ms >= 0.0);
-    let encode_ms = (fresh && stats.latency.is_finite() && stats.latency > 0.0).then_some(stats.latency);
+    let encode_ms =
+        (fresh && stats.latency.is_finite() && stats.latency > 0.0).then_some(stats.latency);
     let fps = (fresh && stats.fps.is_finite() && stats.fps > 0.0).then_some(stats.fps);
-    let loss = (fresh && stats.packet_loss_rate.is_finite() && (0.0..=100.0).contains(&stats.packet_loss_rate))
-        .then_some(stats.packet_loss_rate);
+    let loss = (fresh
+        && stats.packet_loss_rate.is_finite()
+        && (0.0..=100.0).contains(&stats.packet_loss_rate))
+    .then_some(stats.packet_loss_rate);
     serde_json::json!({
         "id": id,
         "network_rtt_ms": rtt,
@@ -853,35 +1128,63 @@ mod file_status_tests {
     fn absent_subscription_measurements_are_null_not_healthy_zeroes() {
         let value = subscription_telemetry(7, &SharedHostStats::default());
         assert_eq!(value["id"], 7);
-        for field in ["network_rtt_ms", "packet_loss_percent", "video_bitrate_kbps"] {
+        for field in [
+            "network_rtt_ms",
+            "packet_loss_percent",
+            "video_bitrate_kbps",
+        ] {
             assert!(value[field].is_null(), "{field}");
         }
     }
-    fn progress(done:u64,total:u64)->FileTransferEvent {
-        FileTransferEvent::IncomingProgress {transfer_id:9,file_object_id:7,received_chunks:1,
-            total_chunks:1,received_bytes:done,total_size:total}
+    fn progress(done: u64, total: u64) -> FileTransferEvent {
+        FileTransferEvent::IncomingProgress {
+            transfer_id: 9,
+            file_object_id: 7,
+            received_chunks: 1,
+            total_chunks: 1,
+            received_bytes: done,
+            total_size: total,
+        }
     }
     #[test]
     fn file_progress_does_not_flood_control_or_lose_completion_paths() {
-        let mut queues=Queues::default();
-        queues.push_file(FileTransferEvent::IncomingStarted {transfer_id:9,file_object_id:7,group:None,
-            name:"fixture.bin".into(),size_bytes:4096,path:PathBuf::from("private/fixture.bin")});
-        for done in 0..=4096 {queues.push_file(progress(done,4096));}
-        assert_eq!(queues.events.len(),2);
-        assert_eq!(queues.events[1]["file"],"Receiving file · 100%");
-        queues.events.push_back(serde_json::json!({"control":{"Unsubscribed":{"id":7}}}));
-        queues.push_file(progress(4096,4096));
-        queues.push_file(FileTransferEvent::IncomingCompleted {transfer_id:9,file_object_id:7,group:None,
-            path:PathBuf::from("private/fixture.bin"),size_bytes:4096});
-        assert_eq!(queues.events.len(),5);
-        assert_eq!(queues.events[2]["control"]["Unsubscribed"]["id"],7);
-        assert_eq!(queues.events[4]["file"],"File received");
-        assert_eq!(queues.events[4]["detail"]["path"],"private/fixture.bin");
+        let mut queues = Queues::default();
+        queues.push_file(FileTransferEvent::IncomingStarted {
+            transfer_id: 9,
+            file_object_id: 7,
+            group: None,
+            name: "fixture.bin".into(),
+            size_bytes: 4096,
+            path: PathBuf::from("private/fixture.bin"),
+        });
+        for done in 0..=4096 {
+            queues.push_file(progress(done, 4096));
+        }
+        assert_eq!(queues.events.len(), 2);
+        assert_eq!(queues.events[1]["file"], "Receiving file · 100%");
+        queues
+            .events
+            .push_back(serde_json::json!({"control":{"Unsubscribed":{"id":7}}}));
+        queues.push_file(progress(4096, 4096));
+        queues.push_file(FileTransferEvent::IncomingCompleted {
+            transfer_id: 9,
+            file_object_id: 7,
+            group: None,
+            path: PathBuf::from("private/fixture.bin"),
+            size_bytes: 4096,
+        });
+        assert_eq!(queues.events.len(), 5);
+        assert_eq!(queues.events[2]["control"]["Unsubscribed"]["id"], 7);
+        assert_eq!(queues.events[4]["file"], "File received");
+        assert_eq!(queues.events[4]["detail"]["path"], "private/fixture.bin");
     }
     #[test]
     fn file_percentages_are_bounded_without_overflow_or_debug_text() {
-        assert_eq!(file_status(&progress(u64::MAX,u64::MAX)),"Receiving file · 100%");
-        assert_eq!(file_status(&progress(u64::MAX,1)),"Receiving file · 100%");
-        assert_eq!(file_status(&progress(0,0)),"Receiving file · 0%");
+        assert_eq!(
+            file_status(&progress(u64::MAX, u64::MAX)),
+            "Receiving file · 100%"
+        );
+        assert_eq!(file_status(&progress(u64::MAX, 1)), "Receiving file · 100%");
+        assert_eq!(file_status(&progress(0, 0)), "Receiving file · 0%");
     }
 }

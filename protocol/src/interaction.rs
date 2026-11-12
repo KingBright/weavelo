@@ -101,7 +101,11 @@ pub fn validate_icon_container(png: &[u8]) -> Result<(u32, u32), &'static str> {
     validate_png_container(png, MAX_ICON_EDGE, MAX_ICON_BYTES)
 }
 
-pub fn validate_png_container(png: &[u8], max_edge: u32, max_bytes: usize) -> Result<(u32, u32), &'static str> {
+pub fn validate_png_container(
+    png: &[u8],
+    max_edge: u32,
+    max_bytes: usize,
+) -> Result<(u32, u32), &'static str> {
     if png.len() > max_bytes || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err("invalid application PNG size or signature");
     }
@@ -309,10 +313,17 @@ mod text_delivery_tests {
     }
     #[test]
     fn committed_text_cannot_bypass_receipts_through_realtime_input() {
-        let request=request();let mut lease=InputLease::new(request.binding,100);
-        let packet=crate::realtime_input::RealtimeInput {binding:request.binding,sequence:1,created_host_ms:100,
-            payload:crate::realtime_input::InputPayload::Event(crate::InputEvent::Text(request.text))};
-        assert!(lease.accept(&packet,100).is_none());
+        let request = request();
+        let mut lease = InputLease::new(request.binding, 100);
+        let packet = crate::realtime_input::RealtimeInput {
+            binding: request.binding,
+            sequence: 1,
+            created_host_ms: 100,
+            payload: crate::realtime_input::InputPayload::Event(crate::InputEvent::Text(
+                request.text,
+            )),
+        };
+        assert!(lease.accept(&packet, 100).is_none());
     }
     #[test]
     fn lost_ack_retries_do_not_reinject_or_change_the_original_request() {

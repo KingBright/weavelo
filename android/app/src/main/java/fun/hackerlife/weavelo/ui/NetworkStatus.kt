@@ -1,12 +1,11 @@
 package `fun`.hackerlife.weavelo.ui
 
 import android.os.SystemClock
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
@@ -15,10 +14,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
@@ -51,12 +53,33 @@ internal fun networkIndicator(session: SessionState, telemetry: TelemetrySnapsho
     }
 }
 
-/** Uses existing observations. Opening never starts a probe or changes a session. */
+internal fun signalBarsLevel(session: SessionState, telemetry: TelemetrySnapshot, now: Long): Int {
+    if (session != SessionState.STREAMING) return 0
+    val status = networkIndicator(session, telemetry, now)
+    return when (status.tone) {
+        NetworkTone.ONLINE -> {
+            val rtt = telemetry.networkRttMs?.takeIf { it.isFinite() && it >= 0 }
+            val decodeMs = telemetry.latencyMs.takeIf { it.isFinite() && it > 0f } ?: 0f
+            val videoE2e = telemetry.captureReceiveEstimateMs?.takeIf { it.isFinite() && it >= 0 }?.let { it + decodeMs }
+            val loss = telemetry.packetLossPercent.takeIf { it.isFinite() && it in 0f..100f } ?: 0f
+            if (loss < 0.3f && ((videoE2e != null && videoE2e <= 45f) || (videoE2e == null && rtt != null && rtt <= 35.0))) 4 else 3
+        }
+        NetworkTone.WARNING -> 2
+        NetworkTone.ERROR -> 1
+        NetworkTone.NEUTRAL -> 2
+    }
+}
+
+/**
+ * Minimalist signal-bars-only corner indicator (zero persistent text).
+ * Tapping opens a floating popover with full live transport & video latency details.
+ */
 @Composable
 internal fun NetworkStatusChip(
     session: SessionState,
     telemetry: TelemetrySnapshot,
     route: String? = null,
+    alpha: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
     val p = WeaveloTokens.colors
@@ -64,14 +87,15 @@ internal fun NetworkStatusChip(
     LaunchedEffect(Unit) { while (true) { now = SystemClock.elapsedRealtime(); delay(1000) } }
     val sampleNow = maxOf(now, SystemClock.elapsedRealtime())
     val status = networkIndicator(session, telemetry, sampleNow)
+    val bars = signalBarsLevel(session, telemetry, sampleNow)
     val fresh = freshNetworkTelemetry(session, telemetry, sampleNow)
     val rtt = telemetry.networkRttMs?.takeIf { fresh && it.isFinite() && it >= 0 }
     val decodeMs = telemetry.latencyMs.takeIf { fresh && it.isFinite() && it > 0f }
     val videoE2e = telemetry.captureReceiveEstimateMs?.takeIf { fresh && it.isFinite() && it >= 0 }
         ?.let { it + (decodeMs ?: 0f) }
     val rttLabel = rtt?.let { String.format(Locale.ROOT, "%.0f ms", it) }
-    val videoLabel = videoE2e?.let { trFormat("Video %.0f ms", it) }
-    val primaryMetric = videoLabel ?: rttLabel?.let { "RTT $it" }
+    val fpsLabel = telemetry.fps.takeIf { fresh && it.isFinite() && it > 0f }
+        ?.let { String.format(Locale.ROOT, "%.0f FPS", it) }
     val loss = telemetry.packetLossPercent.takeIf { fresh && it.isFinite() && it in 0f..100f }
     val routeLabel = when (route?.trim()?.uppercase(Locale.ROOT)) {
         null, "" -> null
@@ -80,54 +104,39 @@ internal fun NetworkStatusChip(
         "RELAY" -> tr("Relay")
         else -> route.trim()
     }
-    val chipText = when {
-        session != SessionState.STREAMING -> tr(status.label)
-        routeLabel != null && primaryMetric != null -> "$routeLabel · $primaryMetric"
-        primaryMetric != null -> primaryMetric
-        routeLabel != null -> "$routeLabel · ${tr(status.label)}"
-        else -> tr(status.label)
-    }
 
-    val textColor = when (status.tone) {
-        NetworkTone.ONLINE -> p.emeraldText
-        NetworkTone.WARNING -> p.warningText
-        NetworkTone.ERROR -> p.dangerText
-        NetworkTone.NEUTRAL -> p.textSecondary
-    }
-    val dotColor = when (status.tone) {
+    val clampedAlpha = alpha.coerceIn(0.28f, 1f)
+    val activeBarColor = when (status.tone) {
         NetworkTone.ONLINE -> p.emeraldDot
         NetworkTone.WARNING -> p.warningText
         NetworkTone.ERROR -> p.dangerText
-        NetworkTone.NEUTRAL -> p.textTertiary
+        NetworkTone.NEUTRAL -> Color.White.copy(alpha = 0.78f)
     }
+    val shape = RoundedCornerShape(11.dp)
     var pinned by remember { mutableStateOf(false) }
+
     Box(modifier) {
-        Row(
+        Box(
             Modifier
-                .heightIn(min = 34.dp)
-                .clip(RoundedCornerShape(50))
-                .background(p.surfaceGlass)
-                .border(1.dp, p.border, RoundedCornerShape(50))
-                .clickable(role = Role.Button, onClickLabel = tr("Network details")) { pinned = !pinned }
-                .padding(horizontal = 11.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .size(34.dp)
+                .clip(shape)
+                .background(Color(0x940B1018).copy(alpha = 0.58f * clampedAlpha))
+                .border(0.75.dp, Color.White.copy(alpha = 0.15f * clampedAlpha), shape)
+                .clickable(role = Role.Button, onClickLabel = tr("Network details")) { pinned = !pinned },
+            contentAlignment = Alignment.Center,
         ) {
-            Box(Modifier.size(6.5.dp).background(dotColor, CircleShape))
-            Text(
-                chipText,
-                color = textColor,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            SignalBarsGlyph(
+                bars = bars,
+                activeColor = activeBarColor.copy(alpha = activeBarColor.alpha * clampedAlpha),
+                inactiveColor = Color.White.copy(alpha = 0.24f * clampedAlpha),
+                modifier = Modifier.size(width = 16.dp, height = 13.dp),
             )
         }
         DropdownMenu(
             expanded = pinned,
             onDismissRequest = { pinned = false },
             properties = PopupProperties(focusable = pinned),
-            modifier = Modifier.widthIn(min = 180.dp, max = 236.dp),
+            modifier = Modifier.widthIn(min = 196.dp, max = 248.dp),
         ) {
             Column(
                 Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -157,6 +166,7 @@ internal fun NetworkStatusChip(
                 NetworkDetail("Video E2E latency", videoE2e?.let { String.format(Locale.ROOT, "%.0f ms", it) } ?: "—")
                 NetworkDetail("Decode latency", decodeMs?.let { String.format(Locale.ROOT, "%.1f ms", it) } ?: "—")
                 NetworkDetail("Network RTT", rttLabel ?: "—")
+                NetworkDetail("Frame rate", fpsLabel ?: "—")
                 NetworkDetail("Packet loss rate", loss?.let { String.format(Locale.ROOT, "%.1f%%", it) } ?: "—")
                 NetworkDetail(
                     "Video bitrate",
@@ -167,6 +177,34 @@ internal fun NetworkStatusChip(
                     },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SignalBarsGlyph(
+    bars: Int,
+    activeColor: Color,
+    inactiveColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val clamped = bars.coerceIn(0, 4)
+    Canvas(modifier) {
+        val barCount = 4
+        val gap = 2.dp.toPx()
+        val barWidth = ((size.width - gap * (barCount - 1)) / barCount).coerceAtLeast(1.5f)
+        val radius = CornerRadius(barWidth * 0.48f, barWidth * 0.48f)
+        val fractions = floatArrayOf(0.32f, 0.54f, 0.77f, 1.0f)
+        for (i in 0 until barCount) {
+            val h = (size.height * fractions[i]).coerceAtLeast(2.dp.toPx())
+            val x = i * (barWidth + gap)
+            val y = size.height - h
+            drawRoundRect(
+                color = if (i < clamped) activeColor else inactiveColor,
+                topLeft = Offset(x, y),
+                size = Size(barWidth, h),
+                cornerRadius = radius,
+            )
         }
     }
 }

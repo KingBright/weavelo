@@ -1,14 +1,8 @@
-pub mod device_artwork;
-pub mod directed_delivery;
-pub mod cameras;
-pub mod camera_switch;
-pub mod audio_output;
-pub mod audio;
 pub mod application_icons;
-pub mod source_picker;
-pub mod desktop_identity;
-pub mod device_name;
-pub mod desktop_storage;
+pub mod audio;
+pub mod audio_output;
+pub mod camera_switch;
+pub mod cameras;
 pub mod client_session;
 pub mod clipboard_file_runtime;
 pub mod clipboard_plane;
@@ -18,12 +12,16 @@ pub mod clipboard_sync;
 pub mod clock;
 pub mod clock_sync;
 pub mod data_plane;
+pub mod desktop_identity;
+pub mod desktop_storage;
+pub mod device_artwork;
+pub mod device_name;
+pub mod directed_delivery;
 pub mod discovery;
 pub mod discovery_status;
 mod file_delivery;
 pub mod file_transfer;
 pub mod file_transfer_runtime;
-pub mod shared_files;
 pub mod frame_pacer;
 pub mod jitter_buffer;
 pub mod latest_frame;
@@ -33,34 +31,39 @@ pub mod media_plane;
 pub mod mesh;
 pub mod net;
 pub mod p2p;
-pub mod pairing_qr;
 #[cfg(feature = "pairing-image")]
 pub mod pairing_image;
+pub mod pairing_qr;
 pub mod relay;
 pub mod relay_status;
 pub mod role;
 pub mod scheduled_sender;
-pub mod session_crypto;
 pub mod session_auth;
+pub mod session_crypto;
 pub mod session_tabs;
+pub mod shared_files;
+pub mod source_picker;
 pub mod stats;
 pub mod stream_settings;
-pub mod view_commands;
 pub mod telemetry;
 pub mod timing;
-pub mod viewport;
-pub mod view_transform;
 pub mod trace;
 pub mod traits;
-pub mod video_recovery;
 pub mod video_queue;
-pub mod workspace_session;
+pub mod video_recovery;
+pub mod view_commands;
+pub mod view_transform;
+pub mod viewport;
 mod workspace_input;
+pub mod workspace_session;
 
 // Re-export traits for convenience
 pub use client_session::{
     AudioIngressEvent, ClientSessionEvent, ClientSessionReceiverConfig, EnvelopeIngress, HostStats,
     SharedHostStats, spawn_client_session_receiver,
+};
+pub use clock_sync::{
+    ClockEstimate, ClockSample, ClockSyncConfig, ClockSyncError, ClockSyncState, ClockSynchronizer,
 };
 pub use latest_frame::LatestFrameSlot;
 pub use pairing_qr::{
@@ -74,13 +77,9 @@ pub use telemetry::{
     DropReason, PipelineTelemetryEngine, RollingBitrateCalculator, RollingFpsCalculator,
     RollingQuantileAggregator,
 };
-pub use clock_sync::{
-    ClockEstimate, ClockSample, ClockSyncConfig, ClockSyncError, ClockSyncState, ClockSynchronizer,
-};
 pub use timing::{
-    ClientFrameTracker, HighPrecisionClock, HostFrameTracker,
-    advance_client_stage, client_stage_offset_us, global_clock, quanta_now, quanta_now_us,
-    stamp_client_stage,
+    ClientFrameTracker, HighPrecisionClock, HostFrameTracker, advance_client_stage,
+    client_stage_offset_us, global_clock, quanta_now, quanta_now_us, stamp_client_stage,
 };
 pub use trace::{
     BottleneckAnalyzer, BottleneckDiagnosis, BottleneckSeverity, ChromeTraceDocument,
@@ -92,7 +91,7 @@ pub fn init_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-pub mod routed_relay;
 pub mod hevc_sequence;
+pub mod routed_relay;
 
 pub(crate) mod committed_text;

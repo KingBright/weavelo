@@ -19,11 +19,16 @@ use tokio::{
 // Display metadata for an existing authenticated routed endpoint. This is
 // process-local bookkeeping, never authorization or an IP/name heuristic.
 fn incoming_identities() -> &'static Mutex<HashMap<SocketAddr, String>> {
-    static IDENTITIES:std::sync::OnceLock<Mutex<HashMap<SocketAddr,String>>>=std::sync::OnceLock::new();
+    static IDENTITIES: std::sync::OnceLock<Mutex<HashMap<SocketAddr, String>>> =
+        std::sync::OnceLock::new();
     IDENTITIES.get_or_init(Default::default)
 }
-pub fn incoming_device(endpoint:SocketAddr)->Option<String> {
-    incoming_identities().lock().unwrap().get(&endpoint).cloned()
+pub fn incoming_device(endpoint: SocketAddr) -> Option<String> {
+    incoming_identities()
+        .lock()
+        .unwrap()
+        .get(&endpoint)
+        .cloned()
 }
 
 const MAX_PEERS: usize = 64;
@@ -63,13 +68,14 @@ fn handshake_stage(payload: &[u8]) -> Option<&'static str> {
     }
     match protocol::ControlMessage::decode(&payload[1..]).ok()? {
         protocol::ControlMessage::SessionHandshake(message) => Some(match *message {
-            protocol::session_auth::HandshakeMessage::Hello{..}=>"hello-v3",
-            protocol::session_auth::HandshakeMessage::Challenge{..}=>"challenge-v3",
-            protocol::session_auth::HandshakeMessage::ClientFinish{..}=>"client-finish-v3",
-            protocol::session_auth::HandshakeMessage::ServerFinish{..}=>"server-finish-v3",
-            protocol::session_auth::HandshakeMessage::Reject{..}=>"reject-v3",
+            protocol::session_auth::HandshakeMessage::Hello { .. } => "hello-v3",
+            protocol::session_auth::HandshakeMessage::Challenge { .. } => "challenge-v3",
+            protocol::session_auth::HandshakeMessage::ClientFinish { .. } => "client-finish-v3",
+            protocol::session_auth::HandshakeMessage::ServerFinish { .. } => "server-finish-v3",
+            protocol::session_auth::HandshakeMessage::Reject { .. } => "reject-v3",
         }),
-        protocol::ControlMessage::SessionHello { .. } | protocol::ControlMessage::SessionAccept { .. } => Some("retired-protocol"),
+        protocol::ControlMessage::SessionHello { .. }
+        | protocol::ControlMessage::SessionAccept { .. } => Some("retired-protocol"),
         protocol::ControlMessage::SessionReject { .. } => Some("reject"),
         _ => None,
     }
@@ -141,7 +147,11 @@ impl<'a> EnvelopeView<'a> {
         let source = std::str::from_utf8(body.get(24..24 + a)?).ok()?;
         let target = std::str::from_utf8(body.get(24 + a..end)?).ok()?;
         let size = u16::from_be_bytes(body.get(end..end + 2)?.try_into().ok()?) as usize;
-        if !valid_id(source) || !valid_id(target) || body.len() != end + 2 + size || size > MAX_PAYLOAD {
+        if !valid_id(source)
+            || !valid_id(target)
+            || body.len() != end + 2 + size
+            || size > MAX_PAYLOAD
+        {
             return None;
         }
         Some(Self {
@@ -156,7 +166,10 @@ impl<'a> EnvelopeView<'a> {
 
 /// Select an existing v1 destination without treating its metadata as authority.
 /// Discovery remains broadcast. Malformed or source-spoofed RPMX is never broadcast.
-pub(crate) fn relay_target<'a>(bytes: &'a [u8], registered_source: &str) -> Result<Option<&'a str>, ()> {
+pub(crate) fn relay_target<'a>(
+    bytes: &'a [u8],
+    registered_source: &str,
+) -> Result<Option<&'a str>, ()> {
     if !bytes.starts_with(MAGIC) {
         return Ok(None);
     }
@@ -289,8 +302,11 @@ impl Listener {
     ) -> io::Result<Self> {
         let failure = Arc::new(Mutex::new(None));
         let task = Self::spawn_reader(socket.clone(), kind.clone(), tx, failure.clone())?;
-        if let ListenerKind::Host {peer,..}=&kind {
-            incoming_identities().lock().unwrap().insert(socket.local_addr()?,peer.clone());
+        if let ListenerKind::Host { peer, .. } = &kind {
+            incoming_identities()
+                .lock()
+                .unwrap()
+                .insert(socket.local_addr()?, peer.clone());
         }
         Ok(Self {
             socket,
@@ -377,8 +393,10 @@ impl Listener {
 }
 impl Drop for Listener {
     fn drop(&mut self) {
-        if matches!(self.kind,ListenerKind::Host {..}) {
-            if let Ok(endpoint)=self.socket.local_addr() {incoming_identities().lock().unwrap().remove(&endpoint);}
+        if matches!(self.kind, ListenerKind::Host { .. }) {
+            if let Ok(endpoint) = self.socket.local_addr() {
+                incoming_identities().lock().unwrap().remove(&endpoint);
+            }
         }
         self.task.abort();
     }
@@ -824,8 +842,14 @@ mod tests {
             let mut seen = std::collections::HashSet::new();
             let mut buf = [0u8; 1500];
             while seen.len() < 256 {
-                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { break; };
-                let Ok(Ok((n, _))) = tokio::time::timeout(remaining, receiver.recv_from(&mut buf)).await else { break; };
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                let Ok(Ok((n, _))) =
+                    tokio::time::timeout(remaining, receiver.recv_from(&mut buf)).await
+                else {
+                    break;
+                };
                 assert_eq!(n, 1400);
                 seen.insert(u32::from_be_bytes(buf[..4].try_into().unwrap()));
             }
@@ -839,7 +863,11 @@ mod tests {
         let seen = drain.await.unwrap();
         let _ = cancel.send(());
         server_task.abort();
-        assert_eq!(seen.len(), 256, "local relay hops lost a draining viewer's video fragments");
+        assert_eq!(
+            seen.len(),
+            256,
+            "local relay hops lost a draining viewer's video fragments"
+        );
         assert!((0u32..256).all(|sequence| seen.contains(&sequence)));
     }
 
@@ -880,9 +908,9 @@ mod tests {
             assert_eq!(got_b, pa);
             assert_eq!(got_c, pb);
             assert_eq!(got_a, pc);
-            assert_eq!(incoming_device(addr_b).as_deref(),Some("ho5"));
-            assert_eq!(incoming_device(addr_c).as_deref(),Some("ho5"));
-            assert_eq!(incoming_device(addr_a).as_deref(),Some("studio"));
+            assert_eq!(incoming_device(addr_b).as_deref(), Some("ho5"));
+            assert_eq!(incoming_device(addr_c).as_deref(), Some("ho5"));
+            assert_eq!(incoming_device(addr_a).as_deref(), Some("studio"));
             b.host.send_to(b"STUDIO_FRAME", addr_b).await.unwrap();
             c.host.send_to(b"MACBOOK_FRAME", addr_c).await.unwrap();
             a.host.send_to(b"HO5_FRAME", addr_a).await.unwrap();
@@ -936,13 +964,32 @@ mod tests {
         router.expire();
         assert!(router.outgoing.is_empty());
         assert!(router.clients.is_empty());
-        let socket=Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let endpoint=socket.local_addr().unwrap();
-        let listener=Listener::new(socket,ListenerKind::Host {peer:"bound-peer".into(),token:[4;16],host:local},router.tx.clone()).unwrap();
-        assert_eq!(incoming_device(endpoint).as_deref(),Some("bound-peer"));
-        router.incoming.insert(("bound-peer".into(),[4;16]),Incoming {listener,seen:Instant::now()-IDLE-Duration::from_secs(1)});
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let endpoint = socket.local_addr().unwrap();
+        let listener = Listener::new(
+            socket,
+            ListenerKind::Host {
+                peer: "bound-peer".into(),
+                token: [4; 16],
+                host: local,
+            },
+            router.tx.clone(),
+        )
+        .unwrap();
+        assert_eq!(incoming_device(endpoint).as_deref(), Some("bound-peer"));
+        router.incoming.insert(
+            ("bound-peer".into(), [4; 16]),
+            Incoming {
+                listener,
+                seen: Instant::now() - IDLE - Duration::from_secs(1),
+            },
+        );
         router.expire();
-        assert_eq!(incoming_device(endpoint),None,"expired routing metadata must not attach a later connection to an old device");
+        assert_eq!(
+            incoming_device(endpoint),
+            None,
+            "expired routing metadata must not attach a later connection to an old device"
+        );
     }
 }
 
