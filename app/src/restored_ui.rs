@@ -637,8 +637,8 @@ struct RestoredDashboard {
     pause_when_inactive: bool,
     window_active: bool,
     window_visible: Option<bool>,
-    last_remote_focus: Option<((u32, remote_core::video_recovery::VideoEpoch), Instant)>,
-    auto_focused_source: Option<(u32, remote_core::video_recovery::VideoEpoch)>,
+    last_remote_focus: Option<((u32, Instant), Instant)>,
+    auto_focused_source: Option<(u32, Instant)>,
     telemetry_engine: remote_core::PipelineTelemetryEngine,
 
     show_apps_menu: bool,
@@ -2709,7 +2709,7 @@ impl Render for RestoredDashboard {
             && self.bound_source.is_some()
             && self.auto_focused_source != self.bound_source
         {
-            window.focus(&this.input_focus);
+            window.focus(&self.input_focus);
             self.request_remote_source_focus();
         }
         let active_session = role.session().cloned();
@@ -4343,7 +4343,7 @@ impl RestoredDashboard {
         app_name: &str,
     ) -> Option<WindowStreamOverride> {
         let key = crate::preferences::UserPreferences::window_override_key(device_id, app_name)?;
-        let prefs = crate::preferences::UserPreferences::load();
+        let prefs = crate::preferences::UserPreferences::load_or_default();
         let saved = prefs.window_overrides.get(&key)?;
         Some(WindowStreamOverride {
             clarity: WindowClarityScale::from_percent(saved.clarity_percent),

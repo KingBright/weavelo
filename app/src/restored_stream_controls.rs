@@ -1247,7 +1247,7 @@ impl RestoredDashboard {
                 format!("{} {w} × {h}", crate::i18n::tr("Remote window adapted to")),
                 crate::design_system::theme_accent_cyan(cx),
             )),
-            Some(Err(reason)) => Some((crate::i18n::message(reason), theme.status.warning)),
+            Some(Err(reason)) => Some((crate::i18n::message(reason), theme.status.warning.fg)),
             None => None,
         };
 
@@ -1517,7 +1517,7 @@ impl RestoredDashboard {
                             })),
                     )
                     .when_some(self.window_settings_error.as_ref(), |col, err| {
-                        col.child(div().text_size(px(10.5)).text_color(theme.status.danger).child(err.clone()))
+                        col.child(div().text_size(px(10.5)).text_color(theme.status.error.fg).child(err.clone()))
                     })
                     .child(
                         command_button("toggle_win_media_pause", ActionVariantKind::Neutral, cx)
@@ -1527,7 +1527,7 @@ impl RestoredDashboard {
                                 crate::i18n::tr("Pause media · keep connected")
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.set_stream_media_paused(!this.manual_media_paused, cx);
+                                this.set_stream_paused(!this.manual_media_paused, cx);
                             })),
                     ),
             );
