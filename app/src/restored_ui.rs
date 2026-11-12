@@ -2389,7 +2389,7 @@ fn stream_video_canvas_surface(
                             .child(
                                 icon(IconName::Maximize(false))
                                     .size(px(20.0))
-                                    .color(theme_accent_brand(cx)),
+                                    .color(theme.action.primary.bg),
                             ),
                     )
                     .child(
