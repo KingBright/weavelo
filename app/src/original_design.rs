@@ -1,14 +1,12 @@
-//! Original product visuals, shared across desktop renderers without redesign.
+//! Shared desktop stage & status capsule surfaces, adaptive across Prism Air & Obsidian Craft.
 //! The production GPUI view and platform probe use these same functions.
-use crate::design_system::{
-    color_accent_cyan, color_accent_emerald, color_border_fine, color_glass_card,
+use crate::design_system::{theme_border_fine, theme_glass_card};
+use crate::product_components::{
+    theme::{ActiveTheme, Theme},
+    weavelo_brand_mark,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use crate::product_components::{
-    component::{IconName, icon},
-    theme::{ActiveTheme, Theme},
-};
 
 pub(crate) fn full_idle_canvas_stage<T: 'static>(cx: &mut Context<T>) -> Div {
     let theme = cx.theme().clone();
@@ -18,35 +16,21 @@ pub(crate) fn full_idle_canvas_stage<T: 'static>(cx: &mut Context<T>) -> Div {
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgb(0x0e0f12))
+        .bg(theme.surface.canvas)
         .child(
             div()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap_4()
-                .p_8()
-                .rounded(px(8.0))
-                .bg(color_glass_card())
+                .gap_3p5()
+                .px_10()
+                .py_8()
+                .rounded(px(16.0))
+                .bg(theme_glass_card(cx))
                 .border_1()
-                .border_color(color_border_fine())
+                .border_color(theme_border_fine(cx))
                 .shadow_lg()
-                .child(
-                    div()
-                        .size(px(60.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(rgb(0x12151c))
-                        .border_1()
-                        .border_color(color_accent_cyan())
-                        .child(
-                            icon(IconName::Server)
-                                .size(px(26.0))
-                                .color(color_accent_cyan()),
-                        ),
-                )
+                .child(weavelo_brand_mark(52.0, cx))
                 .child(
                     div()
                         .text_size(px(18.0))
@@ -57,8 +41,8 @@ pub(crate) fn full_idle_canvas_stage<T: 'static>(cx: &mut Context<T>) -> Div {
                 .child(
                     div()
                         .text_size(px(12.0))
-                        .text_color(theme.content.tertiary)
-                        .child("Ready for incoming and outgoing sessions"),
+                        .text_color(theme.content.secondary)
+                        .child(crate::i18n::tr("Ready for incoming and outgoing sessions")),
                 ),
         )
 }
@@ -71,15 +55,26 @@ pub(crate) fn stream_status_capsule_card(
     theme: &Theme,
     action_slot: Option<AnyElement>,
 ) -> Div {
+    let is_dark = Rgba::from(theme.surface.canvas).r < 0.3;
+    let capsule_bg: Hsla = if is_dark {
+        rgba(0x171d28f2).into()
+    } else {
+        rgba(0xfffffff5).into()
+    };
+    let live_dot: Hsla = if is_dark {
+        rgb(0x34d399).into()
+    } else {
+        rgb(0x10b981).into()
+    };
     div()
         .flex()
         .items_center()
         .gap_3()
         .px_4()
         .py_2()
-        .bg(color_glass_card())
+        .bg(capsule_bg)
         .border_1()
-        .border_color(color_border_fine())
+        .border_color(theme.border.default)
         .rounded_full()
         .shadow_lg()
         .child(
@@ -94,7 +89,7 @@ pub(crate) fn stream_status_capsule_card(
                         .flex_none()
                         .rounded_full()
                         .bg(if is_live {
-                            Hsla::from(color_accent_emerald())
+                            live_dot
                         } else {
                             theme.content.disabled
                         }),

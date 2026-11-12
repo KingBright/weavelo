@@ -41,22 +41,30 @@ impl RenderOnce for ConnectionRecoveryControls {
         };
         let retry = self.send.clone();
         let cancel = self.send;
+        let is_failed = self.model.failed.is_some();
+        let theme = cx.theme().clone();
         div()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded(px(8.0))
-            .bg(cx.theme().surface.sunken)
-            .text_size(px(11.0))
-            .text_color(cx.theme().content.primary)
-            .child(label)
+            .gap_2p5()
+            .p_3p5()
+            .rounded(px(12.0))
+            .bg(theme.surface.base)
+            .border_1()
+            .border_color(if is_failed {
+                crate::design_system::theme_accent_rose(cx)
+            } else {
+                theme.border.default
+            })
+            .text_size(px(11.5))
+            .text_color(theme.content.primary)
+            .child(crate::i18n::message(&label))
             .child(
                 div()
                     .flex()
                     .gap_2()
                     .child(
-                        Button::new("connection_retry", "Retry")
+                        Button::new("connection_retry", crate::i18n::tr("Retry"))
                             .debug_selector(|| "connection-retry".into())
                             .variant(ButtonVariant::Primary)
                             .control_size(ControlSize::Sm)
@@ -66,7 +74,7 @@ impl RenderOnce for ConnectionRecoveryControls {
                             .on_click(move |_, _, cx| retry(SessionTabsAction::Reconnect, cx)),
                     )
                     .child(
-                        Button::new("connection_back", back)
+                        Button::new("connection_back", crate::i18n::tr(back))
                             .debug_selector(|| "connection-back".into())
                             .variant(ButtonVariant::Secondary)
                             .control_size(ControlSize::Sm)

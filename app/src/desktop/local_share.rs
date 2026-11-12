@@ -131,16 +131,23 @@ impl Controls {
 impl RenderOnce for Controls {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let pending = self.state.pending();
+        let theme = cx.theme().clone();
         let mut panel = div()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded(px(8.0))
-            .bg(cx.theme().surface.sunken)
-            .text_size(px(11.0))
-            .text_color(cx.theme().content.primary)
-            .child(div().child(crate::i18n::tr("Share this computer")));
+            .gap_2p5()
+            .p_3p5()
+            .rounded(px(12.0))
+            .bg(theme.surface.base)
+            .border_1()
+            .border_color(theme.border.default)
+            .text_size(px(11.5))
+            .text_color(theme.content.primary)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(crate::i18n::tr("Share this computer")),
+            );
         let mut choices = div().flex().flex_wrap().gap_2();
         for (id, label, kind) in [
             ("share-window", crate::i18n::tr("App window"), ShareKind::Window),
@@ -155,6 +162,11 @@ impl RenderOnce for Controls {
             choices = choices.child(
                 Button::new(id, label)
                     .debug_selector(move || id.into())
+                    .variant(if kind == ShareKind::ControlledDisplay {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    })
                     .control_size(ControlSize::Sm)
                     .rounded_full()
                     .h(px(28.0))
@@ -174,7 +186,11 @@ impl RenderOnce for Controls {
                 }),
             )
             .control_size(ControlSize::Sm)
-            .variant(ButtonVariant::Secondary)
+            .variant(if selected {
+                ButtonVariant::Subtle
+            } else {
+                ButtonVariant::Ghost
+            })
             .rounded_full()
             .h(px(26.0))
             .disabled(pending)

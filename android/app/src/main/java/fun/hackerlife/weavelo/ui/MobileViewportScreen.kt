@@ -13,12 +13,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -28,6 +26,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -51,6 +50,7 @@ import kotlinx.coroutines.withContext
 fun MobileViewportScreen(
     onDisconnect: () -> Unit
 ) {
+    val p = WeaveloTokens.colors
     StreamOrientation(active = true)
     var touchMode by remember { mutableStateOf(TouchMode.DIRECT) }
     var lastControlMode by remember { mutableStateOf(TouchMode.DIRECT) }
@@ -143,47 +143,95 @@ fun MobileViewportScreen(
     }
 
     if (showStreamSettings) {
-        AlertDialog(onDismissRequest = { showStreamSettings = false },
-            title = { Text(tr("Stream settings")) },
-            text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = fpsText, onValueChange = { fpsText = it },
-                    label = { Text(tr("Frame rate (FPS)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                OutlinedTextField(value = bitrateText, onValueChange = { bitrateText = it },
-                    label = { Text(tr("Video bitrate (kbps)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                OutlinedTextField(value = keepAliveText, onValueChange = { keepAliveText = it },
-                    label = { Text(tr("Background keepalive (seconds)")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.Checkbox(naturalScroll, { WeaveloClient.updateNaturalScroll(it) })
-                    Column {
-                        Text(tr("Natural scrolling (Apple style)"))
-                        Text(tr("Content moves in the same direction as your fingers"), color = ColorTextSecondary, style = MaterialTheme.typography.bodySmall)
-                    }
+        PrecisionDialog(
+            title = tr("Stream settings"),
+            onDismissRequest = { showStreamSettings = false },
+            icon = MobileSymbol.Settings,
+            dismissButton = {
+                PrecisionButton(
+                    text = tr("Cancel"),
+                    onClick = { showStreamSettings = false },
+                    style = PrecisionButtonStyle.SUBTLE,
+                    compact = true
+                )
+            },
+            confirmButton = {
+                PrecisionButton(
+                    text = tr("Apply"),
+                    onClick = {
+                        val fps = fpsText.toIntOrNull()
+                        val bitrate = bitrateText.toIntOrNull()
+                        val keepAlive = keepAliveText.toIntOrNull()
+                        if (fps == null || bitrate == null || fps <= 0 || bitrate <= 0 || keepAlive == null || keepAlive !in 0..86400) {
+                            settingsError = "Use positive FPS/kbps and 0–86400 keepalive seconds"
+                            settingsErrorText = `fun`.hackerlife.weavelo.AppText("Use positive FPS/kbps and 0–86400 keepalive seconds")
+                        } else scope.launch {
+                            settingsErrorText = null
+                            settingsError = withContext(Dispatchers.IO) { WeaveloClient.updateStreamRates(fps, bitrate) }
+                            if (settingsError == null) settingsError = WeaveloClient.updateBackgroundKeepAlive(keepAlive)
+                            if (settingsError == null) { WeaveloClient.updateBackgroundServiceEnabled(keepService); showStreamSettings = false }
+                        }
+                    },
+                    style = PrecisionButtonStyle.PRIMARY,
+                    compact = true
+                )
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrecisionTextField(
+                        value = fpsText,
+                        onValueChange = { fpsText = it },
+                        label = tr("Frame rate (FPS)"),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
+                    PrecisionTextField(
+                        value = bitrateText,
+                        onValueChange = { bitrateText = it },
+                        label = tr("Video bitrate (kbps)"),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.Checkbox(keepService, { keepService = it })
-                    Text(tr("Keep this connection in background until Disconnect"))
+                PrecisionTextField(
+                    value = keepAliveText,
+                    onValueChange = { keepAliveText = it },
+                    label = tr("Background keepalive (seconds)"),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                HorizontalDivider(color = p.borderMuted)
+                PrecisionSwitchRow(
+                    title = tr("Natural scrolling (Apple style)"),
+                    subtitle = tr("Content moves in the same direction as your fingers"),
+                    checked = naturalScroll,
+                    onCheckedChange = { WeaveloClient.updateNaturalScroll(it) },
+                    leadingSymbol = MobileSymbol.Touch
+                )
+                PrecisionSwitchRow(
+                    title = tr("Keep this connection in background until Disconnect"),
+                    subtitle = tr("When off, the idle timeout applies (0 keeps the connection). This is not a system-stop or battery exemption."),
+                    checked = keepService,
+                    onCheckedChange = { keepService = it },
+                    leadingSymbol = MobileSymbol.Network
+                )
+                settingsError?.let {
+                    Text(
+                        text = settingsErrorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it),
+                        color = p.dangerText,
+                        fontSize = 12.sp
+                    )
                 }
-                Text(tr("When off, the idle timeout applies (0 keeps the connection). This is not a system-stop or battery exemption."))
-                settingsError?.let { Text(settingsErrorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it), color = MaterialTheme.colorScheme.error) }
-            } },
-            confirmButton = { TextButton(onClick = {
-                val fps = fpsText.toIntOrNull()
-                val bitrate = bitrateText.toIntOrNull()
-                val keepAlive = keepAliveText.toIntOrNull()
-                if (fps == null || bitrate == null || fps <= 0 || bitrate <= 0 || keepAlive == null || keepAlive !in 0..86400) {
-                    settingsError = "Use positive FPS/kbps and 0–86400 keepalive seconds"
-                    settingsErrorText = `fun`.hackerlife.weavelo.AppText("Use positive FPS/kbps and 0–86400 keepalive seconds")
-                } else scope.launch {
-                    settingsErrorText = null
-                    settingsError = withContext(Dispatchers.IO) { WeaveloClient.updateStreamRates(fps, bitrate) }
-                    if (settingsError == null) settingsError = WeaveloClient.updateBackgroundKeepAlive(keepAlive)
-                    if (settingsError == null) { WeaveloClient.updateBackgroundServiceEnabled(keepService); showStreamSettings = false }
-                }
-            }) { Text(tr("Apply")) } },
-            dismissButton = { TextButton(onClick = { showStreamSettings = false }) { Text(tr("Cancel")) } })
+            }
+        }
     }
 
-    Column(Modifier.fillMaxSize().imePadding().background(Color.Black)) {
+    Column(Modifier.fillMaxSize().imePadding().background(Color(0xFF070A0F))) {
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val viewportHeightPx = with(LocalDensity.current) { maxHeight.toPx().coerceAtLeast(1f) }
             val gestureOwner = inputSessionToken
@@ -346,9 +394,22 @@ fun MobileViewportScreen(
                 onKey = { key, pressed -> keyboardToken?.let { if (!WeaveloClient.textKey(it,key,pressed)) { playbackError="Keyboard input is unavailable"; playbackErrorText = `fun`.hackerlife.weavelo.AppText("Keyboard input is unavailable") } } })
 
             playbackError?.let { message ->
-                Text(playbackErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = Color.White,
-                    modifier = Modifier.align(Alignment.Center)
-                        .background(Color.Black.copy(alpha = 0.85f)).padding(16.dp))
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(16.dp)
+                        .border(1.dp, p.dangerBorder, RoundedCornerShape(16.dp)),
+                    shape = RoundedCornerShape(16.dp),
+                    color = p.surfaceGlass,
+                    shadowElevation = 8.dp
+                ) {
+                    Text(
+                        text = playbackErrorText?.let { appText(it) } ?: trFormat("Details: %s", message),
+                        color = p.dangerText,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    )
+                }
             }
 
             NetworkStatusChip(sessionState, telemetry,
@@ -405,7 +466,7 @@ fun MobileViewportScreen(
                             controlsExpanded = !controlsExpanded
                         }
                         .padding(start = 36.dp, end = 2.dp, top = 10.dp, bottom = 10.dp)
-                        .background(ColorAccentCyan.copy(alpha = pillAlpha), RoundedCornerShape(6.dp))
+                        .background(p.brand.copy(alpha = pillAlpha), RoundedCornerShape(6.dp))
                 )
 
                 if (controlsExpanded) {
@@ -414,14 +475,15 @@ fun MobileViewportScreen(
                             .align(Alignment.CenterEnd)
                             .safeDrawingPadding()
                             .padding(end = 42.dp, top = 8.dp, bottom = 8.dp)
-                            .widthIn(min = 220.dp, max = 276.dp),
-                        shape = RoundedCornerShape(20.dp),
-                        color = ColorSurfaceCard.copy(alpha = .95f),
-                        shadowElevation = 8.dp
+                            .widthIn(min = 232.dp, max = 286.dp)
+                            .border(1.dp, p.borderStrong, RoundedCornerShape(22.dp)),
+                        shape = RoundedCornerShape(22.dp),
+                        color = p.surfaceGlass,
+                        shadowElevation = 12.dp
                     ) {
                         Column(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -430,17 +492,19 @@ fun MobileViewportScreen(
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.weight(1f)
                                 ) {
-                                    Box(modifier = Modifier.size(6.dp).background(ColorStatusGreen, CircleShape))
+                                    Box(modifier = Modifier.size(7.dp).background(p.emeraldDot, CircleShape))
                                     Text(
                                         text = if (sessionState == SessionState.RECONNECTING) tr("Reconnecting…")
                                             else if (pausePending) tr("Waiting for host…")
                                             else if (mediaPaused) tr("Paused · connected")
                                             else decodedFps?.let { trFormat("Decoded %s FPS", it) } ?: tr("Remote session"),
-                                        color = ColorTextPrimary,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                        color = p.textPrimary,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
                                     )
                                 }
                                 TouchIslandIconButton(text = tr("DISCONNECT"), active = false, isDestructive = true) {
@@ -450,42 +514,49 @@ fun MobileViewportScreen(
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                TextButton(onClick = {
-                                    WeaveloClient.setManualMediaPaused(!WeaveloClient.manualMediaPaused)
-                                }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
-                                    Text(if (WeaveloClient.manualMediaPaused) tr("Resume") else tr("Pause"))
-                                }
-                                TextButton(onClick = {
-                                    fpsText = WeaveloClient.streamFps.toString()
-                                    bitrateText = WeaveloClient.streamBitrateKbps.toString()
-                                    settingsError = null
-                                    controlsExpanded = false
-                                    showStreamSettings = true
-                                }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
-                                    Text(tr("Stream settings"))
-                                }
-                                LanguageSelector()
+                                PrecisionButton(
+                                    text = if (WeaveloClient.manualMediaPaused) tr("Resume") else tr("Pause"),
+                                    onClick = { WeaveloClient.setManualMediaPaused(!WeaveloClient.manualMediaPaused) },
+                                    style = PrecisionButtonStyle.SUBTLE,
+                                    compact = true
+                                )
+                                PrecisionButton(
+                                    text = tr("Stream settings"),
+                                    leadingSymbol = MobileSymbol.Settings,
+                                    onClick = {
+                                        fpsText = WeaveloClient.streamFps.toString()
+                                        bitrateText = WeaveloClient.streamBitrateKbps.toString()
+                                        settingsError = null
+                                        controlsExpanded = false
+                                        showStreamSettings = true
+                                    },
+                                    style = PrecisionButtonStyle.TONAL,
+                                    compact = true,
+                                    modifier = Modifier.weight(1f)
+                                )
                             }
+                            LanguageSelector(modifier = Modifier.fillMaxWidth())
+                            HorizontalDivider(color = p.borderMuted)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(40.dp),
-                                    selected = touchMode == TouchMode.TRACKPAD) {
+                                MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(42.dp),
+                                    selected = touchMode == TouchMode.TRACKPAD, tonalWell = true) {
                                     lastControlMode = TouchMode.TRACKPAD; touchMode = TouchMode.TRACKPAD
                                     WeaveloClient.setTouchMode(touchMode)
                                 }
-                                MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(40.dp),
-                                    selected = touchMode == TouchMode.DIRECT) {
+                                MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(42.dp),
+                                    selected = touchMode == TouchMode.DIRECT, tonalWell = true) {
                                     lastControlMode = TouchMode.DIRECT; touchMode = TouchMode.DIRECT
                                     WeaveloClient.setTouchMode(touchMode)
                                 }
-                                MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(40.dp),
-                                    selected = touchMode == TouchMode.VIEW) {
+                                MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(42.dp),
+                                    selected = touchMode == TouchMode.VIEW, tonalWell = true) {
                                     if (touchMode == TouchMode.VIEW && inputEnabled) {
                                         touchMode = lastControlMode
                                         WeaveloClient.setTouchMode(touchMode)
@@ -494,7 +565,7 @@ fun MobileViewportScreen(
                                         touchMode = TouchMode.VIEW
                                     }
                                 }
-                                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(40.dp)) {
+                                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(42.dp), tonalWell = true) {
                                     controlsExpanded = false
                                     if (showKeyboard) {
                                         showKeyboard = false; textInputToken = null
@@ -503,7 +574,7 @@ fun MobileViewportScreen(
                                         showKeyboard = textInputToken != null
                                     }
                                 }
-                                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(40.dp)) {
+                                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(42.dp), tonalWell = true) {
                                     transform = transform.reset()
                                     if (inputEnabled && touchMode == TouchMode.VIEW) {
                                         touchMode = lastControlMode
@@ -517,23 +588,27 @@ fun MobileViewportScreen(
             }
         }
         if (isModifierBarVisible) {
-            Row(
-                Modifier.fillMaxWidth().background(ColorSurfaceCard).padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Column(Modifier.fillMaxWidth().background(p.surfaceRaised)) {
+                HorizontalDivider(color = p.border, thickness = 1.dp)
                 Row(
-                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
-                        VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = inputEnabled) {
-                            virtualKeys.tap(key, inputEnabled); heldModifiers = virtualKeys.selected()
+                    Row(
+                        Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
+                            VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = inputEnabled) {
+                                virtualKeys.tap(key, inputEnabled); heldModifiers = virtualKeys.selected()
+                            }
                         }
                     }
-                }
-                MobileAction(MobileSymbol.Collapse, tr("Hide keyboard"), modifier = Modifier.size(40.dp)) {
-                    showKeyboard = false; textInputToken = null; controlsExpanded = false
+                    Spacer(Modifier.width(4.dp))
+                    MobileAction(MobileSymbol.Collapse, tr("Hide keyboard"), tonalWell = true, modifier = Modifier.size(42.dp)) {
+                        showKeyboard = false; textInputToken = null; controlsExpanded = false
+                    }
                 }
             }
         }
@@ -548,38 +623,40 @@ fun TouchIslandIconButton(
     enabled: Boolean = true,
     onClick: () -> Unit
 ) {
+    val p = WeaveloTokens.colors
+    val shape = RoundedCornerShape(999.dp)
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(9999.dp))
+            .clip(shape)
             .background(
                 when {
-                    isDestructive -> Color(0xFFFFEBE9)
-                    active -> Color(0xFFEFF6FF)
-                    else -> Color(0xFFF1F5F9)
+                    isDestructive -> p.dangerSoft
+                    active -> p.brandSoft
+                    else -> p.surfaceSunken
                 }
             )
             .border(
                 1.dp,
                 when {
-                    isDestructive -> Color(0xFFFF5252)
-                    active -> ColorAccentCyan
-                    else -> ColorBorderFine
+                    isDestructive -> p.dangerBorder
+                    active -> p.brandBorder
+                    else -> p.border
                 },
-                RoundedCornerShape(9999.dp)
+                shape
             )
-            .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .sizeIn(minWidth = 44.dp, minHeight = 34.dp)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
             color = when {
-                isDestructive -> Color(0xFFB42318)
-                active -> ColorAccentCyan
-                else -> ColorTextSecondary
+                isDestructive -> p.dangerText
+                active -> p.brand
+                else -> p.textSecondary
             },
-            fontSize = 9.sp,
+            fontSize = 9.5.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace
         )
@@ -588,22 +665,24 @@ fun TouchIslandIconButton(
 
 @Composable
 fun VirtualKeyPill(name: String, active: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    val p = WeaveloTokens.colors
+    val shape = RoundedCornerShape(9.dp)
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (active) Color(0xFFEFF6FF) else Color(0xFFF1F5F9))
-            .border(1.dp, if (active) ColorAccentCyan else ColorBorderFine, RoundedCornerShape(6.dp))
-            .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .clip(shape)
+            .background(if (active) p.brandSoft else p.surfaceSunken)
+            .border(1.dp, if (active) p.brand else p.border, shape)
+            .sizeIn(minWidth = 42.dp, minHeight = 36.dp)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = name,
-            color = ColorTextPrimary,
-            fontSize = 10.sp,
+            color = if (active) p.brand else p.textPrimary,
+            fontSize = 10.5.sp,
             fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Medium
+            fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold
         )
     }
 }

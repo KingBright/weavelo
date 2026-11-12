@@ -32,18 +32,15 @@ internal fun AppLanguageProvider(context: Context, content: @Composable () -> Un
 @Composable
 internal fun tr(key: String): String = LanguageCatalog.text(LocalLanguage.current?.language ?: LanguageCatalog.resolvePreference(null, Locale.getDefault().language), key)
 
-/** Self-named options remain understandable in either selected language. */
+/** Self-named options inside a recessed segmented track. */
 @Composable
 internal fun LanguageSelector() {
     val controller = LocalLanguage.current ?: return
-    androidx.compose.foundation.layout.Row {
-        androidx.compose.material3.TextButton(onClick = { controller.select(AppLanguage.CHINESE) }) {
-            androidx.compose.material3.Text(if (controller.language == AppLanguage.CHINESE) "中文 ✓" else "中文")
-        }
-        androidx.compose.material3.TextButton(onClick = { controller.select(AppLanguage.ENGLISH) }) {
-            androidx.compose.material3.Text(if (controller.language == AppLanguage.ENGLISH) "English ✓" else "English")
-        }
-    }
+    PrecisionSegmentedRow(
+        options = listOf(AppLanguage.CHINESE to "中文", AppLanguage.ENGLISH to "English"),
+        selected = controller.language,
+        onSelect = controller::select,
+    )
 }
 
 @Composable
@@ -64,7 +61,7 @@ internal fun android.content.Context.notificationText(key: String): String {
 
 /** Refresh an already-running foreground notification without restarting its owner. */
 internal class LanguageNotificationObserver(context: Context, private val refresh: () -> Unit) : java.io.Closeable {
-    private val preferences = context.applicationContext.getSharedPreferences("language", Context.MODE_PRIVATE)
+    private val preferences = context.applicationContext.getSharedPreferences("language", android.content.Context.MODE_PRIVATE)
     private val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "selection") refresh()
     }

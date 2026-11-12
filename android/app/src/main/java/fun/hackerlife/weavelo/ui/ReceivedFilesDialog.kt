@@ -9,14 +9,24 @@ import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -25,6 +35,7 @@ import java.io.File
 
 @Composable
 fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () -> Unit) {
+    val p = WeaveloTokens.colors
     val context = LocalContext.current
     val root = remember { File(context.filesDir, "received").apply { mkdirs() }.canonicalFile }
     var directory by remember { mutableStateOf(root) }
@@ -42,10 +53,17 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
         exporting = null
         if (uri != null && source != null) scope.launch(Dispatchers.IO) {
             runCatching {
-                source.inputStream().use { input -> checkNotNull(context.contentResolver.openOutputStream(uri, "w")).use { input.copyTo(it, 64 * 1024) } }
+                source.inputStream().use { input ->
+                    checkNotNull(context.contentResolver.openOutputStream(uri, "w")).use { input.copyTo(it, 64 * 1024) }
+                }
             }.onSuccess {
                 withContext(Dispatchers.Main) { error = null; errorText = null; savedNotice = source.name }
-            }.onFailure { withContext(Dispatchers.Main) { error = it.message ?: "File could not be saved"; errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("File could not be saved") else null } }
+            }.onFailure {
+                withContext(Dispatchers.Main) {
+                    error = it.message ?: "File could not be saved"
+                    errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("File could not be saved") else null
+                }
+            }
         }
     }
     fun saveToSystemDownloads(file: File) {
@@ -78,7 +96,10 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
             }.onSuccess {
                 withContext(Dispatchers.Main) { error = null; errorText = null; savedNotice = file.name }
             }.onFailure {
-                withContext(Dispatchers.Main) { error = it.message ?: "File could not be saved"; errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("File could not be saved") else null }
+                withContext(Dispatchers.Main) {
+                    error = it.message ?: "File could not be saved"
+                    errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("File could not be saved") else null
+                }
             }
         }
     }
@@ -87,15 +108,20 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
             val type = context.contentResolver.getType(uri) ?: "application/octet-stream"
             val intent = if (share) Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, uri)
-                else Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
+            else Intent(Intent.ACTION_VIEW).setDataAndType(uri, type)
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             context.startActivity(Intent.createChooser(intent, if (share) shareLabel else openLabel))
-        }.onFailure { error = it.message ?: "No application can open this file"; errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("No application can open this file") else null }
+        }.onFailure {
+            error = it.message ?: "No application can open this file"
+            errorText = if (it.message == null) `fun`.hackerlife.weavelo.AppText("No application can open this file") else null
+        }
     }
     DisposableEffect(directory) {
-        val observer = object : FileObserver(directory.path,
+        val observer = object : FileObserver(
+            directory.path,
             FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.MOVED_FROM or
-                FileObserver.CREATE or FileObserver.DELETE) {
+                FileObserver.CREATE or FileObserver.DELETE,
+        ) {
             override fun onEvent(event: Int, path: String?) {
                 if (path == null || !path.startsWith(".weavelo-")) scope.launch { refresh++ }
             }
@@ -104,29 +130,145 @@ fun ReceivedFilesDialog(onSendToDevice: ((File) -> Unit)? = null, onClose: () ->
         onDispose { observer.stopWatching() }
     }
     LaunchedEffect(directory, refresh) {
-        files = withContext(Dispatchers.IO) { directory.listFiles()?.filter { !it.name.startsWith(".weavelo-") && it.canonicalPath.startsWith(root.path + File.separator) }?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name }) ?: emptyList() }
+        files = withContext(Dispatchers.IO) {
+            directory.listFiles()
+                ?.filter { !it.name.startsWith(".weavelo-") && it.canonicalPath.startsWith(root.path + File.separator) }
+                ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name })
+                ?: emptyList()
+        }
     }
-    AlertDialog(onDismissRequest = onClose, title = { Text(tr("Received files")) }, text = {
-        Column {
-            if (directory != root) TextButton(onClick = { directory = directory.parentFile ?: root }) { Text(tr("Back to parent folder")) }
-            savedNotice?.let { Text(trFormat("Saved to Downloads: %s", it), color = ColorAccentEmerald) }
-            error?.let { Text(errorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it)) }
-            LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                items(files, key = { it.absolutePath }) { file ->
-                    Column {
-                        TextButton(onClick = { if (file.isDirectory) directory = file else open(file, false) }) { Text(if (file.isDirectory) trFormat("Folder · %s", file.name) else file.name) }
-                        if (file.isFile) Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            TextButton(onClick = { saveToSystemDownloads(file) }) { Text(tr("Save to Downloads")) }
-                            TextButton(onClick = { exporting = file; save.launch(file.name) }) { Text(tr("Save a copy")) }
-                            TextButton(onClick = { open(file, true) }) { Text(tr("Share")) }
-                            onSendToDevice?.let { send ->
-                                MobileAction(MobileSymbol.Send, tr("Send to device"), modifier = Modifier.size(44.dp)) { send(file) }
+
+    PrecisionDialog(
+        title = tr("Received files"),
+        onDismiss = onClose,
+        confirmButton = {
+            PrecisionButton(
+                text = tr("Close"),
+                onClick = onClose,
+                style = PrecisionButtonStyle.TONAL,
+                compact = true,
+            )
+        },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (directory != root) {
+                PrecisionButton(
+                    text = tr("Back to parent folder"),
+                    leadingSymbol = MobileSymbol.Back,
+                    style = PrecisionButtonStyle.TONAL,
+                    compact = true,
+                    onClick = { directory = directory.parentFile ?: root },
+                )
+            }
+            savedNotice?.let {
+                Text(
+                    trFormat("Saved to Downloads: %s", it),
+                    color = p.successText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            error?.let {
+                Text(
+                    errorText?.let { text -> appText(text) } ?: trFormat("Details: %s", it),
+                    color = p.dangerText,
+                    fontSize = 12.sp,
+                )
+            }
+            if (files.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(p.surfaceSunken)
+                        .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(tr("No completed files in this folder"), color = p.textSecondary, fontSize = 13.sp)
+                }
+            } else {
+                LazyColumn(
+                    Modifier.heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(files, key = { it.absolutePath }) { file ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(p.surfaceSunken)
+                                .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { if (file.isDirectory) directory = file else open(file, false) }
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                MobileIcon(
+                                    symbol = if (file.isDirectory) MobileSymbol.Folder else MobileSymbol.Files,
+                                    tint = p.brand,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    text = if (file.isDirectory) trFormat("Folder · %s", file.name) else file.name,
+                                    color = p.textPrimary,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                MobileIcon(
+                                    symbol = MobileSymbol.ChevronRight,
+                                    tint = p.textTertiary,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
+                            if (file.isFile) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    PrecisionButton(
+                                        text = tr("Save to Downloads"),
+                                        leadingSymbol = MobileSymbol.Download,
+                                        style = PrecisionButtonStyle.PRIMARY,
+                                        compact = true,
+                                        onClick = { saveToSystemDownloads(file) },
+                                    )
+                                    PrecisionButton(
+                                        text = tr("Save a copy"),
+                                        style = PrecisionButtonStyle.TONAL,
+                                        compact = true,
+                                        onClick = { exporting = file; save.launch(file.name) },
+                                    )
+                                    MobileAction(
+                                        symbol = MobileSymbol.Share,
+                                        description = tr("Share"),
+                                        tonalWell = true,
+                                        modifier = Modifier.size(36.dp),
+                                    ) { open(file, true) }
+                                    onSendToDevice?.let { send ->
+                                        MobileAction(
+                                            symbol = MobileSymbol.Send,
+                                            description = tr("Send to device"),
+                                            tonalWell = true,
+                                            modifier = Modifier.size(36.dp),
+                                        ) { send(file) }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            if (files.isEmpty()) Text(tr("No completed files in this folder"))
         }
-    }, confirmButton = { TextButton(onClick = onClose) { Text(tr("Close")) } })
+    }
 }

@@ -1,6 +1,7 @@
 use crate::design_system::{
     color_accent_amber, color_accent_cyan, color_accent_emerald, color_accent_purple,
-    color_border_fine, color_glass_card, weavelo_themes,
+    color_border_fine, color_glass_card, theme_accent_brand, theme_border_fine, theme_glass_card,
+    weavelo_themes,
 };
 use crate::original_design::{full_idle_canvas_stage, stream_status_capsule_card};
 use crate::telemetry_display::UiHostStats;
@@ -37,10 +38,10 @@ pub async fn run_unified_gui(
     let app = Application::new().with_assets(UiAsset);
     app.run(move |cx: &mut App| {
         apply_product_window_appearance();
-        let appearance = product_window_appearance();
+        let _default_appearance = product_window_appearance();
         component::init(cx).expect("Ely legacy reference assets");
         crate::product_components::theme::install(
-            appearance,
+            cx.window_appearance(),
             weavelo_themes(), cx);
         let window_options = WindowOptions {
             app_id: Some(remote_core::desktop_identity::identity().application_id.clone()),
@@ -108,14 +109,11 @@ fn apply_product_window_appearance() {
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;
-        use objc2_app_kit::{NSAppearance, NSAppearanceNameDarkAqua, NSApplication};
+        use objc2_app_kit::NSApplication;
 
         let mtm = MainThreadMarker::new().expect("GPUI application must run on the main thread");
         let app = NSApplication::sharedApplication(mtm);
-        if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua })
-        {
-            app.setAppearance(Some(&appearance));
-        }
+        app.setAppearance(None);
     }
 }
 
@@ -214,6 +212,12 @@ struct UnifiedDashboard {
 
 impl UnifiedDashboard {
     fn new(runtime: UnifiedRuntimeHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::product_components::theme::sync_appearance(window.appearance(), cx);
+        cx.observe_window_appearance(window, |_this, window, cx| {
+            crate::product_components::theme::sync_appearance(window.appearance(), cx);
+            cx.notify();
+        })
+        .detach();
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.window_active = true;
@@ -1362,7 +1366,7 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<UnifiedDashboard>) -> Di
         .flex()
         .items_center()
         .justify_center()
-        .bg(rgb(0x08090b))
+        .bg(theme.surface.canvas)
         .child(
             div()
                 .flex()
@@ -1370,24 +1374,18 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<UnifiedDashboard>) -> Di
                 .items_center()
                 .gap_3()
                 .p_8()
-                .rounded(px(8.0))
-                .bg(color_glass_card())
+                .rounded(px(18.0))
+                .bg(theme_glass_card(&theme))
                 .border_1()
-                .border_color(color_border_fine())
-                .child(
-                    div()
-                        .size(px(56.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(theme.status.info.bg)
-                        .child(
-                            icon(IconName::User)
-                                .size(px(26.0))
-                                .color(theme.status.info.fg),
-                        ),
-                )
+                .border_color(theme_border_fine(&theme))
+                .shadow_sm()
+                .child(crate::product_components::tonal_icon_well(
+                    icon(IconName::User)
+                        .size(px(24.0))
+                        .color(theme_accent_brand(&theme)),
+                    52.0,
+                    cx,
+                ))
                 .child(
                     div()
                         .text_size(px(17.0))
@@ -3698,31 +3696,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, cx: &mut Context<UnifiedDash
 }
 
 fn product_mark(cx: &mut Context<UnifiedDashboard>) -> Div {
-    let theme = cx.theme().clone();
-    div()
-        .size(px(22.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(5.0))
-        .bg(color_accent_cyan())
-        .text_color(theme.action.primary.fg)
-        .child(
-            div()
-                .size(px(10.0))
-                .flex()
-                .flex_col()
-                .justify_between()
-                .child(div().h(px(3.0)).w_full().rounded(px(1.0)).bg(rgb(0x001f28)))
-                .child(
-                    div()
-                        .h(px(3.0))
-                        .w(px(6.0))
-                        .rounded(px(1.0))
-                        .bg(rgb(0x001f28)),
-                ),
-        )
+    crate::product_components::weavelo_brand_mark(22.0, cx)
 }
 
 fn qr_matrix_view(matrix: &remote_core::QrMatrix) -> Div {

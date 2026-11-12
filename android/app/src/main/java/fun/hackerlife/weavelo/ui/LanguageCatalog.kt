@@ -516,6 +516,7 @@ internal object LanguageCatalog {
         "• Two-Finger Pinch: Zoom & Pan Viewport\n• Three-Finger Drag / Pan Canvas Button: Move Zoomed Canvas" to "• 双指捏合张开：无级缩放并顺带平移视口\n• 三指拖动 / 移动画布按钮：平移放大后的画布",
         "Natural scrolling (Apple style)" to "自然滚动（苹果风格）",
         "Content moves in the same direction as your fingers" to "内容随手指滑动方向移动（上推向上滚、下拉向下滚）",
+        "View" to "查看",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

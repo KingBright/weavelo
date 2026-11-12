@@ -253,7 +253,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
       let mut application=None;
       for source in visible.iter().copied().filter(|source|source.source.category()==category) {
         if !heading {
-            rows=rows.child(div().mt_2().text_size(px(10.)).text_color(theme.content.secondary)
+            rows=rows.child(div().mt_2().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.content.secondary)
                 .child(crate::i18n::tr(match category {SourceCategory::Screen=>"Entire screens",SourceCategory::Window=>"App windows",SourceCategory::Camera=>"Cameras"})));heading=true;
         }
         if windows {
@@ -272,7 +272,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         };
         let full_title=if windows&&!source.application.trim().is_empty() {format!("{} · {}",source.application.trim(),display_title)}else{display_title.clone()};
         rows=rows.child(command_button(format!("source_selection_{id:?}"),if selected {ActionVariantKind::Primary}else{ActionVariantKind::Neutral},cx)
-            .w_full().min_w(px(0.)).min_h(px(34.)).px_2().justify_start().stretch_content()
+            .w_full().min_w(px(0.)).min_h(px(34.)).px_2().rounded(px(9.)).justify_start().stretch_content()
             .when(windows,|row|row.pl_4()).disabled(!selection.catalog_ready())
             .tooltip(tooltip(full_title).build())
             .on_click(move|event,_,cx| {let _=view.update(cx,|this,cx| {
@@ -289,15 +289,15 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                 }cx.notify();
             });})
             .child(div().debug_selector(||"source-picker-row".into()).w_full().min_w(px(0.)).flex().items_center().gap_2()
-                .child(div().w(px(14.)).flex_none().child(if selected {"✓"}else{"○"}))
+                .child(crate::product_components::selection_indicator(selected, cx))
                 .child(capture_source_badge(source,&selection.artwork,&theme))
-                .child(div().debug_selector(||"source-picker-title".into()).flex_1().min_w(px(0.)).truncate().text_size(px(11.)).child(display_title))));
+                .child(div().debug_selector(||"source-picker-title".into()).flex_1().min_w(px(0.)).truncate().text_size(px(11.5)).child(display_title))));
       }
     }
     if visible.is_empty()&&!selection.query.trim().is_empty()&&!selection.loading {
         rows=rows.child(div().flex().items_center().justify_between().text_size(px(11.)).text_color(theme.content.secondary)
             .child(crate::i18n::tr("No matching sources"))
-            .child(command_button("clear_source_filter",ActionVariantKind::Neutral,cx).child(crate::i18n::tr("Clear search"))
+            .child(command_button("clear_source_filter",ActionVariantKind::Neutral,cx).rounded_full().child(crate::i18n::tr("Clear search"))
                 .on_click(cx.listener(|this,_,_,cx|{if let Some(selection)=this.source_selection.as_mut(){selection.query.clear();}cx.notify();}))));
     }
     let view=cx.weak_entity();let confirm=cx.weak_entity();
@@ -311,7 +311,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                 ("delivery-control",crate::i18n::tr("Screen + control"),crate::sharing_permissions::ShareKind::ControlledDisplay),
             ] {
                 choices=choices.child(command_button(id,ActionVariantKind::Neutral,cx)
-                    .h(px(26.)).text_size(px(10.)).disabled(sharing_pending)
+                    .h(px(26.)).rounded_full().text_size(px(10.)).disabled(sharing_pending)
                     .on_click(cx.listener(move|this,_,_,cx|this.dispatch_local_share(crate::desktop::local_share::Action::Select(kind),cx)))
                     .child(label));
             }
@@ -323,7 +323,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
         .flatten();
     let panel=div().id("source_selection_panel").occlude().w(px(460.)).max_w(relative(0.95))
         .max_h(relative(0.94))
-        .p_4().flex().flex_col().gap_3().bg(color_glass_card()).border_1().border_color(color_border_fine()).rounded_xl().shadow_2xl()
+        .p_4().flex().flex_col().gap_3().bg(crate::design_system::theme_glass_card(cx)).border_1().border_color(crate::design_system::theme_border_fine(cx)).rounded(px(16.)).shadow_2xl()
         .on_any_mouse_down(cx.listener(|_,_,_,cx|cx.stop_propagation()))
         .child(div().flex().items_center().justify_between().gap_2()
             .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(crate::i18n::message(&selection.title)))
@@ -334,6 +334,7 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                     command_button("source_selection_quick_screen", ActionVariantKind::Primary, cx)
                         .h(px(28.))
                         .px_2p5()
+                        .rounded_full()
                         .text_size(px(11.))
                         .tooltip(tooltip(screen.title.clone()).build())
                         .on_click(move |_, _, cx| {
@@ -348,12 +349,12 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                         .child(crate::i18n::tr("Open main screen")),
                 )
             }))
-        .child(component::text_input("source-search").placeholder(crate::i18n::tr("Search apps and windows")).height(px(32.).into()).content(selection.query.clone())
+        .child(component::text_input("source-search").placeholder(crate::i18n::tr("Search apps and windows")).height(px(34.).into()).content(selection.query.clone())
             .on_change({let view=cx.weak_entity();move|text,_,cx|{let _=view.update(cx,|this,cx|{
                 if let Some(selection)=this.source_selection.as_mut(){selection.query=text.to_string();}cx.notify();
             });}}))
         .when(!selection.loading && selection.catalog_ready() && !selection.is_delivery() && !selection.sources.is_empty(), |panel| {
-            panel.child(div().text_size(px(10.)).text_color(theme.content.tertiary)
+            panel.child(div().text_size(px(10.5)).text_color(theme.content.tertiary)
                 .child(crate::i18n::tr("Double-click any item to open directly, or select multiple sources.")))
         })
         .children({#[cfg(target_os="linux")] {Some(share_choices)} #[cfg(not(target_os="linux"))] {None::<Div>}})
@@ -364,20 +365,21 @@ pub(super) fn render(selection:&Selection,#[cfg(target_os="linux")] sharing_pend
                 .child(crate::i18n::tr(if selection.is_delivery() {"Screen not shared. Open Sharing & permissions."}
                     else {"Screen not shared. Start sharing on the remote device."}))))
         .child(rows)
-        .when_some(selection.error.as_ref(),|panel,error|panel.child(div().text_size(px(11.)).text_color(theme.status.error.bg).child(crate::i18n::message(error))))
-        .child(div().flex().items_center().justify_end().gap_2()
-            .child(div().flex_1().text_size(px(10.)).child(crate::i18n::tr_format!("{} selected",selection.selected.len())))
+        .when_some(selection.error.as_ref(),|panel,error|panel.child(div().text_size(px(11.)).text_color(crate::design_system::theme_accent_rose(cx)).child(crate::i18n::message(error))))
+        .child(div().pt_2().border_t_1().border_color(theme.border.divider).flex().items_center().justify_end().gap_2()
+            .child(div().flex_1().text_size(px(10.5)).text_color(theme.content.secondary).child(crate::i18n::tr_format!("{} selected",selection.selected.len())))
             .when(!selection.is_delivery(),|row|row.child(command_button("source_selection_refresh",ActionVariantKind::Neutral,cx)
-                .disabled(selection.loading).child(crate::i18n::tr("Refresh sources"))
+                .rounded_full().disabled(selection.loading).child(crate::i18n::tr("Refresh sources"))
                 .on_click(cx.listener(|this,_,_,cx|this.refresh_remote_source_selection(cx)))))
-            .child(command_button("source_selection_cancel",ActionVariantKind::Neutral,cx).on_click(move|_,_,cx|{
+            .child(command_button("source_selection_cancel",ActionVariantKind::Neutral,cx).rounded_full().on_click(move|_,_,cx|{
                 let _=view.update(cx,|this,cx|{this.cancel_source_selection(cx);cx.notify();});
             }).child(crate::i18n::tr("Cancel")))
             .child(command_button("source_selection_confirm",ActionVariantKind::Primary,cx)
+                .rounded_full()
                 .disabled(selection.loading||!selection.catalog_ready()||selection.selected.is_empty())
                 .on_click(move|_,_,cx|{let _=confirm.update(cx,|this,cx|this.confirm_source_selection(cx));})
                 .child(crate::i18n::tr(if matches!(selection.target,Target::Send(_)) {"Send"}else if matches!(selection.target,Target::Replace(_)) {"Replace"}else{"Open"}))));
-    div().occlude().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x00000088)).child(panel)
+    div().occlude().absolute().inset_0().flex().items_center().justify_center().bg(rgba(0x070a1099)).child(panel)
 }
 
 #[cfg(test)]

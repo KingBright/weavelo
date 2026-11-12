@@ -238,35 +238,37 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
     };
     let choice =
         |id, label: &'static str, selection: DeviceBadge, cx: &mut Context<RestoredDashboard>| {
-            command_button(
-                id,
-                if editor.selection == selection {
-                    ActionVariantKind::Primary
+            let is_selected = editor.selection == selection;
+            ely_gpui_component::buttons::Button::new(id, "")
+                .variant(if is_selected {
+                    ely_gpui_component::buttons::ButtonVariant::Primary
                 } else {
-                    ActionVariantKind::Neutral
-                },
+                    ely_gpui_component::buttons::ButtonVariant::Ghost
+                })
+                .control_size(ely_gpui_component::theme::ControlSize::Sm)
+                .h(px(28.0))
+                .px_2p5()
+                .rounded(px(7.))
+                .text_size(px(10.5))
+                .disabled(editor.picking)
+                .tooltip(tooltip(crate::i18n::tr(label)).build())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let editor = &mut this.device_badge_editor;
+                    editor.error = editor.save(selection.clone()).err();
+                    cx.notify();
+                }))
+        };
+    let mut choices = crate::product_components::segmented_track(&theme)
+        .flex_wrap()
+        .child(
+            choice(
+                "device-badge-auto",
+                "Use automatic device badge",
+                DeviceBadge::Automatic,
                 cx,
             )
-            .h(px(28.0))
-            .px_2()
-            .text_size(px(10.0))
-            .disabled(editor.picking)
-            .tooltip(tooltip(crate::i18n::tr(label)).build())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let editor = &mut this.device_badge_editor;
-                editor.error = editor.save(selection.clone()).err();
-                cx.notify();
-            }))
-        };
-    let mut choices = div().flex().gap_1().items_center().child(
-        choice(
-            "device-badge-auto",
-            "Use automatic device badge",
-            DeviceBadge::Automatic,
-            cx,
-        )
-        .child(crate::i18n::tr("Auto")),
-    );
+            .child(crate::i18n::tr("Auto")),
+        );
     for preset in Preset::CHOICES {
         let button = choice(
             preset.label(),
@@ -278,17 +280,26 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
             button.child(gpui::img(image).size(px(18.0)))
         }));
     }
+    let amber_ink = crate::design_system::theme_accent_amber(cx);
     div()
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_2p5()
+        .p_3()
+        .rounded(px(12.0))
+        .bg(theme.surface.base)
+        .border_1()
+        .border_color(theme.border.default)
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_2p5()
                 .when_some(preview, |row, image| {
-                    row.child(gpui::img(image).size(px(28.0)).flex_none())
+                    row.child(
+                        crate::product_components::tonal_icon_well(36.0, true, cx)
+                            .child(gpui::img(image).size(px(24.0)).flex_none()),
+                    )
                 })
                 .child(
                     div()
@@ -297,13 +308,13 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
                         .flex_1()
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(px(11.5))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(crate::i18n::tr("Device badge")),
                         )
                         .child(
                             div()
-                                .text_size(px(10.0))
+                                .text_size(px(10.5))
                                 .text_color(theme.content.secondary)
                                 .child(label),
                         ),
@@ -311,8 +322,9 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
                 .child(
                     command_button("choose-device-badge", ActionVariantKind::Neutral, cx)
                         .h(px(28.0))
-                        .px_2()
-                        .text_size(px(10.0))
+                        .px_2p5()
+                        .rounded_full()
+                        .text_size(px(10.5))
                         .disabled(editor.picking)
                         .child(crate::i18n::tr("Choose image…"))
                         .on_click(cx.listener(|this, _, _, cx| choose_image(this, cx))),
@@ -322,8 +334,8 @@ pub(super) fn controls(editor: &Editor, cx: &mut Context<RestoredDashboard>) -> 
         .when_some(editor.error.clone(), |panel, error| {
             panel.child(
                 div()
-                    .text_size(px(10.0))
-                    .text_color(color_accent_amber())
+                    .text_size(px(10.5))
+                    .text_color(amber_ink)
                     .child(crate::i18n::message(&error)),
             )
         })

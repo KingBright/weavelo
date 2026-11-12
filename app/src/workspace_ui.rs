@@ -108,6 +108,11 @@ pub fn open(target: SocketAddr, name: String, cx: &mut App) {
 
 impl WorkspaceView {
     fn new(target: SocketAddr, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::product_components::theme::sync_appearance(window.appearance(), cx);
+        cx.observe_window_appearance(window, |_, window, cx| {
+            crate::product_components::theme::sync_appearance(window.appearance(), cx);
+        })
+        .detach();
         cx.observe_window_activation(window, |this, window, _| {
             if !window.is_window_active() {
                 this.release_input();
@@ -575,18 +580,13 @@ impl WorkspaceView {
     }
 }
 
-fn action(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
-    div()
-        .id(id.into())
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .bg(rgb(0x25313a))
-        .cursor_pointer()
-        .child(label.into())
-}
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::product_components::theme::ActiveTheme;
+        use ely_gpui_component::{
+            buttons::{Button, ButtonVariant},
+            theme::ControlSize,
+        };
         if !self
             .shared
             .lock()
@@ -598,10 +598,23 @@ impl Render for WorkspaceView {
             control.stop();
         }
         self.update_activity(window_visible(window), window.scale_factor());
-        if window_visible(window)&&window.is_window_active() {
-            if let Some(connection)=self.connection(){
-                let ids=self.shared.lock().unwrap().input_sources.iter().copied().collect::<Vec<_>>();
-                for id in ids {if let Some(binding)=connection.input_binding(id,0){if !connection.refresh_bound_input(binding){self.release_input_id(id);}}}
+        if window_visible(window) && window.is_window_active() {
+            if let Some(connection) = self.connection() {
+                let ids = self
+                    .shared
+                    .lock()
+                    .unwrap()
+                    .input_sources
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>();
+                for id in ids {
+                    if let Some(binding) = connection.input_binding(id, 0) {
+                        if !connection.refresh_bound_input(binding) {
+                            self.release_input_id(id);
+                        }
+                    }
+                }
             }
         }
 
@@ -614,54 +627,263 @@ impl Render for WorkspaceView {
         let remote_files = state.remote_files.clone();
         let shared_next = state.shared_next;
         drop(state);
-        let toolbar = div().flex().gap_2().items_center().child(action("grid", if self.tiled { "Grid ✓" } else { "Grid" }).on_click(cx.listener(|this, _, _, cx| { this.tiled = true; cx.notify(); })))
-            .child(action("clipboard", if self.clipboard.is_some() { "Clipboard ✓" } else { "Clipboard" })
-                .on_click(cx.listener(|this, _, _, cx| { this.toggle_clipboard(); cx.notify(); })))
-            .child(action("tabs", if !self.tiled { "Tabs ✓" } else { "Tabs" }).on_click(cx.listener(|this, _, _, cx| { this.tiled = false; cx.notify(); })))
-            .child(action("audio-background", if self.keep_audio { "Background audio ✓" } else { "Background audio" }).on_click(cx.listener(|this, _, _, cx| { this.keep_audio = !this.keep_audio; cx.notify(); })))
-            .child(action("send", "Send files").on_click(cx.listener(|this, _, _, _| {
-                if let Some(connection) = this.connection() { std::thread::spawn(move || {
-                    if let Some(paths) = rfd::FileDialog::new().pick_files() { let _ = connection.file_commands.blocking_send(remote_core::file_transfer_runtime::FileTransferCommand::SendFileGroup { files: paths.into_iter().map(|path| remote_core::file_transfer_runtime::FileTransferGroupFile { path, mime_type: None }).collect() }); }
-                }); }
-            })))
-            .child(action("received", "Received files").on_click(cx.listener(|this, _, _, cx| cx.reveal_path(&this.receive_dir))))
-            .child(action("refresh", "Refresh sources").on_click(cx.listener(|this, _, _, _| { if let Some(connection) = this.connection() { tokio::spawn(async move { let _ = connection.control(SessionCommand::ListSources { request_id: 1, known_icons: Vec::new() }).await; }); } })));
-        let file_toolbar=div().flex().flex_wrap().gap_2()
-            .child(action("publish-files","Share files with network").on_click(cx.listener(|this,_,_,_| {
-                let shared=Arc::downgrade(&this.shared);
-                std::thread::spawn(move || {
-                    let scope=remote_core::shared_files::current_share_scope();
-                    if let Some(paths)=rfd::FileDialog::new().pick_files() {
-                        let result=(|| -> Result<(),String> {
-                            let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|e.to_string())?;
-                            for path in paths {
-                                if remote_core::shared_files::current_share_scope()!=scope {return Err("Device network changed; select files again".into());}
-                                runtime.block_on(remote_core::shared_files::shared_file_catalog().publish(&path,scope))?;
+
+        let theme = cx.theme().clone();
+        let rose_ink = crate::design_system::theme_accent_rose(cx);
+        let layout_switcher = crate::product_components::segmented_track(&theme)
+            .child(
+                Button::new("grid", crate::i18n::tr("Grid"))
+                    .variant(if self.tiled {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .control_size(ControlSize::Sm)
+                    .h(px(26.))
+                    .px_2p5()
+                    .rounded(px(7.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tiled = true;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("tabs", crate::i18n::tr("Tabs"))
+                    .variant(if !self.tiled {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .control_size(ControlSize::Sm)
+                    .h(px(26.))
+                    .px_2p5()
+                    .rounded(px(7.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tiled = false;
+                        cx.notify();
+                    })),
+            );
+
+        let toolbar = div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .items_center()
+            .p_2p5()
+            .rounded(px(12.))
+            .bg(theme.surface.base)
+            .border_1()
+            .border_color(theme.border.default)
+            .child(crate::product_components::weavelo_brand_mark(26.0, cx))
+            .child(layout_switcher)
+            .child(
+                Button::new("clipboard", crate::i18n::tr("Clipboard"))
+                    .variant(if self.clipboard.is_some() {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    })
+                    .control_size(ControlSize::Sm)
+                    .h(px(28.))
+                    .px_2p5()
+                    .rounded_full()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_clipboard();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("audio-background", crate::i18n::tr("Background audio"))
+                    .variant(if self.keep_audio {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    })
+                    .control_size(ControlSize::Sm)
+                    .h(px(28.))
+                    .px_2p5()
+                    .rounded_full()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.keep_audio = !this.keep_audio;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("send", crate::i18n::tr("Send files"))
+                    .variant(ButtonVariant::Secondary)
+                    .control_size(ControlSize::Sm)
+                    .h(px(28.))
+                    .px_2p5()
+                    .rounded_full()
+                    .on_click(cx.listener(|this, _, _, _| {
+                        if let Some(connection) = this.connection() {
+                            std::thread::spawn(move || {
+                                if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                                    let _ = connection.file_commands.blocking_send(
+                                        remote_core::file_transfer_runtime::FileTransferCommand::SendFileGroup {
+                                            files: paths
+                                                .into_iter()
+                                                .map(|path| {
+                                                    remote_core::file_transfer_runtime::FileTransferGroupFile {
+                                                        path,
+                                                        mime_type: None,
+                                                    }
+                                                })
+                                                .collect(),
+                                        },
+                                    );
+                                }
+                            });
+                        }
+                    })),
+            )
+            .child(
+                Button::new("received", crate::i18n::tr("Received files"))
+                    .variant(ButtonVariant::Secondary)
+                    .control_size(ControlSize::Sm)
+                    .h(px(28.))
+                    .px_2p5()
+                    .rounded_full()
+                    .on_click(cx.listener(|this, _, _, cx| cx.reveal_path(&this.receive_dir))),
+            )
+            .child(
+                Button::new("refresh", crate::i18n::tr("Refresh sources"))
+                    .variant(ButtonVariant::Subtle)
+                    .control_size(ControlSize::Sm)
+                    .h(px(28.))
+                    .px_2p5()
+                    .rounded_full()
+                    .on_click(cx.listener(|this, _, _, _| {
+                        if let Some(connection) = this.connection() {
+                            tokio::spawn(async move {
+                                let _ = connection
+                                    .control(SessionCommand::ListSources {
+                                        request_id: 1,
+                                        known_icons: Vec::new(),
+                                    })
+                                    .await;
+                            });
+                        }
+                    })),
+            );
+
+        let file_toolbar = div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .pt_2()
+            .border_t_1()
+            .border_color(theme.border.divider)
+            .child(
+                Button::new("publish-files", crate::i18n::tr("Share files with network"))
+                    .variant(ButtonVariant::Secondary)
+                    .control_size(ControlSize::Sm)
+                    .full_width()
+                    .h(px(28.))
+                    .rounded(px(8.))
+                    .on_click(cx.listener(|this, _, _, _| {
+                        let shared = Arc::downgrade(&this.shared);
+                        std::thread::spawn(move || {
+                            let scope = remote_core::shared_files::current_share_scope();
+                            if let Some(paths) = rfd::FileDialog::new().pick_files() {
+                                let result = (|| -> Result<(), String> {
+                                    let runtime = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all()
+                                        .build()
+                                        .map_err(|e| e.to_string())?;
+                                    for path in paths {
+                                        if remote_core::shared_files::current_share_scope() != scope {
+                                            return Err(
+                                                "Device network changed; select files again".into()
+                                            );
+                                        }
+                                        runtime.block_on(
+                                            remote_core::shared_files::shared_file_catalog()
+                                                .publish(&path, scope),
+                                        )?;
+                                    }
+                                    Ok(())
+                                })();
+                                if let Some(s) = shared.upgrade() {
+                                    s.lock().unwrap().status = match result {
+                                        Ok(()) => "Files shared with device network until cleared, network change, or app exit".into(),
+                                        Err(e) => e,
+                                    };
+                                }
                             }
-                            Ok(())
-                        })();
-                        if let Some(s)=shared.upgrade() {s.lock().unwrap().status=match result {Ok(())=>"Files shared with device network until cleared, network change, or app exit".into(),Err(e)=>e};}
-                    }
-                });
-            })))
-            .child(action("clear-shared","Clear my shared list").on_click(cx.listener(|this,_,_,_| {remote_core::shared_files::shared_file_catalog().clear();this.shared.lock().unwrap().status="Shared list cleared; accepted transfers may finish".into();})))
-            .child(action("list-shared","Retrieve shared files").on_click(cx.listener(|this,_,_,_| {this.request_shared_files(0);})))
-            .when_some(shared_next,|view,next| view.child(action("next-shared","Next shared page").on_click(cx.listener(move |this,_,_,_| {this.request_shared_files(next);})))) ;
+                        });
+                    })),
+            )
+            .child(
+                Button::new("clear-shared", crate::i18n::tr("Clear my shared list"))
+                    .variant(ButtonVariant::Ghost)
+                    .control_size(ControlSize::Sm)
+                    .full_width()
+                    .h(px(26.))
+                    .rounded(px(8.))
+                    .on_click(cx.listener(|this, _, _, _| {
+                        remote_core::shared_files::shared_file_catalog().clear();
+                        this.shared.lock().unwrap().status =
+                            "Shared list cleared; accepted transfers may finish".into();
+                    })),
+            )
+            .child(
+                Button::new("list-shared", crate::i18n::tr("Retrieve shared files"))
+                    .variant(ButtonVariant::Subtle)
+                    .control_size(ControlSize::Sm)
+                    .full_width()
+                    .h(px(28.))
+                    .rounded(px(8.))
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.request_shared_files(0);
+                    })),
+            )
+            .when_some(shared_next, |view, next| {
+                view.child(
+                    Button::new("next-shared", crate::i18n::tr("Next shared page"))
+                        .variant(ButtonVariant::Ghost)
+                        .control_size(ControlSize::Sm)
+                        .full_width()
+                        .h(px(26.))
+                        .rounded(px(8.))
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.request_shared_files(next);
+                        })),
+                )
+            });
+
         let mut sidebar = div()
             .id("sources")
-            .w(px(240.))
+            .w(px(252.))
             .flex_none()
+            .p_3()
+            .rounded(px(12.))
+            .bg(theme.surface.base)
+            .border_1()
+            .border_color(theme.border.default)
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_2()
-            .child("Displays and application windows");
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.content.secondary)
+                    .child(crate::i18n::tr("Displays and application windows")),
+            );
         for (index, source) in sources.into_iter().enumerate() {
             sidebar = sidebar.child(
-                action(
+                Button::new(
                     format!("source-{index}"),
                     format!("{} — {}", source.application, source.title),
                 )
+                .variant(ButtonVariant::Subtle)
+                .control_size(ControlSize::Sm)
+                .full_width()
+                .justify_start()
+                .h(px(30.))
+                .rounded(px(8.))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.add(source.clone(), window, cx);
                     cx.notify();
@@ -671,22 +893,61 @@ impl Render for WorkspaceView {
         sidebar = sidebar.child(file_toolbar);
         for file in remote_files {
             let id = file.id;
-            sidebar=sidebar.child(action(format!("get-shared-{id}"),format!("Get {} ({} bytes)",file.name,file.size_bytes)).on_click(cx.listener(move |this,_,_,_| {
-                if let Some(connection)=this.connection() {
-                    let request_id={let mut s=this.shared.lock().unwrap();s.shared_request+=1;s.shared_request};
-                    tokio::spawn(async move {let _=connection.file_commands.send(remote_core::file_transfer_runtime::FileTransferCommand::SharedRequest {request_id,request:protocol::shared_files::SharedFileRequest::Fetch {file_id:id}}).await;});
-                }
-            })));
+            sidebar = sidebar.child(
+                Button::new(
+                    format!("get-shared-{id}"),
+                    format!("Get {} ({} bytes)", file.name, file.size_bytes),
+                )
+                .variant(ButtonVariant::Secondary)
+                .control_size(ControlSize::Sm)
+                .full_width()
+                .justify_start()
+                .h(px(28.))
+                .rounded(px(8.))
+                .on_click(cx.listener(move |this, _, _, _| {
+                    if let Some(connection) = this.connection() {
+                        let request_id = {
+                            let mut s = this.shared.lock().unwrap();
+                            s.shared_request += 1;
+                            s.shared_request
+                        };
+                        tokio::spawn(async move {
+                            let _ = connection
+                                .file_commands
+                                .send(
+                                    remote_core::file_transfer_runtime::FileTransferCommand::SharedRequest {
+                                        request_id,
+                                        request: protocol::shared_files::SharedFileRequest::Fetch {
+                                            file_id: id,
+                                        },
+                                    },
+                                )
+                                .await;
+                        });
+                    }
+                })),
+            );
         }
-        let mut tabs = div().flex().flex_wrap().gap_2();
+        let mut tabs = div().flex().flex_wrap().gap_1p5();
         for pane in &self.panes {
             let id = pane.request.id;
-            tabs = tabs.child(action(format!("tab-{id}"), pane.title.clone()).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.selected = Some(id);
-                    cx.notify();
-                }),
-            ));
+            let is_selected = self.selected == Some(id);
+            tabs = tabs.child(
+                Button::new(format!("tab-{id}"), pane.title.clone())
+                    .variant(if is_selected {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    })
+                    .control_size(ControlSize::Sm)
+                    .h(px(28.))
+                    .px_2p5()
+                    .rounded_full()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected = Some(id);
+                        cx.notify();
+                    })),
+            );
         }
         let count = if self.tiled {
             self.panes.len()
@@ -700,7 +961,7 @@ impl Render for WorkspaceView {
             .grid()
             .grid_cols(columns)
             .grid_rows((count as u16).div_ceil(columns).max(1))
-            .gap_2();
+            .gap_2p5();
         for pane in &self.panes {
             let id = pane.request.id;
             if !self.tiled && self.selected != Some(id) {
@@ -714,44 +975,97 @@ impl Render for WorkspaceView {
                 .unwrap_or(100);
             let heading = div()
                 .flex()
-                .gap_2()
+                .gap_1p5()
                 .items_center()
-                .child(div().flex_1().overflow_hidden().child(pane.title.clone()))
-                .child(action(format!("rates-{id}"), "Rates").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        if let Some(pane) = this.panes.iter().find(|p| p.request.id == id) {
-                            this.rate_editor = Some(id);
-                            this.fps_edit = pane.request.fps.to_string();
-                            this.bitrate_edit = pane.request.bitrate_kbps.to_string();
+                .pb_1p5()
+                .border_b_1()
+                .border_color(theme.border.divider)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(pane.title.clone()),
+                )
+                .child(
+                    Button::new(format!("rates-{id}"), crate::i18n::tr("Rates"))
+                        .variant(ButtonVariant::Subtle)
+                        .control_size(ControlSize::Sm)
+                        .h(px(24.))
+                        .px_2()
+                        .rounded_full()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(pane) = this.panes.iter().find(|p| p.request.id == id) {
+                                this.rate_editor = Some(id);
+                                this.fps_edit = pane.request.fps.to_string();
+                                this.bitrate_edit = pane.request.bitrate_kbps.to_string();
+                                cx.notify();
+                            }
+                        })),
+                )
+                .child(
+                    Button::new(format!("less-{id}"), "−")
+                        .variant(ButtonVariant::Subtle)
+                        .control_size(ControlSize::Sm)
+                        .size(px(24.))
+                        .p_0()
+                        .rounded(px(6.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.volume(id, -10);
                             cx.notify();
-                        }
-                    },
-                )))
-                .child(action(format!("less-{id}"), "−").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.volume(id, -10);
-                        cx.notify();
-                    },
-                )))
-                .child(format!("{volume}%"))
-                .child(action(format!("more-{id}"), "+").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.volume(id, 10);
-                        cx.notify();
-                    },
-                )))
-                .child(action(format!("close-{id}"), "×").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.remove(id);
-                        cx.notify();
-                    },
-                )));
+                        })),
+                )
+                .child(
+                    div()
+                        .font_family(crate::design_system::product_mono_font())
+                        .text_size(px(11.))
+                        .text_color(theme.content.secondary)
+                        .child(format!("{volume}%")),
+                )
+                .child(
+                    Button::new(format!("more-{id}"), "+")
+                        .variant(ButtonVariant::Subtle)
+                        .control_size(ControlSize::Sm)
+                        .size(px(24.))
+                        .p_0()
+                        .rounded(px(6.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.volume(id, 10);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new(format!("close-{id}"), "")
+                        .variant(ButtonVariant::Subtle)
+                        .control_size(ControlSize::Sm)
+                        .size(px(24.))
+                        .p_0()
+                        .rounded(px(6.))
+                        .child(
+                            crate::product_components::icon(
+                                crate::product_components::IconName::Close,
+                            )
+                            .size(px(12.)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove(id);
+                            cx.notify();
+                        })),
+                );
             let shared_frame = pane.media.shared_frame();
             let frame = shared_frame.lock().unwrap();
             let image = if let Some(frame) = frame.as_ref() {
                 client::decoded_video_frame_surface_with_fit(frame, ObjectFit::Contain)
             } else {
-                div().child("Waiting for source…").into_any_element()
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.content.tertiary)
+                    .child(crate::i18n::tr("Waiting for source…"))
+                    .into_any_element()
             };
             let bounds = pane.bounds.clone();
             grid = grid.child(
@@ -760,11 +1074,16 @@ impl Render for WorkspaceView {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .bg(rgb(0x101820))
+                    .gap_1p5()
+                    .bg(theme.surface.base)
                     .border_1()
-                    .border_color(rgb(0x2a3844))
-                    .rounded_md()
-                    .p_2()
+                    .border_color(if self.selected == Some(id) {
+                        theme.border.focus
+                    } else {
+                        theme.border.default
+                    })
+                    .rounded(px(12.))
+                    .p_2p5()
                     .child(heading)
                     .child(
                         div()
@@ -802,7 +1121,9 @@ impl Render for WorkspaceView {
                             .capture_key_down(cx.listener(
                                 move |this, event: &KeyDownEvent, _, _| {
                                     if let Some(event) = crate::restored_ui::fresh_key_down(event)
-                                        .and_then(|key| crate::restored_ui::protocol_key_event(key, true))
+                                        .and_then(|key| {
+                                            crate::restored_ui::protocol_key_event(key, true)
+                                        })
                                     {
                                         this.input(id, event);
                                     }
@@ -820,13 +1141,18 @@ impl Render for WorkspaceView {
                                     let delta = event.delta.pixel_delta(px(40.));
                                     this.input(
                                         id,
-                                        protocol::InputEvent::scroll(f32::from(delta.x).round() as i32, f32::from(delta.y).round() as i32),
+                                        protocol::InputEvent::scroll(
+                                            f32::from(delta.x).round() as i32,
+                                            f32::from(delta.y).round() as i32,
+                                        ),
                                     );
                                 },
                             ))
                             .relative()
                             .flex_1()
                             .min_h_0()
+                            .rounded(px(8.))
+                            .bg(rgb(0x090c10))
                             .overflow_hidden()
                             .child(image)
                             .child(
@@ -844,17 +1170,37 @@ impl Render for WorkspaceView {
         }
         let mut transfer_line = div().flex().flex_wrap().gap_2();
         for transfer in transfers.iter().rev().take(4) {
-            transfer_line = transfer_line.child(format!(
-                "{} · {:?} · {:.0}%",
-                transfer.label,
-                transfer.status,
-                transfer.progress() * 100.
-            ));
+            transfer_line = transfer_line.child(
+                div()
+                    .px_2p5()
+                    .py_1()
+                    .rounded_full()
+                    .bg(theme.surface.sunken)
+                    .border_1()
+                    .border_color(theme.border.muted)
+                    .text_size(px(11.))
+                    .child(format!(
+                        "{} · {:?} · {:.0}%",
+                        transfer.label,
+                        transfer.status,
+                        transfer.progress() * 100.
+                    )),
+            );
         }
-        let mut rates = div().flex().gap_2();
+        let mut rates = div().flex().items_center().gap_2();
         if self.rate_editor.is_some() {
             rates = rates
-                .child("FPS / kbps")
+                .p_2()
+                .rounded(px(10.))
+                .bg(theme.surface.base)
+                .border_1()
+                .border_color(theme.border.default)
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("FPS / kbps"),
+                )
                 .child(
                     crate::product_components::component::text_input("pane-fps")
                         .content(self.fps_edit.clone())
@@ -876,26 +1222,42 @@ impl Render for WorkspaceView {
                             }
                         }),
                 )
-                .child(action("apply-pane-rates", "Apply").on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.apply_rates();
-                        cx.notify();
-                    },
-                )));
+                .child(
+                    Button::new("apply-pane-rates", crate::i18n::tr("Apply"))
+                        .variant(ButtonVariant::Primary)
+                        .control_size(ControlSize::Sm)
+                        .rounded_full()
+                        .h(px(28.))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.apply_rates();
+                            cx.notify();
+                        })),
+                );
         }
         div()
             .size_full()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_2p5()
             .p_3()
-            .bg(rgb(0x0a1017))
-            .text_color(rgb(0xe0e9ef))
+            .bg(theme.surface.canvas)
+            .text_color(theme.content.primary)
+            .font_family(crate::design_system::product_ui_font())
             .text_size(px(12.))
             .child(toolbar)
-            .child(status)
-            .children(audio_error)
-            .child(rates)
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(theme.content.secondary)
+                    .child(crate::i18n::message(&status)),
+            )
+            .children(audio_error.map(|err| {
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rose_ink)
+                    .child(crate::i18n::message(&err))
+            }))
+            .when(self.rate_editor.is_some(), |root| root.child(rates))
             .child(
                 div()
                     .flex()

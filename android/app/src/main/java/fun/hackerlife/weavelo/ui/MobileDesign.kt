@@ -1,15 +1,28 @@
 package `fun`.hackerlife.weavelo.ui
 
+import android.app.Activity
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -17,11 +30,145 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.WindowCompat
 import kotlin.math.min
+
+/**
+ * Unified Weavelo Brand Token System:
+ * - Light: Prism Air (Warm mist alabaster + deep obsidian ink + Weavelo prism cobalt-indigo)
+ * - Dark:  Obsidian Craft (Layered micro-crystal graphite + luminous prism sky-cyan)
+ */
+@Immutable
+data class WeaveloPalette(
+    val isDark: Boolean,
+    val canvas: Color,
+    val surface: Color,
+    val surfaceRaised: Color,
+    val surfaceSunken: Color,
+    val surfaceHover: Color,
+    val surfaceGlass: Color,
+    val border: Color,
+    val borderMuted: Color,
+    val borderStrong: Color,
+    val textPrimary: Color,
+    val textSecondary: Color,
+    val textTertiary: Color,
+    val brand: Color,
+    val brandOn: Color,
+    val brandSoft: Color,
+    val brandBorder: Color,
+    val prismCyan: Color,
+    val prismCyanSoft: Color,
+    val emeraldText: Color,
+    val emeraldDot: Color,
+    val emeraldSoft: Color,
+    val warningText: Color,
+    val warningSoft: Color,
+    val warningBorder: Color,
+    val danger: Color,
+    val dangerOn: Color,
+    val dangerText: Color,
+    val dangerSoft: Color,
+    val dangerBorder: Color,
+)
+
+val PrismAirPalette = WeaveloPalette(
+    isDark = false,
+    canvas = Color(0xFFF4F7FA),
+    surface = Color(0xFFFFFFFF),
+    surfaceRaised = Color(0xFFFFFFFF),
+    surfaceSunken = Color(0xFFEAEFF6),
+    surfaceHover = Color(0xFFE1E8F2),
+    surfaceGlass = Color(0xF5FFFFFF),
+    border = Color(0xFFDAE3EE),
+    borderMuted = Color(0xFFE6EDF5),
+    borderStrong = Color(0xFFC3CFDE),
+    textPrimary = Color(0xFF0F172A),
+    textSecondary = Color(0xFF475569),
+    textTertiary = Color(0xFF64748B),
+    brand = Color(0xFF1B56D0),
+    brandOn = Color(0xFFFFFFFF),
+    brandSoft = Color(0xFFEAF2FF),
+    brandBorder = Color(0xFF93B8FA),
+    prismCyan = Color(0xFF0C7792),
+    prismCyanSoft = Color(0xFFE4F4F8),
+    emeraldText = Color(0xFF057A55),
+    emeraldDot = Color(0xFF10B981),
+    emeraldSoft = Color(0xFFDCFCE7),
+    warningText = Color(0xFF925006),
+    warningSoft = Color(0xFFFEF3DC),
+    warningBorder = Color(0xFFE5A93B),
+    danger = Color(0xFFC83A37),
+    dangerOn = Color(0xFFFFFFFF),
+    dangerText = Color(0xFFB42318),
+    dangerSoft = Color(0xFFFEECEB),
+    dangerBorder = Color(0xFFF2A6A2),
+)
+
+val ObsidianCraftPalette = WeaveloPalette(
+    isDark = true,
+    canvas = Color(0xFF0F131A),
+    surface = Color(0xFF161C26),
+    surfaceRaised = Color(0xFF1D2533),
+    surfaceSunken = Color(0xFF0A0D13),
+    surfaceHover = Color(0xFF242E3F),
+    surfaceGlass = Color(0xF0171D28),
+    border = Color(0xFF253041),
+    borderMuted = Color(0xFF1B2331),
+    borderStrong = Color(0xFF344258),
+    textPrimary = Color(0xFFF1F5F9),
+    textSecondary = Color(0xFF9AA8BC),
+    textTertiary = Color(0xFF6E7E94),
+    brand = Color(0xFF38BDF8),
+    brandOn = Color(0xFF06131F),
+    brandSoft = Color(0xFF142A3E),
+    brandBorder = Color(0xFF23668E),
+    prismCyan = Color(0xFF38BDF8),
+    prismCyanSoft = Color(0xFF132838),
+    emeraldText = Color(0xFF34D399),
+    emeraldDot = Color(0xFF34D399),
+    emeraldSoft = Color(0xFF112C24),
+    warningText = Color(0xFFFBBF24),
+    warningSoft = Color(0xFF2B2111),
+    warningBorder = Color(0xFF785314),
+    danger = Color(0xFFF87171),
+    dangerOn = Color(0xFF1E0808),
+    dangerText = Color(0xFFFCA5A5),
+    dangerSoft = Color(0xFF2E1619),
+    dangerBorder = Color(0xFF6B282C),
+)
+
+val LocalWeaveloPalette = staticCompositionLocalOf { PrismAirPalette }
+
+object WeaveloTokens {
+    val colors: WeaveloPalette
+        @Composable get() = LocalWeaveloPalette.current
+}
+
+// Reactive semantic aliases kept compatible with all existing mobile screens
+val ColorBaseBg: Color @Composable get() = LocalWeaveloPalette.current.canvas
+val ColorSurfaceCard: Color @Composable get() = LocalWeaveloPalette.current.surface
+val ColorBorderFine: Color @Composable get() = LocalWeaveloPalette.current.border
+val ColorAccentCyan: Color @Composable get() = LocalWeaveloPalette.current.brand
+val ColorAccentEmerald: Color @Composable get() = LocalWeaveloPalette.current.emeraldText
+val ColorStatusGreen: Color @Composable get() = LocalWeaveloPalette.current.emeraldDot
+val ColorTextPrimary: Color @Composable get() = LocalWeaveloPalette.current.textPrimary
+val ColorTextSecondary: Color @Composable get() = LocalWeaveloPalette.current.textSecondary
 
 /** Small native vectors, cached once and kept out of the video frame path. */
 enum class MobileSymbol(path: String) {
@@ -40,7 +187,15 @@ enum class MobileSymbol(path: String) {
     Files("M3 5h6l2 2.5h10v11.5H3z M8.5 12h7 M13.5 10l2 2-2 2 M15.5 15.5h-7 M10.5 13.5l-2 2 2 2"),
     Sources("M3 4h14v11H3z M3 8h14 M18 13v7 M14.5 16.5h7 M7 19h5"),
     Refresh("M20 7a9 9 0 1 0 1 9 M20 3v5h-5"),
-    Close("M6 6l12 12 M18 6L6 18"),
+    Close("M6.5 6.5l11 11 M17.5 6.5l-11 11"),
+    Check("M5 12.5l4.5 4.5L19 7.5"),
+    ChevronRight("M9 6l6 6-6 6"),
+    Copy("M9 9h10v11H9z M5 15H4V4h11v1"),
+    Download("M12 4v11 M8 11.5L12 15.5l4-4 M5 19h14"),
+    Folder("M3 6h6l2 2h10v11H3z"),
+    Clipboard("M9 4h6v3H9z M6 6h3v2h6V6h3v14H6z"),
+    Grid("M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z"),
+    Disconnect("M15 4h4v16h-4 M10 17l5-5-5-5 M15 12H3"),
     Back("M14 5l-7 7 7 7"),
     Home("M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0"),
     More("M5 11a1 1 0 1 0 0 2 1 1 0 1 0 0-2z M12 11a1 1 0 1 0 0 2 1 1 0 1 0 0-2z M19 11a1 1 0 1 0 0 2 1 1 0 1 0 0-2z"),
@@ -56,37 +211,647 @@ enum class MobileSymbol(path: String) {
     Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10");
 
     val image: ImageVector = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
-        .addPath(PathParser().parsePathString(path).toNodes(), fill = null,
-            stroke = SolidColor(Color.White), strokeLineWidth = 1.7f,
-            strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round)
+        .addPath(
+            PathParser().parsePathString(path).toNodes(),
+            fill = null,
+            stroke = SolidColor(Color.White),
+            strokeLineWidth = 1.75f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round
+        )
         .build()
 }
 
+private val lightMaterialScheme = lightColorScheme(
+    primary = PrismAirPalette.brand,
+    onPrimary = PrismAirPalette.brandOn,
+    primaryContainer = PrismAirPalette.brandSoft,
+    onPrimaryContainer = PrismAirPalette.brand,
+    secondary = PrismAirPalette.prismCyan,
+    onSecondary = Color.White,
+    secondaryContainer = PrismAirPalette.prismCyanSoft,
+    onSecondaryContainer = PrismAirPalette.prismCyan,
+    background = PrismAirPalette.canvas,
+    onBackground = PrismAirPalette.textPrimary,
+    surface = PrismAirPalette.surface,
+    onSurface = PrismAirPalette.textPrimary,
+    surfaceVariant = PrismAirPalette.surfaceSunken,
+    onSurfaceVariant = PrismAirPalette.textSecondary,
+    outline = PrismAirPalette.borderStrong,
+    outlineVariant = PrismAirPalette.border,
+    error = PrismAirPalette.danger,
+    onError = PrismAirPalette.dangerOn,
+)
+
+private val darkMaterialScheme = darkColorScheme(
+    primary = ObsidianCraftPalette.brand,
+    onPrimary = ObsidianCraftPalette.brandOn,
+    primaryContainer = ObsidianCraftPalette.brandSoft,
+    onPrimaryContainer = ObsidianCraftPalette.brand,
+    secondary = ObsidianCraftPalette.emeraldText,
+    onSecondary = ObsidianCraftPalette.brandOn,
+    secondaryContainer = ObsidianCraftPalette.emeraldSoft,
+    onSecondaryContainer = ObsidianCraftPalette.emeraldText,
+    background = ObsidianCraftPalette.canvas,
+    onBackground = ObsidianCraftPalette.textPrimary,
+    surface = ObsidianCraftPalette.surface,
+    onSurface = ObsidianCraftPalette.textPrimary,
+    surfaceVariant = ObsidianCraftPalette.surfaceSunken,
+    onSurfaceVariant = ObsidianCraftPalette.textSecondary,
+    outline = ObsidianCraftPalette.borderStrong,
+    outlineVariant = ObsidianCraftPalette.border,
+    error = ObsidianCraftPalette.danger,
+    onError = ObsidianCraftPalette.dangerOn,
+)
+
+private val mobileShapes = Shapes(
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(24.dp)
+)
+
 @Composable
-fun MobileAction(symbol: MobileSymbol, label: String, enabled: Boolean = true,
-    modifier: Modifier = Modifier, selected: Boolean = false, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = modifier
-        .background(if (selected) ColorAccentCyan.copy(alpha = .12f) else Color.Transparent, RoundedCornerShape(24.dp))) {
-        Icon(symbol.image, contentDescription = label,
-            tint = if (!enabled) ColorTextSecondary.copy(alpha = .4f) else if (selected) ColorAccentCyan else ColorTextPrimary)
+fun WeaveloTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit
+) {
+    val palette = if (darkTheme) ObsidianCraftPalette else PrismAirPalette
+    val colorScheme = if (darkTheme) darkMaterialScheme else lightMaterialScheme
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            (view.context as? Activity)?.window?.let { window ->
+                WindowCompat.getInsetsController(window, view).apply {
+                    isAppearanceLightStatusBars = !darkTheme
+                    isAppearanceLightNavigationBars = !darkTheme
+                }
+            }
+        }
+    }
+    CompositionLocalProvider(LocalWeaveloPalette provides palette) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            shapes = mobileShapes,
+            content = content
+        )
     }
 }
 
-private val mobileColorScheme = lightColorScheme(
-        primary = ColorAccentCyan, onPrimary = Color.White,
-        secondary = ColorAccentEmerald, onSecondary = Color.White,
-        background = ColorBaseBg, onBackground = ColorTextPrimary,
-        surface = ColorSurfaceCard, onSurface = ColorTextPrimary,
-        surfaceVariant = Color(0xFFF1F5F9), onSurfaceVariant = ColorTextSecondary,
-        outline = Color(0xFF94A3B8), outlineVariant = ColorBorderFine,
-        error = Color(0xFFB42318),
-)
-private val mobileShapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(24.dp))
+/** Authentic Weavelo interlaced geometric W emblem inside a sculpted jewel badge. */
+@Composable
+fun WeaveloBrandEmblem(size: Dp = 30.dp, modifier: Modifier = Modifier) {
+    val p = WeaveloTokens.colors
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(RoundedCornerShape(size * 0.3f))
+            .background(
+                Brush.linearGradient(
+                    colors = if (p.isDark) {
+                        listOf(Color(0xFF38BDF8), Color(0xFF1D6CE0))
+                    } else {
+                        listOf(Color(0xFF2563EB), Color(0xFF1643A8))
+                    }
+                )
+            )
+            .border(0.75.dp, Color.White.copy(alpha = if (p.isDark) 0.22f else 0.18f), RoundedCornerShape(size * 0.3f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.size(size * 0.68f)) {
+            val w = this.size.width
+            val h = this.size.height
+            val strokeW = w * 0.135f
+            val glyphColor = if (p.isDark) Color(0xFF05131F) else Color.White
+            clipRect(left = 0f, top = h * 0.22f, right = w, bottom = h * 0.92f) {
+                val rectW = w * 0.66f
+                val rectH = h * 0.30f
+                val rx = w * 0.06f
+                rotate(45f, pivot = Offset(w * 0.38f, h * 0.50f)) {
+                    drawRoundRect(
+                        color = glyphColor,
+                        topLeft = Offset(w * 0.38f - rectW / 2f, h * 0.50f - rectH / 2f),
+                        size = Size(rectW, rectH),
+                        cornerRadius = CornerRadius(rx, rx),
+                        style = Stroke(width = strokeW, join = StrokeJoin.Round)
+                    )
+                }
+                rotate(-45f, pivot = Offset(w * 0.62f, h * 0.50f)) {
+                    drawRoundRect(
+                        color = glyphColor,
+                        topLeft = Offset(w * 0.62f - rectW / 2f, h * 0.50f - rectH / 2f),
+                        size = Size(rectW, rectH),
+                        cornerRadius = CornerRadius(rx, rx),
+                        style = Stroke(width = strokeW, join = StrokeJoin.Round)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Tactile Precision Craft card container with subtle hairline border and optional active focus state. */
+@Composable
+fun PrecisionCard(
+    modifier: Modifier = Modifier,
+    highlighted: Boolean = false,
+    sunken: Boolean = false,
+    cornerRadius: Dp = 16.dp,
+    contentPadding: PaddingValues = PaddingValues(14.dp),
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val p = WeaveloTokens.colors
+    val shape = RoundedCornerShape(cornerRadius)
+    val bg = when {
+        highlighted -> p.brandSoft
+        sunken -> p.surfaceSunken
+        else -> p.surface
+    }
+    val borderColor = when {
+        highlighted -> p.brandBorder
+        sunken -> p.borderMuted
+        else -> p.border
+    }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(bg)
+            .border(1.dp, borderColor, shape)
+            .let { mod ->
+                if (onClick != null) mod.clickable(enabled = enabled, onClick = onClick) else mod
+            }
+            .padding(contentPadding),
+        content = content
+    )
+}
+
+enum class PillTone { BRAND, CYAN, EMERALD, WARNING, DANGER, NEUTRAL }
 
 @Composable
-fun WeaveloTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = mobileColorScheme, shapes = mobileShapes, content = content)
+fun PrecisionPillBadge(
+    text: String,
+    tone: PillTone = PillTone.NEUTRAL,
+    showDot: Boolean = false,
+    monospace: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val p = WeaveloTokens.colors
+    val (bg, fg, dot) = when (tone) {
+        PillTone.BRAND -> Triple(p.brandSoft, p.brand, p.brand)
+        PillTone.CYAN -> Triple(p.prismCyanSoft, p.prismCyan, p.prismCyan)
+        PillTone.EMERALD -> Triple(p.emeraldSoft, p.emeraldText, p.emeraldDot)
+        PillTone.WARNING -> Triple(p.warningSoft, p.warningText, p.warningText)
+        PillTone.DANGER -> Triple(p.dangerSoft, p.dangerText, p.danger)
+        PillTone.NEUTRAL -> Triple(p.surfaceSunken, p.textSecondary, p.textTertiary)
+    }
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        if (showDot) {
+            Box(Modifier.size(6.dp).background(dot, CircleShape))
+        }
+        Text(
+            text = text,
+            color = fg,
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+enum class PrecisionButtonStyle { PRIMARY, TONAL, SUBTLE, DANGER, DANGER_TONAL }
+
+@Composable
+fun PrecisionButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    leadingSymbol: MobileSymbol? = null,
+    style: PrecisionButtonStyle = PrecisionButtonStyle.PRIMARY,
+    compact: Boolean = false
+) {
+    val p = WeaveloTokens.colors
+    val shape = RoundedCornerShape(if (compact) 10.dp else 12.dp)
+    val (bg, fg, borderCol) = when (style) {
+        PrecisionButtonStyle.PRIMARY -> Triple(p.brand, p.brandOn, Color.Transparent)
+        PrecisionButtonStyle.TONAL -> Triple(p.brandSoft, p.brand, p.brandBorder.copy(alpha = 0.55f))
+        PrecisionButtonStyle.SUBTLE -> Triple(p.surfaceSunken, p.textPrimary, p.border)
+        PrecisionButtonStyle.DANGER -> Triple(p.danger, p.dangerOn, Color.Transparent)
+        PrecisionButtonStyle.DANGER_TONAL -> Triple(p.dangerSoft, p.dangerText, p.dangerBorder.copy(alpha = 0.65f))
+    }
+    val alpha = if (enabled) 1f else 0.44f
+    Row(
+        modifier = modifier
+            .heightIn(min = if (compact) 34.dp else 40.dp)
+            .clip(shape)
+            .background(bg.copy(alpha = bg.alpha * alpha))
+            .let { mod ->
+                if (borderCol != Color.Transparent) mod.border(1.dp, borderCol.copy(alpha = borderCol.alpha * alpha), shape)
+                else mod
+            }
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = if (compact) 11.dp else 14.dp, vertical = if (compact) 6.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        if (leadingSymbol != null) {
+            Icon(
+                leadingSymbol.image,
+                contentDescription = null,
+                tint = fg.copy(alpha = alpha),
+                modifier = Modifier.size(if (compact) 15.dp else 17.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            text = text,
+            color = fg.copy(alpha = alpha),
+            fontSize = if (compact) 12.sp else 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Tactile icon action button: keeps an accessible 44-48dp outer touch target while
+ * framing the icon inside a sculpted tonal well so multi-action bars never feel raw or cramped.
+ */
+@Composable
+fun MobileAction(
+    symbol: MobileSymbol,
+    label: String,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+    selected: Boolean = false,
+    tonalWell: Boolean = false,
+    destructive: Boolean = false,
+    onClick: () -> Unit
+) {
+    val p = WeaveloTokens.colors
+    val wellBg = when {
+        destructive -> p.dangerSoft
+        selected -> p.brandSoft
+        tonalWell -> p.surfaceSunken
+        else -> Color.Transparent
+    }
+    val wellBorder = when {
+        destructive -> p.dangerBorder.copy(alpha = 0.65f)
+        selected -> p.brandBorder.copy(alpha = 0.7f)
+        tonalWell -> p.borderMuted
+        else -> Color.Transparent
+    }
+    val iconTint = when {
+        !enabled -> p.textTertiary.copy(alpha = 0.38f)
+        destructive -> p.dangerText
+        selected -> p.brand
+        else -> p.textPrimary
+    }
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(wellBg)
+                .let { mod ->
+                    if (wellBorder != Color.Transparent) mod.border(1.dp, wellBorder, RoundedCornerShape(11.dp))
+                    else mod
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                symbol.image,
+                contentDescription = label,
+                tint = iconTint,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+    }
+}
+
+/** Recessed segmented track for mode toggles, language pickers, and audio routing. */
+@Composable
+fun <T> PrecisionSegmentedRow(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    val p = WeaveloTokens.colors
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(p.surfaceSunken)
+            .border(1.dp, p.borderMuted, RoundedCornerShape(12.dp))
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        options.forEach { (value, label) ->
+            val isSelected = value == selected
+            Box(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .heightIn(min = 32.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (isSelected) p.surfaceRaised else Color.Transparent)
+                    .let { mod ->
+                        if (isSelected) mod.border(1.dp, if (p.isDark) p.brandBorder else p.border, RoundedCornerShape(9.dp))
+                        else mod
+                    }
+                    .clickable(enabled = enabled, role = Role.Tab) { onSelect(value) }
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    color = when {
+                        !enabled -> p.textTertiary.copy(alpha = 0.45f)
+                        isSelected -> p.brand
+                        else -> p.textSecondary
+                    },
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+/** Sculpted tactile toggle switch row replacing raw Checkbox + unaligned Switch rows. */
+@Composable
+fun PrecisionSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+    leadingSymbol: MobileSymbol? = null,
+    modifier: Modifier = Modifier
+) {
+    val p = WeaveloTokens.colors
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, role = Role.Switch) { onCheckedChange(!checked) }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (leadingSymbol != null) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (checked) p.brandSoft else p.surfaceSunken)
+                    .border(1.dp, if (checked) p.brandBorder.copy(alpha = 0.5f) else p.borderMuted, RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    leadingSymbol.image,
+                    contentDescription = null,
+                    tint = if (checked) p.brand else p.textSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = title,
+                color = if (enabled) p.textPrimary else p.textTertiary,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                lineHeight = 18.sp
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    color = p.textSecondary,
+                    fontSize = 11.5.sp,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = p.brandOn,
+                checkedTrackColor = p.brand,
+                checkedBorderColor = Color.Transparent,
+                uncheckedThumbColor = p.textSecondary,
+                uncheckedTrackColor = p.surfaceSunken,
+                uncheckedBorderColor = p.borderStrong
+            )
+        )
+    }
+}
+
+/** Recessed precision text field replacing boxy default OutlinedTextField. */
+@Composable
+fun PrecisionTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    isError: Boolean = false,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default
+) {
+    val p = WeaveloTokens.colors
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, fontSize = 12.sp) },
+        singleLine = singleLine,
+        isError = isError,
+        keyboardOptions = keyboardOptions,
+        shape = RoundedCornerShape(12.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = p.textPrimary,
+            unfocusedTextColor = p.textPrimary,
+            focusedContainerColor = p.surface,
+            unfocusedContainerColor = p.surfaceSunken.copy(alpha = 0.65f),
+            focusedBorderColor = p.brand,
+            unfocusedBorderColor = p.border,
+            errorBorderColor = p.danger,
+            focusedLabelColor = p.brand,
+            unfocusedLabelColor = p.textSecondary,
+            cursorColor = p.brand
+        ),
+        modifier = modifier.fillMaxWidth()
+    )
+}
+
+/**
+ * Precision Craft Modal Sheet/Dialog: replaces stock Material AlertDialog across the product
+ * with a sculpted card, icon-well header, circular close button, and tactile footer actions.
+ */
+@Composable
+fun PrecisionDialog(
+    title: String,
+    onDismissRequest: () -> Unit,
+    icon: MobileSymbol? = null,
+    subtitle: String? = null,
+    maxWidth: Dp = 440.dp,
+    dismissButton: (@Composable () -> Unit)? = null,
+    confirmButton: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val p = WeaveloTokens.colors
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .imePadding()
+                .navigationBarsPadding()
+                .widthIn(max = maxWidth)
+                .fillMaxWidth(0.92f)
+                .border(1.dp, p.borderStrong.copy(alpha = if (p.isDark) 0.85f else 0.55f), RoundedCornerShape(22.dp)),
+            shape = RoundedCornerShape(22.dp),
+            color = p.surfaceRaised,
+            shadowElevation = 14.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (icon != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(p.brandSoft)
+                                .border(1.dp, p.brandBorder.copy(alpha = 0.55f), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(icon.image, contentDescription = null, tint = p.brand, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = title,
+                            color = p.textPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (!subtitle.isNullOrBlank()) {
+                            Text(
+                                text = subtitle,
+                                color = p.textSecondary,
+                                fontSize = 11.5.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                    MobileAction(
+                        symbol = MobileSymbol.Close,
+                        label = tr("Close"),
+                        tonalWell = true,
+                        modifier = Modifier.size(38.dp),
+                        onClick = onDismissRequest
+                    )
+                }
+                HorizontalDivider(color = p.borderMuted, thickness = 1.dp)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+                if (dismissButton != null || confirmButton != null) {
+                    HorizontalDivider(color = p.borderMuted, thickness = 1.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        dismissButton?.invoke()
+                        confirmButton?.invoke()
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Structured popover menu item with icon, active badge/check, and optional destructive styling. */
+@Composable
+fun PrecisionMenuItem(
+    text: String,
+    symbol: MobileSymbol,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    checked: Boolean = false,
+    destructive: Boolean = false
+) {
+    val p = WeaveloTokens.colors
+    val fg = when {
+        !enabled -> p.textTertiary.copy(alpha = 0.42f)
+        destructive -> p.dangerText
+        checked -> p.brand
+        else -> p.textPrimary
+    }
+    val iconTint = when {
+        !enabled -> p.textTertiary.copy(alpha = 0.38f)
+        destructive -> p.dangerText
+        checked -> p.brand
+        else -> p.textSecondary
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 42.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (checked) p.brandSoft.copy(alpha = 0.7f) else Color.Transparent)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(symbol.image, contentDescription = null, tint = iconTint, modifier = Modifier.size(18.dp))
+        Text(
+            text = text,
+            color = fg,
+            fontSize = 13.sp,
+            fontWeight = if (checked || destructive) FontWeight.SemiBold else FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (checked) {
+            Icon(MobileSymbol.Check.image, contentDescription = null, tint = p.brand, modifier = Modifier.size(16.dp))
+        }
+    }
 }
 
 /** Persistent input & canvas actions live outside the measured video rectangle. */
@@ -102,17 +867,28 @@ internal fun MobileInputControls(
     onKeyboard: () -> Unit,
     onReset: () -> Unit
 ) {
-    Box(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
-        .padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-        Surface(shape = RoundedCornerShape(28.dp), color = ColorSurfaceCard.copy(alpha = .94f), shadowElevation = 6.dp) {
-            Row(Modifier.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(48.dp), selected = trackpad, onClick = onTrackpad)
-                MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(48.dp), selected = direct, onClick = onDirect)
+    val p = WeaveloTokens.colors
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = p.surfaceGlass,
+            shadowElevation = 8.dp,
+            modifier = Modifier.border(1.dp, p.border, RoundedCornerShape(24.dp))
+        ) {
+            Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                MobileAction(MobileSymbol.Trackpad, tr("Trackpad"), inputEnabled, Modifier.size(46.dp), selected = trackpad, onClick = onTrackpad)
+                MobileAction(MobileSymbol.Touch, tr("Direct touch"), inputEnabled, Modifier.size(46.dp), selected = direct, onClick = onDirect)
                 if (onPanView != null) {
-                    MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(48.dp), selected = panView, onClick = onPanView)
+                    MobileAction(MobileSymbol.Pan, tr("Pan canvas"), true, Modifier.size(46.dp), selected = panView, onClick = onPanView)
                 }
-                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(48.dp), onClick = onKeyboard)
-                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(48.dp), onClick = onReset)
+                MobileAction(MobileSymbol.Keyboard, tr("Show keyboard"), inputEnabled, Modifier.size(46.dp), onClick = onKeyboard)
+                MobileAction(MobileSymbol.Refresh, tr("Reset zoom"), modifier = Modifier.size(46.dp), onClick = onReset)
             }
         }
     }
@@ -128,58 +904,69 @@ internal fun ZoomedCanvasChip(
     onTogglePan: () -> Unit,
     onResetZoom: () -> Unit
 ) {
+    val p = WeaveloTokens.colors
     Surface(
-        modifier = modifier,
+        modifier = modifier.border(1.dp, p.border, RoundedCornerShape(20.dp)),
         shape = RoundedCornerShape(20.dp),
-        color = ColorSurfaceCard.copy(alpha = .9f),
-        shadowElevation = 4.dp
+        color = p.surfaceGlass,
+        shadowElevation = 6.dp
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             if (canTogglePan) {
-                TextButton(
-                    onClick = onTogglePan,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                Row(
                     modifier = Modifier
-                        .heightIn(min = 32.dp)
-                        .background(
-                            if (panActive) ColorAccentCyan.copy(alpha = .14f) else Color.Transparent,
-                            RoundedCornerShape(16.dp)
-                        )
+                        .heightIn(min = 30.dp)
+                        .clip(RoundedCornerShape(15.dp))
+                        .background(if (panActive) p.brandSoft else Color.Transparent)
+                        .let { mod ->
+                            if (panActive) mod.border(1.dp, p.brandBorder.copy(alpha = 0.6f), RoundedCornerShape(15.dp))
+                            else mod
+                        }
+                        .clickable(role = Role.Button, onClick = onTogglePan)
+                        .padding(horizontal = 9.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
                         MobileSymbol.Pan.image,
                         contentDescription = null,
-                        tint = if (panActive) ColorAccentCyan else ColorTextPrimary,
-                        modifier = Modifier.size(15.dp)
+                        tint = if (panActive) p.brand else p.textPrimary,
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(Modifier.width(4.dp))
                     Text(
                         tr("Pan canvas"),
-                        color = if (panActive) ColorAccentCyan else ColorTextPrimary,
-                        style = MaterialTheme.typography.labelMedium
+                        color = if (panActive) p.brand else p.textPrimary,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
-            TextButton(
-                onClick = onResetZoom,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                modifier = Modifier.heightIn(min = 32.dp)
+            Row(
+                modifier = Modifier
+                    .heightIn(min = 30.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(p.surfaceSunken)
+                    .clickable(role = Role.Button, onClick = onResetZoom)
+                    .padding(horizontal = 9.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
                     String.format(java.util.Locale.ROOT, "%.1f×", scale),
-                    color = ColorAccentCyan,
-                    style = MaterialTheme.typography.labelMedium
+                    color = p.brand,
+                    fontSize = 11.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(Modifier.width(3.dp))
                 Icon(
                     MobileSymbol.Refresh.image,
                     contentDescription = tr("Reset zoom"),
-                    tint = ColorTextSecondary,
-                    modifier = Modifier.size(14.dp)
+                    tint = p.textSecondary,
+                    modifier = Modifier.size(13.dp)
                 )
             }
         }
@@ -276,7 +1063,7 @@ internal fun WeaveloPointerOverlay(
             drawPath(
                 path = rightFacetPath,
                 brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFF38BDF8), Color(0xFF2563EB)),
+                    colors = listOf(Color(0xFF38BDF8), Color(0xFF1B56D0)),
                     start = Offset.Zero,
                     end = Offset(rightWingX, notchY)
                 )

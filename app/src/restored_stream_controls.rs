@@ -1,7 +1,6 @@
 //! Device-bound controls and file contexts. These reuse the existing session and
 //! transfer owners; a window is only a presentation of the retained work.
 use super::*;
-use crate::design_system::color_accent_rose;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum StreamPanel {
@@ -144,6 +143,7 @@ impl RestoredDashboard {
                             ActionVariantKind::Neutral,
                             cx,
                         )
+                        .rounded_full()
                         .child(self.device_label(&device))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_device_files(device.clone(), cx)
@@ -157,6 +157,7 @@ impl RestoredDashboard {
 
     fn device_files_panel(&self, context: &DeviceFiles, cx: &mut Context<Self>) -> Div {
         let disconnect = self.device_files(&context.device);
+        let rose_ink = crate::design_system::theme_accent_rose(cx);
         let busy = context.connecting.load(Ordering::Acquire)
             || context
                 .owner
@@ -166,7 +167,7 @@ impl RestoredDashboard {
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_2p5()
             .child(
                 div()
                     .text_size(px(12.))
@@ -182,11 +183,12 @@ impl RestoredDashboard {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(color_accent_rose())
+                            .text_color(rose_ink)
                             .child(crate::i18n::message(&error)),
                     )
                     .child(
                         command_button("retry-device-files", ActionVariantKind::Neutral, cx)
+                            .rounded_full()
                             .child(crate::i18n::tr("Retry"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.open_device_files(device.clone(), cx)
@@ -196,6 +198,7 @@ impl RestoredDashboard {
             .child(file_transfer_panel(context.owner.clone(), cx))
             .child(
                 command_button("disconnect-device-files", ActionVariantKind::Neutral, cx)
+                    .rounded_full()
                     .disabled(busy)
                     .child(crate::i18n::tr("Disconnect files"))
                     .on_click(move |_, _, _| disconnect.disconnect()),
@@ -322,24 +325,36 @@ impl RestoredDashboard {
         let home_view = cx.weak_entity();
         let fit_view = cx.weak_entity();
         let theme = cx.theme().clone();
+        let companion_bg = if fullscreen {
+            crate::design_system::theme_glass_floating(cx)
+        } else {
+            theme.surface.canvas
+        };
         div()
             .id("android-navigation-gutter")
             .occlude()
             .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
-            .py_1().rounded_full()
+            .py_1()
+            .rounded_full()
             .flex_none()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
             .gap_1()
-            .bg(if fullscreen { rgb(0x000000).into() } else { theme.surface.canvas })
+            .bg(companion_bg)
+            .when(fullscreen, |gutter| {
+                gutter
+                    .border_1()
+                    .border_color(crate::design_system::theme_border_fine(cx))
+            })
             .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
                 command_button("android-navigation-back", ActionVariantKind::Neutral, cx)
                     .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
                     .h(px(40.))
                     .px_0()
+                    .rounded_full()
                     .disabled(back.is_none() || !current_target)
                     .tooltip(tooltip(back_tooltip).build())
                     .on_click(move |_, _, cx| {
@@ -352,6 +367,7 @@ impl RestoredDashboard {
                     .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
                     .h(px(40.))
                     .px_0()
+                    .rounded_full()
                     .disabled(home.is_none() || !current_target)
                     .tooltip(tooltip(home_tooltip).build())
                     .on_click(move |_, _, cx| {
@@ -364,6 +380,7 @@ impl RestoredDashboard {
                     .w(px(window_fit::ANDROID_COMPANION_WIDTH_PX))
                     .h(px(40.))
                     .px_0()
+                    .rounded_full()
                     .tooltip(tooltip(crate::i18n::tr("Fit the remote picture to the viewer")).build())
                     .on_click(move |_, _, cx| {
                         let _ = fit_view.update(cx, |this, cx| {
@@ -382,13 +399,14 @@ impl RestoredDashboard {
         let cua_mode = self.owner.snapshot().computer_use_status.mode;
         let rail_color = match cua_mode {
             Some(crate::desktop::original_owner::ComputerUseMode::Controlling) => {
-                Hsla::from(color_accent_emerald())
+                crate::design_system::theme_online_dot(cx)
             }
             Some(crate::desktop::original_owner::ComputerUseMode::Observing) => {
-                Hsla::from(color_accent_cyan())
+                crate::design_system::theme_accent_cyan(cx)
             }
             _ => cx.theme().action.primary.bg,
         };
+        let rail_border = crate::design_system::theme_border_fine(cx);
         div()
             .id("fullscreen-toolbar-rail-position")
             .absolute()
@@ -425,7 +443,7 @@ impl RestoredDashboard {
                             .rounded_full()
                             .bg(rail_color)
                             .border_1()
-                            .border_color(color_border_fine())
+                            .border_color(rail_border)
                             .shadow_sm(),
                     ),
             )
@@ -442,6 +460,10 @@ impl RestoredDashboard {
     ) -> Stateful<Div> {
         let visibility = control_island_visibility(snapshot.role.kind());
         let theme = cx.theme().clone();
+        let floating_bg = crate::design_system::theme_glass_floating(cx);
+        let floating_border = crate::design_system::theme_border_fine(cx);
+        let live_dot = crate::design_system::theme_online_dot(cx);
+        let route_accent = crate::design_system::theme_accent_brand(cx);
         let source = confirmed_source(&snapshot.capture_sources, snapshot.active_capture_source);
         let device = self
             .stream_device
@@ -459,10 +481,10 @@ impl RestoredDashboard {
             .flex()
             .items_center()
             .gap_1()
-            .when(fullscreen, |row| row.px_2p5().py_1().rounded_full().bg(color_glass_card()).border_1()
-                .border_color(color_border_fine()).shadow_lg())
+            .when(fullscreen, |row| row.px_2p5().py_1().rounded_full().bg(floating_bg).border_1()
+                .border_color(floating_border).shadow_lg())
             .when(!fullscreen, |row| row.w_full().h(px(window_fit::STREAM_HEADER_HEIGHT_PX))
-                .px_1p5().rounded(px(14.)).bg(theme.surface.base).border_1().border_color(theme.border.muted))
+                .px_1p5().rounded(px(14.)).bg(theme.surface.base).border_1().border_color(theme.border.default))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.toolbar_hovered = *hovered;
                 this.last_toolbar_activity = Instant::now();
@@ -489,7 +511,7 @@ impl RestoredDashboard {
                 })
                 .when_some(source, |row, source| row.child(capture_source_badge(source, &snapshot.source_icons, &theme)))
                 .child(div().size(px(6.)).flex_none().rounded_full().bg(if visibility.show_disconnect {
-                    Hsla::from(color_accent_emerald())
+                    live_dot
                 } else { theme.content.disabled }))
                 .child(
                     div()
@@ -522,13 +544,15 @@ impl RestoredDashboard {
                     ctx.child(
                         div()
                             .flex_none()
-                            .px_1p5()
+                            .px_2()
                             .py_0p5()
                             .rounded_full()
                             .bg(theme.surface.sunken)
+                            .border_1()
+                            .border_color(theme.border.muted)
                             .text_size(px(10.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(color_accent_cyan())
+                            .text_color(route_accent)
                             .child(badge_label),
                     )
                 }),
@@ -549,6 +573,7 @@ impl RestoredDashboard {
             cx,
         )
         .size(px(button_size))
+        .rounded_full()
         .p_0()
         .tooltip(tooltip(crate::i18n::tr(control_caption)).build())
         .child(icon(IconName::Control).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
@@ -566,7 +591,7 @@ impl RestoredDashboard {
             if self.show_apps_menu { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
             cx,
         )
-            .size(px(button_size)).p_0()
+            .size(px(button_size)).rounded_full().p_0()
             .tooltip(tooltip(crate::i18n::tr("Switch source or open a new view")).build())
             .child(icon(IconName::NewView).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
             .disabled(source_binding.is_none())
@@ -578,6 +603,7 @@ impl RestoredDashboard {
             cx,
         )
         .size(px(button_size))
+        .rounded_full()
         .p_0()
         .tooltip(tooltip(crate::i18n::tr(if muted { "Unmute" } else { "Mute" })).build())
         .child(icon(if muted { IconName::SoundMuted } else { IconName::Sound }).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
@@ -588,6 +614,7 @@ impl RestoredDashboard {
         }));
         let fit_button = command_button("stream-primary-fit", ActionVariantKind::Neutral, cx)
             .size(px(button_size))
+            .rounded_full()
             .p_0()
             .tooltip(tooltip(crate::i18n::tr("Fit window")).build())
             .child(icon(IconName::Window).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
@@ -597,7 +624,7 @@ impl RestoredDashboard {
                 cx.notify();
             }));
         let files_button = command_button("stream-primary-files", ActionVariantKind::Neutral, cx)
-            .size(px(button_size)).p_0()
+            .size(px(button_size)).rounded_full().p_0()
             .tooltip(tooltip(crate::i18n::tr("Files")).build())
             .child(icon(IconName::Files).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
             .disabled(self.stream_device.is_none())
@@ -607,12 +634,12 @@ impl RestoredDashboard {
             if self.drawer_open { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
             cx,
         )
-        .size(px(button_size)).p_0()
+        .size(px(button_size)).rounded_full().p_0()
         .tooltip(tooltip(crate::i18n::tr("Control, sound, display and session options")).build())
         .child(icon(IconName::More).size(px(if tiny { 12. } else if compact { 13. } else { 14. })))
         .on_click(cx.listener(|this, _, _, cx| this.open_stream_panel(StreamPanel::More, cx)));
         let fullscreen_button = command_button("stream-primary-fullscreen", ActionVariantKind::Neutral, cx)
-            .size(px(button_size)).p_0()
+            .size(px(button_size)).rounded_full().p_0()
             .tooltip(tooltip(crate::i18n::tr(if fullscreen { "Exit fullscreen · F11" } else { "Fullscreen · F11" })).build())
             .child(icon(IconName::Maximize(fullscreen)).size(px(if tiny { 12. } else { 14. })))
             .on_click(cx.listener(|this, _, window, cx| {
@@ -662,27 +689,28 @@ impl RestoredDashboard {
             .when_some(cua_mode, |tree, mode| {
                 let badge_color = match mode {
                     crate::desktop::original_owner::ComputerUseMode::Observing => {
-                        Hsla::from(color_accent_cyan())
+                        crate::design_system::theme_accent_cyan(cx)
                     }
                     crate::desktop::original_owner::ComputerUseMode::Controlling => {
-                        Hsla::from(color_accent_emerald())
+                        crate::design_system::theme_online_dot(cx)
                     }
                     crate::desktop::original_owner::ComputerUseMode::PausedByHuman => {
                         cx.theme().content.secondary
                     }
                 };
+                let cua_bg = if fullscreen { floating_bg } else { theme.surface.base };
                 tree.child(
                     div()
                         .id("computer-use-status-capsule")
                         .occlude()
-                        .h(px(24.))
+                        .h(px(26.))
                         .flex()
                         .items_center()
                         .gap_2()
                         .px_3()
                         .py_1()
                         .rounded_full()
-                        .bg(if fullscreen { color_glass_card() } else { theme.surface.base })
+                        .bg(cua_bg)
                         .border_1()
                         .border_color(badge_color)
                         .shadow_md()
@@ -692,6 +720,7 @@ impl RestoredDashboard {
                             command_button("computer-use-dismiss-pill", ActionVariantKind::Neutral, cx)
                                 .h(px(20.))
                                 .px_2()
+                                .rounded_full()
                                 .child(if mode == crate::desktop::original_owner::ComputerUseMode::PausedByHuman {
                                     crate::i18n::tr("Dismiss")
                                 } else {
@@ -761,6 +790,7 @@ impl RestoredDashboard {
                 ))
                 .child(
                     command_button("fit-stream-window", ActionVariantKind::Neutral, cx)
+                        .rounded_full()
                         .child(crate::i18n::tr("Fit window"))
                         .tooltip(tooltip(crate::i18n::tr("Resize this window to fit the source without leaving the display")).build())
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -770,6 +800,7 @@ impl RestoredDashboard {
                 )
                 .child(
                     command_button("island_popout_pip", ActionVariantKind::Neutral, cx)
+                        .rounded_full()
                         .child(crate::i18n::tr("Open picture in picture"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_popout_pip_window(cx))),
                 )
@@ -794,7 +825,8 @@ impl RestoredDashboard {
                 + if snapshot.computer_use_status.mode.is_some() { 36.0 } else { 8.0 }
         };
         let bottom = if viewport_height < 280.0 { 8.0 } else { 12.0 };
-        let mut tabs = div().flex().flex_wrap().items_center().gap_1().px_2().pb_2();
+        let panel_theme = cx.theme().clone();
+        let mut tabs = crate::product_components::segmented_track(&panel_theme).flex_wrap();
         for (panel, label, symbol) in [
             (StreamPanel::Control, "Control", IconName::Control),
             (StreamPanel::Sound, "Sound", IconName::Sound),
@@ -806,20 +838,27 @@ impl RestoredDashboard {
             } else {
                 crate::i18n::tr(label).to_owned()
             };
+            let is_active = self.stream_panel == panel;
+            let btn_variant = if is_active {
+                ely_gpui_component::buttons::ButtonVariant::Primary
+            } else {
+                ely_gpui_component::buttons::ButtonVariant::Ghost
+            };
             tabs = tabs.child(
-                command_button(
-                    format!("stream-panel-tab-{panel:?}"),
-                    if self.stream_panel == panel { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
-                    cx,
-                )
-                .when(compact_panel, |button| button.size(px(28.)).p_0())
-                .when(!compact_panel, |button| button.h(px(28.)).px_2().gap_1())
-                .tooltip(tooltip(hint.to_owned()).build())
-                .child(icon(symbol).size(px(13.)))
-                .when(!compact_panel, |button| button.child(label))
-                .on_click(cx.listener(move |this, _, _, cx| this.open_stream_panel(panel, cx))),
+                ely_gpui_component::buttons::Button::new(format!("stream-panel-tab-{panel:?}"), "")
+                    .variant(btn_variant)
+                    .control_size(ely_gpui_component::theme::ControlSize::Sm)
+                    .rounded(px(7.))
+                    .when(compact_panel, |button| button.size(px(26.)).p_0())
+                    .when(!compact_panel, |button| button.h(px(26.)).px_2p5().gap_1())
+                    .tooltip(tooltip(hint.to_owned()).build())
+                    .child(icon(symbol).size(px(13.)))
+                    .when(!compact_panel, |button| button.child(crate::i18n::tr(label)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_stream_panel(panel, cx))),
             );
         }
+        let panel_bg = crate::design_system::theme_glass_card(cx);
+        let panel_border = crate::design_system::theme_border_fine(cx);
         div()
             .id("stream-local-panel")
             .occlude()
@@ -830,10 +869,10 @@ impl RestoredDashboard {
             .w(px((viewport_width - 24.0).max(1.0).min(370.0)))
             .flex()
             .flex_col()
-            .rounded_lg()
-            .bg(color_glass_card())
+            .rounded(px(14.))
+            .bg(panel_bg)
             .border_1()
-            .border_color(color_border_fine())
+            .border_color(panel_border)
             .shadow_lg()
             .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
@@ -841,8 +880,10 @@ impl RestoredDashboard {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .when(compact_panel, |header| header.px_2().py_1())
-                    .when(!compact_panel, |header| header.p_3())
+                    .border_b_1()
+                    .border_color(panel_theme.border.divider)
+                    .when(compact_panel, |header| header.px_2p5().py_1p5())
+                    .when(!compact_panel, |header| header.px_3p5().py_2p5())
                     .child(
                         div()
                             .text_size(px(13.))
@@ -852,8 +893,9 @@ impl RestoredDashboard {
                     .child(
                         command_button("close-stream-panel", ActionVariantKind::Neutral, cx)
                             .size(px(24.))
+                            .rounded(px(7.))
                             .p_0()
-                            .child("×")
+                            .child(icon(IconName::Close).size(px(13.)))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.drawer_open = false;
                                 this.owner.release_input();
@@ -870,18 +912,20 @@ impl RestoredDashboard {
                     .overflow_y_scroll()
                     .when(compact_panel, |scroll| scroll.px_1().py_1())
                     .when(!compact_panel, |scroll| scroll.p_3())
-                    .child(div().flex().flex_col().gap_2().child(tabs).child(body)),
+                    .child(div().flex().flex_col().gap_2p5().child(tabs).child(body)),
             )
     }
 
     fn stream_input_panel(&self, snapshot: &DashboardSnapshot, cx: &mut Context<Self>) -> Div {
         div().flex().flex_col().gap_3()
             .child(command_button("island_toggle_input_lock", if self.input_locked { ActionVariantKind::Neutral } else { ActionVariantKind::Primary }, cx)
+                .rounded_full()
                 .disabled(!snapshot.active_capture_supports_input)
                 .child(input_control_caption(self.input_locked, snapshot.active_capture_supports_input, snapshot.input_eligible, false))
                 .on_click(cx.listener(|this, _, _, cx| { this.set_input_locked(!this.input_locked); cx.notify(); })))
                 .child(div().text_size(px(11.)).child(crate::i18n::message(&snapshot.input_status)))
             .child(command_button("island_keyboard_mode", ActionVariantKind::Neutral, cx)
+                .rounded_full()
                 .child(crate::i18n::tr(if self.text_mode { "Text · local input method" } else { "Keys · physical keyboard" }))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.owner.release_input(); this.remote_text = None; this.text_mode = !this.text_mode; cx.notify();
@@ -894,6 +938,7 @@ impl RestoredDashboard {
         use protocol::audio_output::{AudioOutputMode, LocalPlayback};
         let (volume, muted) = self.owner.audio();
         let host_audio = self.owner.host_audio();
+        let sound_theme = cx.theme().clone();
         let header = if muted {
             crate::i18n::tr_format!("Playback · {volume}% (Muted)", volume=volume)
         } else {
@@ -905,25 +950,26 @@ impl RestoredDashboard {
             .gap_3()
             .child(div().font_weight(FontWeight::MEDIUM).child(header))
             .child(
-                div()
-                    .flex()
+                crate::product_components::segmented_track(&sound_theme)
                     .flex_wrap()
-                    .gap_1p5()
                     .children([0u8, 25, 50, 75, 100].into_iter().map(|preset| {
                         let active = (!muted && volume == preset) || (muted && preset == 0);
-                        command_button(
-                            format!("volume_preset_{preset}"),
-                            if active { ActionVariantKind::Primary } else { ActionVariantKind::Neutral },
-                            cx,
-                        )
-                        .h(px(24.))
-                        .px_2()
-                        .text_size(px(10.))
-                        .child(format!("{preset}%"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.owner.set_audio(preset, preset == 0);
-                            cx.notify();
-                        }))
+                        let variant = if active {
+                            ely_gpui_component::buttons::ButtonVariant::Primary
+                        } else {
+                            ely_gpui_component::buttons::ButtonVariant::Ghost
+                        };
+                        ely_gpui_component::buttons::Button::new(format!("volume_preset_{preset}"), format!("{preset}%"))
+                            .variant(variant)
+                            .control_size(ely_gpui_component::theme::ControlSize::Sm)
+                            .h(px(24.))
+                            .px_2p5()
+                            .rounded(px(7.))
+                            .text_size(px(10.5))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.owner.set_audio(preset, preset == 0);
+                                cx.notify();
+                            }))
                     })),
             )
             .child(
@@ -932,6 +978,7 @@ impl RestoredDashboard {
                     .gap_2()
                     .child(
                         command_button("volume_down", ActionVariantKind::Neutral, cx)
+                            .rounded_full()
                             .child("−")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.owner.set_audio(volume.saturating_sub(5), muted);
@@ -940,6 +987,7 @@ impl RestoredDashboard {
                     )
                     .child(
                         command_button("volume_up", ActionVariantKind::Neutral, cx)
+                            .rounded_full()
                             .child("+")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.owner
@@ -953,6 +1001,7 @@ impl RestoredDashboard {
                             if muted { ActionVariantKind::Danger } else { ActionVariantKind::Neutral },
                             cx,
                         )
+                        .rounded_full()
                         .child(crate::i18n::tr(if muted { "Unmute" } else { "Mute" }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.owner.set_audio(volume, !muted);
@@ -963,6 +1012,8 @@ impl RestoredDashboard {
             .when_some(host_audio, |panel, (pending, status)| {
                 let playback = status.as_ref().map(|status| status.local_playback);
                 let supported = status.as_ref().is_none_or(|status| status.private_supported);
+                let mirror_selected = matches!(playback, None | Some(LocalPlayback::Enabled));
+                let private_selected = playback == Some(LocalPlayback::Disabled);
                 let caption = if pending { "Changing host audio output…" } else {
                     match playback {
                         None | Some(LocalPlayback::Enabled) => "Play on both",
@@ -971,19 +1022,45 @@ impl RestoredDashboard {
                     }
                 };
                 panel.child(div().flex().flex_col().gap_2()
-                    .child(div().text_size(px(11.)).child(crate::i18n::tr("Host audio output")))
-                    .child(div().flex().gap_2()
-                        .child(command_button("host_audio_mirror", ActionVariantKind::Neutral, cx)
-                            .disabled(pending || !supported || matches!(playback, None | Some(LocalPlayback::Enabled)))
-                            .child(crate::i18n::tr("Play on both"))
-                            .on_click(cx.listener(|this, _, _, cx| { this.owner.set_host_audio(AudioOutputMode::Mirror); cx.notify(); })))
-                        .child(command_button("host_audio_private", ActionVariantKind::Neutral, cx)
-                            .disabled(pending || !supported || playback == Some(LocalPlayback::Disabled))
-                            .child(crate::i18n::tr("Remote only"))
-                            .on_click(cx.listener(|this, _, _, cx| { this.owner.set_host_audio(AudioOutputMode::Private); cx.notify(); }))))
-                    .child(div().text_size(px(11.)).child(crate::i18n::tr(caption)))
+                    .child(div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).child(crate::i18n::tr("Host audio output")))
+                    .child(
+                        crate::product_components::segmented_track(&sound_theme)
+                            .child(
+                                ely_gpui_component::buttons::Button::new("host_audio_mirror", crate::i18n::tr("Play on both"))
+                                    .variant(if mirror_selected {
+                                        ely_gpui_component::buttons::ButtonVariant::Primary
+                                    } else {
+                                        ely_gpui_component::buttons::ButtonVariant::Ghost
+                                    })
+                                    .control_size(ely_gpui_component::theme::ControlSize::Sm)
+                                    .h(px(26.))
+                                    .rounded(px(7.))
+                                    .disabled(pending || !supported || mirror_selected)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.owner.set_host_audio(AudioOutputMode::Mirror);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                ely_gpui_component::buttons::Button::new("host_audio_private", crate::i18n::tr("Remote only"))
+                                    .variant(if private_selected {
+                                        ely_gpui_component::buttons::ButtonVariant::Primary
+                                    } else {
+                                        ely_gpui_component::buttons::ButtonVariant::Ghost
+                                    })
+                                    .control_size(ely_gpui_component::theme::ControlSize::Sm)
+                                    .h(px(26.))
+                                    .rounded(px(7.))
+                                    .disabled(pending || !supported || private_selected)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.owner.set_host_audio(AudioOutputMode::Private);
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(div().text_size(px(10.5)).text_color(sound_theme.content.secondary).child(crate::i18n::tr(caption)))
                     .when_some(status.and_then(|status| status.message), |row, message| {
-                        row.child(div().text_size(px(11.)).child(crate::i18n::message(&message)))
+                        row.child(div().text_size(px(10.5)).text_color(sound_theme.content.secondary).child(crate::i18n::message(&message)))
                     }))
             })
             .child(security_toggle_row(
@@ -1038,6 +1115,7 @@ impl RestoredDashboard {
             ))
             .child(
                 command_button("replace-current-source", ActionVariantKind::Neutral, cx)
+                    .rounded_full()
                     .disabled(binding.is_none())
                     .child(crate::i18n::tr("Replace current source…"))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1065,9 +1143,10 @@ impl RestoredDashboard {
                     },
                 ),
             )
-            .child(div().text_size(px(11.)).child(crate::i18n::message(&self.status)))
+            .child(div().text_size(px(11.)).text_color(cx.theme().content.secondary).child(crate::i18n::message(&self.status)))
             .child(
                 command_button("island_disconnect", ActionVariantKind::Danger, cx)
+                    .rounded_full()
                     .debug_selector(||"end-current-stream".into())
                     .child(crate::i18n::tr("End this stream"))
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1078,6 +1157,7 @@ impl RestoredDashboard {
         if let Some(device) = self.stream_device.clone() {
             body = body.child(
                 command_button("send-back-to-device", ActionVariantKind::Neutral, cx)
+                    .rounded_full()
                     .child(crate::i18n::tr("Send a local screen to this device…"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.begin_delivery_selection(device.clone(), cx)

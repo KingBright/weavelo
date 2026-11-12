@@ -11,15 +11,22 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,6 +40,7 @@ fun QrScanScreen(
     onCancel: () -> Unit,
     onManualInput: () -> Unit
 ) {
+    val p = WeaveloTokens.colors
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentResult by rememberUpdatedState(onResult)
@@ -110,18 +118,81 @@ fun QrScanScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(ColorBaseBg)) {
+    Box(Modifier.fillMaxSize().background(p.canvas)) {
         if (permissionGranted && cameraMessage == null) {
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { previewView })
+            val bracketColor = p.brand
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(236.dp)
+            ) {
+                val arm = 28.dp.toPx()
+                val stroke = 3.2.dp.toPx()
+                val w = size.width
+                val h = size.height
+                // Top-left
+                drawLine(bracketColor, Offset(0f, arm), Offset.Zero, stroke, StrokeCap.Round)
+                drawLine(bracketColor, Offset.Zero, Offset(arm, 0f), stroke, StrokeCap.Round)
+                // Top-right
+                drawLine(bracketColor, Offset(w - arm, 0f), Offset(w, 0f), stroke, StrokeCap.Round)
+                drawLine(bracketColor, Offset(w, 0f), Offset(w, arm), stroke, StrokeCap.Round)
+                // Bottom-left
+                drawLine(bracketColor, Offset(0f, h - arm), Offset(0f, h), stroke, StrokeCap.Round)
+                drawLine(bracketColor, Offset(0f, h), Offset(arm, h), stroke, StrokeCap.Round)
+                // Bottom-right
+                drawLine(bracketColor, Offset(w - arm, h), Offset(w, h), stroke, StrokeCap.Round)
+                drawLine(bracketColor, Offset(w, h - arm), Offset(w, h), stroke, StrokeCap.Round)
+            }
         }
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            .background(ColorBaseBg.copy(alpha = 0.92f)).safeDrawingPadding().padding(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(tr(cameraMessage ?: "Scan the invitation QR shown in Weavelo on your other device."),
-                color = ColorTextPrimary, fontSize = 14.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                TextButton(onClick = { session.close(); onManualInput() }) { Text(tr("Enter invitation"), color = ColorAccentCyan) }
-                TextButton(onClick = cancel) { Text(tr("Cancel"), color = ColorTextPrimary) }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .safeDrawingPadding()
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                modifier = Modifier
+                    .widthIn(max = 460.dp)
+                    .fillMaxWidth()
+                    .border(1.dp, p.borderStrong, RoundedCornerShape(22.dp)),
+                shape = RoundedCornerShape(22.dp),
+                color = p.surfaceGlass,
+                shadowElevation = 12.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Text(
+                        text = tr(cameraMessage ?: "Scan the invitation QR shown in Weavelo on your other device."),
+                        color = p.textPrimary,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        lineHeight = 19.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        PrecisionButton(
+                            text = tr("Enter invitation"),
+                            leadingSymbol = MobileSymbol.Invitation,
+                            style = PrecisionButtonStyle.TONAL,
+                            onClick = { session.close(); onManualInput() }
+                        )
+                        PrecisionButton(
+                            text = tr("Cancel"),
+                            style = PrecisionButtonStyle.SUBTLE,
+                            onClick = cancel
+                        )
+                    }
+                }
             }
         }
     }

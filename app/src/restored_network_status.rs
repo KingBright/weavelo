@@ -57,6 +57,8 @@ impl RestoredDashboard {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (label, quality, _) = Self::network_status_details(role, route, stats);
+        let chip_bg = crate::design_system::theme_glass_floating(cx);
+        let chip_border = crate::design_system::theme_border_fine(cx);
         div()
             .id("network-status-hit-area")
             .occlude()
@@ -64,12 +66,13 @@ impl RestoredDashboard {
             .child(
                 command_button("network-status-chip", ActionVariantKind::Neutral, cx)
                     .h(px(28.))
-                    .px_2()
+                    .px_2p5()
                     .rounded_full()
                     .flex_none()
-                    .bg(color_glass_card())
+                    .bg(chip_bg)
                     .border_1()
-                    .border_color(color_border_fine())
+                    .border_color(chip_border)
+                    .shadow_sm()
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.network_details_open = !this.network_details_open;
                         this.reset_pointer_scroll();
@@ -82,7 +85,7 @@ impl RestoredDashboard {
                         div()
                             .flex()
                             .items_center()
-                            .gap_1()
+                            .gap_1p5()
                             .text_size(px(11.))
                             .whitespace_nowrap()
                             .child(network_quality_icon(quality, &cx.theme()).size(px(12.)))
@@ -99,6 +102,10 @@ impl RestoredDashboard {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (_, _, rows) = Self::network_status_details(role, route, stats);
+        let card_bg = crate::design_system::theme_glass_card(cx);
+        let card_border = crate::design_system::theme_border_fine(cx);
+        let divider = cx.theme().border.divider;
+        let secondary = cx.theme().content.secondary;
         div()
             .id("network-status-details")
             .absolute()
@@ -108,13 +115,13 @@ impl RestoredDashboard {
             .flex()
             .flex_col()
             .gap_1()
-            .px_2p5()
-            .py_2()
-            .rounded(px(10.))
+            .px_3()
+            .py_2p5()
+            .rounded(px(12.))
             .occlude()
-            .bg(color_glass_card())
+            .bg(card_bg)
             .border_1()
-            .border_color(color_border_fine())
+            .border_color(card_border)
             .shadow_lg()
             .on_any_mouse_down(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
@@ -123,7 +130,10 @@ impl RestoredDashboard {
                     .items_center()
                     .justify_between()
                     .gap_3()
+                    .pb_1()
                     .mb_0p5()
+                    .border_b_1()
+                    .border_color(divider)
                     .child(
                         div()
                             .text_size(px(12.))
@@ -133,16 +143,17 @@ impl RestoredDashboard {
                     )
                     .child(
                         command_button("close-network-status", ActionVariantKind::Neutral, cx)
-                            .size(px(20.))
+                            .size(px(22.))
+                            .rounded(px(6.))
                             .p_0()
-                            .child("×")
+                            .child(icon(IconName::Close).size(px(12.)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.network_details_open = false;
                                 cx.notify();
                             })),
                     ),
             )
-            .children(rows.into_iter().map(|(name, value)| {
+            .children(rows.into_iter().map(move |(name, value)| {
                 div()
                     .flex()
                     .items_center()
@@ -151,13 +162,14 @@ impl RestoredDashboard {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(cx.theme().content.secondary)
+                            .text_color(secondary)
                             .whitespace_nowrap()
                             .child(name),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
+                            .font_family(crate::design_system::product_mono_font())
                             .font_weight(FontWeight::MEDIUM)
                             .whitespace_nowrap()
                             .child(value),

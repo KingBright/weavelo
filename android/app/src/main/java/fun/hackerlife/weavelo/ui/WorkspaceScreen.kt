@@ -5,6 +5,7 @@ import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +18,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,11 +34,14 @@ import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import `fun`.hackerlife.weavelo.*
@@ -136,36 +141,6 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         }
     }
     val volumes = remember { mutableStateMapOf<Int, Float>() }
-    if (sourcePicker) {
-        if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
-            LaunchedEffect(Unit) { sourcePicker = false }
-        } else SourcePicker(state.sources, onClose = { sourcePicker = false }) { source ->
-            localError = null; localErrorText = null
-            WorkspaceClient.add(source, sessionKey, pickerGeneration)
-            sourcePicker = false
-        }
-    }
-    if (backgroundSettings) AlertDialog(onDismissRequest = { backgroundSettings = false }, title = { Text(tr("Background connection")) },
-        text = { Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(keepService, { keepService = it }); Text(tr("Keep this connection in background until Disconnect"))
-            }
-            Text(tr("This is an explicit foreground service, not a battery or system-stop exemption. The idle timeout below applies when this is off."))
-            OutlinedTextField(keepAlive, { keepAlive = it }, label = { Text(tr("Idle seconds (0 = always keep)")) },
-                isError = keepAlive.toIntOrNull()?.let { it !in 0..86400 } ?: true)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(adaptive, { adaptive = it }); Text(tr("Adjust for battery and mobile data"))
-            }
-            Text(tr("Media pauses immediately. Idle connections sleep sooner on battery saver (30s), low battery (60s), or metered data (120s). File transfers finish first. Reopen to reconnect."))
-        } }, confirmButton = { TextButton(onClick = {
-            val seconds = keepAlive.toIntOrNull()
-            if (seconds != null && seconds in 0..86400) {
-                WeaveloClient.updateBackgroundKeepAlive(seconds)
-                WeaveloClient.updateBackgroundServiceEnabled(keepService)
-                preferences.edit().putBoolean("adaptive_background", adaptive).apply()
-                backgroundSettings = false
-            }
-        }) { Text(tr("Save")) } })
     DisposableEffect(endpoint, deviceId, sessionKey) {
         SessionConnectionService.openWorkspace(context, incoming ?: WorkspaceSessionRequest(endpoint, deviceId, sessionKey, openMainDisplay = openMainDisplay))
         val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }
@@ -261,42 +236,178 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         }
     }
 
-    @Composable
-    fun SessionActionsDropdown(expanded: Boolean, onDismiss: () -> Unit) {
-        DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-            LanguageSelector()
-            if (!state.connected && !state.incomingEnded) {
-                TextButton(onClick = { onDismiss(); WorkspaceClient.reconnect() }) { Text(tr("Reconnect")) }
-            }
-            if (state.panes.size > 1) {
-                TextButton(onClick = { onDismiss(); WorkspaceClient.layout(!state.grid) }) {
-                    Text(if (state.grid) tr("Use tabs") else tr("Show together"))
+    WeaveloTheme {
+        val p = WeaveloTokens.colors
+
+        @Composable
+        fun SessionActionsDropdown(expanded: Boolean, onDismiss: () -> Unit) {
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = onDismiss,
+                shape = RoundedCornerShape(18.dp),
+                containerColor = p.surfaceRaised,
+                border = BorderStroke(1.dp, p.borderStrong)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 248.dp, max = 300.dp)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    LanguageSelector(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                    HorizontalDivider(color = p.borderMuted)
+                    if (!state.connected && !state.incomingEnded) {
+                        PrecisionMenuItem(
+                            text = tr("Reconnect"),
+                            symbol = MobileSymbol.Refresh,
+                            onClick = { onDismiss(); WorkspaceClient.reconnect() }
+                        )
+                    }
+                    if (state.panes.size > 1) {
+                        PrecisionMenuItem(
+                            text = if (state.grid) tr("Use tabs") else tr("Show together"),
+                            symbol = MobileSymbol.Grid,
+                            onClick = { onDismiss(); WorkspaceClient.layout(!state.grid) }
+                        )
+                    }
+                    PrecisionMenuItem(
+                        text = tr("Refresh screens and windows"),
+                        symbol = MobileSymbol.Refresh,
+                        enabled = state.connected && !state.incomingEnded,
+                        onClick = { onDismiss(); WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) }
+                    )
+                    HorizontalDivider(color = p.borderMuted)
+                    PrecisionMenuItem(
+                        text = tr("Send file"),
+                        symbol = MobileSymbol.Send,
+                        enabled = state.connected && state.files,
+                        onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Share file with network"),
+                        symbol = MobileSymbol.Share,
+                        enabled = state.connected,
+                        onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Retrieve shared files"),
+                        symbol = MobileSymbol.Download,
+                        enabled = state.connected && state.files && !state.sharedBusy,
+                        onClick = { onDismiss(); sharedFilesOpen = true; WorkspaceClient.listSharedFiles() }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Received files"),
+                        symbol = MobileSymbol.Folder,
+                        onClick = { onDismiss(); receivedFiles = true }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Clear my shared list"),
+                        symbol = MobileSymbol.Close,
+                        enabled = state.connected,
+                        onClick = { onDismiss(); WorkspaceClient.clearSharedFiles() }
+                    )
+                    HorizontalDivider(color = p.borderMuted)
+                    PrecisionMenuItem(
+                        text = tr("Clipboard"),
+                        symbol = MobileSymbol.Clipboard,
+                        checked = state.clipboard,
+                        enabled = state.connected && state.clipboardAvailable,
+                        onClick = { onDismiss(); WorkspaceClient.enableClipboard(!state.clipboard) }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Send clipboard"),
+                        symbol = MobileSymbol.Copy,
+                        enabled = state.connected && state.clipboard,
+                        onClick = { onDismiss(); sendClipboardNow() }
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Background"),
+                        symbol = MobileSymbol.Settings,
+                        onClick = { onDismiss(); backgroundSettings = true }
+                    )
+                    HorizontalDivider(color = p.borderMuted)
+                    PrecisionMenuItem(
+                        text = tr("Disconnect"),
+                        symbol = MobileSymbol.Disconnect,
+                        destructive = true,
+                        onClick = { onDismiss(); disconnect() }
+                    )
                 }
             }
-            TextButton(onClick = { onDismiss(); WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) },
-                enabled = state.connected && !state.incomingEnded) { Text(tr("Refresh screens and windows")) }
-            TextButton(onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) },
-                enabled = state.connected && state.files) { Text(tr("Send file")) }
-            TextButton(onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = true; filePicker.launch(arrayOf("*/*")) },
-                enabled = state.connected) { Text(tr("Share file with network")) }
-            TextButton(onClick = { onDismiss(); WorkspaceClient.clearSharedFiles() },
-                enabled = state.connected) { Text(tr("Clear my shared list")) }
-            TextButton(onClick = { onDismiss(); sharedFilesOpen = true; WorkspaceClient.listSharedFiles() },
-                enabled = state.connected && state.files && !state.sharedBusy) { Text(tr("Retrieve shared files")) }
-            TextButton(onClick = { onDismiss(); receivedFiles = true }) { Text(tr("Received files")) }
-            TextButton(onClick = { onDismiss(); backgroundSettings = true }) { Text(tr("Background")) }
-            TextButton(onClick = { onDismiss(); WorkspaceClient.enableClipboard(!state.clipboard) },
-                enabled = state.connected && state.clipboardAvailable) {
-                Text(if (state.clipboard) tr("Clipboard ✓") else tr("Clipboard"))
-            }
-            TextButton(onClick = { onDismiss(); sendClipboardNow() },
-                enabled = state.connected && state.clipboard) { Text(tr("Send clipboard")) }
-            TextButton(onClick = { onDismiss(); disconnect() }) { Text(tr("Disconnect")) }
         }
-    }
 
-    WeaveloTheme {
-        Box(Modifier.fillMaxSize().background(if (state.panes.isEmpty()) ColorBaseBg else Color.Black)) {
+        if (sourcePicker) {
+            if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
+                LaunchedEffect(Unit) { sourcePicker = false }
+            } else SourcePicker(state.sources, onClose = { sourcePicker = false }) { source ->
+                localError = null; localErrorText = null
+                WorkspaceClient.add(source, sessionKey, pickerGeneration)
+                sourcePicker = false
+            }
+        }
+
+        if (backgroundSettings) {
+            PrecisionDialog(
+                title = tr("Background connection"),
+                onDismissRequest = { backgroundSettings = false },
+                icon = MobileSymbol.Network,
+                dismissButton = {
+                    PrecisionButton(
+                        text = tr("Cancel"),
+                        onClick = { backgroundSettings = false },
+                        style = PrecisionButtonStyle.SUBTLE,
+                        compact = true
+                    )
+                },
+                confirmButton = {
+                    PrecisionButton(
+                        text = tr("Save"),
+                        onClick = {
+                            val seconds = keepAlive.toIntOrNull()
+                            if (seconds != null && seconds in 0..86400) {
+                                WeaveloClient.updateBackgroundKeepAlive(seconds)
+                                WeaveloClient.updateBackgroundServiceEnabled(keepService)
+                                preferences.edit().putBoolean("adaptive_background", adaptive).apply()
+                                backgroundSettings = false
+                            }
+                        },
+                        style = PrecisionButtonStyle.PRIMARY,
+                        compact = true
+                    )
+                }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    PrecisionSwitchRow(
+                        title = tr("Keep this connection in background until Disconnect"),
+                        subtitle = tr("This is an explicit foreground service, not a battery or system-stop exemption. The idle timeout below applies when this is off."),
+                        checked = keepService,
+                        onCheckedChange = { keepService = it },
+                        leadingSymbol = MobileSymbol.Network
+                    )
+                    PrecisionTextField(
+                        value = keepAlive,
+                        onValueChange = { keepAlive = it },
+                        label = tr("Idle seconds (0 = always keep)"),
+                        isError = keepAlive.toIntOrNull()?.let { it !in 0..86400 } ?: true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    PrecisionSwitchRow(
+                        title = tr("Adjust for battery and mobile data"),
+                        subtitle = tr("Media pauses immediately. Idle connections sleep sooner on battery saver (30s), low battery (60s), or metered data (120s). File transfers finish first. Reopen to reconnect."),
+                        checked = adaptive,
+                        onCheckedChange = { adaptive = it },
+                        leadingSymbol = MobileSymbol.Settings
+                    )
+                }
+            }
+        }
+
+        Box(Modifier.fillMaxSize().background(if (state.panes.isEmpty()) p.canvas else Color(0xFF070A0F))) {
             Column(Modifier.fillMaxSize().imePadding()) {
                 val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
                 if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
@@ -368,37 +479,43 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     val streamIssue = localError ?: if (!state.connected) state.status else null
                     if (!streamIssue.isNullOrBlank() && !typing) {
                         Surface(
-                            modifier = Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(8.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .safeDrawingPadding()
+                                .padding(8.dp)
+                                .border(1.dp, p.borderStrong, RoundedCornerShape(18.dp)),
                             shape = RoundedCornerShape(18.dp),
-                            color = ColorSurfaceCard.copy(alpha = .94f),
-                            shadowElevation = 4.dp
+                            color = p.surfaceGlass,
+                            shadowElevation = 6.dp
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
                                     text = if (localError != null && localErrorText != null) appText(localErrorText!!)
                                         else if (localError == null && state.statusText != null) appText(state.statusText!!)
                                         else trFormat("Details: %s", streamIssue),
-                                    color = ColorTextPrimary,
+                                    color = p.textPrimary,
                                     style = MaterialTheme.typography.labelMedium,
                                     maxLines = 2,
                                     modifier = Modifier.widthIn(max = 240.dp)
                                 )
                                 if (!state.connected && !state.incomingEnded) {
-                                    TextButton(
+                                    PrecisionButton(
+                                        text = tr("Reconnect"),
                                         onClick = { WorkspaceClient.reconnect() },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                                    ) { Text(tr("Reconnect"), style = MaterialTheme.typography.labelMedium) }
+                                        style = PrecisionButtonStyle.TONAL,
+                                        compact = true
+                                    )
                                 }
                                 if (localError != null) {
-                                    MobileAction(MobileSymbol.Close, tr("Close"), modifier = Modifier.size(28.dp)) {
+                                    MobileAction(MobileSymbol.Close, tr("Close"), tonalWell = true, modifier = Modifier.size(32.dp)) {
                                         localError = null; localErrorText = null
                                     }
                                 } else {
-                                    MobileAction(MobileSymbol.Close, tr("Exit stream"), modifier = Modifier.size(28.dp), onClick = disconnect)
+                                    MobileAction(MobileSymbol.Close, tr("Exit stream"), tonalWell = true, modifier = Modifier.size(32.dp), onClick = disconnect)
                                 }
                             }
                         }
@@ -413,53 +530,107 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
                             .take(4)
                     }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
-                        if (loadingCatalog) {
-                            CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp, color = ColorAccentCyan)
-                        } else {
-                            Icon(MobileSymbol.Sources.image, null, tint = ColorAccentEmerald, modifier = Modifier.size(40.dp))
-                        }
-                        Text(when {
-                            state.incomingEnded -> tr("Sharing ended")
-                            loadingCatalog -> tr("Connecting…")
-                            else -> tr("Choose a screen")
-                        }, color = ColorTextPrimary, style = MaterialTheme.typography.titleLarge)
-                        Text(when {
-                            state.incomingEnded -> tr("You can still exchange files.")
-                            loadingCatalog -> tr("Connecting and loading shared screens…")
-                            state.sources.isEmpty() -> tr("This device has not shared a screen yet. You can still exchange files.")
-                            else -> tr("Open a display or application window. File transfers stay independent.")
-                        }, color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                        if (!state.incomingEnded && !loadingCatalog) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                if (quickScreen != null) {
-                                    Button(onClick = {
-                                        localError = null; localErrorText = null
-                                        WorkspaceClient.add(quickScreen, sessionKey, state.connectionGeneration)
-                                    }, enabled = state.connected) {
-                                        Text(tr("Open main screen"))
-                                    }
-                                }
-                                OutlinedButton(onClick = {
-                                    WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
-                                    pickerGeneration = state.connectionGeneration; sourcePicker = true
-                                }, enabled = state.connected) {
-                                    Text(tr("Browse screens and windows"))
+                    PrecisionCard(
+                        modifier = Modifier
+                            .widthIn(max = 460.dp)
+                            .padding(horizontal = 18.dp, vertical = 24.dp),
+                        cornerRadius = 22.dp,
+                        contentPadding = PaddingValues(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(p.brandSoft)
+                                    .border(1.dp, p.brandBorder.copy(alpha = 0.55f), RoundedCornerShape(16.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (loadingCatalog) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.6.dp, color = p.brand)
+                                } else {
+                                    Icon(MobileSymbol.Sources.image, null, tint = p.brand, modifier = Modifier.size(26.dp))
                                 }
                             }
-                            if (quickSources.isNotEmpty()) {
-                                Column(Modifier.widthIn(max = 420.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    quickSources.forEach { source ->
-                                        OutlinedButton(onClick = {
-                                            localError = null; localErrorText = null
-                                            WorkspaceClient.add(source, sessionKey, state.connectionGeneration)
-                                        }, enabled = state.connected, modifier = Modifier.fillMaxWidth()) {
-                                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(when {
+                                state.incomingEnded -> tr("Sharing ended")
+                                loadingCatalog -> tr("Connecting…")
+                                else -> tr("Choose a screen")
+                            }, color = p.textPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                            Text(when {
+                                state.incomingEnded -> tr("You can still exchange files.")
+                                loadingCatalog -> tr("Connecting and loading shared screens…")
+                                state.sources.isEmpty() -> tr("This device has not shared a screen yet. You can still exchange files.")
+                                else -> tr("Open a display or application window. File transfers stay independent.")
+                            }, color = p.textSecondary, fontSize = 13.sp, lineHeight = 19.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            if (!state.incomingEnded && !loadingCatalog) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    if (quickScreen != null) {
+                                        PrecisionButton(
+                                            text = tr("Open main screen"),
+                                            leadingSymbol = MobileSymbol.View,
+                                            enabled = state.connected,
+                                            style = PrecisionButtonStyle.PRIMARY,
+                                            onClick = {
+                                                localError = null; localErrorText = null
+                                                WorkspaceClient.add(quickScreen, sessionKey, state.connectionGeneration)
+                                            }
+                                        )
+                                    }
+                                    PrecisionButton(
+                                        text = tr("Browse screens and windows"),
+                                        leadingSymbol = MobileSymbol.Sources,
+                                        enabled = state.connected,
+                                        style = if (quickScreen != null) PrecisionButtonStyle.TONAL else PrecisionButtonStyle.PRIMARY,
+                                        onClick = {
+                                            WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                                            pickerGeneration = state.connectionGeneration; sourcePicker = true
+                                        }
+                                    )
+                                }
+                                if (quickSources.isNotEmpty()) {
+                                    HorizontalDivider(color = p.borderMuted)
+                                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        quickSources.forEach { source ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(p.surfaceSunken)
+                                                    .border(1.dp, p.borderMuted, RoundedCornerShape(12.dp))
+                                                    .clickable(enabled = state.connected, role = Role.Button) {
+                                                        localError = null; localErrorText = null
+                                                        WorkspaceClient.add(source, sessionKey, state.connectionGeneration)
+                                                    }
+                                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
                                                 SourceIcon(source)
-                                                Text(localizedSourceTitle(source), modifier = Modifier.weight(1f), maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis)
+                                                Text(
+                                                    localizedSourceTitle(source),
+                                                    color = p.textPrimary,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    modifier = Modifier.weight(1f),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Icon(
+                                                    MobileSymbol.ChevronRight.image,
+                                                    contentDescription = null,
+                                                    tint = p.textTertiary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
                                             }
                                         }
                                     }
@@ -475,45 +646,65 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             // Top header ONLY when no stream pane is open (pre-stream selection page).
             // During active streaming, zero top bars are ever shown.
             if (state.panes.isEmpty()) {
-                Column(
-                    Modifier.align(Alignment.TopCenter).fillMaxWidth().safeDrawingPadding().padding(6.dp)
-                        .background(ColorSurfaceCard.copy(alpha = .92f), RoundedCornerShape(18.dp))
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .safeDrawingPadding()
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                        .border(1.dp, p.border, RoundedCornerShape(20.dp)),
+                    shape = RoundedCornerShape(20.dp),
+                    color = p.surfaceGlass,
+                    shadowElevation = 6.dp
                 ) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
-                        MobileAction(MobileSymbol.Back, tr("Exit stream"), onClick = disconnect)
-                        Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                            Text(remoteDevice?.name ?: tr("Remote device"),
-                                color = ColorTextPrimary, fontWeight = FontWeight.SemiBold,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            val subStatus = when {
-                                state.incomingEnded -> tr("Sharing ended")
-                                state.connected && routeBadge != null -> "${tr("Connected")} · $routeBadge"
-                                state.connected -> tr("Connected")
-                                else -> tr("Connecting…")
+                    Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 50.dp), verticalAlignment = Alignment.CenterVertically) {
+                            MobileAction(MobileSymbol.Back, tr("Exit stream"), tonalWell = true, onClick = disconnect)
+                            Column(Modifier.weight(1f).padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        remoteDevice?.name ?: tr("Remote device"),
+                                        color = p.textPrimary,
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (routeBadge != null) {
+                                        PrecisionPillBadge(text = routeBadge, tone = PillTone.EMERALD, showDot = state.connected)
+                                    }
+                                }
+                                val subStatus = when {
+                                    state.incomingEnded -> tr("Sharing ended")
+                                    state.connected -> tr("Connected")
+                                    else -> tr("Connecting…")
+                                }
+                                Text(subStatus, color = p.textSecondary, fontSize = 11.5.sp)
                             }
-                            Text(subStatus, color = ColorTextSecondary, style = MaterialTheme.typography.labelSmall)
+                            MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded, tonalWell = true) {
+                                WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                                pickerGeneration = state.connectionGeneration; sourcePicker = true
+                            }
+                            MobileAction(MobileSymbol.Refresh, tr("Refresh screens and windows"), state.connected && !state.incomingEnded, tonalWell = true) {
+                                WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                            }
+                            Box {
+                                MobileAction(MobileSymbol.More, tr("Connection actions"), tonalWell = true) { actionsOpen = true }
+                                SessionActionsDropdown(actionsOpen) { actionsOpen = false }
+                            }
                         }
-                        MobileAction(MobileSymbol.Sources, tr("Choose screen or app window"), state.connected && !state.incomingEnded) {
-                            WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
-                            pickerGeneration = state.connectionGeneration; sourcePicker = true
+                        (localError ?: state.status.takeUnless { it == "Connected" })?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                if (localError != null && localErrorText != null) appText(localErrorText!!)
+                                else if (localError == null && state.statusText != null) appText(state.statusText!!)
+                                else trFormat("Details: %s", it),
+                                color = if (localError != null) p.dangerText else p.textSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 2,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
                         }
-                        MobileAction(MobileSymbol.Refresh, tr("Refresh screens and windows"), state.connected && !state.incomingEnded) {
-                            WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
-                        }
-                        Box {
-                            MobileAction(MobileSymbol.More, tr("Connection actions")) { actionsOpen = true }
-                            SessionActionsDropdown(actionsOpen) { actionsOpen = false }
-                        }
-                    }
-                    (localError ?: state.status.takeUnless { it == "Connected" })?.takeIf { it.isNotBlank() }?.let {
-                        Text(
-                            if (localError != null && localErrorText != null) appText(localErrorText!!)
-                            else if (localError == null && state.statusText != null) appText(state.statusText!!)
-                            else trFormat("Details: %s", it),
-                            color = ColorTextSecondary,
-                            maxLines = 2,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                        )
                     }
                 }
             }
@@ -526,59 +717,177 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             var fps by remember(pane.id) { mutableStateOf(pane.fps.toString()) }
             var kbps by remember(pane.id) { mutableStateOf(pane.kbps.toString()) }
             val naturalScroll by WeaveloClient.naturalScrollFlow.collectAsState()
-            AlertDialog(onDismissRequest = { selectedSettings = null }, title = { Text(tr("Stream settings")) },
-                text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                    OutlinedTextField(fps, { fps = it }, label = { Text(tr("Frames per second")) })
-                    OutlinedTextField(kbps, { kbps = it }, label = { Text(tr("Bitrate (kbps)")) })
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = naturalScroll, onCheckedChange = { WeaveloClient.updateNaturalScroll(it) })
-                        Column {
-                            Text(tr("Natural scrolling (Apple style)"))
-                            Text(tr("Content moves in the same direction as your fingers"), color = ColorTextSecondary, style = MaterialTheme.typography.bodySmall)
-                        }
+            PrecisionDialog(
+                title = tr("Stream settings"),
+                onDismissRequest = { selectedSettings = null },
+                icon = MobileSymbol.Settings,
+                dismissButton = {
+                    PrecisionButton(
+                        text = tr("Cancel"),
+                        onClick = { selectedSettings = null },
+                        style = PrecisionButtonStyle.SUBTLE,
+                        compact = true
+                    )
+                },
+                confirmButton = {
+                    PrecisionButton(
+                        text = tr("Apply"),
+                        onClick = {
+                            val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
+                            if (f != null && k != null && f > 0 && k > 0) {
+                                WorkspaceClient.settings(pane.id, sessionKey, settingsGeneration, fps = f, kbps = k)
+                                selectedSettings = null
+                            }
+                        },
+                        style = PrecisionButtonStyle.PRIMARY,
+                        compact = true
+                    )
+                }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 380.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PrecisionTextField(
+                            value = fps,
+                            onValueChange = { fps = it },
+                            label = tr("Frames per second"),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        PrecisionTextField(
+                            value = kbps,
+                            onValueChange = { kbps = it },
+                            label = tr("Bitrate (kbps)"),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
                     }
+                    PrecisionSwitchRow(
+                        title = tr("Natural scrolling (Apple style)"),
+                        subtitle = tr("Content moves in the same direction as your fingers"),
+                        checked = naturalScroll,
+                        onCheckedChange = { WeaveloClient.updateNaturalScroll(it) },
+                        leadingSymbol = MobileSymbol.Touch
+                    )
                     pane.audioOwner?.let { owner ->
-                        Text(tr("Volume"))
-                        Slider(value = volumes[owner] ?: 1f, onValueChange = { volumes[owner] = it })
+                        HorizontalDivider(color = p.borderMuted)
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(tr("Volume"), color = p.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${((volumes[owner] ?: 1f) * 100).toInt()}%",
+                                color = p.brand,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Slider(
+                            value = volumes[owner] ?: 1f,
+                            onValueChange = { volumes[owner] = it },
+                            colors = SliderDefaults.colors(
+                                thumbColor = p.brand,
+                                activeTrackColor = p.brand,
+                                inactiveTrackColor = p.surfaceSunken
+                            )
+                        )
                     }
                     if (pane.source.isDisplay && !state.androidHost) {
                         val output = pane.audioOutput
-                        Text(tr("Sound on controlled device"))
-                        Text(tr(when {
-                            output.pendingRevision != null -> "Changing host audio output…"
-                            output.localPlayback == "Enabled" -> "Host sound is on"
-                            output.localPlayback == "Disabled" -> "Host sound is off"
-                            output.localPlayback == "Partial" -> "Host sound is partially on"
-                            else -> "Host sound state is unknown"
-                        }))
-                        output.messageText?.let { Text(appText(it)) }
-                        output.message?.takeIf { it.isNotBlank() }?.let { Text(tr(it)) }
-                        if (output.privateSupported == false) Text(tr("Private output is unavailable on this host"))
-                        Row {
-                            TextButton(onClick = { WorkspaceClient.setAudioOutput(pane.id, sessionKey, settingsGeneration, "Mirror") },
-                                enabled = settingsCurrent && output.pendingRevision == null && output.privateSupported != false) { Text(tr("Play on both")) }
-                            TextButton(onClick = { WorkspaceClient.setAudioOutput(pane.id, sessionKey, settingsGeneration, "Private") },
-                                enabled = settingsCurrent && output.pendingRevision == null && output.privateSupported != false) { Text(tr("Remote only")) }
+                        HorizontalDivider(color = p.borderMuted)
+                        Text(tr("Sound on controlled device"), color = p.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            tr(when {
+                                output.pendingRevision != null -> "Changing host audio output…"
+                                output.localPlayback == "Enabled" -> "Host sound is on"
+                                output.localPlayback == "Disabled" -> "Host sound is off"
+                                output.localPlayback == "Partial" -> "Host sound is partially on"
+                                else -> "Host sound state is unknown"
+                            }),
+                            color = p.textSecondary,
+                            fontSize = 12.sp
+                        )
+                        output.messageText?.let { Text(appText(it), color = p.textSecondary, fontSize = 11.5.sp) }
+                        output.message?.takeIf { it.isNotBlank() }?.let { Text(tr(it), color = p.textSecondary, fontSize = 11.5.sp) }
+                        if (output.privateSupported == false) {
+                            Text(tr("Private output is unavailable on this host"), color = p.warningText, fontSize = 11.5.sp)
                         }
+                        val selectedRoute = if (output.localPlayback == "Disabled") "Private" else "Mirror"
+                        PrecisionSegmentedRow(
+                            options = listOf(
+                                "Mirror" to tr("Play on both"),
+                                "Private" to tr("Remote only")
+                            ),
+                            selected = selectedRoute,
+                            enabled = settingsCurrent && output.pendingRevision == null && output.privateSupported != false,
+                            onSelect = { mode ->
+                                WorkspaceClient.setAudioOutput(pane.id, sessionKey, settingsGeneration, mode)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                } },
-                confirmButton = { TextButton(onClick = {
-                    val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
-                    if (f != null && k != null && f > 0 && k > 0) { WorkspaceClient.settings(pane.id, sessionKey, settingsGeneration, fps = f, kbps = k); selectedSettings = null }
-                }) { Text(tr("Apply")) } })
+                }
+            }
         }
-        if (sharedFilesOpen) AlertDialog(onDismissRequest = { sharedFilesOpen = false }, title = { Text(tr("Remote shared files")) },
-            text = { Column {
-                Text(state.status)
-                Text(tr("Only explicitly shared files are listed. No remote filesystem paths are accepted."))
-                state.remoteFiles.forEach { file ->
-                    TextButton(onClick = { WorkspaceClient.fetchSharedFile(file.id, sessionKey) }, enabled = state.connected && !state.sharedBusy) { Text(trFormat("Get %s (%d bytes)", file.name, file.sizeBytes)) }
+        if (sharedFilesOpen) {
+            PrecisionDialog(
+                title = tr("Remote shared files"),
+                onDismissRequest = { sharedFilesOpen = false },
+                icon = MobileSymbol.Download,
+                subtitle = tr("Only explicitly shared files are listed. No remote filesystem paths are accepted."),
+                confirmButton = {
+                    PrecisionButton(
+                        text = tr("Close"),
+                        onClick = { sharedFilesOpen = false },
+                        style = PrecisionButtonStyle.SUBTLE,
+                        compact = true
+                    )
                 }
-                Row {
-                    TextButton(onClick = { WorkspaceClient.listSharedFiles() }, enabled = state.connected && !state.sharedBusy) { Text(tr("Refresh")) }
-                    state.sharedNext?.let { next -> TextButton(onClick = { WorkspaceClient.listSharedFiles(next) }, enabled = state.connected && !state.sharedBusy) { Text(tr("Next page")) } }
+            ) {
+                Text(state.status, color = p.textSecondary, fontSize = 12.sp)
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    state.remoteFiles.forEach { file ->
+                        PrecisionMenuItem(
+                            text = trFormat("Get %s (%d bytes)", file.name, file.sizeBytes),
+                            symbol = MobileSymbol.Download,
+                            enabled = state.connected && !state.sharedBusy,
+                            onClick = { WorkspaceClient.fetchSharedFile(file.id, sessionKey) }
+                        )
+                    }
                 }
-            } }, confirmButton = { TextButton(onClick = { sharedFilesOpen = false }) { Text(tr("Close")) } })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrecisionButton(
+                        text = tr("Refresh"),
+                        leadingSymbol = MobileSymbol.Refresh,
+                        enabled = state.connected && !state.sharedBusy,
+                        style = PrecisionButtonStyle.TONAL,
+                        compact = true,
+                        onClick = { WorkspaceClient.listSharedFiles() }
+                    )
+                    state.sharedNext?.let { next ->
+                        PrecisionButton(
+                            text = tr("Next page"),
+                            enabled = state.connected && !state.sharedBusy,
+                            style = PrecisionButtonStyle.SUBTLE,
+                            compact = true,
+                            onClick = { WorkspaceClient.listSharedFiles(next) }
+                        )
+                    }
+                }
+            }
+        }
         if (receivedFiles) ReceivedFilesDialog(onSendToDevice = if (state.connected && state.files) { file ->
             receivedFiles = false
             WorkspaceClient.sendFile(file, sessionKey)
@@ -628,21 +937,48 @@ private fun WorkspaceVideo(
     sessionActionsContent: @Composable (Boolean, () -> Unit) -> Unit,
     onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit
 ) {
+    val p = WeaveloTokens.colors
     pane.videoError?.let { reason ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(pane.videoErrorText?.let { appText(it) } ?: trFormat("Details: %s", reason), color = ColorTextSecondary, style = MaterialTheme.typography.bodyMedium,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { WorkspaceClient.retry(pane.id, sessionKey, generation) }) { Text(tr("Retry this source")) }
-                    TextButton(onClick = onPickSource) { Text(tr("Switch screen")) }
+            PrecisionCard(
+                modifier = Modifier.widthIn(max = 360.dp).padding(20.dp),
+                cornerRadius = 18.dp,
+                contentPadding = PaddingValues(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        pane.videoErrorText?.let { appText(it) } ?: trFormat("Details: %s", reason),
+                        color = p.textSecondary,
+                        fontSize = 13.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PrecisionButton(
+                            text = tr("Retry this source"),
+                            leadingSymbol = MobileSymbol.Refresh,
+                            style = PrecisionButtonStyle.PRIMARY,
+                            compact = true,
+                            onClick = { WorkspaceClient.retry(pane.id, sessionKey, generation) }
+                        )
+                        PrecisionButton(
+                            text = tr("Switch screen"),
+                            leadingSymbol = MobileSymbol.Sources,
+                            style = PrecisionButtonStyle.TONAL,
+                            compact = true,
+                            onClick = onPickSource
+                        )
+                    }
                 }
             }
         }
         return
     }
     if (pane.source.isCamera && !pane.accepted) {
-        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { Text(tr("Updating camera…"),color=ColorTextSecondary) }
+        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) { Text(tr("Updating camera…"),color=p.textSecondary) }
         return
     }
     var dimensions by remember(pane.id, sessionKey, generation) {
@@ -893,10 +1229,22 @@ private fun WorkspaceVideo(
                     )
                 }
                 (videoStatus ?: pane.inputError)?.let { message ->
-                    Text(if (videoStatus != null) tr(message) else pane.inputErrorText?.let { appText(it) } ?: trFormat("Details: %s", message), color = ColorTextPrimary, style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(12.dp)
-                            .background(ColorSurfaceCard.copy(alpha = .94f), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 12.dp, vertical = 8.dp))
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(12.dp)
+                            .border(1.dp, p.border, RoundedCornerShape(14.dp)),
+                        shape = RoundedCornerShape(14.dp),
+                        color = p.surfaceGlass,
+                        shadowElevation = 6.dp
+                    ) {
+                        Text(
+                            if (videoStatus != null) tr(message) else pane.inputErrorText?.let { appText(it) } ?: trFormat("Details: %s", message),
+                            color = p.textPrimary,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
                 }
             },
             factory = { context ->
@@ -1025,38 +1373,41 @@ private fun WorkspaceVideo(
         if (portraitViewport && landscapeOverride == null && !portraitHintDismissed && !imeVisible &&
             !mobileTarget && pane.source.width > pane.source.height && transform.value.scale <= 1.05f) {
             Surface(
-                modifier = Modifier.align(Alignment.BottomStart).safeDrawingPadding().padding(8.dp),
-                shape = RoundedCornerShape(50),
-                color = ColorSurfaceCard.copy(alpha = .9f),
-                shadowElevation = 4.dp
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .safeDrawingPadding()
+                    .padding(8.dp)
+                    .border(1.dp, p.border, RoundedCornerShape(22.dp)),
+                shape = RoundedCornerShape(22.dp),
+                color = p.surfaceGlass,
+                shadowElevation = 6.dp
             ) {
                 Row(
-                    modifier = Modifier.padding(start = 6.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    TextButton(
+                    PrecisionButton(
+                        text = tr("Fill height"),
+                        leadingSymbol = MobileSymbol.ExpandVertical,
+                        style = PrecisionButtonStyle.TONAL,
+                        compact = true,
                         onClick = {
                             val bw = baseMeasured.width.coerceAtLeast(1).toFloat()
                             val bh = baseMeasured.height.coerceAtLeast(1).toFloat()
                             val cw = containerMeasured.width.coerceAtLeast(baseMeasured.width).coerceAtLeast(1).toFloat()
                             val ch = containerMeasured.height.coerceAtLeast(baseMeasured.height).coerceAtLeast(1).toFloat()
                             transform.value = transform.value.fillHeight(bw, bh, cw, ch)
-                        },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Icon(MobileSymbol.ExpandVertical.image, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(tr("Fill height"), style = MaterialTheme.typography.labelMedium)
-                    }
-                    TextButton(
-                        onClick = onToggleLandscape,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Icon(MobileSymbol.Rotate.image, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(tr("Landscape view"), style = MaterialTheme.typography.labelMedium)
-                    }
-                    MobileAction(MobileSymbol.Close, tr("Close"), modifier = Modifier.size(28.dp), onClick = onDismissPortraitHint)
+                        }
+                    )
+                    PrecisionButton(
+                        text = tr("Landscape view"),
+                        leadingSymbol = MobileSymbol.Rotate,
+                        style = PrecisionButtonStyle.SUBTLE,
+                        compact = true,
+                        onClick = onToggleLandscape
+                    )
+                    MobileAction(MobileSymbol.Close, tr("Close"), modifier = Modifier.size(32.dp), onClick = onDismissPortraitHint)
                 }
             }
         }
@@ -1118,7 +1469,7 @@ private fun WorkspaceVideo(
                     if (!sideDrawerOpen) sideMoreOpen = false else sideInteraction++
                 }
                 .padding(start = 36.dp, end = 2.dp, top = 10.dp, bottom = 10.dp)
-                .background(ColorAccentCyan.copy(alpha = pillAlpha), RoundedCornerShape(6.dp)))
+                .background(p.brand.copy(alpha = pillAlpha), RoundedCornerShape(6.dp)))
 
             if (sideDrawerOpen) {
                 val paneTitle = localizedSourceTitle(pane.source)
@@ -1128,7 +1479,8 @@ private fun WorkspaceVideo(
                         .align(Alignment.CenterEnd)
                         .safeDrawingPadding()
                         .padding(end = 42.dp, top = 8.dp, bottom = 8.dp)
-                        .widthIn(min = 220.dp, max = 276.dp)
+                        .widthIn(min = 232.dp, max = 286.dp)
+                        .border(1.dp, p.borderStrong, RoundedCornerShape(22.dp))
                         .pointerInput(pane.id, sessionKey, generation) {
                             awaitPointerEventScope {
                                 while (true) {
@@ -1138,72 +1490,75 @@ private fun WorkspaceVideo(
                                 }
                             }
                         },
-                    shape = RoundedCornerShape(20.dp),
-                    color = ColorSurfaceCard.copy(alpha = .95f),
-                    shadowElevation = 8.dp
+                    shape = RoundedCornerShape(22.dp),
+                    color = p.surfaceGlass,
+                    shadowElevation = 12.dp
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
                         // Row 1: Compact device header + more session menu + exit stream
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Column(Modifier.weight(1f)) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(
                                     text = deviceName,
-                                    color = ColorTextPrimary,
-                                    style = MaterialTheme.typography.labelLarge,
+                                    color = p.textPrimary,
+                                    fontSize = 13.5.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 if (routeBadge != null) {
-                                    Text(
-                                        text = routeBadge,
-                                        color = ColorAccentEmerald,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        maxLines = 1
-                                    )
+                                    PrecisionPillBadge(text = routeBadge, tone = PillTone.EMERALD, showDot = true)
                                 }
                             }
                             Box {
                                 MobileAction(
                                     symbol = MobileSymbol.More,
                                     label = tr("Connection actions"),
-                                    modifier = Modifier.size(36.dp)
+                                    tonalWell = true,
+                                    modifier = Modifier.size(38.dp)
                                 ) { sideMoreOpen = true }
                                 sessionActionsContent(sideMoreOpen) { sideMoreOpen = false }
                             }
                             MobileAction(
-                                symbol = MobileSymbol.Back,
+                                symbol = MobileSymbol.Disconnect,
                                 label = tr("Exit stream"),
-                                modifier = Modifier.size(36.dp),
+                                destructive = true,
+                                modifier = Modifier.size(38.dp),
                                 onClick = onDisconnect
                             )
                         }
 
-                        // Row 2: Current source / window selector & stream settings (tucked inside side drawer)
+                        // Row 2: Current source / window selector & stream settings (recessed precision slot)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFFF1F5F9))
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                .background(p.surfaceSunken)
+                                .border(1.dp, p.borderMuted, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TextButton(
-                                onClick = { sideDrawerOpen = false; onOpenSettings() },
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                                modifier = Modifier.weight(1f)
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(role = Role.Button) { sideDrawerOpen = false; onOpenSettings() }
+                                    .padding(horizontal = 4.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 SourceIcon(pane.source.copy(icon = pane.appearance?.application ?: pane.source.icon))
                                 Text(
                                     text = paneTitle,
-                                    color = ColorTextPrimary,
-                                    style = MaterialTheme.typography.labelMedium,
+                                    color = p.textPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -1212,7 +1567,7 @@ private fun WorkspaceVideo(
                                 MobileAction(
                                     symbol = MobileSymbol.CameraSwitch,
                                     label = tr("Switch camera"),
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(34.dp)
                                 ) {
                                     WorkspaceClient.switchCamera(pane.id, sessionKey, generation)
                                 }
@@ -1220,7 +1575,7 @@ private fun WorkspaceVideo(
                             MobileAction(
                                 symbol = MobileSymbol.Sources,
                                 label = tr("Choose screen or app window"),
-                                modifier = Modifier.size(32.dp)
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 sideDrawerOpen = false
                                 onPickSource()
@@ -1229,7 +1584,7 @@ private fun WorkspaceVideo(
                                 MobileAction(
                                     symbol = MobileSymbol.Close,
                                     label = trFormat("Close %s", paneTitle),
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(34.dp)
                                 ) {
                                     WorkspaceClient.remove(pane.id)
                                 }
@@ -1238,25 +1593,33 @@ private fun WorkspaceVideo(
 
                         if (!gridMode && allPanes.size > 1) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(p.surfaceSunken)
+                                    .padding(3.dp)
+                                    .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 allPanes.forEach { candidate ->
                                     val active = candidate.id == selectedPaneId
-                                    TextButton(
-                                        onClick = { WorkspaceClient.layout(false, candidate.id) },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    Box(
                                         modifier = Modifier
-                                            .heightIn(min = 30.dp)
-                                            .background(
-                                                if (active) ColorAccentCyan.copy(alpha = .12f) else Color.Transparent,
-                                                RoundedCornerShape(10.dp)
-                                            )
+                                            .heightIn(min = 28.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (active) p.surfaceRaised else Color.Transparent)
+                                            .let { mod ->
+                                                if (active) mod.border(1.dp, p.brandBorder, RoundedCornerShape(8.dp)) else mod
+                                            }
+                                            .clickable(role = Role.Tab) { WorkspaceClient.layout(false, candidate.id) }
+                                            .padding(horizontal = 9.dp, vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         Text(
                                             localizedSourceTitle(candidate.source),
-                                            color = if (active) ColorAccentCyan else ColorTextSecondary,
-                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (active) p.brand else p.textSecondary,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
                                             maxLines = 1
                                         )
                                     }
@@ -1275,6 +1638,7 @@ private fun WorkspaceVideo(
                                     symbol = MobileSymbol.Back,
                                     label = tr("Remote Back"),
                                     enabled = inputReady && pane.accepted && canRemoteBack,
+                                    tonalWell = true,
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)?.let {
@@ -1285,6 +1649,7 @@ private fun WorkspaceVideo(
                                     symbol = MobileSymbol.Home,
                                     label = tr("Remote Home"),
                                     enabled = inputReady && pane.accepted && isPhoneScreen,
+                                    tonalWell = true,
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     WorkspaceClient.keyboardBinding(pane.id, sessionKey, generation, token)?.let {
@@ -1297,6 +1662,7 @@ private fun WorkspaceVideo(
                                     label = tr("Trackpad"),
                                     enabled = inputReady,
                                     selected = touchMode == TouchMode.TRACKPAD,
+                                    tonalWell = true,
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
@@ -1308,6 +1674,7 @@ private fun WorkspaceVideo(
                                     label = tr("Direct touch"),
                                     enabled = inputReady,
                                     selected = touchMode == TouchMode.DIRECT || touchMode == TouchMode.NATIVE,
+                                    tonalWell = true,
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
@@ -1320,6 +1687,7 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Pan,
                                 label = tr("Pan canvas"),
                                 selected = touchMode == TouchMode.VIEW,
+                                tonalWell = true,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
@@ -1335,6 +1703,7 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Keyboard,
                                 label = tr("Show keyboard"),
                                 enabled = inputReady,
+                                tonalWell = true,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
@@ -1350,12 +1719,14 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Rotate,
                                 label = if (landscapeOverride == true) tr("Unlock rotation") else tr("Rotate to landscape"),
                                 selected = landscapeOverride == true,
+                                tonalWell = true,
                                 modifier = Modifier.size(40.dp),
                                 onClick = onToggleLandscape
                             )
                             MobileAction(
                                 symbol = MobileSymbol.Refresh,
                                 label = tr("Reset zoom"),
+                                tonalWell = true,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 transform.value = transform.value.reset()
@@ -1368,36 +1739,41 @@ private fun WorkspaceVideo(
         }
       }
       if (imeVisible && pane.input) {
-        Row(
-            Modifier.fillMaxWidth().background(ColorSurfaceCard).padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Column(Modifier.fillMaxWidth().background(p.surfaceRaised)) {
+            HorizontalDivider(color = p.border, thickness = 1.dp)
             Row(
-                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
-                    VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = token != 0L) {
-                        val owner = if (heldModifiers.isNotEmpty()) modifierBinding else keyboardBinding
-                        if (owner != null) {
-                            modifierBinding = owner
-                            virtualKeys.tap(key, token != 0L)
-                            heldModifiers = virtualKeys.selected()
-                            if (heldModifiers.isEmpty()) modifierBinding = null
+                Row(
+                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf("Esc", "Ctrl", "Alt", "Win", "Shift", "Tab", "F5", "F11", "▲", "▼", "◄", "►").forEach { key ->
+                        VirtualKeyPill(name = key, active = key.lowercase() in heldModifiers, enabled = token != 0L) {
+                            val owner = if (heldModifiers.isNotEmpty()) modifierBinding else keyboardBinding
+                            if (owner != null) {
+                                modifierBinding = owner
+                                virtualKeys.tap(key, token != 0L)
+                                heldModifiers = virtualKeys.selected()
+                                if (heldModifiers.isEmpty()) modifierBinding = null
+                            }
                         }
                     }
                 }
-            }
-            MobileAction(
-                symbol = MobileSymbol.Collapse,
-                label = tr("Hide keyboard"),
-                modifier = Modifier.size(40.dp)
-            ) {
-                focusGate.invalidate()
-                WorkspaceClient.invalidateEditorFocus()
-                keyboardVisible = false
-                sideDrawerOpen = false
+                Spacer(Modifier.width(4.dp))
+                MobileAction(
+                    symbol = MobileSymbol.Collapse,
+                    label = tr("Hide keyboard"),
+                    tonalWell = true,
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    focusGate.invalidate()
+                    WorkspaceClient.invalidateEditorFocus()
+                    keyboardVisible = false
+                    sideDrawerOpen = false
+                }
             }
         }
       }
@@ -1406,13 +1782,32 @@ private fun WorkspaceVideo(
 
 @Composable
 private fun SourceIcon(source: WorkspaceSource) {
-    Box(Modifier.size(24.dp),contentAlignment=Alignment.Center) {
-        val bitmap=source.icon
-        if (bitmap!=null) Image(bitmap = remember(bitmap) { bitmap.asImageBitmap() }, contentDescription = source.application.ifBlank { source.title }, modifier = Modifier.size(20.dp))
-        else Icon((if (source.isCamera) MobileSymbol.Camera else if (source.isWindow) MobileSymbol.Sources else MobileSymbol.Devices).image,
-            contentDescription=null,modifier=Modifier.size(20.dp))
+    val p = WeaveloTokens.colors
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(p.surfaceRaised)
+            .border(0.75.dp, p.borderMuted, RoundedCornerShape(6.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        val bitmap = source.icon
+        if (bitmap != null) {
+            Image(
+                bitmap = remember(bitmap) { bitmap.asImageBitmap() },
+                contentDescription = source.application.ifBlank { source.title },
+                modifier = Modifier.size(18.dp)
+            )
+        } else {
+            Icon(
+                (if (source.isCamera) MobileSymbol.Camera else if (source.isWindow) MobileSymbol.Sources else MobileSymbol.Devices).image,
+                contentDescription = null,
+                tint = p.brand,
+                modifier = Modifier.size(15.dp)
+            )
+        }
     }
-    Spacer(Modifier.width(4.dp))
+    Spacer(Modifier.width(6.dp))
 }
 
 @Composable
@@ -1441,6 +1836,7 @@ private fun localizedSourceTitle(source: WorkspaceSource): String {
 
 @Composable
 private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
+    val p = WeaveloTokens.colors
     var query by remember { mutableStateOf("") }
     val quickScreen = remember(sources) { primaryScreenSource(sources) }
     val matches = remember(sources, query) {
@@ -1449,52 +1845,114 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
             .filter { it.title.contains(query.trim(), true) || it.application.contains(query.trim(), true) }
             .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
     }
-    AlertDialog(onDismissRequest = onClose,
-        modifier = Modifier.imePadding().navigationBarsPadding().widthIn(max = 560.dp).fillMaxWidth(.9f),
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        title = {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(tr("Sources"), maxLines = 1)
-                if (quickScreen != null) {
-                    TextButton(onClick = { onSelect(quickScreen) }) { Text(tr("Open main screen")) }
+    PrecisionDialog(
+        title = tr("Sources"),
+        onDismissRequest = onClose,
+        icon = MobileSymbol.Sources,
+        maxWidth = 520.dp,
+        dismissButton = if (quickScreen != null) {
+            {
+                PrecisionButton(
+                    text = tr("Open main screen"),
+                    leadingSymbol = MobileSymbol.View,
+                    style = PrecisionButtonStyle.TONAL,
+                    compact = true,
+                    onClick = { onSelect(quickScreen) }
+                )
+            }
+        } else null,
+        confirmButton = {
+            PrecisionButton(
+                text = tr("Close"),
+                onClick = onClose,
+                style = PrecisionButtonStyle.SUBTLE,
+                compact = true
+            )
+        }
+    ) {
+        PrecisionTextField(
+            value = query,
+            onValueChange = { query = it },
+            label = tr("Search apps and windows")
+        )
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 310.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
+                Column(Modifier.fillMaxWidth()) {
+                    if (index == 0 || matches[index - 1].group != source.group) {
+                        Text(
+                            text = tr(source.group),
+                            color = p.brand,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                        )
+                    }
+                    val app = source.application.trim().ifBlank { "Other applications" }
+                    if (source.isWindow && (index == 0 || !matches[index - 1].isWindow ||
+                            !matches[index - 1].application.trim().ifBlank { "Other applications" }.equals(app, true))
+                    ) {
+                        Text(
+                            text = if (source.application.trim().isBlank()) tr("Other applications") else app,
+                            color = p.textSecondary,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(start = 6.dp, top = 6.dp, bottom = 3.dp)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = if (source.isWindow) 10.dp else 0.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(p.surfaceSunken)
+                            .border(1.dp, p.borderMuted, RoundedCornerShape(11.dp))
+                            .clickable(role = Role.Button) { onSelect(source) }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SourceIcon(source)
+                        Text(
+                            text = localizedSourceTitle(source),
+                            color = p.textPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Icon(
+                            MobileSymbol.ChevronRight.image,
+                            contentDescription = null,
+                            tint = p.textTertiary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
-        }, text = {
-        Column(Modifier.fillMaxWidth()) {
-            OutlinedTextField(query, { query = it }, label = { Text(tr("Search apps and windows")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(Modifier.weight(1f, fill = false).fillMaxWidth().heightIn(max = 300.dp)) {
-                itemsIndexed(matches, key = { _, source -> source.source.toString() }) { index, source ->
-                  Column(Modifier.fillMaxWidth()) {
-                    if (index == 0 || matches[index - 1].group != source.group) {
-                        Text(tr(source.group),
-                            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-                    }
-                    val app=source.application.trim().ifBlank { "Other applications" }
-                    if (source.isWindow && (index==0 || !matches[index-1].isWindow ||
-                            !matches[index-1].application.trim().ifBlank { "Other applications" }.equals(app,true))) {
-                        Text(if (source.application.trim().isBlank()) tr("Other applications") else app,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier=Modifier.padding(start=8.dp,top=8.dp,bottom=2.dp))
-                    }
-                    TextButton(onClick = { onSelect(source) }, modifier = Modifier.fillMaxWidth(),
-                        contentPadding=PaddingValues(start=if (source.isWindow) 16.dp else 8.dp,end=8.dp,top=6.dp,bottom=6.dp)) {
-                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-                            SourceIcon(source)
-                            Text(localizedSourceTitle(source),modifier=Modifier.weight(1f),maxLines=2,
-                                textAlign=androidx.compose.ui.text.style.TextAlign.Start,
-                                overflow=TextOverflow.Ellipsis)
-                        }
-                    }
-                  }
-                }
-                if (matches.isEmpty()) item {
-                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
-                        Text(tr("No matching sources"),style=MaterialTheme.typography.bodySmall)
-                        TextButton(onClick={query=""}) { Text(tr("Clear search")) }
+            if (matches.isEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(tr("No matching sources"), color = p.textSecondary, fontSize = 12.5.sp)
+                        PrecisionButton(
+                            text = tr("Clear search"),
+                            style = PrecisionButtonStyle.SUBTLE,
+                            compact = true,
+                            onClick = { query = "" }
+                        )
                     }
                 }
             }
         }
-    }, confirmButton = { TextButton(onClick = onClose) { Text(tr("Close")) } })
+    }
 }

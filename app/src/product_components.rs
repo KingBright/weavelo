@@ -35,6 +35,95 @@ pub fn device_badge_element(image: Option<Arc<RenderImage>>) -> AnyElement {
     }
 }
 
+/// Recessed tactile segmented track (Tactile Precision Craft).
+pub fn segmented_track(theme: &theme::Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_0p5()
+        .p(px(3.0))
+        .rounded(px(10.0))
+        .bg(theme.surface.sunken)
+        .border_1()
+        .border_color(theme.border.muted)
+}
+
+/// Sculpted tonal icon container for device badges, permissions, and composite headers.
+pub fn tonal_icon_well(size_px: f32, active: bool, cx: &App) -> Div {
+    use theme::ActiveTheme;
+    let theme = cx.theme();
+    div()
+        .size(px(size_px))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px((size_px * 0.28).clamp(6.0, 12.0)))
+        .bg(if active {
+            crate::design_system::theme_brand_soft(cx)
+        } else {
+            theme.surface.sunken
+        })
+        .border_1()
+        .border_color(if active {
+            theme.border.focus
+        } else {
+            theme.border.muted
+        })
+}
+
+/// Authentic Weavelo interlaced prism emblem inside a sculpted jewel badge.
+pub fn weavelo_brand_mark(size_px: f32, cx: &App) -> Div {
+    use theme::ActiveTheme;
+    let theme = cx.theme();
+    let glyph_px = (size_px * 0.68).round().max(12.0);
+    div()
+        .size(px(size_px))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px((size_px * 0.3).clamp(6.0, 10.0)))
+        .bg(theme.action.primary.bg)
+        .child(
+            svg()
+                .path("weavelo-brand/mark-mono.svg")
+                .size(px(glyph_px))
+                .text_color(theme.action.primary.fg),
+        )
+}
+
+/// Precision selection ring / checkmark badge (replaces ASCII `✓` / `○`).
+pub fn selection_indicator(selected: bool, cx: &App) -> Div {
+    use theme::ActiveTheme;
+    let theme = cx.theme();
+    div()
+        .size(px(16.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(if selected {
+            theme.action.primary.bg
+        } else {
+            theme.surface.base
+        })
+        .border_1()
+        .border_color(if selected {
+            theme.action.primary.bg
+        } else {
+            theme.border.default
+        })
+        .when(selected, |ring| {
+            ring.child(
+                icon(IconName::Check)
+                    .size(px(10.5))
+                    .color(theme.action.primary.fg),
+            )
+        })
+}
+
 const CURSOR_BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 type ChangeCallback<T> = Arc<dyn Fn(T, &mut Window, &mut App)>;
 
@@ -51,6 +140,8 @@ pub mod assets {
                 "weavelo-icons/server.svg" => {
                     Some(include_bytes!("product_components/icons/server.svg"))
                 }
+                "weavelo-icons/close.svg" => Some(include_bytes!("product_components/icons/close.svg")),
+                "weavelo-icons/check.svg" => Some(include_bytes!("product_components/icons/check.svg")),
                 "weavelo-icons/back.svg" => Some(include_bytes!("product_components/icons/back.svg")),
                 "weavelo-icons/home.svg" => Some(include_bytes!("product_components/icons/home.svg")),
                 "weavelo-icons/display.svg" => Some(include_bytes!("product_components/icons/display.svg")),
@@ -106,6 +197,10 @@ pub mod assets {
             let mut names = ely_gpui_component::Assets.list(path)?;
             for icon in [
                 "server.svg",
+                "close.svg",
+                "check.svg",
+                "back.svg",
+                "home.svg",
                 "display.svg",
                 "sharing.svg",
                 "receiving.svg",
@@ -138,7 +233,9 @@ pub mod assets {
             }
             for name in ["mark-light.svg", "mark-dark.svg", "mark-mono.svg"] {
                 let name = format!("weavelo-brand/{name}");
-                if name.starts_with(path) { names.push(name.into()); }
+                if name.starts_with(path) {
+                    names.push(name.into());
+                }
             }
             Ok(names)
         }
@@ -170,6 +267,8 @@ pub fn button(id: impl Into<ElementId>) -> Button {
 }
 
 pub enum IconName {
+    Close,
+    Check,
     Back,
     Home,
     Server,
@@ -200,6 +299,8 @@ pub struct ProductIcon {
 }
 pub fn icon(name: IconName) -> ProductIcon {
     let file = match name {
+        IconName::Close => "close.svg",
+        IconName::Check => "check.svg",
         IconName::Back => "back.svg",
         IconName::Home => "home.svg",
         IconName::Server => "server.svg",
@@ -270,12 +371,13 @@ impl Render for ProductTooltip {
         use theme::ActiveTheme;
         let theme = cx.theme();
         div()
-            .px_3()
-            .py_2()
-            .rounded_md()
+            .px_2p5()
+            .py_1p5()
+            .rounded(px(8.0))
             .bg(theme.surface.raised)
             .border_1()
             .border_color(theme.border.default)
+            .shadow_md()
             .text_color(theme.content.primary)
             .text_size(px(11.0))
             .child(self.0.clone())
@@ -300,7 +402,7 @@ fn compute_input_style(
         bg: if disabled {
             theme.surface.sunken
         } else {
-            bg.unwrap_or(theme.surface.base)
+            bg.unwrap_or(theme.surface.sunken)
         },
         border: if disabled {
             theme.border.muted

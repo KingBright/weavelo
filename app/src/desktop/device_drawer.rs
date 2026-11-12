@@ -2,17 +2,21 @@ use super::device_list::{
     DeviceActivity, DeviceFilterKind, DeviceListAction, DeviceListState,
     DeviceListViewModel,
 };
-use crate::design_system::color_accent_emerald;
-use crate::product_components::{component::tooltip,icon,IconName};
+use crate::design_system::{
+    theme_accent_rose, theme_brand_soft, theme_online_dot,
+};
 use crate::product_components::theme::ActiveTheme;
-use crate::product_components::{device_badge_element, device_badge_image};
+use crate::product_components::{
+    IconName, component::tooltip, device_badge_element, device_badge_image, icon,
+    segmented_track, tonal_icon_well,
+};
 use ely_gpui_component::{
     buttons::{Button, ButtonVariant},
     theme::ControlSize,
 };
 use gpui::{App, FontWeight, IntoElement, RenderOnce, Window, div, prelude::*, px};
 use remote_core::discovery::DiscoveryScope;
-use std::{rc::Rc,collections::BTreeMap};
+use std::{collections::BTreeMap, rc::Rc};
 
 type ActionSink = Rc<dyn Fn(DeviceListAction, &mut App)>;
 
@@ -21,7 +25,7 @@ pub(crate) struct DeviceDrawer {
     model: DeviceListViewModel,
     state: DeviceListState,
     send: ActionSink,
-    activity:BTreeMap<String,DeviceActivity>,
+    activity: BTreeMap<String, DeviceActivity>,
 }
 
 impl DeviceDrawer {
@@ -34,121 +38,347 @@ impl DeviceDrawer {
             model,
             state,
             send: Rc::new(send),
-            activity:BTreeMap::new(),
+            activity: BTreeMap::new(),
         }
     }
 }
 
 impl DeviceDrawer {
-    pub(crate) fn with_activity(mut self,activity:BTreeMap<String,DeviceActivity>)->Self {self.activity=activity;self}
+    pub(crate) fn with_activity(mut self, activity: BTreeMap<String, DeviceActivity>) -> Self {
+        self.activity = activity;
+        self
+    }
 }
 
 impl RenderOnce for DeviceDrawer {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme=cx.theme();
-        let mut filters=div().flex().gap_1();
-        for (label,filter) in [("All",DeviceFilterKind::All),("LAN",DeviceFilterKind::Lan),("P2P",DeviceFilterKind::P2p),("Relay",DeviceFilterKind::Relay)] {
-            let send=self.send.clone();
-            filters=filters.child(Button::new(format!("filter_{label}"),crate::i18n::tr(label))
-                .debug_selector(move||format!("filter-{label}"))
-                .variant(if filter==self.state.filter {ButtonVariant::Primary}else{ButtonVariant::Ghost})
-                .control_size(ControlSize::Sm).h(px(24.)).px_2().text_size(px(10.))
-                .on_click(move|_,_,cx|send(DeviceListAction::SelectFilter(filter),cx)));
+        let theme = cx.theme().clone();
+        let mut filters = segmented_track(&theme);
+        for (label, filter) in [
+            ("All", DeviceFilterKind::All),
+            ("LAN", DeviceFilterKind::Lan),
+            ("P2P", DeviceFilterKind::P2p),
+            ("Relay", DeviceFilterKind::Relay),
+        ] {
+            let send = self.send.clone();
+            let is_selected = filter == self.state.filter;
+            filters = filters.child(
+                Button::new(format!("filter_{label}"), crate::i18n::tr(label))
+                    .debug_selector(move || format!("filter-{label}"))
+                    .variant(if is_selected {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .control_size(ControlSize::Sm)
+                    .h(px(24.))
+                    .px_2p5()
+                    .rounded(px(7.))
+                    .text_size(px(10.5))
+                    .on_click(move |_, _, cx| send(DeviceListAction::SelectFilter(filter), cx)),
+            );
         }
-        let mut content=div().flex().flex_col().gap_2().child(filters);
+        let mut content = div().flex().flex_col().gap_2p5().child(div().flex().child(filters));
         if self.model.rows.is_empty() {
-            return content.child(div().py_3().text_color(theme.content.tertiary).text_size(px(12.))
-                .child(crate::i18n::tr("No devices. Add a device or choose All.")));
+            return content.child(
+                div()
+                    .px_3()
+                    .py_4()
+                    .rounded(px(12.))
+                    .bg(theme.surface.sunken)
+                    .border_1()
+                    .border_color(theme.border.muted)
+                    .text_color(theme.content.tertiary)
+                    .text_size(px(12.))
+                    .child(crate::i18n::tr("No devices. Add a device or choose All.")),
+            );
         }
+        let online_dot = theme_online_dot(cx);
+        let brand_soft = theme_brand_soft(cx);
+        let rose_ink = theme_accent_rose(cx);
         for row in self.model.rows {
-            let id=row.device_id.clone();
-            let activity=self.activity.get(&id).cloned().unwrap_or_default();
-            let status=activity.label();
-            let scope=crate::i18n::tr(match row.scope {DiscoveryScope::Lan=>"LAN",DiscoveryScope::P2p=>"Direct",DiscoveryScope::Relay=>"Relay",DiscoveryScope::Mesh=>"Mesh"});
-            let active=activity.receiving>0||activity.sharing>0||activity.connecting;
-            let send=self.send.clone();let detail_id=id.clone();
-            let mut card=div().flex().flex_col().gap_1().px_3().py_2().rounded(px(10.))
-                .bg(theme.surface.base).border_1()
-                .border_color(if active {theme.border.focus}else{theme.border.default})
-                .child(div().min_h(px(42.)).flex().items_center().gap_2()
-                    .child(div().size(px(34.)).flex_none().flex().items_center().justify_center()
-                        .rounded(px(8.)).bg(theme.surface.sunken)
-                        .child(device_badge_element(device_badge_image(row.badge, cx))))
-                    .child(div().min_w_0().flex_1().flex().flex_col()
-                        .child(Button::new(format!("device-name-{id}"),row.display_name.clone())
-                            .debug_selector({let id=id.clone();move||format!("device-name-{id}")})
-                            .variant(ButtonVariant::Ghost).h(px(22.)).p_0().min_w_0().w_full().justify_start()
-                            .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
-                            .tooltip(tooltip(row.display_name.clone()).build())
-                            .on_click(move|_,_,cx|send(DeviceListAction::Details(detail_id.clone()),cx)))
-                        .child(div().flex().items_center().gap_1().text_size(px(10.))
-                            .text_color(theme.content.secondary)
-                            .child(div().size(px(6.)).flex_none().rounded_full().bg(if row.online {color_accent_emerald().into()}else{theme.content.disabled}))
-                            .child(if !status.is_empty(){status}else{crate::i18n::tr_format!("{} · {}",scope,crate::i18n::tr(if row.online {"Available"}else{"Offline"}))})))
-                    .child({
-                        let send=self.send.clone();let target=id.clone();let selector=format!("connect-{id}");
-                        Button::new(format!("device-connect-{id}"),crate::i18n::tr("View"))
-                            .debug_selector(move||selector.clone()).variant(ButtonVariant::Primary)
-                            .control_size(ControlSize::Sm).h(px(28.)).px_2().text_size(px(11.))
-                            .disabled(!row.can_connect).on_click(move|_,_,cx|send(DeviceListAction::Connect(target.clone()),cx))
-                    })
-                    .child({
-                        let send=self.send.clone();let target=id.clone();
-                        Button::new(format!("device-quick-files-{id}"),"")
-                            .child(icon(IconName::Files).size(px(15.)))
-                            .tooltip(tooltip(crate::i18n::tr("Files")).build())
-                            .control_size(ControlSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .size(px(28.)).p_0()
-                            .disabled(!row.can_open_files)
-                            .on_click(move|_,_,cx|send(DeviceListAction::OpenFiles(target.clone()),cx))
-                    })
-                    .child({
-                        let send=self.send.clone();let target=id.clone();
-                        Button::new(format!("device-quick-send-{id}"),"")
-                            .child(icon(IconName::Sharing).size(px(15.)))
-                            .tooltip(tooltip(crate::i18n::tr("Send screen or app")).build())
-                            .control_size(ControlSize::Sm)
-                            .variant(ButtonVariant::Ghost)
-                            .size(px(28.)).p_0()
-                            .disabled(!row.online)
-                            .on_click(move|_,_,cx|send(DeviceListAction::SendScreen(target.clone()),cx))
-                    })
-                    .child({
-                        let send=self.send.clone();let target=id.clone();let selector=format!("more-{id}");
-                        Button::new(format!("device-more-{id}"),"")
-                            .debug_selector(move||selector.clone()).child(icon(IconName::More).size(px(18.)))
-                            .tooltip(tooltip(crate::i18n::tr("More device actions")).build()).control_size(ControlSize::Sm)
-                            .variant(ButtonVariant::Ghost).size(px(28.)).p_0()
-                            .on_click(move|_,_,cx|send(DeviceListAction::More(target.clone()),cx))
-                    }));
-            if let Some(error)=activity.error.as_ref() {
-                card=card.child(div().text_size(px(11.)).text_color(theme.content.primary)
-                    .child(crate::i18n::tr_format!("Needs attention: {error}", error=crate::i18n::message(error))));
+            let id = row.device_id.clone();
+            let activity = self.activity.get(&id).cloned().unwrap_or_default();
+            let status = activity.label();
+            let scope = crate::i18n::tr(match row.scope {
+                DiscoveryScope::Lan => "LAN",
+                DiscoveryScope::P2p => "Direct",
+                DiscoveryScope::Relay => "Relay",
+                DiscoveryScope::Mesh => "Mesh",
+            });
+            let active = activity.receiving > 0 || activity.sharing > 0 || activity.connecting;
+            let expanded =
+                self.state.more.as_ref() == Some(&id) || self.state.details.as_ref() == Some(&id);
+            let send = self.send.clone();
+            let detail_id = id.clone();
+            let mut card = div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .px_3()
+                .py_2p5()
+                .rounded(px(12.))
+                .bg(if active { brand_soft } else { theme.surface.base })
+                .border_1()
+                .border_color(if active {
+                    theme.border.focus
+                } else {
+                    theme.border.default
+                })
+                .child(
+                    div()
+                        .min_h(px(44.))
+                        .flex()
+                        .items_center()
+                        .gap_2p5()
+                        .child(
+                            tonal_icon_well(36.0, active, cx)
+                                .child(device_badge_element(device_badge_image(row.badge, cx))),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .gap_0p5()
+                                .child(
+                                    Button::new(format!("device-name-{id}"), row.display_name.clone())
+                                        .debug_selector({
+                                            let id = id.clone();
+                                            move || format!("device-name-{id}")
+                                        })
+                                        .variant(ButtonVariant::Ghost)
+                                        .h(px(22.))
+                                        .p_0()
+                                        .min_w_0()
+                                        .w_full()
+                                        .justify_start()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .tooltip(tooltip(row.display_name.clone()).build())
+                                        .on_click(move |_, _, cx| {
+                                            send(DeviceListAction::Details(detail_id.clone()), cx)
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .text_size(px(10.5))
+                                        .text_color(theme.content.secondary)
+                                        .child(
+                                            div()
+                                                .size(px(6.5))
+                                                .flex_none()
+                                                .rounded_full()
+                                                .bg(if row.online {
+                                                    online_dot
+                                                } else {
+                                                    theme.content.disabled
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .px_1p5()
+                                                .py(px(1.))
+                                                .rounded(px(5.))
+                                                .bg(theme.surface.sunken)
+                                                .border_1()
+                                                .border_color(theme.border.muted)
+                                                .text_size(px(9.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.content.secondary)
+                                                .child(scope.clone()),
+                                        )
+                                        .child(
+                                            div().min_w_0().truncate().child(if !status.is_empty() {
+                                                status
+                                            } else {
+                                                crate::i18n::tr(if row.online {
+                                                    "Available"
+                                                } else {
+                                                    "Offline"
+                                                })
+                                                .into()
+                                            }),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child({
+                                    let send = self.send.clone();
+                                    let target = id.clone();
+                                    let selector = format!("connect-{id}");
+                                    Button::new(format!("device-connect-{id}"), crate::i18n::tr("View"))
+                                        .debug_selector(move || selector.clone())
+                                        .variant(ButtonVariant::Primary)
+                                        .control_size(ControlSize::Sm)
+                                        .h(px(28.))
+                                        .px_2p5()
+                                        .rounded_full()
+                                        .text_size(px(11.))
+                                        .disabled(!row.can_connect)
+                                        .on_click(move |_, _, cx| {
+                                            send(DeviceListAction::Connect(target.clone()), cx)
+                                        })
+                                })
+                                .child({
+                                    let send = self.send.clone();
+                                    let target = id.clone();
+                                    Button::new(format!("device-quick-files-{id}"), "")
+                                        .child(icon(IconName::Files).size(px(14.)))
+                                        .tooltip(tooltip(crate::i18n::tr("Files")).build())
+                                        .control_size(ControlSize::Sm)
+                                        .variant(ButtonVariant::Subtle)
+                                        .size(px(28.))
+                                        .rounded(px(8.))
+                                        .p_0()
+                                        .disabled(!row.can_open_files)
+                                        .on_click(move |_, _, cx| {
+                                            send(DeviceListAction::OpenFiles(target.clone()), cx)
+                                        })
+                                })
+                                .child({
+                                    let send = self.send.clone();
+                                    let target = id.clone();
+                                    Button::new(format!("device-quick-send-{id}"), "")
+                                        .child(icon(IconName::Sharing).size(px(14.)))
+                                        .tooltip(tooltip(crate::i18n::tr("Send screen or app")).build())
+                                        .control_size(ControlSize::Sm)
+                                        .variant(ButtonVariant::Subtle)
+                                        .size(px(28.))
+                                        .rounded(px(8.))
+                                        .p_0()
+                                        .disabled(!row.online)
+                                        .on_click(move |_, _, cx| {
+                                            send(DeviceListAction::SendScreen(target.clone()), cx)
+                                        })
+                                })
+                                .child({
+                                    let send = self.send.clone();
+                                    let target = id.clone();
+                                    let selector = format!("more-{id}");
+                                    Button::new(format!("device-more-{id}"), "")
+                                        .debug_selector(move || selector.clone())
+                                        .child(icon(IconName::More).size(px(16.)))
+                                        .tooltip(tooltip(crate::i18n::tr("More device actions")).build())
+                                        .control_size(ControlSize::Sm)
+                                        .variant(if expanded {
+                                            ButtonVariant::Secondary
+                                        } else {
+                                            ButtonVariant::Subtle
+                                        })
+                                        .size(px(28.))
+                                        .rounded(px(8.))
+                                        .p_0()
+                                        .on_click(move |_, _, cx| {
+                                            send(DeviceListAction::More(target.clone()), cx)
+                                        })
+                                }),
+                        ),
+                );
+            if let Some(error) = activity.error.as_ref() {
+                card = card.child(
+                    div()
+                        .px_2p5()
+                        .py_1()
+                        .rounded(px(8.))
+                        .bg(theme.status.error.bg)
+                        .text_size(px(11.))
+                        .text_color(rose_ink)
+                        .child(crate::i18n::tr_format!(
+                            "Needs attention: {error}",
+                            error = crate::i18n::message(error)
+                        )),
+                );
             }
-            if self.state.more.as_ref()==Some(&id) || self.state.details.as_ref()==Some(&id) {
-                let mut more=div().flex().flex_col().gap_2().py_2();
-                let mut commands=div().flex().flex_wrap().gap_2();
-                for (key,label,enabled,action) in [
-                    ("send","Send screen or app",row.online,DeviceListAction::SendScreen(id.clone())),
-                    ("files","Files",row.can_open_files,DeviceListAction::OpenFiles(id.clone())),
-                    ("workspace","Open another source",row.can_open_workspace,DeviceListAction::OpenWorkspace(id.clone())),
-                    ("show","Show stream",activity.receiving>0||activity.connecting||activity.error.is_some(),DeviceListAction::ShowStreams(id.clone())),
-                    ("end","End streams",activity.receiving>0||activity.connecting||activity.error.is_some(),DeviceListAction::EndStreams(id.clone())),
-                    ("stop-send","Stop sending",activity.can_stop_sending,DeviceListAction::StopSending(id.clone())),
+            if expanded {
+                let mut more = div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .pt_2()
+                    .mt_0p5()
+                    .border_t_1()
+                    .border_color(theme.border.divider);
+                let mut commands = div().flex().flex_wrap().gap_1p5();
+                for (key, label, enabled, action) in [
+                    (
+                        "send",
+                        "Send screen or app",
+                        row.online,
+                        DeviceListAction::SendScreen(id.clone()),
+                    ),
+                    (
+                        "files",
+                        "Files",
+                        row.can_open_files,
+                        DeviceListAction::OpenFiles(id.clone()),
+                    ),
+                    (
+                        "workspace",
+                        "Open another source",
+                        row.can_open_workspace,
+                        DeviceListAction::OpenWorkspace(id.clone()),
+                    ),
+                    (
+                        "show",
+                        "Show stream",
+                        activity.receiving > 0 || activity.connecting || activity.error.is_some(),
+                        DeviceListAction::ShowStreams(id.clone()),
+                    ),
+                    (
+                        "end",
+                        "End streams",
+                        activity.receiving > 0 || activity.connecting || activity.error.is_some(),
+                        DeviceListAction::EndStreams(id.clone()),
+                    ),
+                    (
+                        "stop-send",
+                        "Stop sending",
+                        activity.can_stop_sending,
+                        DeviceListAction::StopSending(id.clone()),
+                    ),
                 ] {
-                    if !enabled && key!="send" && key!="files" {continue;}
-                    let send=self.send.clone();let selector=format!("{key}-{id}");
-                    commands=commands.child(Button::new(format!("device-{key}-{id}"),crate::i18n::tr(label))
-                        .debug_selector(move||selector.clone()).variant(ButtonVariant::Secondary)
-                        .control_size(ControlSize::Sm).h(px(26.)).px_2().text_size(px(11.)).disabled(!enabled)
-                        .on_click(move|_,_,cx|send(action.clone(),cx)));
+                    if !enabled && key != "send" && key != "files" {
+                        continue;
+                    }
+                    let send = self.send.clone();
+                    let selector = format!("{key}-{id}");
+                    let is_destructive = key == "end" || key == "stop-send";
+                    commands = commands.child(
+                        Button::new(format!("device-{key}-{id}"), crate::i18n::tr(label))
+                            .debug_selector(move || selector.clone())
+                            .variant(if is_destructive {
+                                ButtonVariant::Danger
+                            } else {
+                                ButtonVariant::Secondary
+                            })
+                            .control_size(ControlSize::Sm)
+                            .h(px(26.))
+                            .px_2p5()
+                            .rounded_full()
+                            .text_size(px(11.))
+                            .disabled(!enabled)
+                            .on_click(move |_, _, cx| send(action.clone(), cx)),
+                    );
                 }
-                more=more.child(commands).child(div().text_size(px(10.)).text_color(theme.content.tertiary)
-                    .child(format!("{scope} · {} · {}",row.endpoint,row.device_id)));
-                card=card.child(more);
+                more = more.child(commands).child(
+                    div()
+                        .text_size(px(10.))
+                        .font_family(crate::design_system::product_mono_font())
+                        .text_color(theme.content.tertiary)
+                        .child(format!("{scope} · {} · {}", row.endpoint, row.device_id)),
+                );
+                card = card.child(more);
             }
-            content=content.child(card);
+            content = content.child(card);
         }
         content
     }

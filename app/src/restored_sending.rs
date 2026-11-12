@@ -331,19 +331,25 @@ impl RestoredDashboard {
                     .items_center()
                     .gap_2()
                     .p_3()
+                    .bg(theme.surface.base)
                     .border_b_1()
-                    .border_color(color_border_fine())
-                    .child(icon(IconName::Sharing).size(px(16.)))
+                    .border_color(crate::design_system::theme_border_fine(cx))
+                    .child(
+                        crate::product_components::tonal_icon_well(28.0, true, cx)
+                            .child(icon(IconName::Sharing).size(px(14.))),
+                    )
                     .child(
                         div()
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .text_size(px(12.))
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
                             .child(title),
                     )
                     .child(
                         command_button("sending-files", ActionVariantKind::Neutral, cx)
+                            .rounded_full()
                             .child(crate::i18n::tr("Files"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.open_device_files(files_target.clone(), cx)
@@ -351,6 +357,7 @@ impl RestoredDashboard {
                     )
                     .child(
                         command_button("sending-new-source", ActionVariantKind::Neutral, cx)
+                            .rounded_full()
                             .child(crate::i18n::tr("New source"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.begin_delivery_selection(send_target.clone(), cx)
@@ -358,6 +365,7 @@ impl RestoredDashboard {
                     )
                     .child(
                         command_button("sending-fullscreen", ActionVariantKind::Neutral, cx)
+                            .rounded(px(8.))
                             .tooltip(
                                 tooltip(crate::i18n::tr(if fullscreen { "Restore" } else { "Fullscreen" })).build(),
                             )
@@ -383,26 +391,38 @@ impl RestoredDashboard {
                             .flex()
                             .flex_col()
                             .gap_3()
-                            .p_4()
-                            .rounded_xl()
-                            .bg(color_glass_card())
+                            .p_5()
+                            .rounded(px(16.))
+                            .bg(crate::design_system::theme_glass_card(cx))
                             .border_1()
-                            .border_color(color_border_fine())
+                            .border_color(crate::design_system::theme_border_fine(cx))
+                            .shadow_lg()
                             .child(sources)
-                            .child(div().text_size(px(12.)).child(crate::i18n::tr_format!("To {device}", device=device)))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(theme.content.secondary)
+                                    .child(crate::i18n::tr_format!("To {device}", device=device)),
+                            )
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap_2()
+                                    .px_2p5()
+                                    .py_1p5()
+                                    .rounded(px(10.))
+                                    .bg(theme.surface.sunken)
+                                    .border_1()
+                                    .border_color(theme.border.muted)
                                     .child(div().size(px(7.)).rounded_full().bg(if failed {
-                                        theme.status.error.bg
+                                        crate::design_system::theme_accent_rose(cx)
                                     } else if finished {
                                         theme.content.disabled
                                     } else if context.progress.started {
-                                        color_accent_emerald().into()
+                                        crate::design_system::theme_online_dot(cx)
                                     } else {
-                                        color_accent_cyan().into()
+                                        crate::design_system::theme_accent_brand(cx)
                                     }))
                                     .child(div().text_size(px(12.)).child(crate::i18n::message(&context.progress.status))),
                             )
@@ -414,6 +434,7 @@ impl RestoredDashboard {
                             ))
                             .child(
                                 div()
+                                    .pt_1()
                                     .flex()
                                     .flex_wrap()
                                     .items_center()
@@ -424,6 +445,7 @@ impl RestoredDashboard {
                                             ActionVariantKind::Neutral,
                                             cx,
                                         )
+                                        .rounded_full()
                                         .child(crate::i18n::tr("View device"))
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
@@ -437,6 +459,7 @@ impl RestoredDashboard {
                                             ActionVariantKind::Danger,
                                             cx,
                                         )
+                                        .rounded_full()
                                         .disabled(finished)
                                         .debug_selector(|| "sending-stop".into())
                                         .child(if context.sources.len() == 1 {

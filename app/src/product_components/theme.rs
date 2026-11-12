@@ -1,7 +1,7 @@
 // Derived from Yororen UI 0.2.0, commit 31005a92286067b56dcc45e7833b91e428533274.
 // Copyright 2026 MeowLynxSea; Apache-2.0. See LICENSE-APACHE and NOTICE.
-// Modified by Weavelo: semantic snapshot backed by Ely; original theme manager removed.
-use gpui::{App, Hsla, WindowAppearance, hsla, rgb};
+// Modified by Weavelo: semantic snapshot backed by Ely; unified Prism Air + Obsidian Craft palettes.
+use gpui::{App, Hsla, WindowAppearance, hsla, rgb, rgba};
 
 #[derive(Clone, Debug, Default)]
 pub enum TextDirection {
@@ -101,76 +101,76 @@ pub struct ShadowTheme {
 impl Theme {
     pub fn default_dark() -> Self {
         let content = ContentTheme {
-            primary: rgb(0xF2F2F3).into(),
-            secondary: rgb(0xC8C8CC).into(),
-            tertiary: rgb(0x9B9BA1).into(),
-            disabled: rgb(0x6F6F76).into(),
-            on_primary: rgb(0x0B0B0D).into(),
-            on_status: rgb(0x0B0B0D).into(),
+            primary: rgb(0xF1F5F9).into(),
+            secondary: rgb(0x9AA8BC).into(),
+            tertiary: rgb(0x6E7E94).into(),
+            disabled: rgb(0x495567).into(),
+            on_primary: rgb(0x06131F).into(),
+            on_status: rgb(0x071921).into(),
         };
 
         Self {
             surface: SurfaceTheme {
-                canvas: rgb(0x0F0F11).into(),
-                base: rgb(0x151518).into(),
-                raised: rgb(0x1D1D21).into(),
-                sunken: rgb(0x111113).into(),
-                hover: rgb(0x232327).into(),
+                canvas: rgb(0x0F131A).into(),
+                base: rgb(0x161C26).into(),
+                raised: rgb(0x1D2533).into(),
+                sunken: rgb(0x0A0D13).into(),
+                hover: rgb(0x242E3F).into(),
             },
             content: content.clone(),
             border: BorderTheme {
-                default: rgb(0x2A2A2F).into(),
-                muted: rgb(0x1E1E22).into(),
-                focus: rgb(0x8BB0FF).into(),
-                divider: rgb(0x1E1E22).into(),
+                default: rgb(0x253041).into(),
+                muted: rgb(0x1B2331).into(),
+                focus: rgb(0x38BDF8).into(),
+                divider: rgb(0x1E2736).into(),
             },
             action: ActionTheme {
                 neutral: ActionVariant {
-                    bg: rgb(0x1D1D21).into(),
-                    hover_bg: rgb(0x24242A).into(),
-                    active_bg: rgb(0x2A2A31).into(),
+                    bg: rgb(0x1D2533).into(),
+                    hover_bg: rgb(0x263143).into(),
+                    active_bg: rgb(0x313E54).into(),
                     fg: content.primary,
-                    disabled_bg: rgb(0x1A1A1D).into(),
+                    disabled_bg: rgb(0x141923).into(),
                     disabled_fg: content.disabled,
                 },
                 primary: ActionVariant {
-                    bg: rgb(0xF4F4F6).into(),
-                    hover_bg: rgb(0xFFFFFF).into(),
-                    active_bg: rgb(0xE9E9EC).into(),
+                    bg: rgb(0x38BDF8).into(),
+                    hover_bg: rgb(0x5CCBFB).into(),
+                    active_bg: rgb(0x1FA6E0).into(),
                     fg: content.on_primary,
-                    disabled_bg: rgb(0xE0E0E4).into(),
-                    disabled_fg: rgb(0x5B5B61).into(),
+                    disabled_bg: rgb(0x1E384B).into(),
+                    disabled_fg: rgb(0x6E8DA3).into(),
                 },
                 danger: ActionVariant {
-                    bg: rgb(0xFFB4AE).into(),
-                    hover_bg: rgb(0xFFA099).into(),
-                    active_bg: rgb(0xFF8A82).into(),
-                    fg: content.on_status,
-                    disabled_bg: rgb(0xE0B3AF).into(),
-                    disabled_fg: rgb(0x5B5B61).into(),
+                    bg: rgb(0xF87171).into(),
+                    hover_bg: rgb(0xFCA5A5).into(),
+                    active_bg: rgb(0xEF4444).into(),
+                    fg: rgb(0x1E0808).into(),
+                    disabled_bg: rgb(0x482224).into(),
+                    disabled_fg: content.disabled,
                 },
             },
             status: StatusTheme {
                 success: StatusVariant {
-                    bg: rgb(0xB9F5C9).into(),
-                    fg: content.on_status,
+                    bg: rgb(0x34D399).into(),
+                    fg: rgb(0x05291D).into(),
                 },
                 warning: StatusVariant {
-                    bg: rgb(0xFFE1A6).into(),
-                    fg: content.on_status,
+                    bg: rgb(0xFBBF24).into(),
+                    fg: rgb(0x2C1C03).into(),
                 },
                 error: StatusVariant {
-                    bg: rgb(0xFFB4AE).into(),
-                    fg: content.on_status,
+                    bg: rgb(0xF87171).into(),
+                    fg: rgb(0x2D0A0A).into(),
                 },
                 info: StatusVariant {
-                    bg: rgb(0xB6D9FF).into(),
-                    fg: content.on_status,
+                    bg: rgb(0x38BDF8).into(),
+                    fg: rgb(0x061926).into(),
                 },
             },
             shadow: ShadowTheme {
-                elevation_1: hsla(0.0, 0.0, 0.0, 0.3),
-                elevation_2: hsla(0.0, 0.0, 0.0, 0.45),
+                elevation_1: hsla(0.0, 0.0, 0.0, 0.32),
+                elevation_2: hsla(0.0, 0.0, 0.0, 0.50),
             },
             text_direction: TextDirection::Ltr,
         }
@@ -178,76 +178,76 @@ impl Theme {
 
     pub fn default_light() -> Self {
         let content = ContentTheme {
-            primary: rgb(0x141416).into(),
-            secondary: rgb(0x3E3E45).into(),
-            tertiary: rgb(0x6B6B73).into(),
-            disabled: rgb(0x9A9AA2).into(),
+            primary: rgb(0x0F172A).into(),
+            secondary: rgb(0x475569).into(),
+            tertiary: rgb(0x64748B).into(),
+            disabled: rgb(0x94A3B8).into(),
             on_primary: rgb(0xFFFFFF).into(),
-            on_status: rgb(0x0B0B0D).into(),
+            on_status: rgb(0x091926).into(),
         };
 
         Self {
             surface: SurfaceTheme {
-                canvas: rgb(0xF4F4F6).into(),
+                canvas: rgb(0xF4F7FA).into(),
                 base: rgb(0xFFFFFF).into(),
-                raised: rgb(0xFBFBFD).into(),
-                sunken: rgb(0xEFEFF2).into(),
-                hover: rgb(0xE6E6EA).into(),
+                raised: rgb(0xFFFFFF).into(),
+                sunken: rgb(0xEAEFF6).into(),
+                hover: rgb(0xE1E8F2).into(),
             },
             content: content.clone(),
             border: BorderTheme {
-                default: rgb(0xD8D8DD).into(),
-                muted: rgb(0xE3E3E8).into(),
-                focus: rgb(0x2F63FF).into(),
-                divider: rgb(0xE3E3E8).into(),
+                default: rgb(0xDAE3EE).into(),
+                muted: rgb(0xE6EDF5).into(),
+                focus: rgb(0x1B56D0).into(),
+                divider: rgb(0xE2E9F2).into(),
             },
             action: ActionTheme {
                 neutral: ActionVariant {
-                    bg: rgb(0xF1F1F3).into(),
-                    hover_bg: rgb(0xE6E6EA).into(),
-                    active_bg: rgb(0xDADADF).into(),
+                    bg: rgb(0xEEF3F8).into(),
+                    hover_bg: rgb(0xE2EAF3).into(),
+                    active_bg: rgb(0xD3DFEC).into(),
                     fg: content.primary,
-                    disabled_bg: rgb(0xE7E7EA).into(),
+                    disabled_bg: rgb(0xF1F5F9).into(),
                     disabled_fg: content.disabled,
                 },
                 primary: ActionVariant {
-                    bg: rgb(0x121214).into(),
-                    hover_bg: rgb(0x0C0C0D).into(),
-                    active_bg: rgb(0x000000).into(),
+                    bg: rgb(0x1B56D0).into(),
+                    hover_bg: rgb(0x1648B2).into(),
+                    active_bg: rgb(0x123B94).into(),
                     fg: content.on_primary,
-                    disabled_bg: rgb(0x2A2A2E).into(),
-                    disabled_fg: rgb(0xD0D0D6).into(),
+                    disabled_bg: rgb(0xA3B8E0).into(),
+                    disabled_fg: rgb(0xF8FAFC).into(),
                 },
                 danger: ActionVariant {
-                    bg: rgb(0xFFB4AE).into(),
-                    hover_bg: rgb(0xFFA099).into(),
-                    active_bg: rgb(0xFF8A82).into(),
-                    fg: content.on_status,
-                    disabled_bg: rgb(0xF0CBC7).into(),
-                    disabled_fg: content.disabled,
+                    bg: rgb(0xC83A37).into(),
+                    hover_bg: rgb(0xB22F2C).into(),
+                    active_bg: rgb(0x992624).into(),
+                    fg: rgb(0xFFFFFF).into(),
+                    disabled_bg: rgb(0xDFA8A6).into(),
+                    disabled_fg: rgb(0xFAF0EF).into(),
                 },
             },
             status: StatusTheme {
                 success: StatusVariant {
-                    bg: rgb(0xB9F5C9).into(),
-                    fg: content.on_status,
+                    bg: rgb(0xDCFCE7).into(),
+                    fg: rgb(0x065F46).into(),
                 },
                 warning: StatusVariant {
-                    bg: rgb(0xFFE1A6).into(),
-                    fg: content.on_status,
+                    bg: rgb(0xFEF2D6).into(),
+                    fg: rgb(0x784905).into(),
                 },
                 error: StatusVariant {
-                    bg: rgb(0xFFB4AE).into(),
-                    fg: content.on_status,
+                    bg: rgb(0xFEE6E4).into(),
+                    fg: rgb(0x8E2420).into(),
                 },
                 info: StatusVariant {
-                    bg: rgb(0xB6D9FF).into(),
-                    fg: content.on_status,
+                    bg: rgb(0xE6F1FF).into(),
+                    fg: rgb(0x1446A8).into(),
                 },
             },
             shadow: ShadowTheme {
-                elevation_1: hsla(0.0, 0.0, 0.0, 0.18),
-                elevation_2: hsla(0.0, 0.0, 0.0, 0.3),
+                elevation_1: hsla(215.0 / 360.0, 0.28, 0.12, 0.08),
+                elevation_2: hsla(215.0 / 360.0, 0.32, 0.10, 0.16),
             },
             text_direction: TextDirection::Ltr,
         }
@@ -310,27 +310,63 @@ impl ActiveTheme for App {
         t
     }
 }
+
 pub fn install(appearance: WindowAppearance, themes: ThemeSet, cx: &mut App) {
     use ely_gpui_component::theme::{Mode, Palette, Theme as ElyTheme};
-    fn palette(t: &Theme, mut p: Palette) -> Palette {
+    fn palette(t: &Theme, is_dark: bool, mut p: Palette) -> Palette {
         p.bg = t.surface.canvas;
         p.surface = t.surface.base;
         p.overlay = t.surface.raised;
         p.sunken = t.surface.sunken;
         p.hover = t.surface.hover;
+        p.active = t.action.neutral.active_bg;
         p.fg = t.content.primary;
         p.fg_muted = t.content.secondary;
         p.fg_subtle = t.content.tertiary;
+        p.fg_disabled = t.content.disabled;
         p.border = t.border.default;
+        p.border_strong = if is_dark {
+            rgb(0x334155).into()
+        } else {
+            rgb(0xc3cfde).into()
+        };
         p.focus = t.border.focus;
         p.accent = t.action.primary.bg;
         p.accent_hover = t.action.primary.hover_bg;
         p.on_accent = t.action.primary.fg;
-        p.active = t.action.neutral.active_bg;
-        p.success = t.status.success.bg;
-        p.warning = t.status.warning.bg;
-        p.danger = t.status.error.bg;
-        p.info = t.status.info.bg;
+        p.link = t.border.focus;
+        p.selection = if is_dark {
+            rgba(0x38bdf838).into()
+        } else {
+            rgba(0x1b56d029).into()
+        };
+        p.danger = t.action.danger.bg;
+        p.success = if is_dark {
+            rgb(0x34d399).into()
+        } else {
+            rgb(0x059669).into()
+        };
+        p.warning = if is_dark {
+            rgb(0xfbbf24).into()
+        } else {
+            rgb(0xd97706).into()
+        };
+        p.info = t.border.focus;
+        p.success_subtle = t.status.success.bg;
+        p.warning_subtle = t.status.warning.bg;
+        p.danger_subtle = t.status.error.bg;
+        p.info_subtle = t.status.info.bg;
+        p.glass = if is_dark {
+            rgba(0x161c26eb).into()
+        } else {
+            rgba(0xfffffff2).into()
+        };
+        p.tooltip_bg = if is_dark {
+            rgb(0x1e293b).into()
+        } else {
+            rgb(0x0f172a).into()
+        };
+        p.tooltip_fg = rgb(0xf8fafc).into();
         p
     }
     ElyTheme::update(cx, |theme| {
@@ -339,11 +375,20 @@ pub fn install(appearance: WindowAppearance, themes: ThemeSet, cx: &mut App) {
     });
     ElyTheme::set_palette(
         Mode::Light,
-        Some(palette(&themes.light, Palette::light(false))),
+        Some(palette(&themes.light, false, Palette::light(false))),
         cx,
     );
     if let Some(dark) = themes.dark {
-        ElyTheme::set_palette(Mode::Dark, Some(palette(&dark, Palette::dark(false))), cx);
+        ElyTheme::set_palette(Mode::Dark, Some(palette(&dark, true, Palette::dark(false))), cx);
     }
     ElyTheme::set_mode_now(Mode::from(appearance), cx);
+}
+
+/// Live-sync Ely + Weavelo theme mode whenever the OS window appearance toggles.
+pub fn sync_appearance(appearance: WindowAppearance, cx: &mut App) {
+    use ely_gpui_component::theme::{Mode, Theme as ElyTheme};
+    let target = Mode::from(appearance);
+    if ely_gpui_component::theme::ActiveTheme::theme(cx).mode() != target {
+        ElyTheme::set_mode(target, cx);
+    }
 }

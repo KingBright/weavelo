@@ -1,10 +1,19 @@
 package `fun`.hackerlife.weavelo
 
-import `fun`.hackerlife.weavelo.ui.cameraNameText
-import `fun`.hackerlife.weavelo.ui.appText
-import `fun`.hackerlife.weavelo.ui.trFormat
-import `fun`.hackerlife.weavelo.ui.tr
 import `fun`.hackerlife.weavelo.ui.AppLanguageProvider
+import `fun`.hackerlife.weavelo.ui.MobileConsoleScreen
+import `fun`.hackerlife.weavelo.ui.MobileSymbol
+import `fun`.hackerlife.weavelo.ui.MobileViewportScreen
+import `fun`.hackerlife.weavelo.ui.PrecisionButton
+import `fun`.hackerlife.weavelo.ui.PrecisionButtonStyle
+import `fun`.hackerlife.weavelo.ui.PrecisionDialog
+import `fun`.hackerlife.weavelo.ui.PrecisionMenuItem
+import `fun`.hackerlife.weavelo.ui.QrScanScreen
+import `fun`.hackerlife.weavelo.ui.WeaveloTokens
+import `fun`.hackerlife.weavelo.ui.appText
+import `fun`.hackerlife.weavelo.ui.cameraNameText
+import `fun`.hackerlife.weavelo.ui.tr
+import `fun`.hackerlife.weavelo.ui.trFormat
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -13,6 +22,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.Text
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.LaunchedEffect
@@ -23,9 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
-import `fun`.hackerlife.weavelo.ui.MobileConsoleScreen
-import `fun`.hackerlife.weavelo.ui.MobileViewportScreen
-import `fun`.hackerlife.weavelo.ui.QrScanScreen
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,10 +72,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
         requestNotificationPermissionOnce()
         WeaveloClient.initialize(applicationContext)
 
@@ -211,16 +215,43 @@ class MainActivity : ComponentActivity() {
                 if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) CameraPublisher.start(this)
                 else cameraPermission.launch(Manifest.permission.CAMERA)
             }
-            if (cameraTarget != null && camera.enabled) androidx.compose.material3.AlertDialog(
-                onDismissRequest = { cameraTarget = null }, title = { androidx.compose.material3.Text(tr("Send camera")) },
-                text = { androidx.compose.foundation.layout.Column {
-                    camera.sources.forEach { source -> androidx.compose.material3.TextButton(onClick = {
-                        val target = cameraTarget ?: return@TextButton
-                        cameraTarget = null
-                        scope.launch(Dispatchers.IO) { runCatching { CameraPublisher.send(target, source) }
-                            .onFailure { CameraPublisher.update(camera.copy(status = it.message ?: "Could not send camera", statusText = appTextOf(it) ?: if (it.message == null) AppText("Could not send camera") else null)) } }
-                    }) { androidx.compose.material3.Text(appText(cameraNameText(source.facing))) } }
-                } }, confirmButton = {}, dismissButton = { androidx.compose.material3.TextButton(onClick = { cameraTarget = null }) { androidx.compose.material3.Text(tr("Cancel")) } })
+            if (cameraTarget != null && camera.enabled) {
+                PrecisionDialog(
+                    title = tr("Send camera"),
+                    onDismissRequest = { cameraTarget = null },
+                    icon = MobileSymbol.Camera,
+                    dismissButton = {
+                        PrecisionButton(
+                            text = tr("Cancel"),
+                            onClick = { cameraTarget = null },
+                            style = PrecisionButtonStyle.SUBTLE,
+                            compact = true
+                        )
+                    }
+                ) {
+                    camera.sources.forEach { source ->
+                        PrecisionMenuItem(
+                            text = appText(cameraNameText(source.facing)),
+                            symbol = MobileSymbol.Camera,
+                            onClick = {
+                                val target = cameraTarget ?: return@PrecisionMenuItem
+                                cameraTarget = null
+                                scope.launch(Dispatchers.IO) {
+                                    runCatching { CameraPublisher.send(target, source) }
+                                        .onFailure {
+                                            CameraPublisher.update(
+                                                camera.copy(
+                                                    status = it.message ?: "Could not send camera",
+                                                    statusText = appTextOf(it) ?: if (it.message == null) AppText("Could not send camera") else null
+                                                )
+                                            )
+                                        }
+                                }
+                            }
+                        )
+                    }
+                }
+            }
 
             LaunchedEffect(Unit) {
                 lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -372,24 +403,42 @@ class MainActivity : ComponentActivity() {
                 receivedFiles = false
                 receivedFileTargetPath = file.absolutePath
             }) { receivedFiles = false }
-            if (receivedFileTargetPath != null) androidx.compose.material3.AlertDialog(
-                onDismissRequest = { receivedFileTargetPath = null },
-                title = { androidx.compose.material3.Text(tr("Send to device")) },
-                text = { androidx.compose.foundation.layout.Column {
+            if (receivedFileTargetPath != null) {
+                val p = WeaveloTokens.colors
+                PrecisionDialog(
+                    title = tr("Send to device"),
+                    onDismissRequest = { receivedFileTargetPath = null },
+                    icon = MobileSymbol.Send,
+                    dismissButton = {
+                        PrecisionButton(
+                            text = tr("Cancel"),
+                            onClick = { receivedFileTargetPath = null },
+                            style = PrecisionButtonStyle.SUBTLE,
+                            compact = true
+                        )
+                    }
+                ) {
                     val targets = devices.filter { it.canSendFiles && it.canOpenWorkspace }
-                    if (targets.isEmpty()) androidx.compose.material3.Text(tr("No devices available"))
-                    targets.forEach { device -> androidx.compose.material3.TextButton(onClick = {
-                        workspaceFilePath = receivedFileTargetPath
-                        receivedFileTargetPath = null
-                        incomingSession = null
-                        sendFileOnConnect = false
-                        openMainDisplay = false
-                        workspaceDeviceId = device.id
-                        workspaceEndpoint = device.endpoint
-                    }) { androidx.compose.material3.Text(device.name) } }
-                } }, confirmButton = {}, dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { receivedFileTargetPath = null }) { androidx.compose.material3.Text(tr("Cancel")) }
-                })
+                    if (targets.isEmpty()) {
+                        Text(tr("No devices available"), color = p.textSecondary, fontSize = 13.sp)
+                    }
+                    targets.forEach { device ->
+                        PrecisionMenuItem(
+                            text = device.name,
+                            symbol = MobileSymbol.Devices,
+                            onClick = {
+                                workspaceFilePath = receivedFileTargetPath
+                                receivedFileTargetPath = null
+                                incomingSession = null
+                                sendFileOnConnect = false
+                                openMainDisplay = false
+                                workspaceDeviceId = device.id
+                                workspaceEndpoint = device.endpoint
+                            }
+                        )
+                    }
+                }
+            }
             }
             }
         }
