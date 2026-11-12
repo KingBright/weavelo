@@ -174,6 +174,8 @@ public:
         const auto submitted=Clock::now();
         auto slot=*std::find_if(slots.begin(),slots.end(),[](const auto& s){return !s->used;});
         auto lease=std::make_shared<SlotLease>(slot);
+        // Keep WGC pool frames acquired until the completion query below.
+        std::vector<std::shared_ptr<RawFrame>> overlay_frames;
         ID3D11Texture2D* source_tex = frame->texture.Get();
         if (popups && !popups->empty() && handle != 0) {
             RECT outer{};
@@ -214,6 +216,7 @@ public:
                         UINT(right-pop.rect.left),UINT(bottom-pop.rect.top),1};
                     root.gpu.context->CopySubresourceRegion(composite.Get(),0,UINT(left-outer.left),UINT(top-outer.top),0,
                         overlay->texture.Get(),0,&box);
+                    overlay_frames.push_back(std::move(overlay));
                 }
                 source_tex=composite.Get();
             }
