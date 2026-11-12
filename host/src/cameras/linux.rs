@@ -500,7 +500,7 @@ async fn prepare_v4l2_camera_capture(
     let budget = FrameBudget::new(per_frame, (per_frame * 3).min(2 * MAX_FRAME_BYTES))
         .map_err(|e| format!("V4L2 buffer budget: {e:?}"))?;
 
-    let spawn_ffmpeg = |mjpeg_input: bool| -> std::result::Result<Child, String> {
+    let spawn_ffmpeg = move |mjpeg_input: bool| -> std::result::Result<Child, String> {
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"]);
         cmd.args(["-f", "v4l2"]);
