@@ -698,7 +698,7 @@ fun ClipboardCenterDialog(
     val state by WorkspaceClient.state.collectAsState()
     val connected = state.sessionKey == sessionKey && state.connected && state.clipboardAvailable
     var draftText by remember { mutableStateOf("") }
-    var feedback by remember { mutableStateOf<String?>(null) }
+    var feedbackKey by remember { mutableStateOf<String?>(null) }
 
     fun copyEntryToPhone(entry: ClipboardHistoryEntry) {
         val clipboard = context.getSystemService(ClipboardManager::class.java)
@@ -706,14 +706,14 @@ fun ClipboardCenterDialog(
             when {
                 !entry.text.isNullOrEmpty() -> {
                     clipboard.setPrimaryClip(ClipData.newPlainText("Weavelo", entry.text))
-                    feedback = tr("Copied to phone clipboard")
+                    feedbackKey = "Copied to phone clipboard"
                 }
                 !entry.imagePath.isNullOrEmpty() -> {
                     val file = File(entry.imagePath)
                     if (file.exists()) {
                         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
                         clipboard.setPrimaryClip(ClipData.newUri(context.contentResolver, "Weavelo image", uri))
-                        feedback = tr("Copied image to phone clipboard")
+                        feedbackKey = "Copied image to phone clipboard"
                     }
                 }
             }
@@ -758,7 +758,7 @@ fun ClipboardCenterDialog(
                     compact = true,
                     onClick = {
                         onSendPhoneClipboard()
-                        feedback = tr("Phone clipboard sent to remote")
+                        feedbackKey = "Phone clipboard sent to remote"
                     }
                 )
                 Spacer(Modifier.weight(1f))
@@ -794,7 +794,7 @@ fun ClipboardCenterDialog(
                             onClick = {
                                 if (!state.clipboard) WorkspaceClient.enableClipboard(true)
                                 WorkspaceClient.sendClipboard(JSONObject().put("text", draftText))
-                                feedback = tr("Synced to remote clipboard")
+                                feedbackKey = "Synced to remote clipboard"
                                 draftText = ""
                             }
                         )
@@ -807,7 +807,7 @@ fun ClipboardCenterDialog(
                                 compact = true,
                                 onClick = {
                                     onTypeIntoRemote(draftText)
-                                    feedback = tr("Typed into remote cursor")
+                                    feedbackKey = "Typed into remote cursor"
                                     draftText = ""
                                 }
                             )
@@ -816,8 +816,8 @@ fun ClipboardCenterDialog(
                 }
             }
 
-            feedback?.let { msg ->
-                Text(msg, color = p.emeraldText, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+            feedbackKey?.let { msgKey ->
+                Text(tr(msgKey), color = p.emeraldText, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
             }
 
             if (state.clipboardHistory.isEmpty()) {
@@ -933,7 +933,7 @@ fun ClipboardCenterDialog(
                                             } else if (!entry.imagePath.isNullOrBlank()) {
                                                 WorkspaceClient.sendClipboard(JSONObject().put("image", entry.imagePath).put("mime", "image/png"))
                                             }
-                                            feedback = tr("Synced to remote clipboard")
+                                            feedbackKey = "Synced to remote clipboard"
                                         }
                                     )
                                 }
@@ -945,7 +945,7 @@ fun ClipboardCenterDialog(
                                         modifier = Modifier.size(32.dp)
                                     ) {
                                         onTypeIntoRemote(entry.text)
-                                        feedback = tr("Typed into remote cursor")
+                                        feedbackKey = "Typed into remote cursor"
                                     }
                                 }
                                 Spacer(Modifier.weight(1f))
