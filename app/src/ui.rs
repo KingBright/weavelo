@@ -1375,17 +1375,17 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<UnifiedDashboard>) -> Di
                 .gap_3()
                 .p_8()
                 .rounded(px(18.0))
-                .bg(theme_glass_card(&theme))
+                .bg(theme_glass_card(cx))
                 .border_1()
-                .border_color(theme_border_fine(&theme))
+                .border_color(theme_border_fine(cx))
                 .shadow_sm()
-                .child(crate::product_components::tonal_icon_well(
-                    icon(IconName::User)
-                        .size(px(24.0))
-                        .color(theme_accent_brand(&theme)),
-                    52.0,
-                    cx,
-                ))
+                .child(
+                    crate::product_components::tonal_icon_well(52.0, true, cx).child(
+                        icon(IconName::User)
+                            .size(px(24.0))
+                            .color(theme_accent_brand(cx)),
+                    ),
+                )
                 .child(
                     div()
                         .text_size(px(17.0))

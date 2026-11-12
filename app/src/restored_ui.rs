@@ -2313,17 +2313,27 @@ fn stream_video_canvas_surface(
                     .gap_3()
                     .p_6()
                     .rounded(px(16.0))
-                    .bg(theme_glass_card(&theme))
+                    .bg(if theme.surface.canvas.l < 0.5 { Hsla::from(rgba(0x171d28f2)) } else { Hsla::from(rgba(0xfffffff5)) })
                     .border_1()
-                    .border_color(theme_border_fine(&theme))
+                    .border_color(theme.border.default)
                     .shadow_sm()
-                    .child(crate::product_components::tonal_icon_well(
-                        icon(IconName::Maximize(false))
-                            .size(px(20.0))
-                            .color(theme_accent_brand(&theme)),
-                        44.0,
-                        cx,
-                    ))
+                    .child(
+                        div()
+                            .size(px(44.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(12.0))
+                            .bg(if theme.surface.canvas.l < 0.5 { Hsla::from(rgba(0x38bdf824)) } else { Hsla::from(rgb(0xeaf2ff)) })
+                            .border_1()
+                            .border_color(theme.border.focus)
+                            .child(
+                                icon(IconName::Maximize(false))
+                                    .size(px(20.0))
+                                    .color(theme.action.primary.bg),
+                            ),
+                    )
                     .child(
                         div()
                             .text_size(px(13.0))
@@ -2479,8 +2489,8 @@ impl Render for PopoutStreamView {
                     .child(
                         div().flex().flex_col().items_center().gap_1()
                             .max_w(relative(0.95)).min_w_0().px_1p5().py_1()
-                            .rounded(px(14.)).bg(theme_glass_floating(&theme)).border_1()
-                            .border_color(theme_border_fine(&theme)).shadow_lg()
+                            .rounded(px(14.)).bg(theme_glass_floating(cx)).border_1()
+                            .border_color(theme_border_fine(cx)).shadow_lg()
                             .child(div().id("pip_source_title").w_full().min_w_0().truncate().text_center()
                                 .text_size(px(10.)).font_weight(FontWeight::MEDIUM)
                                 .tooltip(tooltip(format!("{} · {}", title, compact_telemetry_label(stats.as_ref()))).build())
@@ -2524,9 +2534,9 @@ impl Render for PopoutStreamView {
                     .flex_col()
                     .gap_1p5()
                     .p_2p5()
-                    .bg(theme_glass_floating(&theme))
+                    .bg(theme_glass_floating(cx))
                     .border_1()
-                    .border_color(theme_border_fine(&theme))
+                    .border_color(theme_border_fine(cx))
                     .rounded(px(12.0))
                     .shadow_lg()
                     .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
@@ -2542,7 +2552,7 @@ impl Render for PopoutStreamView {
                                 div()
                                     .text_size(px(10.5))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme_accent_brand(&theme))
+                                    .text_color(theme_accent_brand(cx))
                                     .child(crate::i18n::tr("Network")),
                             )
                             .child(
@@ -2757,10 +2767,10 @@ impl Render for RestoredDashboard {
             .when_some(snapshot.computer_use_status.mode, |this, mode| {
                 let border_color = match mode {
                     crate::desktop::original_owner::ComputerUseMode::Observing => {
-                        Hsla::from(theme_accent_cyan(&theme))
+                        theme_accent_cyan(cx)
                     }
                     crate::desktop::original_owner::ComputerUseMode::Controlling => {
-                        Hsla::from(theme_accent_emerald(&theme))
+                        theme_accent_emerald(cx)
                     }
                     crate::desktop::original_owner::ComputerUseMode::PausedByHuman => {
                         cx.theme().content.secondary
@@ -2810,7 +2820,7 @@ impl Render for RestoredDashboard {
                                         div()
                                             .px_1p5()
                                             .rounded(px(5.))
-                                            .bg(theme_glass_floating(&theme))
+                                            .bg(theme_glass_floating(cx))
                                             .border_1()
                                             .border_color(border_color)
                                             .text_size(px(10.))
@@ -3099,17 +3109,17 @@ fn full_serving_stage(peer_name: &str, cx: &mut Context<RestoredDashboard>) -> D
                 .gap_3()
                 .p_8()
                 .rounded(px(18.0))
-                .bg(theme_glass_card(&theme))
+                .bg(theme_glass_card(cx))
                 .border_1()
-                .border_color(theme_border_fine(&theme))
+                .border_color(theme_border_fine(cx))
                 .shadow_sm()
-                .child(crate::product_components::tonal_icon_well(
-                    icon(IconName::User)
-                        .size(px(24.0))
-                        .color(theme_accent_brand(&theme)),
-                    52.0,
-                    cx,
-                ))
+                .child(
+                    crate::product_components::tonal_icon_well(52.0, true, cx).child(
+                        icon(IconName::User)
+                            .size(px(24.0))
+                            .color(theme_accent_brand(cx)),
+                    ),
+                )
                 .child(
                     div()
                         .text_size(px(17.0))
@@ -3230,7 +3240,7 @@ fn display_switcher_control(
                 if is_selected {
                     ActionVariantKind::Primary
                 } else {
-                    ActionVariantKind::Subtle
+                    ActionVariantKind::Neutral
                 },
                 cx,
             )
@@ -3253,7 +3263,7 @@ fn display_switcher_control(
     if let Some(target)=sources.iter().find(|source|source.source==active_source)
         .and_then(|source|sources.iter().find(|target|source.camera_switch_target(target))).cloned() {
         let view=view.clone();let binding=source_binding.cloned();
-        items.push(command_button("island_camera_switch",ActionVariantKind::Subtle,cx)
+        items.push(command_button("island_camera_switch",ActionVariantKind::Neutral,cx)
             .disabled(pending_source.is_some()).h(px(24.0)).w(px(28.0)).rounded(px(7.0))
             .tooltip(tooltip(crate::i18n::tr("Switch camera")).build())
             .on_click(move|_,_,cx| {
@@ -3269,7 +3279,7 @@ fn display_switcher_control(
             if show_apps_menu || matches!(selected, protocol::session::CaptureSource::Window(_)) {
                 ActionVariantKind::Primary
             } else {
-                ActionVariantKind::Subtle
+                ActionVariantKind::Neutral
             },
             cx,
         )
@@ -3296,7 +3306,7 @@ fn display_switcher_control(
         .child(crate::i18n::tr("Apps"))
         .into_any_element(),
     );
-    crate::product_components::segmented_track(items, cx)
+    crate::product_components::segmented_track(&cx.theme()).children(items)
 }
 
 fn confirmed_source(
@@ -3360,16 +3370,17 @@ fn capture_source_badge(source: &protocol::session::CaptureSourceInfo, source_ic
     }
     let window = matches!(source.source, protocol::session::CaptureSource::Window(_));
     let initial = window.then(|| source.application.trim().chars().next()).flatten();
+    let soft_bg: Hsla = if theme.surface.canvas.l < 0.5 { rgba(0x38bdf824).into() } else { rgb(0xeaf2ff).into() };
     div().size(px(22.0)).flex_none().flex().items_center().justify_center()
-        .rounded(px(6.0)).bg(theme_brand_soft(theme))
-        .text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme_accent_brand(theme))
+        .rounded(px(6.0)).bg(soft_bg)
+        .text_size(px(11.0)).font_weight(FontWeight::SEMIBOLD).text_color(theme.action.primary.bg)
         .child(match initial {
             Some(letter) => div().child(letter.to_uppercase().collect::<String>()).into_any_element(),
             None => icon(match source.source.category() {
                 protocol::session::SourceCategory::Window=>IconName::Window,
                 protocol::session::SourceCategory::Camera=>IconName::Camera,
                 protocol::session::SourceCategory::Screen=>IconName::Display,
-            }).size(px(14.0)).color(theme_accent_brand(theme)).into_any_element(),
+            }).size(px(14.0)).color(theme.action.primary.bg).into_any_element(),
         }).into_any_element()
 }
 
@@ -3406,9 +3417,9 @@ fn capture_source_menu(
         .p_3p5()
         .min_w(px(340.0))
         .max_w(px(460.0))
-        .bg(theme_glass_floating(&theme))
+        .bg(theme_glass_floating(cx))
         .border_1()
-        .border_color(theme_border_fine(&theme))
+        .border_color(theme_border_fine(cx))
         .rounded(px(16.0))
         .shadow_2xl()
         .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
@@ -3688,57 +3699,54 @@ fn capture_source_menu(
 fn scale_mode_control(current: ViewportScaleMode, cx: &Context<RestoredDashboard>) -> Div {
     let fit_view = cx.weak_entity();
     let fill_view = cx.weak_entity();
-    crate::product_components::segmented_track(
-        vec![
-            command_button(
-                "island_scale_fit",
-                if current == ViewportScaleMode::AspectFit {
-                    ActionVariantKind::Primary
-                } else {
-                    ActionVariantKind::Subtle
-                },
-                cx,
-            )
-            .h(px(24.0))
-            .px_2p5()
-            .rounded(px(7.0))
-            .text_size(px(10.0))
-            .tooltip(tooltip(crate::i18n::tr("Fit the entire remote display")).build())
-            .on_click(move |_event, _window, cx| {
-                let _ = fit_view.update(cx, |this, cx| {
-                    this.scale_mode = ViewportScaleMode::AspectFit;
-                    this.persist_preferences();
-                    cx.notify();
-                });
-            })
-            .child(crate::i18n::tr("Fit"))
-            .into_any_element(),
-            command_button(
-                "island_scale_fill",
-                if current == ViewportScaleMode::Fill {
-                    ActionVariantKind::Primary
-                } else {
-                    ActionVariantKind::Subtle
-                },
-                cx,
-            )
-            .h(px(24.0))
-            .px_2p5()
-            .rounded(px(7.0))
-            .text_size(px(10.0))
-            .tooltip(tooltip(crate::i18n::tr("Fill the viewport and crop the edges")).build())
-            .on_click(move |_event, _window, cx| {
-                let _ = fill_view.update(cx, |this, cx| {
-                    this.scale_mode = ViewportScaleMode::Fill;
-                    this.persist_preferences();
-                    cx.notify();
-                });
-            })
-            .child(crate::i18n::tr("Fill"))
-            .into_any_element(),
-        ],
-        cx,
-    )
+    crate::product_components::segmented_track(&cx.theme()).children(vec![
+        command_button(
+            "island_scale_fit",
+            if current == ViewportScaleMode::AspectFit {
+                ActionVariantKind::Primary
+            } else {
+                ActionVariantKind::Neutral
+            },
+            cx,
+        )
+        .h(px(24.0))
+        .px_2p5()
+        .rounded(px(7.0))
+        .text_size(px(10.0))
+        .tooltip(tooltip(crate::i18n::tr("Fit the entire remote display")).build())
+        .on_click(move |_event, _window, cx| {
+            let _ = fit_view.update(cx, |this, cx| {
+                this.scale_mode = ViewportScaleMode::AspectFit;
+                this.persist_preferences();
+                cx.notify();
+            });
+        })
+        .child(crate::i18n::tr("Fit"))
+        .into_any_element(),
+        command_button(
+            "island_scale_fill",
+            if current == ViewportScaleMode::Fill {
+                ActionVariantKind::Primary
+            } else {
+                ActionVariantKind::Neutral
+            },
+            cx,
+        )
+        .h(px(24.0))
+        .px_2p5()
+        .rounded(px(7.0))
+        .text_size(px(10.0))
+        .tooltip(tooltip(crate::i18n::tr("Fill the viewport and crop the edges")).build())
+        .on_click(move |_event, _window, cx| {
+            let _ = fill_view.update(cx, |this, cx| {
+                this.scale_mode = ViewportScaleMode::Fill;
+                this.persist_preferences();
+                cx.notify();
+            });
+        })
+        .child(crate::i18n::tr("Fill"))
+        .into_any_element(),
+    ])
 }
 
 fn drawer_trigger_capsule(
@@ -3793,10 +3801,10 @@ fn drawer_trigger_capsule(
                         .px_1p5()
                         .py_0p5()
                         .rounded_full()
-                        .bg(theme_brand_soft(&theme))
+                        .bg(theme_brand_soft(cx))
                         .text_size(px(9.5))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(theme_accent_brand(&theme))
+                        .text_color(theme_accent_brand(cx))
                         .whitespace_nowrap()
                         .child(format!("{online_count}")),
                 ),
@@ -3843,8 +3851,8 @@ fn slide_over_management_drawer(
         .h_full()
         .flex()
         .flex_col()
-        .bg(if management { theme.surface.canvas } else { Hsla::from(theme_glass_card(&theme)) })
-        .when(!management, |panel| panel.border_r_1().border_color(theme_border_fine(&theme)).shadow_xl())
+        .bg(if management { theme.surface.canvas } else { theme_glass_card(cx) })
+        .when(!management, |panel| panel.border_r_1().border_color(theme_border_fine(cx)).shadow_xl())
         .overflow_hidden()
         .on_any_mouse_down(cx.listener(|_this, _event, _window, cx| {
             cx.stop_propagation();
@@ -3877,7 +3885,7 @@ fn slide_over_management_drawer(
                         ),
                 )
                 .when(!management, |header| header.child(
-                    command_button("close_drawer_btn", ActionVariantKind::Subtle, cx)
+                    command_button("close_drawer_btn", ActionVariantKind::Neutral, cx)
                         .size(px(28.0))
                         .p_0()
                         .flex_none()
@@ -3918,7 +3926,7 @@ fn slide_over_management_drawer(
                 .py_1p5()
                 .border_b_1()
                 .border_color(theme.border.divider)
-                .child(crate::product_components::segmented_track(tab_items, cx))
+                .child(crate::product_components::segmented_track(&theme).children(tab_items))
         })
         .child(
             div()
@@ -3981,7 +3989,7 @@ fn drawer_tab_button(
         if is_active {
             ActionVariantKind::Primary
         } else {
-            ActionVariantKind::Subtle
+            ActionVariantKind::Neutral
         },
         cx,
     )
@@ -4018,21 +4026,20 @@ fn drawer_devices_tab(
         _=>"This device",
     };
     let local=div().flex().items_center().gap_2p5().px_3().py_2().rounded(px(12.))
-        .bg(theme.surface.base).border_1().border_color(theme_border_fine(&theme))
-        .child(crate::product_components::tonal_icon_well(
-            crate::product_components::device_badge_element(badge.image(cx)),
-            34.0,
-            cx,
-        ))
+        .bg(theme.surface.base).border_1().border_color(theme_border_fine(cx))
+        .child(
+            crate::product_components::tonal_icon_well(34.0, false, cx)
+                .child(crate::product_components::device_badge_element(badge.image(cx))),
+        )
         .child(div().min_w_0().flex_1().flex().flex_col().gap_0p5()
             .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(theme.content.primary).child(name))
             .child(div().text_size(px(10.5)).text_color(theme.content.secondary).child(crate::i18n::message(&permission_hint)))
-            .when(activity.unattributed_sharing>0,|card|card.child(div().text_size(px(10.5)).font_weight(FontWeight::MEDIUM).text_color(theme_accent_emerald(&theme))
+            .when(activity.unattributed_sharing>0,|card|card.child(div().text_size(px(10.5)).font_weight(FontWeight::MEDIUM).text_color(theme_accent_emerald(cx))
                 .child(crate::i18n::tr_format!("Sharing · {} direct streams",activity.unattributed_sharing)))))
-        .child(command_button("sharing-permissions",ActionVariantKind::Subtle,cx).size(px(30.)).rounded(px(8.)).p_0()
+        .child(command_button("sharing-permissions",ActionVariantKind::Neutral,cx).size(px(30.)).rounded(px(8.)).p_0()
             .child(icon(IconName::Permissions).size(px(16.))).tooltip(tooltip(crate::i18n::tr("Sharing & permissions")).build())
             .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::Security;this.refresh_local_permissions(cx);cx.notify();})))
-        .child(command_button("edit-this-device-name",ActionVariantKind::Subtle,cx).size(px(30.)).rounded(px(8.)).p_0()
+        .child(command_button("edit-this-device-name",ActionVariantKind::Neutral,cx).size(px(30.)).rounded(px(8.)).p_0()
             .child(icon(IconName::More).size(px(16.))).tooltip(tooltip(crate::i18n::tr("Device name & pairing")).build())
             .on_click(cx.listener(|this,_,_,cx| {this.active_tab=DrawerTab::DeviceGroup;cx.notify();})));
     let view=cx.weak_entity();
@@ -4604,7 +4611,7 @@ fn file_transfer_panel(owner: Arc<OriginalOwner>, cx: &mut Context<RestoredDashb
         .rounded(px(12.))
         .bg(theme.surface.base)
         .border_1()
-        .border_color(theme_border_fine(&theme))
+        .border_color(theme_border_fine(cx))
         .child(
             div()
                 .text_size(px(12.5))
@@ -4867,7 +4874,7 @@ fn security_toggle_row(
         .p_3()
         .bg(theme.surface.base)
         .border_1()
-        .border_color(theme_border_fine(&theme))
+        .border_color(theme_border_fine(cx))
         .rounded(px(12.0))
         .child(
             div()
@@ -4903,7 +4910,7 @@ fn security_toggle_row(
                 ),
         )
         .child(
-            command_button(format!("toggle_{title}"), ActionVariantKind::Subtle, cx)
+            command_button(format!("toggle_{title}"), ActionVariantKind::Neutral, cx)
                 .disabled(!available)
                 .h(px(26.0))
                 .w(px(44.0))
@@ -4937,9 +4944,9 @@ fn security_toggle_row(
                         .px(px(2.0))
                         .rounded_full()
                         .bg(if enabled && available {
-                            Hsla::from(theme_accent_brand(&theme))
+                            theme_accent_brand(cx)
                         } else {
-                            theme.border.strong
+                            theme.border.default
                         })
                         .child(div().size(px(14.0)).rounded_full().bg(rgb(0xffffff))),
                 ),
@@ -5037,7 +5044,7 @@ fn desktop_update_card(state: &RestoredDashboard, cx: &mut Context<RestoredDashb
         None if checking => crate::i18n::tr("Checking…").to_owned(),
         None => crate::i18n::tr("Check for updates").to_owned(),
     };
-    div().p_3p5().bg(theme.surface.base).border_1().border_color(theme_border_fine(&theme))
+    div().p_3p5().bg(theme.surface.base).border_1().border_color(theme_border_fine(cx))
         .rounded(px(12.)).flex().flex_col().gap_2()
         .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(crate::i18n::tr("Application updates")))
         .child(div().text_size(px(10.5)).text_color(theme.content.primary).child(current_line))
@@ -5107,7 +5114,7 @@ fn drawer_network_telemetry_tab(
                 .p_3p5()
                 .bg(theme.surface.base)
                 .border_1()
-                .border_color(theme_border_fine(&theme))
+                .border_color(theme_border_fine(cx))
                 .rounded(px(12.0))
                 .flex()
                 .flex_col()
@@ -5253,7 +5260,7 @@ fn drawer_network_telemetry_tab(
                 telemetry_metric_row(
                     "Capture → receive (est.)",
                     stats.capture_receive.value(),
-                    theme_accent_cyan(&theme),
+                    theme_accent_cyan(cx),
                     cx,
                 )
                 .id("capture_receive_metric")
@@ -5262,40 +5269,40 @@ fn drawer_network_telemetry_tab(
             .child(telemetry_metric_row(
                 "Video frame rate",
                 crate::i18n::tr_format!("{:.0} FPS", stats.fps),
-                theme_accent_cyan(&theme),
+                theme_accent_cyan(cx),
                 cx,
             ))
             .child(telemetry_metric_row(
                 "Video bitrate",
                 format_bitrate(stats.bitrate_kbps),
-                theme_accent_emerald(&theme),
+                theme_accent_emerald(cx),
                 cx,
             ))
             .child(telemetry_metric_row(
                 "Host encode time",
                 crate::i18n::tr_format!("{:.1} ms", stats.latency),
-                theme_accent_amber(&theme),
+                theme_accent_amber(cx),
                 cx,
             ))
             .child(telemetry_metric_row(
                 "Network RTT",
                 stats.rtt_value(),
-                theme_accent_cyan(&theme),
+                theme_accent_cyan(cx),
                 cx,
             ))
             .child(telemetry_metric_row(
                 "Client decode time",
                 crate::i18n::tr_format!("{:.1} ms", stats.decode_latency_ms),
-                theme_accent_indigo(&theme),
+                theme_accent_indigo(cx),
                 cx,
             ))
             .child(telemetry_metric_row(
                 "Packet loss rate",
                 format!("{:.1}%", stats.packet_loss_rate),
                 if stats.packet_loss_rate > 2.0 {
-                    theme_accent_amber(&theme)
+                    theme_accent_amber(cx)
                 } else {
-                    theme_accent_emerald(&theme)
+                    theme_accent_emerald(cx)
                 },
                 cx,
             ))
@@ -5306,7 +5313,7 @@ fn drawer_network_telemetry_tab(
                 } else {
                     stats.link_status.to_string()
                 },
-                theme_accent_emerald(&theme),
+                theme_accent_emerald(cx),
                 cx,
             ));
 
@@ -5350,7 +5357,7 @@ fn drawer_network_telemetry_tab(
                                     st.p50_us as f32 / 1000.0,
                                     st.p99_us as f32 / 1000.0
                                 ),
-                                theme_accent_indigo(&theme),
+                                theme_accent_indigo(cx),
                                 cx,
                             ));
                         }
@@ -5372,7 +5379,7 @@ fn drawer_network_telemetry_tab(
 fn telemetry_metric_row(
     label: impl Into<SharedString>,
     value: String,
-    color: gpui::Rgba,
+    color: impl Into<Hsla>,
     cx: &Context<RestoredDashboard>,
 ) -> Div {
     let theme = cx.theme().clone();
@@ -5384,7 +5391,7 @@ fn telemetry_metric_row(
         .py_2()
         .bg(theme.surface.base)
         .border_1()
-        .border_color(theme_border_fine(&theme))
+        .border_color(theme_border_fine(cx))
         .rounded(px(9.0))
         .flex()
         .justify_between()
@@ -5410,18 +5417,27 @@ fn telemetry_metric_row(
 }
 
 fn network_quality_icon(quality:NetworkQuality,theme:&Theme)->crate::product_components::ProductIcon {
+    let dark = theme.surface.canvas.l < 0.5;
+    let cyan: Hsla = if dark { rgb(0x38bdf8).into() } else { rgb(0x0c7792).into() };
+    let emerald: Hsla = if dark { rgb(0x34d399).into() } else { rgb(0x057a55).into() };
+    let amber: Hsla = if dark { rgb(0xfbbf24).into() } else { rgb(0xb45309).into() };
+    let rose: Hsla = if dark { rgb(0xf87171).into() } else { rgb(0xc83a37).into() };
     let (symbol,color)=match quality {
-        NetworkQuality::Connecting=>(IconName::NetworkConnecting,Hsla::from(theme_accent_cyan(theme))),
-        NetworkQuality::Disconnected=>(IconName::NetworkDisconnected,Hsla::from(theme_accent_rose(theme))),
+        NetworkQuality::Connecting=>(IconName::NetworkConnecting,cyan),
+        NetworkQuality::Disconnected=>(IconName::NetworkDisconnected,rose),
         NetworkQuality::Unknown=>(IconName::PingIndicator(0),theme.content.secondary),
-        NetworkQuality::Good=>(IconName::PingIndicator(3),Hsla::from(theme_accent_emerald(theme))),
-        NetworkQuality::Fair=>(IconName::PingIndicator(2),Hsla::from(theme_accent_amber(theme))),
-        NetworkQuality::Poor=>(IconName::PingIndicator(1),Hsla::from(theme_accent_rose(theme))),
+        NetworkQuality::Good=>(IconName::PingIndicator(3),emerald),
+        NetworkQuality::Fair=>(IconName::PingIndicator(2),amber),
+        NetworkQuality::Poor=>(IconName::PingIndicator(1),rose),
     };
     icon(symbol).color(color)
 }
 
 fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: NetworkQuality, theme: &Theme) -> Div {
+    let dark = theme.surface.canvas.l < 0.5;
+    let cyan: Hsla = if dark { rgb(0x38bdf8).into() } else { rgb(0x0c7792).into() };
+    let emerald: Hsla = if dark { rgb(0x34d399).into() } else { rgb(0x057a55).into() };
+    let amber: Hsla = if dark { rgb(0xfbbf24).into() } else { rgb(0xb45309).into() };
     if let Some(stats) = host_stats {
         div()
             .flex()
@@ -5441,7 +5457,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .min_w_0()
                             .flex_1()
                             .text_right()
-                            .text_color(theme_accent_cyan(theme))
+                            .text_color(cyan)
                             .child(crate::i18n::tr_format!("{:.0} FPS", stats.fps)),
                     ),
             )
@@ -5486,7 +5502,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .min_w_0()
                             .flex_1()
                             .text_right()
-                            .text_color(theme_accent_emerald(theme))
+                            .text_color(emerald)
                             .child(stats.capture_submit.compact_value()),
                     ),
             )
@@ -5589,7 +5605,7 @@ fn telemetry_hud_metrics_list(host_stats: Option<&UiHostStats>, network: Network
                             .flex_1()
                             .text_right()
                             .text_color(if stats.packet_loss_rate > 2.0 {
-                                theme_accent_amber(theme).into()
+                                amber
                             } else {
                                 theme.content.secondary
                             })
@@ -5646,7 +5662,7 @@ fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut C
     let theme = cx.theme().clone();
     let edit_view = cx.weak_entity();
     let submit_view = cx.weak_entity();
-    div().p_3p5().rounded(px(12.0)).bg(theme.surface.base).border_1().border_color(theme_border_fine(&theme))
+    div().p_3p5().rounded(px(12.0)).bg(theme.surface.base).border_1().border_color(theme_border_fine(cx))
         .flex().flex_col().gap_2p5()
         .child(div().text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD)
             .text_color(theme.content.primary).child(crate::i18n::tr("This device name")))
@@ -5666,7 +5682,7 @@ fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut C
                 });
             }))
         .when_some(editor.validation_error(), |this, error| {
-            this.child(div().text_size(px(10.5)).text_color(theme_accent_amber(&theme)).child(crate::i18n::message(&error)))
+            this.child(div().text_size(px(10.5)).text_color(theme_accent_amber(cx)).child(crate::i18n::message(&error)))
         })
         .child(div().flex().flex_wrap().gap_2()
             .child(command_button("save-device-name", ActionVariantKind::Primary, cx)
@@ -5676,7 +5692,7 @@ fn device_name_controls(editor: remote_core::device_name::NameEditor, cx: &mut C
             .child(command_button("default-device-name", ActionVariantKind::Neutral, cx)
                 .h(px(28.0)).px_3().rounded_full().text_size(px(10.5)).child(crate::i18n::tr("Use host name"))
                 .on_click(cx.listener(|this, _, _, cx| this.save_device_name(true, cx))))
-            .child(command_button("cancel-device-name", ActionVariantKind::Subtle, cx)
+            .child(command_button("cancel-device-name", ActionVariantKind::Neutral, cx)
                 .h(px(28.0)).px_2p5().rounded_full().text_size(px(10.5)).child(crate::i18n::tr("Cancel"))
                 .on_click(cx.listener(|this, _, _, cx| this.cancel_device_name_edit(cx)))))
         .child(div().text_size(px(10.5)).text_color(theme.content.secondary)
@@ -5703,7 +5719,7 @@ fn mesh_pairing_card(snapshot: MeshPairingSnapshot, image_pending: bool, cx: &mu
         .p_3p5()
         .bg(theme.surface.base)
         .border_1()
-        .border_color(theme_border_fine(&theme))
+        .border_color(theme_border_fine(cx))
         .rounded(px(12.0))
         .child(
             div()
