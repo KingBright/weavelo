@@ -51,12 +51,14 @@ impl VideoFrame for MacVideoFrame {
     }
 }
 
+#[derive(Clone)]
 struct StreamOutput {
     slot: Arc<remote_core::LatestFrameSlot<MacVideoFrame>>,
     source: protocol::session::CaptureSource,
     resources: Option<Arc<crate::lifecycle::Resources>>,
     window_crop: Arc<std::sync::Mutex<Option<protocol::viewport::PixelRect>>>,
-    last_format: std::sync::atomic::AtomicU64,
+    last_format: Arc<std::sync::atomic::AtomicU64>,
+    delivered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SCStreamOutputTrait for StreamOutput {
@@ -74,6 +76,8 @@ impl SCStreamOutputTrait for StreamOutput {
         let Some(buffer) = sample.image_buffer() else {
             return;
         };
+        self.delivered
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Some(resources) = &self.resources {
             use std::sync::atomic::Ordering::Relaxed;
             let format = ((buffer.width() as u64) << 32) | buffer.height() as u64;
@@ -333,13 +337,16 @@ impl VideoCapturer for MacVideoCapturer {
         self.family_display_mode = plan.family_display_mode;
         *self.window_crop.lock().unwrap_or_else(|e| e.into_inner()) = plan.window_crop;
         let config = self.configuration(plan.stream_size, plan.includes_children, plan.family_display_mode);
+        let delivered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let output = StreamOutput {
             slot: self.slot.clone(),
             source: self.source,
             resources: self.resources.clone(),
             window_crop: self.window_crop.clone(),
-            last_format: std::sync::atomic::AtomicU64::new(0),
+            last_format: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            delivered: delivered.clone(),
         };
+        let seed_output = output.clone();
 
         // A late callback belongs to this capture generation only. A restart
         // must never inherit its old stream's stop/error signal.
@@ -347,6 +354,28 @@ impl VideoCapturer for MacVideoCapturer {
         let mut stream = SCStream::new_with_delegate(&plan.filter, &config,StreamDelegate(failure));
         stream.add_output_handler(output, SCStreamOutputType::Screen);
         stream.start_capture()?;
+
+        // SCStream on macOS is damage-driven and may not invoke did_output_sample_buffer
+        // when the remote display or window is completely static at connection time.
+        let seed_filter = plan.filter;
+        let seed_config = config;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            if delivered.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            if let Ok(Ok(sample)) = tokio::task::spawn_blocking(move || {
+                screencapturekit::screenshot_manager::SCScreenshotManager::capture_sample_buffer(
+                    &seed_filter,
+                    &seed_config,
+                )
+            })
+            .await
+                && !delivered.load(std::sync::atomic::Ordering::Acquire)
+            {
+                seed_output.did_output_sample_buffer(sample, SCStreamOutputType::Screen);
+            }
+        });
 
         self.stream = Some(stream);
         self.stream_running = true;

@@ -148,8 +148,19 @@ fn mapped_receive_offset(
         .then_some(elapsed as u32)
 }
 
+#[cfg(test)]
 fn clock_probe_period(paused: bool) -> Duration {
     Duration::from_secs(if paused { 5 } else { 1 })
+}
+
+fn realtime_clock_probe_period(paused: bool, synchronized: bool) -> Duration {
+    if paused {
+        Duration::from_secs(5)
+    } else if synchronized {
+        Duration::from_millis(500)
+    } else {
+        Duration::from_millis(150)
+    }
 }
 
 enum OutboundClockControl {
@@ -359,9 +370,7 @@ impl SharedHostStats {
                     while extra.rtt_samples.len() > 5 {
                         extra.rtt_samples.pop_front();
                     }
-                    if extra.updated_at.is_none() {
-                        extra.updated_at = Some(Instant::now());
-                    }
+                    extra.updated_at = Some(Instant::now());
                     if extra.link_status.is_empty() {
                         let rtt_ms = sample.network_rtt_us as f32 / 1_000.0;
                         extra.link_status = if rtt_ms > 80.0 {
@@ -521,6 +530,7 @@ impl SharedHostStats {
         self.jitter_buffer_depth
             .store(jitter_buffer_depth as u32, Relaxed);
         if let Ok(mut extra) = self.extra.lock() {
+            extra.updated_at = Some(Instant::now());
             extra.e2e_is_valid = e2e_latency_ms.is_some();
             if packet_loss_rate > 3.0 {
                 extra.link_status = "🟡 网络丢包波动";
@@ -577,12 +587,14 @@ pub fn spawn_client_session_receiver(
             decode_tx,
             session_event_tx.clone(),
         );
-        let mut clock_sync = ClockSynchronizer::new();
+        let mut clock_sync =
+            ClockSynchronizer::with_config(crate::clock_sync::ClockSyncConfig::realtime_session())
+                .unwrap_or_else(|_| ClockSynchronizer::new());
         let mut clock_continuity = ClockContinuity::new();
         let mut clock_peer: Option<(SocketAddr, [u8; 16])> = None;
         let mut clock_session_id: Option<[u8; 16]> = None;
         let mut next_probe_id = Some(1_u64);
-        let mut clock_tick = tokio::time::interval(Duration::from_secs(1));
+        let mut clock_tick = tokio::time::interval(Duration::from_millis(150));
         clock_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -618,7 +630,10 @@ pub fn spawn_client_session_receiver(
                 },
                 packet = udp_receiver.recv() => packet,
                 _ = clock_tick.tick() => {
-                    clock_tick.reset_after(clock_probe_period(host_stats.media_pause.is_paused()));
+                    let synced = clock_sync
+                        .estimate(crate::timing::quanta_now_us())
+                        .is_some_and(|e| e.state == ClockSyncState::Synchronized);
+                    clock_tick.reset_after(realtime_clock_probe_period(host_stats.media_pause.is_paused(), synced));
                     if !clock_continuity.observe(crate::timing::quanta_now_us(), std::time::SystemTime::now()) {
                         clock_sync.invalidate_measurements();
                         media_handler.update_clock_estimate(None);
@@ -910,6 +925,7 @@ pub(crate) struct MediaPacketHandler {
     clock_estimate: Option<ClockEstimate>,
     rtt_ms: f32,
     smooth_e2e_ms: f32,
+    last_video_packet_timing: Option<(FrameTimingCheckpoints, u64)>,
     video_source: Option<SocketAddr>,
     needs_keyframe: bool,
     last_keyframe_request: Option<Instant>,
@@ -946,6 +962,7 @@ impl MediaPacketHandler {
             clock_estimate: None,
             rtt_ms: 0.0,
             smooth_e2e_ms: 0.0,
+            last_video_packet_timing: None,
             video_source: None,
             needs_keyframe: false,
             last_keyframe_request: None,
@@ -990,6 +1007,7 @@ impl MediaPacketHandler {
         self.packets_lost = 0;
         self.loss_rate_pct = 0.0;
         self.smooth_e2e_ms = 0.0;
+        self.last_video_packet_timing = None;
         self.needs_keyframe = true;
         self.last_keyframe_request = None;
         self.stats_net
@@ -1040,9 +1058,54 @@ impl MediaPacketHandler {
         });
         self.host_stats.set_rtt(self.rtt_ms);
         self.host_stats.set_clock_estimate(estimate);
-        if fresh_clock_offset_at(self.clock_estimate.as_ref(), crate::timing::quanta_now_us())
-            .is_none()
-        {
+        let now_us = crate::timing::quanta_now_us();
+        if self.video_expected_seq_init && self.last_loss_calc.elapsed() >= Duration::from_millis(500) {
+            let rate = if self.packets_expected == 0 {
+                0.0
+            } else {
+                self.packets_lost as f32 / self.packets_expected as f32 * 100.0
+            };
+            self.loss_rate_pct = if self.loss_rate_pct < 0.05 && rate == 0.0 {
+                0.0
+            } else {
+                self.loss_rate_pct * 0.7 + rate * 0.3
+            };
+            self.packets_expected = 0;
+            self.packets_lost = 0;
+            self.last_loss_calc = Instant::now();
+        }
+        if let Some(offset) = fresh_clock_offset_at(self.clock_estimate.as_ref(), now_us) {
+            if self.smooth_e2e_ms <= 0.01
+                && let Some((host_timing, recv_now_us)) = self.last_video_packet_timing
+                && now_us.saturating_sub(recv_now_us) <= 5_000_000
+            {
+                let retro_offset = fresh_clock_offset_at(self.clock_estimate.as_ref(), recv_now_us)
+                    .unwrap_or(offset);
+                if let Some(recv_offset) = mapped_receive_offset(&host_timing, retro_offset, recv_now_us) {
+                    self.smooth_e2e_ms = recv_offset as f32 / 1_000.0;
+                    let decode_us = (f32::from_bits(self.host_stats.decode_latency_ms.load(Relaxed)).max(0.0) * 1_000.0) as u32;
+                    if decode_us > 0 && self.host_stats.latest_ui_submission().is_none() {
+                        let mut synth = host_timing;
+                        synth.recv_ts_us = recv_offset;
+                        synth.jitter_enter_ts_us = recv_offset;
+                        synth.jitter_exit_ts_us = recv_offset;
+                        synth.decode_enter_ts_us = recv_offset;
+                        synth.decode_done_ts_us = recv_offset.saturating_add(decode_us);
+                        synth.render_submit_ts_us = synth.decode_done_ts_us;
+                        self.host_stats.set_latest_timing(synth);
+                    }
+                }
+            }
+            let e2e = (self.smooth_e2e_ms > 0.0).then_some(self.smooth_e2e_ms);
+            if self.video_expected_seq_init || e2e.is_some() {
+                self.host_stats.update_video_link(
+                    e2e,
+                    self.rtt_ms,
+                    self.loss_rate_pct,
+                    self.video_jitter_buffer.len(),
+                );
+            }
+        } else {
             self.smooth_e2e_ms = 0.0;
         }
     }
@@ -1078,6 +1141,9 @@ impl MediaPacketHandler {
             && (current_session == 0 || packet.header.ssrc == current_session)
         {
             self.host_stats.set_latest_host_timing(host_timing);
+            if host_timing.capture_ts_us > 0 {
+                self.last_video_packet_timing = Some((host_timing, now_us));
+            }
         }
         let recv_offset = fresh_clock_offset_at(self.clock_estimate.as_ref(), now_us)
             .and_then(|offset| mapped_receive_offset(&host_timing, offset, now_us));
@@ -1263,7 +1329,7 @@ impl MediaPacketHandler {
                 }
             }
             self.last_seq = Some(seq);
-            if self.last_loss_calc.elapsed() >= Duration::from_secs(1) {
+            if self.last_loss_calc.elapsed() >= Duration::from_millis(500) {
                 let rate = self.packets_lost as f32 / self.packets_expected.max(1) as f32 * 100.0;
                 self.loss_rate_pct = self.loss_rate_pct * 0.7 + rate * 0.3;
                 self.packets_expected = 0;

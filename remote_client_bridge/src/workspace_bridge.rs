@@ -1062,8 +1062,14 @@ impl MobileWorkspace {
             .events
             .drain(..)
             .collect::<Vec<_>>();
+        let has_stream_activation = events.iter().any(|ev| {
+            ev.get("control")
+                .is_some_and(|c| c.get("Subscribed").is_some() || c.get("Activity").is_some())
+        });
         let mut sent_at = self.telemetry_sent_at.lock().unwrap();
-        if sent_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1)) {
+        if has_stream_activation
+            || sent_at.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(500))
+        {
             let telemetry = self
                 .telemetry
                 .lock()
@@ -1121,8 +1127,8 @@ fn subscription_telemetry(id: u32, shared: &SharedHostStats) -> serde_json::Valu
         .estimated_e2e_latency_ms()
         .filter(|ms| ms.is_finite() && *ms >= 0.0);
     let encode_ms =
-        (fresh && stats.latency.is_finite() && stats.latency > 0.0).then_some(stats.latency);
-    let fps = (fresh && stats.fps.is_finite() && stats.fps > 0.0).then_some(stats.fps);
+        (fresh && stats.latency.is_finite() && stats.latency >= 0.0).then_some(stats.latency);
+    let fps = (fresh && stats.fps.is_finite() && stats.fps >= 0.0).then_some(stats.fps);
     let loss = (fresh
         && stats.packet_loss_rate.is_finite()
         && (0.0..=100.0).contains(&stats.packet_loss_rate))

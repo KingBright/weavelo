@@ -42,6 +42,8 @@ impl RestoredDashboard {
                 let compact = s.capture_submit.compact_value();
                 if compact != "—" {
                     compact
+                } else if s.capture_receive.compact_value() != "—" {
+                    s.capture_receive.compact_value()
                 } else if s.latency.is_finite() && s.latency > 0.0 {
                     format!("{} {:.1} ms", crate::i18n::tr("Enc"), s.latency)
                 } else if s.fps.is_finite() && s.fps == 0.0 {
@@ -233,36 +235,5 @@ impl RestoredDashboard {
                             .child(value),
                     )
             }))
-            .child(
-                div()
-                    .pt_1()
-                    .mt_0p5()
-                    .border_t_1()
-                    .border_color(divider)
-                    .child(
-                        command_button(
-                            "network-open-display-settings",
-                            ActionVariantKind::Neutral,
-                            cx,
-                        )
-                        .w_full()
-                        .h(px(24.))
-                        .rounded(px(7.))
-                        .text_size(px(11.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap_1()
-                                .child(icon(IconName::Display).size(px(12.)))
-                                .child(crate::i18n::tr("Display")),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.network_details_open = false;
-                            this.open_stream_panel(StreamPanel::Display, cx);
-                        })),
-                    ),
-            )
     }
 }

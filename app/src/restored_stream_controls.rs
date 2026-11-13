@@ -1463,14 +1463,6 @@ impl RestoredDashboard {
                         this.begin_remote_source_replacement(binding.clone(), cx);
                     })),
             )
-            .child(display_switcher_control(
-                &snapshot.capture_sources,
-                snapshot.source_binding.as_ref(),
-                snapshot.active_capture_source,
-                snapshot.pending_capture_source,
-                self.show_apps_menu,
-                cx,
-            ))
             .child(
                 crate::desktop::session_recovery::ConnectionRecoveryControls::new(
                     self.owner.session_tabs(),

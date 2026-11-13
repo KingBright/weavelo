@@ -265,33 +265,18 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             ) {
                 Column(
                     modifier = Modifier
-                        .widthIn(min = 248.dp, max = 300.dp)
+                        .widthIn(min = 220.dp, max = 280.dp)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    LanguageSelector(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
-                    HorizontalDivider(color = p.borderMuted)
                     if (!state.connected && !state.incomingEnded) {
                         PrecisionMenuItem(
                             text = tr("Reconnect"),
                             symbol = MobileSymbol.Refresh,
                             onClick = { onDismiss(); WorkspaceClient.reconnect() }
                         )
+                        HorizontalDivider(color = p.borderMuted)
                     }
-                    if (state.panes.size > 1) {
-                        PrecisionMenuItem(
-                            text = if (state.grid) tr("Use tabs") else tr("Show together"),
-                            symbol = MobileSymbol.Grid,
-                            onClick = { onDismiss(); WorkspaceClient.layout(!state.grid) }
-                        )
-                    }
-                    PrecisionMenuItem(
-                        text = tr("Refresh screens and windows"),
-                        symbol = MobileSymbol.Refresh,
-                        enabled = state.connected && !state.incomingEnded,
-                        onClick = { onDismiss(); WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration) }
-                    )
-                    HorizontalDivider(color = p.borderMuted)
                     PrecisionMenuItem(
                         text = tr("File transfer & manager"),
                         symbol = MobileSymbol.Files,
@@ -302,19 +287,6 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         }
                     )
                     PrecisionMenuItem(
-                        text = tr("Send files"),
-                        symbol = MobileSymbol.Send,
-                        enabled = state.connected && state.files,
-                        onClick = { onDismiss(); pickerSessionKey = sessionKey; shareSelection = false; filePicker.launch(arrayOf("*/*")) }
-                    )
-                    PrecisionMenuItem(
-                        text = tr("Retrieve shared files"),
-                        symbol = MobileSymbol.Download,
-                        enabled = state.connected && state.files && !state.sharedBusy,
-                        onClick = { onDismiss(); WorkspaceClient.listSharedFiles(); fileHubInitialTab = "remote"; receivedFiles = true }
-                    )
-                    HorizontalDivider(color = p.borderMuted)
-                    PrecisionMenuItem(
                         text = tr("Clipboard manager"),
                         symbol = MobileSymbol.Clipboard,
                         checked = state.clipboard,
@@ -322,26 +294,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         onClick = { onDismiss(); clipboardCenterOpen = true }
                     )
                     PrecisionMenuItem(
-                        text = tr("Send clipboard"),
-                        symbol = MobileSymbol.Copy,
-                        enabled = state.connected && state.clipboardAvailable,
-                        onClick = {
-                            onDismiss()
-                            if (!state.clipboard) WorkspaceClient.enableClipboard(true)
-                            sendClipboardNow()
-                        }
-                    )
-                    PrecisionMenuItem(
                         text = tr("Background"),
                         symbol = MobileSymbol.Settings,
                         onClick = { onDismiss(); backgroundSettings = true }
-                    )
-                    HorizontalDivider(color = p.borderMuted)
-                    PrecisionMenuItem(
-                        text = tr("Disconnect"),
-                        symbol = MobileSymbol.Disconnect,
-                        destructive = true,
-                        onClick = { onDismiss(); disconnect() }
                     )
                 }
             }
@@ -1012,6 +967,15 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
+                    HorizontalDivider(color = p.borderMuted)
+                    PrecisionMenuItem(
+                        text = tr("Background connection"),
+                        symbol = MobileSymbol.Network,
+                        onClick = {
+                            selectedSettings = null
+                            backgroundSettings = true
+                        }
+                    )
                 }
             }
         }
@@ -1785,15 +1749,6 @@ private fun WorkspaceVideo(
                                 sideDrawerOpen = false
                                 onOpenClipboard()
                             }
-                            Box {
-                                MobileAction(
-                                    symbol = MobileSymbol.More,
-                                    label = tr("Connection actions"),
-                                    tonalWell = true,
-                                    modifier = Modifier.size(38.dp)
-                                ) { sideMoreOpen = true }
-                                sessionActionsContent(sideMoreOpen) { sideMoreOpen = false }
-                            }
                             MobileAction(
                                 symbol = MobileSymbol.Disconnect,
                                 label = tr("Exit stream"),
@@ -1848,6 +1803,14 @@ private fun WorkspaceVideo(
                                 onPickSource()
                             }
                             if (allPanes.size > 1) {
+                                MobileAction(
+                                    symbol = MobileSymbol.Grid,
+                                    label = if (gridMode) tr("Use tabs") else tr("Show together"),
+                                    selected = gridMode,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    WorkspaceClient.layout(!gridMode)
+                                }
                                 MobileAction(
                                     symbol = MobileSymbol.Close,
                                     label = trFormat("Close %s", paneTitle),

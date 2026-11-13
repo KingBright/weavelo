@@ -587,7 +587,6 @@ fun MobileViewportScreen(
                                     modifier = Modifier.weight(1f)
                                 )
                             }
-                            LanguageSelector(modifier = Modifier.fillMaxWidth())
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()

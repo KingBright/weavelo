@@ -1218,11 +1218,23 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut current_jitter_ms = 0.0_f32;
 
     let telemetry_udp_sender = udp_sender.clone();
+    let _ = telemetry_udp_sender
+        .send_control(
+            &protocol::ControlMessage::HostTelemetry {
+                session_id,
+                fps: 0.0,
+                encode_latency_ms: 0.0,
+                jitter_ms: 0.0,
+                bitrate_kbps: 0,
+            },
+            client_addr,
+        )
+        .await;
     let mut paused = false;
     let mut resume_capture_after_us = 0_u64;
     let mut awaiting_resume_keyframe = false;
     let mut reported_settings=(width,height,fps,bitrate_kbps);
-    let mut telemetry_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut telemetry_tick = tokio::time::interval(Duration::from_millis(500));
     telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     #[cfg(any(target_os="macos",target_os="linux"))]
     let mut viewport_ticks=tokio::time::interval(remote_core::viewport::DEMAND_INTERVAL);
@@ -1297,12 +1309,12 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
             _ = telemetry_tick.tick() => {
                 let now=std::time::Instant::now();
                 let elapsed=now.duration_since(last_fps_update).as_secs_f32();
-                if elapsed>=0.5 {
+                if elapsed>=0.2 {
                     let active=frames_since_update>0;
                     let _=telemetry_udp_sender.send_control(&protocol::ControlMessage::HostTelemetry {
                         session_id,
                         fps:frames_since_update as f32/elapsed,
-                        encode_latency_ms:if active {current_latency_ms}else{0.0},
+                        encode_latency_ms:current_latency_ms,
                         jitter_ms:if active {current_jitter_ms}else{0.0},
                         bitrate_kbps:(bytes_since_update as f64*8.0/1000.0/f64::from(elapsed)) as u32,
                     },client_addr).await;

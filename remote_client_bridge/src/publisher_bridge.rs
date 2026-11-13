@@ -118,6 +118,7 @@ struct Peer {
     addr: SocketAddr,
     id: u32,
     seen: Instant,
+    telemetry_active: bool,
     subscriptions: HashMap<u32, MobileSubscription>,
     retired: std::collections::HashSet<u32>,
     scheduled: ScheduledDataSender,
@@ -136,6 +137,11 @@ struct MobileSubscription {
     video_sequence: u16,
     audio_sequence: u16,
     screen_stream: u64,
+    frames_since_telemetry: u32,
+    bytes_since_telemetry: u64,
+    last_encode_latency_ms: f32,
+    last_jitter_ms: f32,
+    last_telemetry_at: Instant,
 }
 struct PendingArtwork {
     request_id: u32,
@@ -224,6 +230,11 @@ impl MobileSubscription {
             video_sequence: 0,
             audio_sequence: 0,
             screen_stream,
+            frames_since_telemetry: 0,
+            bytes_since_telemetry: 0,
+            last_encode_latency_ms: 0.0,
+            last_jitter_ms: 0.0,
+            last_telemetry_at: Instant::now(),
         }
     }
     fn input_allowed(&self) -> bool {
@@ -748,6 +759,8 @@ impl MobilePublisher {
             let mut artwork_requests = HashMap::new();
             let mut handshakes = remote_core::session_auth::ServerHandshake::default();
             let mut maintenance = tokio::time::interval(Duration::from_secs(1));
+            let mut telemetry_tick = tokio::time::interval(Duration::from_millis(500));
+            telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut input_watchdog = tokio::time::interval(Duration::from_millis(
                 protocol::realtime_input::INPUT_WATCHDOG_INTERVAL_MS,
             ));
@@ -851,6 +864,33 @@ impl MobilePublisher {
                             }
                         }
                     }
+                    _ = telemetry_tick.tick() => {
+                        let now = Instant::now();
+                        for (addr, peer) in &mut peers {
+                            if !peer.telemetry_active
+                                || peer.delivery_owner.is_some_and(|(owner, ticket)| !peer_delivery.claim_alive(owner, ticket))
+                            {
+                                continue;
+                            }
+                            for sub in peer.subscriptions.values_mut().filter(|sub| sub.video) {
+                                let elapsed = now.duration_since(sub.last_telemetry_at).as_secs_f32();
+                                if elapsed < 0.2 {
+                                    continue;
+                                }
+                                let active = sub.frames_since_telemetry > 0;
+                                let _ = sender.send_control(&ControlMessage::HostTelemetry {
+                                    session_id: sub.request.id,
+                                    fps: sub.frames_since_telemetry as f32 / elapsed,
+                                    encode_latency_ms: sub.last_encode_latency_ms,
+                                    jitter_ms: if active { sub.last_jitter_ms } else { 0.0 },
+                                    bitrate_kbps: (sub.bytes_since_telemetry as f64 * 8.0 / 1000.0 / f64::from(elapsed)) as u32,
+                                }, *addr).await;
+                                sub.frames_since_telemetry = 0;
+                                sub.bytes_since_telemetry = 0;
+                                sub.last_telemetry_at = now;
+                            }
+                        }
+                    }
                     Some(frame)=frame_rx.recv()=>{
                         let grant={let media=shared.lock().unwrap();
                             let accepted=frame.screen_stream.map_or_else(||media.accepts_frame(frame.source,frame.epoch,frame.audio),
@@ -863,6 +903,15 @@ impl MobilePublisher {
                             for sub in peer.subscriptions.values_mut().filter(|sub|sub.request.source==frame.source) {
                                 if sub.grant!=grant || frame.screen_stream.is_some_and(|stream|stream!=sub.screen_stream)
                                     || (frame.audio&&!sub.audio)||(!frame.audio&&!sub.video){continue;}
+                                if !frame.audio {
+                                    sub.frames_since_telemetry = sub.frames_since_telemetry.saturating_add(1);
+                                    sub.bytes_since_telemetry = sub.bytes_since_telemetry.saturating_add(frame.bytes.len() as u64);
+                                    if let Some(timing) = frame.timing {
+                                        let enc_ms = timing.encode_done_ts_us.saturating_sub(timing.encode_queue_ts_us) as f32 / 1000.0;
+                                        sub.last_jitter_ms = sub.last_jitter_ms * 0.85 + (enc_ms - sub.last_encode_latency_ms).abs() * 0.15;
+                                        sub.last_encode_latency_ms = enc_ms;
+                                    }
+                                }
                                 let (id,payload_type,sequence)=if frame.audio {
                                     (protocol::remote_system_audio_stream_id(sub.request.id),protocol::PayloadType::AudioOpus as u8,&mut sub.audio_sequence)
                                 } else {(sub.request.id,96,&mut sub.video_sequence)};
@@ -897,8 +946,14 @@ impl MobilePublisher {
                             MultiplexedPacket::ClockProbe(probe,host_recv_us,addr)=>{
                                 if authenticated.get(&addr).is_some_and(|(id,..)|*id==probe.session_id) && let Some(p)=peers.get_mut(&addr){
                                     p.seen=Instant::now();
+                                    let first_telemetry = !std::mem::replace(&mut p.telemetry_active, true);
                                     let reply=protocol::session_auth::ClockReply{probe,host_recv_us,host_send_us:remote_core::timing::quanta_now_us()};
                                     let _=sender.send_control(&ControlMessage::ClockReply(reply),addr).await;
+                                    if first_telemetry {
+                                        for sub in p.subscriptions.values().filter(|sub| sub.video) {
+                                            let _=sender.send_control(&ControlMessage::HostTelemetry{session_id:sub.request.id,fps:0.0,encode_latency_ms:sub.last_encode_latency_ms,jitter_ms:0.0,bitrate_kbps:0},addr).await;
+                                        }
+                                    }
                                 }
                             }
                             MultiplexedPacket::ClockReply(..)=>{}
@@ -1029,8 +1084,12 @@ impl MobilePublisher {
                                             let id=request.id;let audio=request.audio&&source.audio;
                                             let supports_input=screen_source(request.source)&&shared_input.lock().unwrap().ready();
                                             peers.get_mut(&addr).unwrap().subscriptions.entry(id).or_insert_with(||MobileSubscription::new(request,source.grant,audio));
+                                            let telemetry_active = peers[&addr].telemetry_active;
                                             recompute(&peers,&shared);
                                             reply(&sender,addr,SessionCommand::Subscribed{id,audio_owner:audio.then_some(id),supports_input, max_touch_points: if supports_input {protocol::touch::MAX_CONTACTS as u8} else {0} }).await;
+                                            if telemetry_active {
+                                                let _=sender.send_control(&ControlMessage::HostTelemetry{session_id:id,fps:0.0,encode_latency_ms:0.0,jitter_ms:0.0,bitrate_kbps:0},addr).await;
+                                            }
                                         }
                                         SessionCommand::SetActivity{id,revision,video,audio} if peers.contains_key(&addr)=>{
                                             let Some(sub)=peers[&addr].subscriptions.get(&id)else{continue;};
@@ -1045,8 +1104,14 @@ impl MobilePublisher {
                                                 if !video&&sub.input_allowed(){shared_input.lock().unwrap().revoke_peer(addr);}
                                                 sub.activity_revision=revision;sub.video=video;sub.audio=audio&&sub.request.audio&&allowed_audio;
                                             }
+                                            let is_video_active = sub.video;
+                                            let last_enc = sub.last_encode_latency_ms;
                                             let response=SessionCommand::Activity{id,revision:sub.activity_revision,video:sub.video,audio:sub.audio};
+                                            let telemetry_active = peers[&addr].telemetry_active;
                                             recompute(&peers,&shared);reply(&sender,addr,response).await;
+                                            if is_video_active && telemetry_active {
+                                                let _=sender.send_control(&ControlMessage::HostTelemetry{session_id:id,fps:0.0,encode_latency_ms:last_enc,jitter_ms:0.0,bitrate_kbps:0},addr).await;
+                                            }
                                         }
                                         SessionCommand::Viewport(demand) if peers.contains_key(&addr)=>{
                                             let result=peers[&addr].subscriptions.get(&demand.id)
@@ -1591,6 +1656,7 @@ impl Peer {
             addr,
             id,
             seen: Instant::now(),
+            telemetry_active: false,
             subscriptions: HashMap::new(),
             retired: Default::default(),
             scheduled,

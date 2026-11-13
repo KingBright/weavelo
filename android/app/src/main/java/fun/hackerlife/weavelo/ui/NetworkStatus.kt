@@ -84,7 +84,7 @@ internal fun NetworkStatusChip(
 ) {
     val p = WeaveloTokens.colors
     var now by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
-    LaunchedEffect(Unit) { while (true) { now = SystemClock.elapsedRealtime(); delay(1000) } }
+    LaunchedEffect(Unit) { while (true) { now = SystemClock.elapsedRealtime(); delay(500) } }
     val sampleNow = maxOf(now, SystemClock.elapsedRealtime())
     val status = networkIndicator(session, telemetry, sampleNow)
     val bars = signalBarsLevel(session, telemetry, sampleNow)
@@ -94,7 +94,7 @@ internal fun NetworkStatusChip(
     val videoE2e = telemetry.captureReceiveEstimateMs?.takeIf { fresh && it.isFinite() && it >= 0 }
         ?.let { it + (decodeMs ?: 0f) }
     val rttLabel = rtt?.let { String.format(Locale.ROOT, "%.0f ms", it) }
-    val fpsLabel = telemetry.fps.takeIf { fresh && it.isFinite() && it > 0f }
+    val fpsLabel = telemetry.fps.takeIf { fresh && it.isFinite() && it >= 0f }
         ?.let { String.format(Locale.ROOT, "%.0f FPS", it) }
     val loss = telemetry.packetLossPercent.takeIf { fresh && it.isFinite() && it in 0f..100f }
     val routeLabel = when (route?.trim()?.uppercase(Locale.ROOT)) {

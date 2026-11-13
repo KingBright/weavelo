@@ -139,7 +139,15 @@ object WorkspaceClient {
 
     fun reportLocalDecodeLatency(id: Int, decodeMs: Float) {
         if (decodeMs.isFinite() && decodeMs >= 0f) {
-            localDecodeLatencies[id] = decodeMs
+            val clamped = decodeMs.coerceAtLeast(0.05f)
+            localDecodeLatencies[id] = clamped
+            if (mutable.value.panes.any { it.id == id && (!it.telemetry.latencyMs.isFinite() || it.telemetry.latencyMs <= 0f) }) {
+                guarded {
+                    mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
+                        if (pane.id == id) pane.copy(telemetry = pane.telemetry.copy(latencyMs = clamped)) else pane
+                    })
+                }
+            }
         }
     }
 
@@ -944,9 +952,11 @@ object WorkspaceClient {
                 val now = SystemClock.elapsedRealtime()
                 mutable.value = mutable.value.copy(panes = mutable.value.panes.map { pane ->
                     val sample = byId[pane.id]
-                    val localDecode = localDecodeLatencies[pane.id] ?: pane.telemetry.latencyMs
-                    pane.copy(telemetry = if (sample == null) TelemetrySnapshot(latencyMs = localDecode) else TelemetrySnapshot(
-                        fps = nullableTelemetryNumber(sample.opt("fps"))?.toFloat() ?: 0f,
+                    val localDecode = localDecodeLatencies[pane.id]
+                        ?: pane.telemetry.latencyMs.takeIf { it.isFinite() && it > 0f }
+                        ?: Float.NaN
+                    pane.copy(telemetry = if (sample == null) TelemetrySnapshot(fps = Float.NaN, latencyMs = localDecode, packetLossPercent = Float.NaN, videoBitrateKbps = -1) else TelemetrySnapshot(
+                        fps = nullableTelemetryNumber(sample.opt("fps"))?.toFloat() ?: Float.NaN,
                         latencyMs = localDecode,
                         captureReceiveEstimateMs = nullableTelemetryNumber(sample.opt("video_e2e_latency_ms")),
                         networkRttMs = nullableTelemetryNumber(sample.opt("network_rtt_ms")),

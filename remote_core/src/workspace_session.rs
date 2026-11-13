@@ -27,10 +27,28 @@ type VideoIngress = crate::video_queue::VideoSender;
 type PointerUpdate =
     Arc<std::sync::Mutex<Option<(protocol::realtime_input::RealtimeInput, Instant)>>>;
 
+#[cfg(test)]
 fn clock_probe_due(active: bool, last_probe: Option<Instant>, now: Instant) -> bool {
     active
         || last_probe
             .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(5))
+}
+
+fn realtime_clock_probe_due(
+    active: bool,
+    synchronized: bool,
+    sample_count: usize,
+    last_probe: Option<Instant>,
+    now: Instant,
+) -> bool {
+    let min_gap = if !synchronized && (active || sample_count < 4) {
+        Duration::from_millis(140)
+    } else if active {
+        Duration::from_millis(480)
+    } else {
+        Duration::from_secs(5)
+    };
+    last_probe.is_none_or(|last| now.saturating_duration_since(last) >= min_gap)
 }
 
 #[derive(Default)]
@@ -1945,8 +1963,11 @@ impl Actor {
         let mut last_pong = Instant::now();
         let mut rejected_count = 0u64;
         let mut rejection_log_at: Option<Instant> = None;
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
-        let mut clock = crate::clock_sync::ClockSynchronizer::new();
+        let mut heartbeat = tokio::time::interval(Duration::from_millis(150));
+        let mut clock = crate::clock_sync::ClockSynchronizer::with_config(
+            crate::clock_sync::ClockSyncConfig::realtime_session(),
+        )
+        .unwrap_or_else(|_| crate::clock_sync::ClockSynchronizer::new());
         let mut clock_continuity = crate::clock_sync::ClockContinuity::new();
         let mut probe_id = 0u64;
         let mut last_probe = None;
@@ -1977,10 +1998,14 @@ impl Actor {
                     let now=crate::timing::quanta_now_us();
                     if !clock_continuity.observe(now,std::time::SystemTime::now()){clock.invalidate_measurements();}
                     let estimate=clock.estimate(now);
+                    let synced = estimate
+                        .as_ref()
+                        .is_some_and(|e| e.state == crate::clock_sync::ClockSyncState::Synchronized);
+                    let sample_count = estimate.as_ref().map_or(0, |e| e.sample_count);
                     for view in self.subscriptions.values_mut(){view.handler.update_clock_estimate(estimate.clone());}
                     let active = self.subscriptions.values().any(|view| view.active);
                     let probe_time = Instant::now();
-                    if !clock_probe_due(active, last_probe, probe_time) { continue; }
+                    if !realtime_clock_probe_due(active, synced, sample_count, last_probe, probe_time) { continue; }
                     last_probe = Some(probe_time);
                     if let Some(session_id)=self.sender.peer_session_id(self.target) {
                         let Some(next)=probe_id.checked_add(1) else { break; };probe_id=next;

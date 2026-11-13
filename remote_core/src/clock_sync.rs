@@ -84,6 +84,19 @@ impl Default for ClockSyncConfig {
     }
 }
 
+impl ClockSyncConfig {
+    /// Fast initial convergence (~450ms) and Wi-Fi/Relay jitter tolerance for live remote sessions.
+    pub fn realtime_session() -> Self {
+        Self {
+            min_fit_samples: 4,
+            min_fit_span_us: 350_000,
+            low_rtt_slack_us: 8_000,
+            low_rtt_ratio: 0.35,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClockSyncError {
     InvalidConfig,
