@@ -94,6 +94,7 @@ class RemoteControlService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         if (!WeaveloClient.initialize(this)) return
+        DevicePresenceService.restoreBackgroundServices(this)
         PublisherClient.action(8,"true")
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             serviceInfo = serviceInfo.apply { flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR }

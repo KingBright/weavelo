@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <queries>
@@ -42,6 +43,12 @@
             android:foregroundServiceType="connectedDevice" />
         <service android:name=".DevicePresenceService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <receiver android:name=".PresenceStartupReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         <service android:name=".FileReceiverService" android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service android:name=".RemoteControlService" android:exported="true"

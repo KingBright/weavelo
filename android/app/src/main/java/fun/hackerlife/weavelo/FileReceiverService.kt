@@ -34,7 +34,13 @@ class FileReceiverService : Service() {
     }
     override fun onCreate() {
         super.onCreate()
-        startForeground(8128, notification())
+        try {
+            startForeground(8128, notification())
+        } catch (error: RuntimeException) {
+            android.util.Log.w("WeaveloFileReceiver", "Foreground start declined in onCreate", error)
+            stopSelf()
+            return
+        }
         languageObserver = LanguageNotificationObserver(this) { getSystemService(NotificationManager::class.java).notify(8128, notification()) }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

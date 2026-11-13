@@ -5,10 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.util.Log
+import java.io.File
 import `fun`.hackerlife.weavelo.ui.LanguageNotificationObserver
 import `fun`.hackerlife.weavelo.ui.notificationText
 import kotlinx.coroutines.CancellationException
@@ -46,12 +49,24 @@ class DevicePresenceService : Service() {
                 Log.w("WeaveloPresence", "Android declined the background connection service", error)
             }
         }
+
+        internal fun restoreBackgroundServices(context: Context) {
+            val app = context.applicationContext
+            if (!File(app.filesDir, "mesh.conf").exists()) return
+            startIfEnabled(app)
+            val autoReceive = app.getSharedPreferences("stream", Context.MODE_PRIVATE)
+                .getBoolean("auto_receive_files", true)
+            if (autoReceive && WeaveloClient.nativeAvailable && !FileReceiverClient.ownsNetwork) {
+                FileReceiverClient.start(app)
+            }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val owner = Any()
     private var worker: Job? = null
     private var languageObserver: LanguageNotificationObserver? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var message = "Starting background connection…"
 
     private fun notification(): Notification {
@@ -74,7 +89,19 @@ class DevicePresenceService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIFICATION_ID, notification())
+        try {
+            startForeground(NOTIFICATION_ID, notification())
+        } catch (error: RuntimeException) {
+            Log.w("WeaveloPresence", "Foreground start declined in onCreate", error)
+            stopSelf()
+            return
+        }
+        runCatching {
+            getSystemService(WifiManager::class.java)
+                ?.createMulticastLock("weavelo-presence-lan")
+                ?.apply { setReferenceCounted(false); acquire() }
+                ?.also { multicastLock = it }
+        }
         languageObserver = LanguageNotificationObserver(this, ::refreshNotification)
     }
 
@@ -92,6 +119,13 @@ class DevicePresenceService : Service() {
                     val next = try {
                         check(WeaveloClient.initialize(applicationContext))
                         DirectedDelivery.listen(applicationContext, owner, checkHealth = true)
+                        val autoReceive = getSharedPreferences("stream", MODE_PRIVATE)
+                            .getBoolean("auto_receive_files", true)
+                        if (autoReceive && !FileReceiverClient.ownsNetwork &&
+                            File(applicationContext.filesDir, "mesh.conf").exists()
+                        ) {
+                            FileReceiverClient.start(applicationContext)
+                        }
                         if (WeaveloClient.backgrounded && DirectedDelivery.hasPendingOffer()) "Incoming screen. Tap to open Weavelo."
                         else "Paired devices can connect while Weavelo is in the background."
                     } catch (cancelled: CancellationException) {
@@ -115,10 +149,21 @@ class DevicePresenceService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { multicastLock?.let { if (it.isHeld) it.release() } }
+        multicastLock = null
         languageObserver?.close()
         scope.cancel()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+}
+
+class PresenceStartupReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent?) {
+        when (intent?.action) {
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+            Intent.ACTION_BOOT_COMPLETED -> DevicePresenceService.restoreBackgroundServices(context)
+        }
+    }
 }
