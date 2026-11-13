@@ -55,7 +55,9 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
         var geometryRevision=0L
         var keyframe=-1L
         var lastSubmitUs=0L
-        var startupBurstRemaining=3
+        var startupBurstRemaining=5
+        var createdAtUs=0L
+        var startupSyncStage=0
         private var selectionKey=""
         private var selection: SurfaceHevcEncoder.Plan?=null
         private var rejectedPlan: SurfaceHevcEncoder.Plan?=null
@@ -161,12 +163,21 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
             val now=PublisherClient.nativeClockMicros()
             val awaitingQualityFrame=demand.qualityPending && acknowledgedRevision!=demand.qualityRevision &&
                 pending.values.none { it.qualityRevision==demand.qualityRevision }
-            val redraw=geometryRevision!=g.revision || keyframe!=demand.keyframe || awaitingQualityFrame
-            if (redraw) startupBurstRemaining=maxOf(startupBurstRemaining,3)
+            val startupSyncDue = when (startupSyncStage) {
+                0 -> createdAtUs > 0L && now - createdAtUs >= 280_000L
+                1 -> createdAtUs > 0L && now - createdAtUs >= 780_000L
+                else -> false
+            }
+            val redraw=geometryRevision!=g.revision || keyframe!=demand.keyframe || awaitingQualityFrame || startupSyncDue
+            if (redraw) startupBurstRemaining=maxOf(startupBurstRemaining,if (startupSyncDue) 2 else 4)
             val frameIntervalUs=1_000_000L/minOf(demand.fps,plan.fps)
             val hasFreshOrBurstFrame=redraw || captureUs!=gpu.sourceCaptureUs || startupBurstRemaining>0
             if (pending.size<3 && now-lastSubmitUs>=frameIntervalUs && hasFreshOrBurstFrame) {
                 encoder.requestKeyframe(demand.keyframe)
+                if (startupSyncDue) {
+                    encoder.forceSyncFrame()
+                    startupSyncStage++
+                }
                 val geometry=g.copy(width=plan.width,height=plan.height)
                 check(geometry.valid())
                 nextPts=maxOf(nextPts+1,System.nanoTime()/1000)
@@ -185,7 +196,8 @@ internal class GpuScreenPublisher(private val width: Int, private val height: In
         }
         private fun installEncoder(next: EncoderOutput) {
             codec=next.codec;output=next.surface
-            captureUs=0;geometryRevision=0;keyframe=-1;lastSubmitUs=0;startupBurstRemaining=3
+            captureUs=0;geometryRevision=0;keyframe=-1;lastSubmitUs=0;startupBurstRemaining=5
+            createdAtUs=PublisherClient.nativeClockMicros();startupSyncStage=0
         }
         private fun closeOutput(target: EncoderOutput) {
             try { gpu.removeOutput(target.surface) } finally { target.codec.close() }

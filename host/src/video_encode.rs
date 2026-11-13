@@ -93,6 +93,7 @@ struct ViewportEncoding {
     bitrate_cap:u32,
     cropper:Option<crate::macos_viewport::Cropper>,
     last_geometry:Option<protocol::viewport::FrameGeometry>,
+    force_redraw:bool,
 }
 
 pub struct MacVideoEncoder {
@@ -426,7 +427,7 @@ impl MacVideoEncoder {
 
     pub(crate) fn viewport_settings(&mut self,settings:&crate::StreamSettings,source:protocol::session::CaptureSource)->Result<(),Box<dyn Error+Send+Sync>> {
         let state=self.viewport.get_or_insert_with(||ViewportEncoding{planner:remote_core::viewport::ViewportPlanner::for_source(source),cap:[settings.width,settings.height],
-            source_revision:settings.source_revision,bitrate_cap:settings.bitrate_kbps,cropper:None,last_geometry:None});
+            source_revision:settings.source_revision,bitrate_cap:settings.bitrate_kbps,cropper:None,last_geometry:None,force_redraw:false});
         if state.source_revision!=settings.source_revision {state.planner.reset();}
         state.source_revision=settings.source_revision;state.cap=[settings.width,settings.height];state.bitrate_cap=settings.bitrate_kbps;
         if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
@@ -438,11 +439,21 @@ impl MacVideoEncoder {
     /// Static sources need not emit another capture buffer when the viewer pans.
     /// Reuse their actual latest IOSurface only when geometry or an IDR changed.
     pub(crate) async fn redraw_if_needed(&mut self,frame:MacVideoFrame)->Result<bool,Box<dyn Error+Send+Sync>> {
-        let Some(state)=&mut self.viewport else{return Ok(false);};
-        let geometry=state.planner.plan([frame.width(),frame.height()],state.cap,state.source_revision,std::time::Instant::now())?;
-        if !self.force_keyframe&&state.last_geometry.is_some_and(|last|last.revision==geometry.revision
-            &&last.source_revision==geometry.source_revision){return Ok(false);}
+        if let Some(state)=&mut self.viewport {
+            let geometry=state.planner.plan([frame.width(),frame.height()],state.cap,state.source_revision,std::time::Instant::now())?;
+            let force_redraw=std::mem::replace(&mut state.force_redraw,false);
+            if !self.force_keyframe && !force_redraw && state.last_geometry.is_some_and(|last|last.revision==geometry.revision
+                &&last.source_revision==geometry.source_revision){return Ok(false);}
+        } else if !self.force_keyframe {
+            return Ok(false);
+        }
         self.submit_frame(frame).await?;Ok(true)
+    }
+
+    pub(crate) fn request_redraw(&mut self) {
+        if let Some(state) = &mut self.viewport {
+            state.force_redraw = true;
+        }
     }
 
     fn prepare_source_color(&mut self,color:crate::video_color::SourceColor)->Result<VTCompressionSessionRef,Box<dyn Error+Send+Sync>> {
@@ -483,6 +494,9 @@ impl MacVideoEncoder {
 
     pub fn request_keyframe(&mut self) {
         self.force_keyframe = true;
+        if let Some(state) = &mut self.viewport {
+            state.force_redraw = true;
+        }
     }
 
     pub fn update_rate_settings(&mut self, fps: u32, bitrate_kbps: u32) -> Result<(),Box<dyn Error+Send+Sync>> {

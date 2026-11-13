@@ -1228,6 +1228,10 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut viewport_ticks=tokio::time::interval(remote_core::viewport::DEMAND_INTERVAL);
     #[cfg(any(target_os="macos",target_os="linux"))]
     viewport_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    #[cfg(any(target_os="macos",target_os="linux"))]
+    let mut startup_static_burst: u8 = 3;
+    #[cfg(any(target_os="macos",target_os="linux"))]
+    let mut startup_sync_deadline = Some(std::time::Instant::now() + Duration::from_millis(320));
 
     loop {
         // Leave the newest raw frame in its capture mailbox while encoded output
@@ -1245,18 +1249,40 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 #[cfg(target_os="macos")]
                 {
                     let evicted = scheduled_media_sender.as_ref().is_some_and(|s| s.take_video_evictions() > 0);
-                    if keyframe_requested.swap(false,Relaxed) || evicted {video_encoder.request_keyframe();}
+                    let startup_sync = startup_sync_deadline.is_some_and(|d| std::time::Instant::now() >= d);
+                    if startup_sync { startup_sync_deadline = None; }
+                    if keyframe_requested.swap(false,Relaxed) || evicted || startup_sync {
+                        video_encoder.request_keyframe();
+                        startup_static_burst = startup_static_burst.max(2);
+                    } else if startup_static_burst > 0 {
+                        video_encoder.request_redraw();
+                    }
                     if let Some((sequence,frame))=video_capturer.snapshot(){
                         let started=std::time::Instant::now();
-                        if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(sequence);resources.video_submit.record(started.elapsed());}
+                        if video_encoder.redraw_if_needed(frame).await?{
+                            startup_static_burst = startup_static_burst.saturating_sub(1);
+                            video_capturer.accepted_snapshot(sequence);
+                            resources.video_submit.record(started.elapsed());
+                        }
                     }
                 }
                 #[cfg(target_os="linux")]
                 {
                     let evicted = scheduled_media_sender.as_ref().is_some_and(|s| s.take_video_evictions() > 0);
-                    if keyframe_requested.swap(false,Relaxed) || evicted {video_encoder.request_keyframe();}
+                    let startup_sync = startup_sync_deadline.is_some_and(|d| std::time::Instant::now() >= d);
+                    if startup_sync { startup_sync_deadline = None; }
+                    if keyframe_requested.swap(false,Relaxed) || evicted || startup_sync {
+                        video_encoder.request_keyframe();
+                        startup_static_burst = startup_static_burst.max(2);
+                    } else if startup_static_burst > 0 {
+                        video_encoder.request_redraw();
+                    }
                     if let Some(frame)=video_capturer.snapshot(){let stamp=frame.stamp;let started=std::time::Instant::now();
-                        if video_encoder.redraw_if_needed(frame).await?{video_capturer.accepted_snapshot(stamp);resources.video_submit.record(started.elapsed());}
+                        if video_encoder.redraw_if_needed(frame).await?{
+                            startup_static_burst = startup_static_burst.saturating_sub(1);
+                            video_capturer.accepted_snapshot(stamp);
+                            resources.video_submit.record(started.elapsed());
+                        }
                     }
                 }
             }
@@ -1312,6 +1338,11 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                             awaiting_resume_keyframe = true;
                             #[cfg(not(target_os="windows"))] video_capturer.resume().await?;
                             video_encoder.request_keyframe();
+                            #[cfg(any(target_os="macos",target_os="linux"))]
+                            {
+                                startup_static_burst = 3;
+                                startup_sync_deadline = Some(std::time::Instant::now() + Duration::from_millis(320));
+                            }
                         }
                         paused = new_settings.paused;
                         last_fps_update = std::time::Instant::now();

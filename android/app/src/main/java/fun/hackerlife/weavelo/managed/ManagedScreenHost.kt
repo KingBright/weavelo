@@ -419,7 +419,10 @@ internal class ManagedScreenHost(@Volatile private var appUid: Int) : IManagedSc
         if (applications.containsKey(id)) {
             cancelInput(id)
         }
-        owned(id).resize(width, height, density)
+        val vd = owned(id)
+        val alt = if (density > 120) density - 1 else density + 1
+        vd.resize(width, height, alt)
+        vd.resize(width, height, density)
     }
     override fun release(id: Int) = call { owned(id); releaseOwned(id) }
     private fun releaseOwned(id: Int) {

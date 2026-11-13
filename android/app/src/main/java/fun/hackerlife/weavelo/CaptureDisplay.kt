@@ -11,6 +11,7 @@ import `fun`.hackerlife.weavelo.managed.IManagedScreen
 internal interface CaptureDisplay {
     var surface: Surface?
     fun resize(width: Int, height: Int, density: Int)
+    fun nudge(width: Int, height: Int, density: Int)
     fun release()
 
     companion object {
@@ -22,6 +23,16 @@ internal interface CaptureDisplay {
                     get() = display.surface
                     set(value) { display.surface = value }
                 override fun resize(width: Int, height: Int, density: Int) = display.resize(width, height, density)
+                override fun nudge(width: Int, height: Int, density: Int) {
+                    val current = display.surface
+                    val alt = if (density > 120) density - 1 else density + 1
+                    display.resize(width, height, alt)
+                    display.resize(width, height, density)
+                    if (current != null) {
+                        display.surface = null
+                        display.surface = current
+                    }
+                }
                 override fun release() = display.release()
             }
         }
@@ -31,6 +42,14 @@ internal interface CaptureDisplay {
                 override var surface: Surface? = null
                     set(value) { host.setSurface(id, value); field = value }
                 override fun resize(width: Int, height: Int, density: Int) = host.resize(id, width, height, density)
+                override fun nudge(width: Int, height: Int, density: Int) {
+                    val current = surface
+                    host.resize(id, width, height, density)
+                    if (current != null) {
+                        host.setSurface(id, null)
+                        host.setSurface(id, current)
+                    }
+                }
                 override fun release() = host.release(id)
             }
         }

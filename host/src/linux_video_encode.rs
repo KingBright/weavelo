@@ -153,6 +153,12 @@ impl LinuxVideoEncoder {
         self.submit_frame(LinuxVideoFrame::from_owned(frame)).await?;Ok(true)
     }
 
+    pub(crate) fn request_redraw(&mut self) {
+        if let Some(viewport) = &mut self.viewport {
+            viewport.force_redraw = true;
+        }
+    }
+
     pub(crate) fn from_hardware_frames(generation:u64,width:u32,height:u32,fps:u32,bitrate_kbps:u32,
         encoder:crate::linux_raw_encode::vaapi::HardwareEncoder)->Result<Self,Box<dyn Error+Send+Sync>> {
         let mut result=Self::from_owned_frames(generation,width,height,fps,bitrate_kbps)?;

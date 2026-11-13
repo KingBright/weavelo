@@ -156,7 +156,7 @@ class ProjectionService : Service() {
                 sendTarget = null
             }
             var surfaceAttachedAt = 0L
-            var nudgedStaticSurface = false
+            var lastSurfaceNudgeAt = 0L
             var lastWakeAttemptAt = 0L
             while (running.get()) {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
@@ -164,13 +164,26 @@ class ProjectionService : Service() {
                     apps?.update()
                 }
                 val requestedViews = demand.optJSONArray("views") ?: org.json.JSONArray()
-                if (managed != null && requestedViews.length() > 0) {
+                if (requestedViews.length() > 0) {
                     val mainDisplay = getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
                     val nowElapsed = SystemClock.elapsedRealtime()
-                    if (mainDisplay != null && mainDisplay.state != Display.STATE_ON && nowElapsed - lastWakeAttemptAt >= 2000L) {
+                    if (mainDisplay != null && mainDisplay.state != Display.STATE_ON && nowElapsed - lastWakeAttemptAt >= 1500L) {
                         lastWakeAttemptAt = nowElapsed
-                        if (runCatching { managed.ensureMainDisplayAwake() }.getOrDefault(false)) {
-                            nudgedStaticSurface = false
+                        var woke = if (managed != null) runCatching { managed.ensureMainDisplayAwake() }.getOrDefault(false) else false
+                        if (!woke && mainDisplay.state != Display.STATE_ON) {
+                            runCatching {
+                                @Suppress("DEPRECATION")
+                                val wl = getSystemService(PowerManager::class.java)?.newWakeLock(
+                                    PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+                                    "weavelo:remote-wake",
+                                )
+                                wl?.acquire(1000L)
+                                wl?.release()
+                                woke = mainDisplay.state == Display.STATE_ON
+                            }
+                        }
+                        if (woke) {
+                            lastSurfaceNudgeAt = 0L
                             surfaceAttachedAt = SystemClock.elapsedRealtime()
                         }
                     }
@@ -189,7 +202,7 @@ class ProjectionService : Service() {
                     display.surface = nextPublisher.input
                     publisher = nextPublisher
                     surfaceAttachedAt = SystemClock.elapsedRealtime()
-                    nudgedStaticSurface = false
+                    lastSurfaceNudgeAt = 0L
                     PublisherClient.action(3, JSONObject().put("grant", captureGrant).put("width", size.first).put("height", size.second)
                         .put("rotation", geometry.rotation).toString())
                     appliedGeometry = geometry
@@ -200,10 +213,11 @@ class ProjectionService : Service() {
                 val activePublisher = publisher
                 if (activePublisher != null) {
                     if (!activePublisher.update(views)) nextDemand = 0
-                    if (views.length() > 0 && !activePublisher.hasSourceFrame && !nudgedStaticSurface &&
-                        SystemClock.elapsedRealtime() - surfaceAttachedAt >= 220L) {
-                        nudgedStaticSurface = true
-                        runCatching { display.resize(size.first, size.second, geometry.density) }
+                    val nowNudge = SystemClock.elapsedRealtime()
+                    if (views.length() > 0 && !activePublisher.hasSourceFrame &&
+                        nowNudge - surfaceAttachedAt >= 180L && nowNudge - lastSurfaceNudgeAt >= 320L) {
+                        lastSurfaceNudgeAt = nowNudge
+                        runCatching { display.nudge(size.first, size.second, geometry.density) }
                     }
                 }
                 val wantsAudio = audioAllowed && demand.optBoolean("audio")

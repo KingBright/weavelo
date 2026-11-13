@@ -101,8 +101,11 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
     fun requestKeyframe(sequence: Long) {
         if (keyframe != sequence) {
             keyframe = sequence
-            codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+            forceSyncFrame()
         }
+    }
+    fun forceSyncFrame() {
+        codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
     }
     fun drain(send: (ByteArray, Long) -> Boolean): Boolean = drain(10_000,send)
     fun drain(waitUs: Long, send: (ByteArray, Long) -> Boolean): Boolean {

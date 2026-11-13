@@ -517,7 +517,7 @@ impl MobileWorkspace {
         let mut touch = WorkspaceTouch::new();
         touch.source = Some(request.source);
         self.touches.lock().unwrap().insert(id, touch);
-        let (tx, mut rx) = remote_core::video_queue::channel(2);
+        let (tx, mut rx) = remote_core::video_queue::channel(6);
         let telemetry = Arc::new(SharedHostStats::default());
         self.connection
             .subscribe(request, tx, Statistics::new(), telemetry.clone())
@@ -527,17 +527,33 @@ impl MobileWorkspace {
         let connection = Arc::downgrade(&self.connection);
         let task = tokio::spawn(async move {
             let mut waiting = true;
+            let mut had_keyframe = false;
+            let mut last_pli = tokio::time::Instant::now() - std::time::Duration::from_millis(250);
             while let Some((packet, timing, source_epoch)) = rx.recv().await {
                 let keyframe = hevc_keyframe(&packet.payload);
                 if waiting && !keyframe {
+                    if had_keyframe
+                        && last_pli.elapsed() >= std::time::Duration::from_millis(250)
+                        && let Some(connection) = connection.upgrade()
+                    {
+                        let _ = connection
+                            .sender
+                            .send_control(
+                                &ControlMessage::RequestKeyframe { session_id: id },
+                                connection.target,
+                            )
+                            .await;
+                        last_pli = tokio::time::Instant::now();
+                    }
                     continue;
                 }
+                had_keyframe |= keyframe;
                 let (result, discarded) = {
                     let mut state = state.lock().unwrap();
                     let queue = state
                         .video
                         .entry(id)
-                        .or_insert_with(|| remote_core::video_queue::EncodedQueue::new(2));
+                        .or_insert_with(|| remote_core::video_queue::EncodedQueue::new(6));
                     queue.push(
                         EncodedVideoNalu {
                             data: packet.payload,
@@ -550,7 +566,7 @@ impl MobileWorkspace {
                 };
                 drop(discarded);
                 if result.needs_keyframe
-                    && !waiting
+                    && (!waiting || last_pli.elapsed() >= std::time::Duration::from_millis(250))
                     && let Some(connection) = connection.upgrade()
                 {
                     let _ = connection
@@ -560,6 +576,7 @@ impl MobileWorkspace {
                             connection.target,
                         )
                         .await;
+                    last_pli = tokio::time::Instant::now();
                 }
                 waiting = result.needs_keyframe;
             }
