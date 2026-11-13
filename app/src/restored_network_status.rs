@@ -23,7 +23,7 @@ impl RestoredDashboard {
                 && s.updated_at
                     .is_some_and(|at| at.elapsed() <= Duration::from_secs(5))
         });
-        let rtt = live
+        let rtt = stats
             .and_then(|s| s.rtt)
             .map(|rtt| format!("{:.0} ms", rtt.latest_ms));
         let route_text = route
@@ -31,30 +31,49 @@ impl RestoredDashboard {
             .map(localized_route_label);
         let base_label = rtt.clone().unwrap_or_else(|| quality.label().into());
         let label = match (&route_text, role.kind()) {
-            (Some(r), remote_core::role::RoleKind::Viewing) => format!("{r} · {base_label}"),
+            (
+                Some(r),
+                remote_core::role::RoleKind::Viewing | remote_core::role::RoleKind::Connecting,
+            ) => format!("{r} · {base_label}"),
             _ => base_label,
         };
+        let capture_ui_value = live
+            .map(|s| {
+                let compact = s.capture_submit.compact_value();
+                if compact != "—" {
+                    compact
+                } else if s.latency.is_finite() && s.latency > 0.0 {
+                    format!("{} {:.1} ms", crate::i18n::tr("Enc"), s.latency)
+                } else if s.fps.is_finite() && s.fps == 0.0 {
+                    crate::i18n::tr("Static").into()
+                } else {
+                    "—".into()
+                }
+            })
+            .unwrap_or_else(|| "—".into());
+        let fps_value = live
+            .and_then(|s| {
+                if !s.fps.is_finite() || s.fps < 0.0 {
+                    None
+                } else if s.fps > 0.0 {
+                    Some(format!("{:.0} FPS", s.fps))
+                } else {
+                    Some(format!("0 FPS ({})", crate::i18n::tr("Static")))
+                }
+            })
+            .unwrap_or_else(|| "—".into());
         let rows = vec![
             (crate::i18n::tr("Connection").into(), quality.label().into()),
             (
                 crate::i18n::tr("Route").into(),
                 route_text.unwrap_or_else(|| "—".into()),
             ),
-            (
-                crate::i18n::tr("Capture → UI").into(),
-                live.map(|s| s.capture_submit.compact_value())
-                    .unwrap_or_else(|| "—".into()),
-            ),
+            (crate::i18n::tr("Capture → UI").into(), capture_ui_value),
             (
                 crate::i18n::tr("Network RTT").into(),
                 rtt.unwrap_or_else(|| "—".into()),
             ),
-            (
-                crate::i18n::tr("Frame rate").into(),
-                live.filter(|s| s.fps.is_finite() && s.fps > 0.0)
-                    .map(|s| format!("{:.0} FPS", s.fps))
-                    .unwrap_or_else(|| "—".into()),
-            ),
+            (crate::i18n::tr("Frame rate").into(), fps_value),
             (
                 crate::i18n::tr("Packet loss rate").into(),
                 live.filter(|s| {

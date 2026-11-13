@@ -498,7 +498,20 @@ impl RestoredDashboard {
             .unwrap_or_else(|| "Weavelo".into());
         let source_label = source
             .map(capture_source_label)
-            .unwrap_or_else(|| crate::i18n::tr("Waiting for source").into());
+            .unwrap_or_else(|| {
+                if matches!(
+                    snapshot.active_capture_source,
+                    protocol::session::CaptureSource::MainDisplay
+                        | protocol::session::CaptureSource::Display(_)
+                ) && matches!(
+                    snapshot.role,
+                    RoleState::Viewing(_) | RoleState::Connecting(_)
+                ) {
+                    crate::i18n::tr("Main display").into()
+                } else {
+                    crate::i18n::tr("Waiting for source").into()
+                }
+            });
         let context_title = crate::i18n::tr_format!("{} · {}", device, source_label);
         let button_size = if tiny { 20.0 } else { 26.0 };
         let source_binding = snapshot.source_binding.clone();

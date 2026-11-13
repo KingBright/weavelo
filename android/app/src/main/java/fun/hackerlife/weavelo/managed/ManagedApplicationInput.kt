@@ -76,9 +76,10 @@ internal class ManagedApplicationInput(val target: ManagedApplications.Target) {
             "MouseDown" -> when((value as Number).toInt()) {
                 0 -> contacts.isEmpty() && start(-1,x,y,1f)
                 1 -> press(KeyEvent.KEYCODE_BACK)
+                2 -> press(KeyEvent.KEYCODE_HOME)
                 else -> false
             }
-            "MouseUp" -> when((value as Number).toInt()) {0 -> end(-1);1 -> true;else -> false}
+            "MouseUp" -> when((value as Number).toInt()) {0 -> end(-1);1, 2 -> true;else -> false}
             "MouseScroll" -> {
                 if(contacts.isNotEmpty()) false else {
                     val delta=value as JSONObject

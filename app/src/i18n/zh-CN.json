@@ -767,5 +767,7 @@
   "Clear local clipboard": "清空本机剪贴板",
   "Local clipboard has no plain text (images/files still sync automatically).": "本机剪贴板暂无纯文本（图片与文件复制仍会自动同步）。",
   "Transfer queue": "传输队列",
-  "Clear finished": "清理已完成"
+  "Clear finished": "清理已完成",
+  "Static": "静止",
+  "Enc": "编码"
 }

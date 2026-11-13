@@ -436,7 +436,7 @@ impl RoutedRelay {
                 "relay identity or host endpoint invalid",
             ));
         }
-        let (tx, rx) = mpsc::channel(128);
+        let (tx, rx) = mpsc::channel(1024);
         let hub = UdpSocket::bind("127.0.0.1:0").await?;
         crate::net::configure_udp_buffers(&hub);
         Ok(Self {

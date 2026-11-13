@@ -297,8 +297,19 @@ impl SharedHostStats {
         self.latency.store(encode_latency_ms.to_bits(), Relaxed);
         self.jitter.store(jitter_ms.to_bits(), Relaxed);
         self.bitrate_kbps.store(bitrate_kbps, Relaxed);
+        let loss = f32::from_bits(self.packet_loss_rate.load(Relaxed));
+        let rtt = f32::from_bits(self.rtt_ms.load(Relaxed));
         if let Ok(mut extra) = self.extra.lock() {
             extra.updated_at = Some(Instant::now());
+            if extra.link_status.is_empty() {
+                extra.link_status = if loss > 3.0 {
+                    "🟡 网络丢包波动"
+                } else if rtt > 80.0 {
+                    "🟡 传输延迟偏高"
+                } else {
+                    "🟢 流畅极佳"
+                };
+            }
         }
     }
 
@@ -347,6 +358,17 @@ impl SharedHostStats {
                     extra.rtt_samples.push_back(sample);
                     while extra.rtt_samples.len() > 5 {
                         extra.rtt_samples.pop_front();
+                    }
+                    if extra.updated_at.is_none() {
+                        extra.updated_at = Some(Instant::now());
+                    }
+                    if extra.link_status.is_empty() {
+                        let rtt_ms = sample.network_rtt_us as f32 / 1_000.0;
+                        extra.link_status = if rtt_ms > 80.0 {
+                            "🟡 传输延迟偏高"
+                        } else {
+                            "🟢 流畅极佳"
+                        };
                     }
                 }
             } else {

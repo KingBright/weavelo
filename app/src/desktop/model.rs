@@ -917,8 +917,10 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     // Incoming app streams also need real titles/icons. Fetch after
                     // Subscribe is accepted, preserving the selected source and the
                     // first-frame path; metadata never starts a desktop subscription.
-                    if matches!(self.source, CaptureSource::Camera(_) | CaptureSource::Window(_))
-                        && !self.sources.iter().any(|source|source.source==self.source) {
+                    if self.sources.is_empty()
+                        || (matches!(self.source, CaptureSource::Camera(_) | CaptureSource::Window(_))
+                            && !self.sources.iter().any(|source| source.source == self.source))
+                    {
                         let _ = self.conn.try_control_checked(SessionCommand::ListSources {
                             request_id: 900_001,
                             known_icons: Vec::new(),

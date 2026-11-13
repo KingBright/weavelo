@@ -16,7 +16,7 @@ internal object ManagedScreenBridge {
     private var current: IManagedScreen? = null
     private var clientLife = Binder()
     @Synchronized fun attached(): IManagedScreen? = current?.takeIf { it.asBinder().isBinderAlive }
-    @Synchronized fun attach(context: Context, binder: IBinder): IBinder {
+    @Synchronized fun attach(context: Context, binder: IBinder, forceEnable: Boolean = false): IBinder {
         if (current?.asBinder() === binder) return clientLife
         check(attached() == null) { "Weavelo capture helper is already attached" }
         val service = checkNotNull(IManagedScreen.Stub.asInterface(binder))
@@ -24,29 +24,34 @@ internal object ManagedScreenBridge {
         check(info.getInt("api") == 5) { "Unsupported Weavelo capture helper" }
         clientLife = Binder()
         current = service
+        val appContext = context.applicationContext
         binder.linkToDeath({
             synchronized(this) {
                 if (current?.asBinder() === binder) {
                     current = null
-                    PublisherClient.stop(context, disableManaged = false)
+                    PublisherClient.stop(appContext, disableManaged = false)
                     PublisherClient.status("Managed screen disconnected", false, `fun`.hackerlife.weavelo.AppText("Managed screen disconnected"))
                 }
             }
         }, 0)
-        // Attaching this provider requires an already authorized shell caller.
-        // No MediaProjection token or system setting is fabricated here.
-        val preferences = context.getSharedPreferences("managed_screen", Context.MODE_PRIVATE)
-        if (!preferences.contains("enabled")) preferences.edit().putBoolean("enabled", true).apply()
-        resume(context)
+        val preferences = appContext.getSharedPreferences("managed_screen", Context.MODE_PRIVATE)
+        if (forceEnable || !preferences.contains("enabled")) {
+            preferences.edit().putBoolean("enabled", true).apply()
+        }
+        `fun`.hackerlife.weavelo.WeaveloClient.initialize(appContext)
+        `fun`.hackerlife.weavelo.DevicePresenceService.restoreBackgroundServices(appContext)
+        resume(appContext)
         return clientLife
     }
     fun enable(context: Context, enabled: Boolean) {
         context.getSharedPreferences("managed_screen", Context.MODE_PRIVATE).edit().putBoolean("enabled", enabled).apply()
     }
     fun resume(context: Context) {
+        val appContext = context.applicationContext
         if (attached() == null || PublisherClient.active ||
-            !context.getSharedPreferences("managed_screen", Context.MODE_PRIVATE).getBoolean("enabled", false)) return
-        runCatching { PublisherClient.startManaged(context) }
+            !appContext.getSharedPreferences("managed_screen", Context.MODE_PRIVATE).getBoolean("enabled", false)) return
+        if (!`fun`.hackerlife.weavelo.WeaveloClient.initialize(appContext)) return
+        runCatching { PublisherClient.startManaged(appContext) }
             .onFailure { PublisherClient.status("Open Weavelo to resume managed screen sharing", false, `fun`.hackerlife.weavelo.AppText("Open Weavelo to resume managed screen sharing")) }
     }
 }
@@ -61,12 +66,25 @@ class ManagedScreenProvider : ContentProvider() {
             return try { Bundle().apply { putString("status", ManagedScreenBridge.attached()?.info() ?: "unavailable") } }
             finally { Binder.restoreCallingIdentity(identity) }
         }
+        if (method == "resume") {
+            val prev = Binder.clearCallingIdentity()
+            return try {
+                val appContext = checkNotNull(context).applicationContext
+                ManagedScreenBridge.enable(appContext, true)
+                `fun`.hackerlife.weavelo.WeaveloClient.initialize(appContext)
+                `fun`.hackerlife.weavelo.DevicePresenceService.restoreBackgroundServices(appContext)
+                ManagedScreenBridge.resume(appContext)
+                Bundle().apply {
+                    putString("status", ManagedScreenBridge.attached()?.info() ?: "unavailable")
+                    putBoolean("active", PublisherClient.active)
+                }
+            } finally { Binder.restoreCallingIdentity(prev) }
+        }
         require(method == "attach" && arg == Process.myUid().toString())
         val service = checkNotNull(extras?.getBinder("service"))
-        // Outbound Binder calls must carry Weavelo's own UID, not the inbound
-        // shell identity. The helper independently checks that exact UID.
+        val forceEnable = extras?.getBoolean("enable", false) == true
         val identity = Binder.clearCallingIdentity()
-        return try { Bundle().apply { putBinder("client", ManagedScreenBridge.attach(checkNotNull(context), service)) } }
+        return try { Bundle().apply { putBinder("client", ManagedScreenBridge.attach(checkNotNull(context), service, forceEnable)) } }
         finally { Binder.restoreCallingIdentity(identity) }
     }
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, order: String?): Cursor? = throw UnsupportedOperationException()

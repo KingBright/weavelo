@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import `fun`.hackerlife.weavelo.managed.IManagedScreen
 import `fun`.hackerlife.weavelo.managed.ManagedScreenBridge
 import `fun`.hackerlife.weavelo.managed.ManagedApplications
+import `fun`.hackerlife.weavelo.managed.ManagedFallbackInput
 
 /** Owns one OS authorization and one VirtualDisplay for its entire lifetime. */
 class ProjectionService : Service() {
@@ -54,6 +55,8 @@ class ProjectionService : Service() {
             val serviceType = if (managed != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             if (Build.VERSION.SDK_INT >= 29) startForeground(8124, notification, serviceType)
             else startForeground(8124, notification)
+            check(WeaveloClient.initialize(applicationContext)) { "Weavelo native client unavailable" }
+            if (managed != null) DevicePresenceService.startIfEnabled(applicationContext)
             languageObserver = LanguageNotificationObserver(this) { getSystemService(NotificationManager::class.java).notify(8124, notification()) }
             val metrics = resources.displayMetrics
             val displays = getSystemService(DisplayManager::class.java)
@@ -121,6 +124,7 @@ class ProjectionService : Service() {
         var display: CaptureDisplay? = null
         var publisher: GpuScreenPublisher? = null
         var apps: ManagedApplications? = null
+        var fallbackInput: ManagedFallbackInput? = null
         var appliedGeometry: ProjectionCaptureGeometry? = null
         var demand = JSONObject()
         var nextDemand = 0L
@@ -133,7 +137,12 @@ class ProjectionService : Service() {
             // rotation replace its Surface, never create another with this token.
             display = if (managed != null) CaptureDisplay.managed(managed, initial.width, initial.height, initial.density)
                 else CaptureDisplay.projection(checkNotNull(capture), initial.width, initial.height, initial.density)
-            if (managed != null) apps = ManagedApplications(managed, applicationContext)
+            if (managed != null) {
+                apps = ManagedApplications(managed, applicationContext)
+                if (controlAllowed) {
+                    fallbackInput = ManagedFallbackInput(applicationContext, managed) { running.get() }.also { it.start() }
+                }
+            }
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
             if (audioAllowed && audioTarget == null) PublisherClient.status("Sharing enabled · $addresses · Phone audio stays on; captured media audio may include other apps.", true,
@@ -148,10 +157,23 @@ class ProjectionService : Service() {
             }
             var surfaceAttachedAt = 0L
             var nudgedStaticSurface = false
+            var lastWakeAttemptAt = 0L
             while (running.get()) {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
                     apps?.update()
+                }
+                val requestedViews = demand.optJSONArray("views") ?: org.json.JSONArray()
+                if (managed != null && requestedViews.length() > 0) {
+                    val mainDisplay = getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
+                    val nowElapsed = SystemClock.elapsedRealtime()
+                    if (mainDisplay != null && mainDisplay.state != Display.STATE_ON && nowElapsed - lastWakeAttemptAt >= 2000L) {
+                        lastWakeAttemptAt = nowElapsed
+                        if (runCatching { managed.ensureMainDisplayAwake() }.getOrDefault(false)) {
+                            nudgedStaticSurface = false
+                            surfaceAttachedAt = SystemClock.elapsedRealtime()
+                        }
+                    }
                 }
                 val geometry = captureGeometry
                 val size = geometry.width to geometry.height
@@ -197,6 +219,7 @@ class ProjectionService : Service() {
             PublisherClient.controlSize = null
             running.set(false); stopAudio()
             PublisherClient.audioEnabled = false
+            runCatching { fallbackInput?.close() }
             runCatching { apps?.close() }
             runCatching { display?.surface = null }; runCatching { display?.release() }
             publisher?.close()

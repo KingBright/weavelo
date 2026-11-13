@@ -16,6 +16,15 @@ struct State {
     stopped:Option<Result<(),String>>,error:Option<String>,sequence:u64,latest:Option<MacVideoFrame>,
 }
 struct Root {scope:ShareScope,state:Mutex<State>,control:watch::Sender<()>,progress:watch::Sender<()>,resources:Arc<Resources>,health:crate::capture::StreamHealth}
+fn canonical_source(source: CaptureSource) -> CaptureSource {
+    match source {
+        CaptureSource::MainDisplay => {
+            CaptureSource::Display(core_graphics::display::CGDisplay::main().id)
+        }
+        other => other,
+    }
+}
+
 impl Root {
     fn new(scope:ShareScope)->Arc<Self>{Arc::new(Self{scope,state:Mutex::new(State::default()),control:watch::channel(()).0,progress:watch::channel(()).0,resources:Arc::new(Resources::default()),health:Default::default()})}
     fn notify(&self){self.progress.send_replace(());}
@@ -43,17 +52,20 @@ impl Root {
         }
     }
     async fn produce(self:&Arc<Self>,owner:&mut Owner)->Result<(),Failure>{
-        let mut control=self.control.subscribe();let mut running=false;
+        let mut control=self.control.subscribe();let mut running=false;let mut applied_fps=0u32;
         loop{
             if self.scope!=current_share_scope(){return Err("The paired network changed".into());}
             let (ending,fps)={let state=self.state.lock().unwrap_or_else(|e|e.into_inner());
                 (state.ending,state.viewers.values().filter(|v|v.active).map(|v|v.fps).max().unwrap_or(0))};
             if ending{return Ok(());}
             if fps==0 {
-                if running{owner.stop().await?;running=false;let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());let previous=state.latest.take();drop(state);drop(previous);self.notify();}
+                if running{owner.stop().await?;running=false;applied_fps=0;let mut state=self.state.lock().unwrap_or_else(|e|e.into_inner());let previous=state.latest.take();drop(state);drop(previous);self.notify();}
                 control.changed().await?;continue;
             }
-            owner.update_capture_fps(fps)?;
+            if applied_fps!=fps {
+                owner.update_capture_fps(fps)?;
+                applied_fps=fps;
+            }
             if !running{owner.start().await?;running=true;self.state.lock().unwrap_or_else(|e|e.into_inner()).started=true;self.notify();}
             tokio::select! {
                 result=control.changed()=>{result?;},
@@ -142,12 +154,12 @@ impl VideoCapturer for MacVideoCapturer {
             camera.start().await?;self.camera=Some(camera);return Ok(());
         }
         loop{
-            let scope=current_share_scope();let key=(scope,self.source);
+            let scope=current_share_scope();let canonical=canonical_source(self.source);let key=(scope,canonical);
             let (root,registration)={let mut roots=ROOTS.get_or_init(Default::default).lock().unwrap_or_else(|e|e.into_inner());
                 roots.retain(|_,root|root.upgrade().is_some_and(|root|root.state.lock().unwrap_or_else(|e|e.into_inner()).stopped.is_none()));
                 if let Some(root)=roots.get(&key).and_then(Weak::upgrade){let lease=root.register(self.fps,self.resources.clone());(root,lease)}
                 else{let root=Root::new(scope);let lease=root.register(self.fps,self.resources.clone());roots.insert(key,Arc::downgrade(&root));
-                    let owner=Owner::new(self.width,self.height,self.fps).with_source(self.source).with_resources(root.resources.clone()).with_stream_health(root.health.clone());
+                    let owner=Owner::new(self.width,self.height,self.fps).with_source(canonical).with_resources(root.resources.clone()).with_stream_health(root.health.clone());
                     root.clone().run(owner);(root,lease)}};
             let lease=match registration{
                 Ok(lease)=>lease,Err(_)=>{root.wait_stopped().await?;drop(root);tokio::task::yield_now().await;continue;}

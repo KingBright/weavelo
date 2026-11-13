@@ -12,26 +12,70 @@ import `fun`.hackerlife.weavelo.BuildConfig
 /** Launched from this installed APK by an already authorized local ADB shell. */
 @android.annotation.TargetApi(34)
 object ManagedScreenMain {
+    private var lockFile: java.io.RandomAccessFile? = null
+    private var fileLock: java.nio.channels.FileLock? = null
+
     @JvmStatic fun main(args: Array<String>) {
         try { run(args) } catch (error: Throwable) {
             error.printStackTrace()
             kotlin.system.exitProcess(1)
         }
     }
+    private fun acquireInstanceLock(): Boolean {
+        return try {
+            val raf = java.io.RandomAccessFile("/data/local/tmp/weavelo-managed-screen.lock", "rw")
+            val lock = raf.channel.tryLock()
+            if (lock == null) {
+                raf.close()
+                false
+            } else {
+                lockFile = raf
+                fileLock = lock
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
     private fun run(args: Array<String>) {
         check(args.isEmpty() && Process.myUid() == 2000) { "Authorized local shell required" }
         check(android.os.Build.VERSION.SDK_INT >= 34) { "Automatic capture requires Android 14 or later" }
+        if (!acquireInstanceLock()) {
+            println("WEAVELO_SCREEN_ALREADY_RUNNING version=${BuildConfig.VERSION_CODE}")
+            return
+        }
+        // Preload helper classes while the APK path is mounted so OTA updates cannot break lazy loads.
+        ManagedScreenHost::class.java.name
+        IManagedScreen.Stub::class.java.name
         Looper.prepareMainLooper()
+        val mainHandler = android.os.Handler(Looper.getMainLooper())
         val context = ManagedShellContext.create()
-        val uid = context.packageManager.getApplicationInfo(BuildConfig.APPLICATION_ID, 0).uid
-        check(uid >= 10_000)
-        val host = ManagedScreenHost(uid)
-        val client = attach(uid, host)
-        client.linkToDeath({ host.clientDied() }, 0)
-        println("WEAVELO_SCREEN_ATTACHED version=${BuildConfig.VERSION_CODE}")
+        val initialUid = context.packageManager.getApplicationInfo(BuildConfig.APPLICATION_ID, 0).uid
+        check(initialUid >= 10_000)
+        val host = ManagedScreenHost(initialUid)
+        var announced = false
+        fun connectLoop() {
+            try {
+                val currentUid = context.packageManager.getApplicationInfo(BuildConfig.APPLICATION_ID, 0).uid
+                check(currentUid >= 10_000)
+                host.resetForReconnect(currentUid)
+                val client = attach(currentUid, host, !announced)
+                client.linkToDeath({
+                    mainHandler.postDelayed({ connectLoop() }, 500L)
+                }, 0)
+                if (!announced) {
+                    announced = true
+                    println("WEAVELO_SCREEN_ATTACHED version=${BuildConfig.VERSION_CODE}")
+                }
+            } catch (error: Throwable) {
+                android.util.Log.w("Weavelo", "Managed screen attach retry scheduled", error)
+                mainHandler.postDelayed({ connectLoop() }, 1500L)
+            }
+        }
+        connectLoop()
         Looper.loop()
     }
-    private fun attach(uid: Int, host: IBinder): IBinder {
+    private fun attach(uid: Int, host: IBinder, forceEnable: Boolean): IBinder {
         // An app_process shell is not an ActivityManager-registered application.
         // Use Android's content shell command path, with the real caller UID.
         val authority = "${BuildConfig.APPLICATION_ID}.managed"
@@ -51,7 +95,8 @@ object ManagedScreenMain {
             val result = Class.forName("android.content.IContentProvider").getMethod("call",
                 AttributionSource::class.java, String::class.java, String::class.java, String::class.java, Bundle::class.java)
                 .invoke(provider, AttributionSource.Builder(Process.myUid()).setPackageName("com.android.shell").build(),
-                    authority, "attach", uid.toString(), Bundle().apply { putBinder("service", host) }) as? Bundle
+                    authority, "attach", uid.toString(),
+                    Bundle().apply { putBinder("service", host); putBoolean("enable", forceEnable) }) as? Bundle
             return checkNotNull(result?.getBinder("client")) { "Weavelo attachment failed" }
         } finally {
             if (acquired) runCatching {

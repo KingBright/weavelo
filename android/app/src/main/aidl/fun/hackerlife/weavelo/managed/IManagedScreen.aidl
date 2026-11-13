@@ -16,4 +16,5 @@ interface IManagedScreen {
     void setSurface(int id, in Surface surface);
     void resize(int id, int width, int height, int density);
     void release(int id);
+    boolean ensureMainDisplayAwake();
 }

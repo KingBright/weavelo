@@ -43,7 +43,7 @@ internal fun cancelManagedKey(event: KeyEvent, now: Long): KeyEvent = KeyEvent(
     event.scanCode,event.flags or KeyEvent.FLAG_CANCELED,event.source)
 
 /** Runs only inside Weavelo's already authorized shell process. */
-internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub() {
+internal class ManagedScreenHost(@Volatile private var appUid: Int) : IManagedScreen.Stub() {
     private val thread = HandlerThread("weavelo-display").apply { start() }
     private val handler = Handler(thread.looper)
     private val context by lazy { ManagedShellContext.create() }
@@ -304,7 +304,10 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
         Class.forName("android.hardware.input.InputManager").getMethod("getInstance").invoke(null)
     }
     private fun geometry(id: Int): Geometry {
-        val display = owned(id).display
+        val display = if (id == Display.DEFAULT_DISPLAY) {
+            check(mirror != null) { "Main display input requires active screen capture" }
+            checkNotNull(manager.getDisplay(Display.DEFAULT_DISPLAY))
+        } else owned(id).display
         val size = DisplayMetrics()
         @Suppress("DEPRECATION")
         display.getRealMetrics(size)
@@ -325,6 +328,13 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
             .invoke(inputManager, event, 1) as Boolean
     }
     private fun inject(id: Int, expected: Geometry, event: InputEvent): Boolean {
+        if (id == Display.DEFAULT_DISPLAY) {
+            check(mirror != null) { "Main display input requires active screen capture" }
+            check(geometry(Display.DEFAULT_DISPLAY) == expected) {
+                "Main display geometry changed"
+            }
+            return send(Display.DEFAULT_DISPLAY, event)
+        }
         check(applications.containsKey(id)) { "Input requires an owned independent display" }
         check(applicationSizes[id] == expected && geometry(id) == expected) {
             "Independent display geometry changed"
@@ -334,8 +344,12 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
     override fun injectMotion(id: Int, width: Int, height: Int, rotation: Int, event: MotionEvent): Boolean = call {
         try {
             val size = DisplayMetrics()
+            val targetDisplay = if (id == Display.DEFAULT_DISPLAY) {
+                check(mirror != null) { "Main display input requires active screen capture" }
+                checkNotNull(manager.getDisplay(Display.DEFAULT_DISPLAY))
+            } else owned(id).display
             @Suppress("DEPRECATION")
-            owned(id).display.getRealMetrics(size)
+            targetDisplay.getRealMetrics(size)
             require(event.pointerCount in 1..10 && event.source == InputDevice.SOURCE_TOUCHSCREEN)
             require(event.actionMasked in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_MOVE,
                 MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP))
@@ -371,7 +385,8 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
                 KeyEvent.KEYCODE_MOVE_HOME,KeyEvent.KEYCODE_MOVE_END,KeyEvent.KEYCODE_PAGE_UP,KeyEvent.KEYCODE_PAGE_DOWN,
                 KeyEvent.KEYCODE_MINUS,KeyEvent.KEYCODE_EQUALS,KeyEvent.KEYCODE_LEFT_BRACKET,KeyEvent.KEYCODE_RIGHT_BRACKET,
                 KeyEvent.KEYCODE_BACKSLASH,KeyEvent.KEYCODE_SEMICOLON,KeyEvent.KEYCODE_APOSTROPHE,
-                KeyEvent.KEYCODE_COMMA,KeyEvent.KEYCODE_PERIOD,KeyEvent.KEYCODE_SLASH,KeyEvent.KEYCODE_GRAVE)) {
+                KeyEvent.KEYCODE_COMMA,KeyEvent.KEYCODE_PERIOD,KeyEvent.KEYCODE_SLASH,KeyEvent.KEYCODE_GRAVE) ||
+            (id == Display.DEFAULT_DISPLAY && event.keyCode == KeyEvent.KEYCODE_HOME)) {
             "Global device keys are not independent-app input"
         }
         val accepted = inject(id, Geometry(width,height,rotation), event)
@@ -415,7 +430,39 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
         val surface = display?.surface
         try { display?.release() } finally { surface?.release() }
     }
+    override fun ensureMainDisplayAwake(): Boolean = call {
+        val mainDisplay = checkNotNull(manager.getDisplay(Display.DEFAULT_DISPLAY))
+        if (mainDisplay.state == Display.STATE_ON) return@call true
+        val now = SystemClock.uptimeMillis()
+        runCatching {
+            val sm = Class.forName("android.os.ServiceManager").getMethod("getService", String::class.java)
+            val powerBinder = sm.invoke(null, "power") as? IBinder
+            if (powerBinder != null) {
+                val power = Class.forName("android.os.IPowerManager\$Stub")
+                    .getMethod("asInterface", IBinder::class.java).invoke(null, powerBinder)
+                val wake4 = power?.javaClass?.methods?.firstOrNull { it.name == "wakeUp" && it.parameterCount == 4 }
+                val wake3 = power?.javaClass?.methods?.firstOrNull { it.name == "wakeUp" && it.parameterCount == 3 }
+                if (wake4 != null) {
+                    wake4.invoke(power, now, 2, "weavelo:remote", ManagedShellContext.SHELL_PACKAGE)
+                } else if (wake3 != null) {
+                    wake3.invoke(power, now, "weavelo:remote", ManagedShellContext.SHELL_PACKAGE)
+                }
+            }
+        }
+        if (mainDisplay.state != Display.STATE_ON) {
+            val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_WAKEUP, 0, 0, -1, 0, 0, InputDevice.SOURCE_KEYBOARD)
+            val up = KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_WAKEUP, 0, 0, -1, 0, 0, InputDevice.SOURCE_KEYBOARD)
+            runCatching { send(Display.DEFAULT_DISPLAY, down); send(Display.DEFAULT_DISPLAY, up) }
+        }
+        var attempts = 0
+        while (mainDisplay.state != Display.STATE_ON && attempts < 12) {
+            Thread.sleep(25)
+            attempts += 1
+        }
+        mainDisplay.state == Display.STATE_ON
+    }
     private fun clear() {
+        cancelInput(Display.DEFAULT_DISPLAY)
         val ids = applications.keys.toList() + listOfNotNull(mirror?.display?.displayId)
         ids.forEach { runCatching { releaseOwned(it) } }
         taskListener?.let { listener -> runCatching {
@@ -428,5 +475,15 @@ internal class ManagedScreenHost(private val appUid: Int) : IManagedScreen.Stub(
         applicationDisplayListener = null
         taskEvents.clear()
     }
-    fun clientDied() { handler.post { try { clear() } finally { kotlin.system.exitProcess(0) } } }
+    fun resetForReconnect(nextUid: Int = appUid) {
+        val task = FutureTask {
+            clear()
+            appUid = nextUid
+            failed = false
+        }
+        if (handler.post(task)) {
+            runCatching { task.get(2, TimeUnit.SECONDS) }
+        }
+    }
+    fun clientDied() = resetForReconnect()
 }

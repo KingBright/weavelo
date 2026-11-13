@@ -8,7 +8,7 @@ use tokio::net::UdpSocket;
 
 pub const DEFAULT_CONTROL_PORT: u16 = 39271;
 const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
-const RELAY_TUNNEL_UDP_BUFFER_BYTES: usize = 256 * 1024;
+const RELAY_TUNNEL_UDP_BUFFER_BYTES: usize = 2 * 1024 * 1024;
 
 /// Relay adapters carry the same fragmented frames as the application socket.
 /// Small OS defaults can discard encoded references on these local UDP hops

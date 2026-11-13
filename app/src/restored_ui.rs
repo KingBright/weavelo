@@ -1255,13 +1255,13 @@ impl RestoredDashboard {
     }
 
     fn host_stats_snapshot(&self, role: &RoleState) -> Option<UiHostStats> {
-        if !matches!(role, RoleState::Viewing(_)) {
+        if !matches!(role, RoleState::Viewing(_) | RoleState::Connecting(_)) {
             return None;
         }
         self.host_stats
             .as_ref()
             .map(|stats| UiHostStats::read(stats))
-            .filter(|stats| host_stats_available(stats))
+            .filter(|stats| host_stats_available(stats) || stats.rtt.is_some())
     }
 
     fn reset_host_stats(&self) {

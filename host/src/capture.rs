@@ -239,13 +239,10 @@ impl MacVideoCapturer {
         height: u32,
         fps: u32,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if !matches!(self.source, protocol::session::CaptureSource::Camera(_)) {
-            self.invalidate_geometry_check();
-            let _ = self.refresh_geometry();
-        }
         if (self.target_width, self.target_height, self.target_fps) == (width, height, fps) {
             return Ok(());
         }
+        let size_changed = (self.target_width, self.target_height) != (width, height);
         self.target_width = width;
         self.target_height = height;
         self.target_fps = fps;
@@ -256,12 +253,15 @@ impl MacVideoCapturer {
             self.stop_owned_stream();self.camera_started=started;
             return Ok(());
         }
+        if size_changed {
+            self.invalidate_geometry_check();
+        }
         if let Some(stream) = &self.stream {
             stream.update_configuration(&self.configuration(self.source_size, self.includes_children, self.family_display_mode))?;
         }
         Ok(())
     }
-    fn refresh_geometry(&mut self) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    async fn refresh_geometry_async(&mut self) -> Result<bool, Box<dyn Error + Send + Sync>> {
         let interval = if matches!(self.source, protocol::session::CaptureSource::Window(_)) {
             std::time::Duration::from_millis(250)
         } else {
@@ -275,7 +275,28 @@ impl MacVideoCapturer {
             return if self.camera.as_ref().is_some_and(|camera|camera.is_running()) {Ok(false)}
                 else {Err("Camera stopped or its permission was revoked".into())};
         }
-        let plan = crate::capture_sources::capture_plan(self.source)?;
+        if let protocol::session::CaptureSource::MainDisplay | protocol::session::CaptureSource::Display(_) = self.source {
+            let id = match self.source {
+                protocol::session::CaptureSource::Display(id) => id,
+                _ => core_graphics::display::CGDisplay::main().id,
+            };
+            let cg = core_graphics::display::CGDisplay::new(id);
+            let stream_size = (cg.pixels_wide() as u32, cg.pixels_high() as u32);
+            if stream_size.0 < 2 || stream_size.1 < 2 {
+                return Err("selected display is no longer available".into());
+            }
+            if stream_size != self.source_size {
+                self.source_size = stream_size;
+                if let Some(stream) = &self.stream {
+                    stream.update_configuration(&self.configuration(stream_size, self.includes_children, self.family_display_mode))?;
+                }
+            }
+            return Ok(false);
+        }
+        let source = self.source;
+        let plan = tokio::task::spawn_blocking(move || crate::capture_sources::capture_plan(source))
+            .await
+            .map_err(|e| -> Box<dyn Error + Send + Sync> { format!("Window geometry worker ended: {e}").into() })??;
         if plan.family_display_mode != self.family_display_mode {
             return Ok(true);
         }
@@ -303,7 +324,10 @@ impl VideoCapturer for MacVideoCapturer {
         if matches!(self.source,protocol::session::CaptureSource::Camera(_)) {
             return self.start_camera();
         }
-        let plan = crate::capture_sources::capture_plan(self.source)?;
+        let source = self.source;
+        let plan = tokio::task::spawn_blocking(move || crate::capture_sources::capture_plan(source))
+            .await
+            .map_err(|e| -> Box<dyn Error + Send + Sync> { format!("Capture plan worker ended: {e}").into() })??;
         self.source_size = plan.stream_size;
         self.includes_children = plan.includes_children;
         self.family_display_mode = plan.family_display_mode;
@@ -378,7 +402,7 @@ impl VideoCapturer for MacVideoCapturer {
         let mut health=self.stream_health.current();
         loop {
             if let Some(reason)=health.reason(){return Err(format!("Native screen capture stopped: {reason}").into());}
-            if self.refresh_geometry()? {
+            if self.refresh_geometry_async().await? {
                 self.stop_owned_stream();
                 self.await_owned_stop().await?;
                 self.minimum_capture_ts_us = remote_core::timing::quanta_now_us();

@@ -59,6 +59,7 @@ class DevicePresenceService : Service() {
             if (autoReceive && WeaveloClient.nativeAvailable && !FileReceiverClient.ownsNetwork) {
                 FileReceiverClient.start(app)
             }
+            `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.resume(app)
         }
     }
 
@@ -126,6 +127,7 @@ class DevicePresenceService : Service() {
                         ) {
                             FileReceiverClient.start(applicationContext)
                         }
+                        `fun`.hackerlife.weavelo.managed.ManagedScreenBridge.resume(applicationContext)
                         if (WeaveloClient.backgrounded && DirectedDelivery.hasPendingOffer()) "Incoming screen. Tap to open Weavelo."
                         else "Paired devices can connect while Weavelo is in the background."
                     } catch (cancelled: CancellationException) {
