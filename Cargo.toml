@@ -7,6 +7,7 @@ members = [
     "remote_platform",
     "app",
     "remote_client_bridge",
+    "ps_remote",
 ]
 resolver = "2"
 exclude = ["third_party/ely-gpui-component"]

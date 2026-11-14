@@ -92,6 +92,7 @@ struct Queues {
     events: VecDeque<serde_json::Value>,
     video: HashMap<u32, remote_core::video_queue::EncodedQueue<EncodedVideoNalu>>,
     audio: HashMap<u32, VecDeque<EncodedAudioPacket>>,
+    gamepad_feedback: VecDeque<protocol::gamepad::GamepadFeedback>,
 }
 impl Queues {
     fn push_file(&mut self, event: FileTransferEvent) {
@@ -366,7 +367,9 @@ impl MobileWorkspace {
         let touches = Arc::new(Mutex::new(HashMap::<u32, WorkspaceTouch>::new()));
         let event_touches = touches.clone();
         let input_connection = Arc::downgrade(&connection);
+        let mut gamepad_fb_rx = connection.subscribe_gamepad_feedback();
         let task = tokio::spawn(async move {
+            let mut gamepad_fb_open = true;
             let mut configs = HashMap::new();
             let mut owners = HashMap::new();
             let mut input_tick = tokio::time::interval(std::time::Duration::from_millis(
@@ -434,6 +437,23 @@ impl MobileWorkspace {
                             let queue = state.audio.entry(packet.header.ssrc).or_default();
                             if queue.len() >= 16 { queue.pop_front(); }
                             queue.push_back(EncodedAudioPacket { data: packet.payload, sample_rate_hz:config.sample_rate_hz, channels:config.channels, pts_us: i64::from(packet.header.timestamp) * 1000 });
+                        }
+                    },
+                    fb = gamepad_fb_rx.recv(), if gamepad_fb_open => match fb {
+                        Ok(feedback) => {
+                            let mut state = state.lock().unwrap();
+                            if state.events.len() == 128 {
+                                state.events.pop_front();
+                            }
+                            state.events.push_back(serde_json::json!({"gamepad_feedback": feedback}));
+                            if state.gamepad_feedback.len() >= 32 {
+                                state.gamepad_feedback.pop_front();
+                            }
+                            state.gamepad_feedback.push_back(feedback);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            gamepad_fb_open = false;
                         }
                     },
                     else => break,
@@ -1163,6 +1183,46 @@ impl MobileWorkspace {
         data.extend(packet.data);
         Some(data)
     }
+    pub fn send_gamepad(&self, json: &str) -> Result<(), String> {
+        #[derive(serde::Deserialize)]
+        struct GamepadInputRequest {
+            #[serde(alias = "subscription_id")]
+            id: u32,
+            #[serde(default)]
+            source_revision: Option<u32>,
+            state: protocol::gamepad::GamepadState,
+        }
+        let req: GamepadInputRequest = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let sent = if let Some(revision) = req.source_revision {
+            let binding = self
+                .connection
+                .input_binding(req.id, revision)
+                .ok_or_else(|| "remote input grant is not ready".to_string())?;
+            self.connection.try_send_bound_gamepad(binding, req.state)
+        } else {
+            self.connection.try_send_gamepad(req.id, req.state)
+        };
+        sent.then_some(())
+            .ok_or_else(|| "gamepad input queue is full".to_string())
+    }
+    pub fn poll_gamepad_feedback(&self) -> Option<String> {
+        let fb = self.queues.lock().unwrap().gamepad_feedback.pop_front()?;
+        serde_json::to_string(&fb).ok()
+    }
+    pub async fn list_consoles(&self) -> Result<String, String> {
+        let consoles = self.connection.list_consoles().await?;
+        serde_json::to_string(&consoles).map_err(|e| e.to_string())
+    }
+    pub async fn pair_console(&self, json: &str) -> Result<String, String> {
+        let request: protocol::session::PairConsoleRequest =
+            serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let response = self.connection.pair_console(request).await?;
+        serde_json::to_string(&response).map_err(|e| e.to_string())
+    }
+    pub async fn remove_console(&self, console_id: u64) -> Result<String, String> {
+        let consoles = self.connection.remove_console(console_id).await?;
+        serde_json::to_string(&consoles).map_err(|e| e.to_string())
+    }
 }
 
 /// Only current measurements from this subscription; never substitute configuration targets.
@@ -1261,5 +1321,41 @@ mod file_status_tests {
         );
         assert_eq!(file_status(&progress(u64::MAX, 1)), "Receiving file · 100%");
         assert_eq!(file_status(&progress(0, 0)), "Receiving file · 0%");
+    }
+
+    #[test]
+    fn console_ids_and_gamepad_feedback_roundtrip_as_json() {
+        let max_safe_js_int = (1u64 << 53) - 1;
+        let summary = protocol::session::ConsoleSummary {
+            console_id: max_safe_js_int,
+            host_id: "AABBCCDDEEFF".into(),
+            nickname: "PS5-LivingRoom".into(),
+            host_addr: Some("192.168.1.50".into()),
+            status: "200 Ok".into(),
+            paired: true,
+        };
+        let encoded = serde_json::to_string(&summary).unwrap();
+        let decoded: protocol::session::ConsoleSummary = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.console_id, max_safe_js_int);
+        assert!(decoded.paired);
+        assert_eq!(decoded.nickname, "PS5-LivingRoom");
+
+        let fb = protocol::gamepad::GamepadFeedback::Rumble {
+            controller_id: 0,
+            left_large: 180,
+            right_small: 90,
+        };
+        let mut queues = Queues::default();
+        for _ in 0..40 {
+            if queues.gamepad_feedback.len() >= 32 {
+                queues.gamepad_feedback.pop_front();
+            }
+            queues.gamepad_feedback.push_back(fb.clone());
+        }
+        assert_eq!(queues.gamepad_feedback.len(), 32);
+        let fb_json = serde_json::to_string(&fb).unwrap();
+        let fb_roundtrip: protocol::gamepad::GamepadFeedback =
+            serde_json::from_str(&fb_json).unwrap();
+        assert_eq!(fb_roundtrip, fb);
     }
 }

@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 
 // Scroll gesture metadata is part of the current input payload. Reject older
 // session layouts before admitting input; authentication and device keys stay unchanged.
-pub const SESSION_VERSION: u32 = 11;
+pub const SESSION_VERSION: u32 = 12;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
+pub const SONY_PSN_AUTHORIZE_URL: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code&client_id=ba495a24-818c-472b-b12d-ff231c1b5745&redirect_uri=https://remoteplay.dl.playstation.net/remoteplay/redirect&scope=psn:clientapp&request_locale=en_US&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&prompt=always&PlatformPrivacyWs1=minimal&";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum CaptureSource {
@@ -13,6 +14,7 @@ pub enum CaptureSource {
     Display(u32),
     Window(u32),
     Camera(u64),
+    Console(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +22,7 @@ pub enum SourceCategory {
     Screen,
     Window,
     Camera,
+    Console,
 }
 
 impl CaptureSource {
@@ -28,8 +31,34 @@ impl CaptureSource {
             Self::MainDisplay | Self::Display(_) => SourceCategory::Screen,
             Self::Window(_) => SourceCategory::Window,
             Self::Camera(_) => SourceCategory::Camera,
+            Self::Console(_) => SourceCategory::Console,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleSummary {
+    pub console_id: u64,
+    pub host_id: String,
+    pub nickname: String,
+    pub host_addr: Option<String>,
+    pub status: String,
+    pub paired: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairConsoleRequest {
+    pub psn_redirect_or_account: String,
+    pub pin: String,
+    pub host_addr: Option<String>,
+    pub nickname_override: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairConsoleResponse {
+    pub ok: bool,
+    pub console: Option<ConsoleSummary>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -362,6 +391,25 @@ pub enum SessionCommand {
         source_revision: u32,
         sequence: u64,
     },
+    ListConsoles {
+        request_id: u32,
+    },
+    Consoles {
+        request_id: u32,
+        consoles: Vec<ConsoleSummary>,
+    },
+    PairConsole {
+        request_id: u32,
+        request: Box<PairConsoleRequest>,
+    },
+    PairConsoleResult {
+        request_id: u32,
+        response: Box<PairConsoleResponse>,
+    },
+    RemoveConsole {
+        request_id: u32,
+        console_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -610,6 +658,66 @@ mod tests {
         ];
         for (expected_tag, command) in [44u32, 44, 45, 45, 46].into_iter().zip(commands) {
             let bytes = bincode::serialize(&command).unwrap();
+            assert_eq!(&bytes[..4], &expected_tag.to_le_bytes());
+            let decoded: SessionCommand = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(bincode::serialize(&decoded).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn console_commands_append_tags_and_preserve_size_budget() {
+        assert!(std::mem::size_of::<SessionCommand>() <= 120);
+        assert_eq!(CaptureSource::Console(42).category(), SourceCategory::Console);
+        let summary = ConsoleSummary {
+            console_id: 42,
+            host_id: "001122334455".into(),
+            nickname: "PS5-LivingRoom".into(),
+            host_addr: Some("192.168.1.55".into()),
+            status: "ready".into(),
+            paired: true,
+        };
+        let cmds = [
+            (47u32, SessionCommand::ListConsoles { request_id: 100 }),
+            (
+                48,
+                SessionCommand::Consoles {
+                    request_id: 100,
+                    consoles: vec![summary.clone()],
+                },
+            ),
+            (
+                49,
+                SessionCommand::PairConsole {
+                    request_id: 101,
+                    request: Box::new(PairConsoleRequest {
+                        psn_redirect_or_account: "AAAAAAAAAAA=".into(),
+                        pin: "12345678".into(),
+                        host_addr: Some("192.168.1.55".into()),
+                        nickname_override: None,
+                    }),
+                },
+            ),
+            (
+                50,
+                SessionCommand::PairConsoleResult {
+                    request_id: 101,
+                    response: Box::new(PairConsoleResponse {
+                        ok: true,
+                        console: Some(summary),
+                        error: None,
+                    }),
+                },
+            ),
+            (
+                51,
+                SessionCommand::RemoveConsole {
+                    request_id: 102,
+                    console_id: 42,
+                },
+            ),
+        ];
+        for (expected_tag, cmd) in cmds {
+            let bytes = bincode::serialize(&cmd).unwrap();
             assert_eq!(&bytes[..4], &expected_tag.to_le_bytes());
             let decoded: SessionCommand = bincode::deserialize(&bytes).unwrap();
             assert_eq!(bincode::serialize(&decoded).unwrap(), bytes);

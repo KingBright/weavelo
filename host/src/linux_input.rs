@@ -438,7 +438,7 @@ impl LinuxUinputInjector {
             InputEvent::ModifiersChanged(modifiers) => {
                 self.set_modifiers(modifiers, deadline)?;
             }
-            InputEvent::Touch { .. } | InputEvent::TouchFrame(_) => {}
+            InputEvent::Touch { .. } | InputEvent::TouchFrame(_) | InputEvent::Gamepad(_) => {}
         }
         Ok(())
     }

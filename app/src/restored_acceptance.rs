@@ -28,6 +28,7 @@ impl SourceRequest {
             CaptureSource::Window(id) if id > 0 && self.process_id.is_some_and(|pid| pid > 0) => {},
             CaptureSource::MainDisplay if self.process_id.is_none() => {},
             CaptureSource::Display(id) if id > 0 && self.process_id.is_none() => {},
+            CaptureSource::Console(id) if id > 0 && self.process_id.is_none() => {},
             _ => return Err("source selector has an invalid ID/process binding".into()),
         }
         Ok(self)

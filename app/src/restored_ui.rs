@@ -3866,6 +3866,7 @@ impl Render for RestoredDashboard {
                 .unwrap_or(match snapshot.active_capture_source.category() {
                     protocol::session::SourceCategory::Window => crate::i18n::tr("Remote window"),
                     protocol::session::SourceCategory::Camera => crate::i18n::tr("Camera"),
+                    protocol::session::SourceCategory::Console => crate::i18n::tr("PS5 Remote Play"),
                     protocol::session::SourceCategory::Screen => {
                         peer.unwrap_or(crate::i18n::tr("Device"))
                     }
@@ -4591,7 +4592,8 @@ fn display_capture_sources(
             protocol::session::CaptureSource::MainDisplay => 0,
             protocol::session::CaptureSource::Display(id) => id,
             protocol::session::CaptureSource::Window(_)
-            | protocol::session::CaptureSource::Camera(_) => u32::MAX,
+            | protocol::session::CaptureSource::Camera(_)
+            | protocol::session::CaptureSource::Console(_) => u32::MAX,
         };
         (primary_rank, id)
     });
@@ -4776,6 +4778,8 @@ fn capture_source_label(source: &protocol::session::CaptureSourceInfo) -> String
             crate::i18n::tr("Application window").into()
         } else if matches!(source.source, protocol::session::CaptureSource::Camera(_)) {
             crate::i18n::tr("Camera").into()
+        } else if matches!(source.source, protocol::session::CaptureSource::Console(_)) {
+            crate::i18n::tr("PS5 Console").into()
         } else {
             crate::i18n::tr("Display").into()
         }
@@ -4807,6 +4811,13 @@ fn remote_window_title(
                     protocol::session::SourceCategory::Camera => {
                         if source.title.trim().is_empty() {
                             crate::i18n::tr("Camera").into()
+                        } else {
+                            source.title.trim().to_owned()
+                        }
+                    }
+                    protocol::session::SourceCategory::Console => {
+                        if source.title.trim().is_empty() {
+                            crate::i18n::tr("PS5 Console").into()
                         } else {
                             source.title.trim().to_owned()
                         }
@@ -4865,6 +4876,7 @@ fn capture_source_badge(
             None => icon(match source.source.category() {
                 protocol::session::SourceCategory::Window => IconName::Window,
                 protocol::session::SourceCategory::Camera => IconName::Camera,
+                protocol::session::SourceCategory::Console => IconName::Control,
                 protocol::session::SourceCategory::Screen => IconName::Display,
             })
             .size(px(14.0))
@@ -8887,7 +8899,7 @@ fn product_mark(cx: &mut Context<RestoredDashboard>) -> Div {
         )
 }
 
-fn qr_matrix_view(matrix: &remote_core::QrMatrix) -> Div {
+pub(super) fn qr_matrix_view(matrix: &remote_core::QrMatrix) -> Div {
     let cell = px(3.0);
     let width = matrix.width;
     div()

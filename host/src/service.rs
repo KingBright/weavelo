@@ -173,6 +173,9 @@ enum InputTarget {
         id: u32,
         pid: i32,
     },
+    Console {
+        console_id: u64,
+    },
     #[cfg(all(unix, any(test, target_os = "linux")))]
     Portal,
 }
@@ -201,6 +204,7 @@ fn input_target_for(
             .filter(|pid| *pid > 0)
             .map(|pid| InputTarget::Window { id, pid }),
         CaptureSource::Camera(_) => None,
+        CaptureSource::Console(console_id) => Some(InputTarget::Console { console_id }),
     }
 }
 
@@ -208,6 +212,9 @@ fn input_target_for(
 // requests consent or posts an event. Constructors/events recheck permission.
 #[cfg(target_os = "macos")]
 fn mac_input_status(target: InputTarget) -> Result<(), String> {
+    if matches!(target, InputTarget::Console { .. }) {
+        return Ok(());
+    }
     crate::input_injector::post_event_access_status().map_err(|e| e.to_string())?;
     match target {
         InputTarget::Desktop => crate::input_injector::display_input_status(
@@ -218,6 +225,7 @@ fn mac_input_status(target: InputTarget) -> Result<(), String> {
             if crate::window_input::permission_available() { Ok(()) }
             else { Err("The running Weavelo host needs Accessibility permission for selected-window control; verify its signed App identity, then reselect the source".into()) }
         }
+        InputTarget::Console { .. } => Ok(()),
         #[cfg(test)]
         InputTarget::Portal => return Err("Portal input requires its exact consented session".into()),
     }.map_err(|e| e.to_string())
@@ -354,7 +362,7 @@ struct Subscription {
     source_revision: u32,
     video_sequence: Arc<std::sync::atomic::AtomicU16>,
     #[cfg(target_os = "windows")]
-    _capture_reservation: Arc<WindowsVideoCaptureReservation>,
+    _capture_reservation: Option<Arc<WindowsVideoCaptureReservation>>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     native_capture: Option<PreparedPortalCapture>,
     #[cfg(target_os = "linux")]
@@ -366,7 +374,7 @@ impl Subscription {
     }
     fn viewport(&mut self,demand:protocol::viewport::ViewportDemand)->Result<u64,String> {
         demand.validate()?;
-        if self.request.id!=demand.id || self.source_revision!=demand.source_revision || matches!(self.request.source,CaptureSource::Camera(_)) {
+        if self.request.id!=demand.id || self.source_revision!=demand.source_revision || matches!(self.request.source,CaptureSource::Camera(_) | CaptureSource::Console(_)) {
             return Err("Viewport does not belong to the current screen or window".into());
         }
         let current=self.settings.borrow().viewport.map_or(0,|v|v.revision);
@@ -1300,9 +1308,14 @@ impl Connection {
         stats: Arc<Statistics>,
         legacy: bool,
     ) -> Result<SessionCommand, String> {
-        self.subscribe_with_preflight(request, addr, udp, stats, legacy, || {
+        let is_console = matches!(request.source, CaptureSource::Console(_));
+        self.subscribe_with_preflight(request, addr, udp, stats, legacy, move || {
             #[cfg(target_os = "windows")]
-            crate::capture_readiness::ffmpeg_program()?;
+            if !is_console {
+                crate::capture_readiness::ffmpeg_program()?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            let _ = is_console;
             Ok(())
         })
         .await
@@ -1485,9 +1498,13 @@ impl Connection {
         );
         #[cfg(target_os="windows")]
         let input_target=if supports_input {
-            let selection=crate::windows_sources::resolve(request.source)?;
-            let canvas=crate::windows_capture_plan::fit(selection.bounds,request.width,request.height)?;
-            Some(InputTarget::Windows {source:selection.source,canvas,width:selection.bounds.width,height:selection.bounds.height})
+            if let CaptureSource::Console(console_id) = request.source {
+                Some(InputTarget::Console { console_id })
+            } else {
+                let selection=crate::windows_sources::resolve(request.source)?;
+                let canvas=crate::windows_capture_plan::fit(selection.bounds,request.width,request.height)?;
+                Some(InputTarget::Windows {source:selection.source,canvas,width:selection.bounds.width,height:selection.bounds.height})
+            }
         } else {None};
         #[cfg(all(unix, any(test, target_os = "linux")))]
         let input_target = if native_capture.is_some() {
@@ -1496,7 +1513,7 @@ impl Connection {
             input_target
         };
         let supports_input = supports_input && input_target.is_some();
-        let wants_audio_group = !matches!(request.source,CaptureSource::Camera(_))
+        let wants_audio_group = !matches!(request.source,CaptureSource::Camera(_) | CaptureSource::Console(_))
             && (request.audio || (legacy && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE")));
         let audio_key = wants_audio_group.then(|| {
             selected.and_then(|s| s.process_id).map_or(AudioGroupKey::System, AudioGroupKey::Application)
@@ -1587,7 +1604,11 @@ impl Connection {
         // reservation before acquiring the next one. Otherwise same-session
         // display/source switches fail against their own reservation.
         #[cfg(target_os = "windows")]
-        let capture_reservation = Arc::new(WindowsVideoCaptureReservation::acquire()?);
+        let capture_reservation = if !matches!(request.source, CaptureSource::Console(_)) {
+            Some(Arc::new(WindowsVideoCaptureReservation::acquire()?))
+        } else {
+            None
+        };
         #[cfg(target_os = "windows")]
         let task_reservation = capture_reservation.clone();
         if let Some(key) = audio_key {
@@ -1968,6 +1989,7 @@ async fn dispatch_realtime_input(
     let active_intent = match &packet.payload {
         InputPayload::Event(InputEvent::MouseDown(_) | InputEvent::KeyDown(_)
             | InputEvent::Key { pressed: true, .. }
+            | InputEvent::Gamepad(_)
             | InputEvent::MouseMove { .. } | InputEvent::MouseMoveAbsolute { .. }) => true,
         InputPayload::Event(InputEvent::MouseScroll { delta_x, delta_y, gesture }) =>
             gesture.can_take_control(*delta_x, *delta_y),
@@ -2272,6 +2294,9 @@ impl LazyInputInjector {
                         let _ = (id, pid);
                         return Err("This host does not implement window-scoped input; no desktop fallback was used".into());
                     }
+                }
+                InputTarget::Console { console_id } => {
+                    Box::new(crate::ps5_bridge::ConsoleInputInjector::new(console_id))
                 }
                 #[cfg(all(unix, any(test, target_os = "linux")))]
                 InputTarget::Portal => {
@@ -3193,6 +3218,27 @@ async fn run_host_service_inner(
                                         applied_size: outcome,
                                     };
                                     input_owner.during_control(&injector, send_session(&udp_sender, addr, reply)).await;
+                                }
+                                SessionCommand::ListConsoles { request_id } if peers.contains_key(&addr) => {
+                                    let udp = udp_sender.clone();
+                                    tokio::spawn(async move {
+                                        let consoles = crate::ps5_bridge::list_consoles().await;
+                                        send_session(&udp, addr, SessionCommand::Consoles { request_id, consoles }).await;
+                                    });
+                                }
+                                SessionCommand::PairConsole { request_id, request } if peers.contains_key(&addr) => {
+                                    let udp = udp_sender.clone();
+                                    tokio::spawn(async move {
+                                        let response = crate::ps5_bridge::pair_console(*request).await;
+                                        send_session(&udp, addr, SessionCommand::PairConsoleResult { request_id, response: Box::new(response) }).await;
+                                    });
+                                }
+                                SessionCommand::RemoveConsole { request_id, console_id } if peers.contains_key(&addr) => {
+                                    let udp = udp_sender.clone();
+                                    tokio::spawn(async move {
+                                        let consoles = crate::ps5_bridge::remove_console(console_id).await;
+                                        send_session(&udp, addr, SessionCommand::Consoles { request_id, consoles }).await;
+                                    });
                                 }
                                 _ => {}
                             },
@@ -5046,7 +5092,7 @@ mod failure_admission_tests {
                 source_revision: 10,
                 video_sequence: Arc::new(std::sync::atomic::AtomicU16::new(37)),
                 #[cfg(target_os = "windows")]
-                _capture_reservation: Arc::new(WindowsVideoCaptureReservation::acquire().unwrap()),
+                _capture_reservation: Some(Arc::new(WindowsVideoCaptureReservation::acquire().unwrap())),
                 #[cfg(all(unix, any(test, target_os = "linux")))]
                 native_capture: None,
                 #[cfg(target_os = "linux")]
@@ -5685,6 +5731,14 @@ mod input_target_tests {
     fn cameras_never_bind_desktop_input_even_with_an_untrusted_capability() {
         assert_eq!(input_target_for(CaptureSource::Camera(42),None,true),None);
         assert_eq!(input_target_for(CaptureSource::Camera(42),Some(123),true),None);
+    }
+    #[test]
+    fn consoles_bind_dedicated_console_input_target() {
+        assert_eq!(
+            input_target_for(CaptureSource::Console(42), None, true),
+            Some(InputTarget::Console { console_id: 42 })
+        );
+        assert_eq!(input_target_for(CaptureSource::Console(42), None, false), None);
     }
     #[test]
     fn windows_are_bound_to_server_selected_owner() {

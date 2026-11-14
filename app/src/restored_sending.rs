@@ -31,6 +31,7 @@ fn source_name(source: CaptureSource) -> String {
         CaptureSource::Display(id) => crate::i18n::tr_format!("Display {id}", id=id),
         CaptureSource::Window(id) => crate::i18n::tr_format!("Window {id}", id=id),
         CaptureSource::Camera(id) => crate::i18n::tr_format!("Camera {id}", id=id),
+        CaptureSource::Console(id) => crate::i18n::tr_format!("PS5 {id}", id=id),
     }
 }
 

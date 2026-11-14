@@ -1,5 +1,6 @@
 pub mod appearance;
 pub mod audio_output;
+pub mod gamepad;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
@@ -14,6 +15,7 @@ pub mod timing;
 pub mod touch;
 pub mod viewport;
 
+pub use gamepad::{ControllerKind, GamepadFeedback, GamepadState, TouchPoint};
 pub use scroll::{MomentumPhase, ScrollGesture, ScrollPhase};
 pub use timing::{
     FRAME_TIMING_CHECKPOINTS_WIRE_LEN, FrameTimingCheckpoints, HOST_TIMING_WIRE_LEN,
@@ -1104,6 +1106,7 @@ pub enum ControlMessage {
     SessionHandshake(Box<session_auth::HandshakeMessage>),
     ClockProbe(session_auth::ClockProbe),
     ClockReply(session_auth::ClockReply),
+    GamepadFeedback(Box<gamepad::GamepadFeedback>),
 }
 
 /// Validate integer custom settings without restricting users to preset tiers.
@@ -1170,6 +1173,8 @@ pub enum InputEvent {
     Text(crate::interaction::CommittedText),
     /// Simultaneous native contacts, owned by the existing realtime input lease.
     TouchFrame(Vec<crate::touch::Contact>),
+    /// Universal / DualSense gamepad state snapshot.
+    Gamepad(Box<gamepad::GamepadState>),
 }
 
 impl InputEvent {
@@ -2024,5 +2029,51 @@ mod tests {
         assert_eq!(recovered_timing.packetize_ts_us, timing.packetize_ts_us);
         assert_eq!(recovered_timing.send_ts_us, timing.send_ts_us);
         assert_eq!(recovered_timing.recv_ts_us, 0);
+    }
+
+    #[test]
+    fn gamepad_input_and_feedback_roundtrip_without_growing_control_message() {
+        assert!(std::mem::size_of::<ControlMessage>() <= 64);
+        let state = GamepadState {
+            controller_id: 0,
+            kind: ControllerKind::DualSense,
+            buttons: gamepad::button::CROSS | gamepad::button::L1,
+            left_trigger: 180,
+            right_trigger: 255,
+            left_stick_x: -12_000,
+            left_stick_y: 8_500,
+            right_stick_x: 4_000,
+            right_stick_y: -3_000,
+            touches: [
+                TouchPoint {
+                    active: true,
+                    id: 1,
+                    x: 960,
+                    y: 470,
+                },
+                TouchPoint::default(),
+            ],
+            has_imu: true,
+            gyro: [0.1, -0.2, 0.3],
+            accel: [0.0, -1.0, 0.0],
+            quat: [0.0, 0.0, 0.0, 1.0],
+        };
+        let input_msg = ControlMessage::Input(InputEvent::Gamepad(Box::new(state.clone())));
+        let ControlMessage::Input(InputEvent::Gamepad(decoded_state)) = roundtrip_control(input_msg)
+        else {
+            panic!("expected InputEvent::Gamepad");
+        };
+        assert_eq!(*decoded_state, state);
+
+        let fb = GamepadFeedback::TriggerEffects {
+            controller_id: 0,
+            left: [2; 10],
+            right: [6; 10],
+        };
+        let fb_msg = ControlMessage::GamepadFeedback(Box::new(fb.clone()));
+        let ControlMessage::GamepadFeedback(decoded_fb) = roundtrip_control(fb_msg) else {
+            panic!("expected GamepadFeedback");
+        };
+        assert_eq!(*decoded_fb, fb);
     }
 }

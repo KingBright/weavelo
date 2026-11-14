@@ -99,6 +99,10 @@ pub struct SessionState<Texture, Pan: Default> {
     pub file_page_after: u64,
     pub file_history: Vec<u64>,
     next_request: u32,
+    gamepad_can_send: Arc<std::sync::atomic::AtomicBool>,
+    gamepad_target: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    gamepad_worker: Option<client::gamepad::GamepadWorker>,
 }
 #[cfg(feature = "gpui-restoration")]
 pub(crate) type OriginalGuiSession =
@@ -263,6 +267,53 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             file_page_after: 0,
             file_history: Vec::new(),
             next_request: 1000,
+            gamepad_can_send: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            gamepad_target: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            gamepad_worker: None,
+        }
+    }
+
+    fn reconcile_gamepad(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let active_console = self.connected
+            && self.confirmed
+            && self.video_error.is_none()
+            && matches!(self.source, CaptureSource::Console(_));
+        if !active_console {
+            self.gamepad_can_send.store(false, Relaxed);
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            {
+                self.gamepad_worker = None;
+            }
+            return;
+        }
+        let packed = (u64::from(self.video_id) << 32) | u64::from(self.source_revision);
+        self.gamepad_target.store(packed, Relaxed);
+        self.gamepad_can_send.store(self.can_input(), Relaxed);
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        if self.gamepad_worker.is_none() {
+            let conn = self.conn.clone();
+            let target = self.gamepad_target.clone();
+            let feedback_rx = self.conn.subscribe_gamepad_feedback();
+            self.gamepad_worker = Some(client::gamepad::GamepadWorker::spawn(
+                self.gamepad_can_send.clone(),
+                feedback_rx,
+                move |state| {
+                    let current = target.load(Relaxed);
+                    let video_id = (current >> 32) as u32;
+                    let source_revision = current as u32;
+                    if let Some(binding) = conn.input_binding(video_id, source_revision) {
+                        conn.try_send_bound_gamepad(binding, state)
+                    } else {
+                        conn.try_control(SessionCommand::SourceInput {
+                            id: video_id,
+                            source_revision,
+                            event: InputEvent::Gamepad(Box::new(state)),
+                        })
+                    }
+                },
+            ));
         }
     }
     pub fn control(&mut self, command: SessionCommand) -> bool {
@@ -698,6 +749,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
         self.video_error = Some(reason.clone());
         self.error = reason;
         self.status = "Video request failed; file connection remains available".into();
+        self.reconcile_gamepad();
     }
     pub fn input_status(&self) -> &'static str {
         let recovery = self.stats.video_recovery.snapshot();
@@ -711,6 +763,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             match self.source {
                 CaptureSource::Window(_) => "This host cannot control the selected window. Check Weavelo Accessibility on that host or choose an input-enabled source",
                 CaptureSource::Camera(_) => "Camera viewing does not control the remote desktop",
+                CaptureSource::Console(_) => "PS5 controller input is unavailable; reselect this console source to retry",
                 CaptureSource::MainDisplay | CaptureSource::Display(_) => "Display control unavailable. Read the host reason below; after correcting permission or source availability, reselect this source before enabling control",
             }
         } else if !self.conn.input_ready(self.video_id,self.source_revision) {
@@ -918,14 +971,17 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     // Subscribe is accepted, preserving the selected source and the
                     // first-frame path; metadata never starts a desktop subscription.
                     if self.sources.is_empty()
-                        || (matches!(self.source, CaptureSource::Camera(_) | CaptureSource::Window(_))
-                            && !self.sources.iter().any(|source| source.source == self.source))
+                        || (matches!(
+                            self.source,
+                            CaptureSource::Camera(_) | CaptureSource::Window(_) | CaptureSource::Console(_)
+                        ) && !self.sources.iter().any(|source| source.source == self.source))
                     {
                         let _ = self.conn.try_control_checked(SessionCommand::ListSources {
                             request_id: 900_001,
                             known_icons: Vec::new(),
                         });
                     }
+                    self.reconcile_gamepad();
                 }
                 SessionCommand::SourceSwitched {
                     id,
@@ -947,6 +1003,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.uploaded_epoch = None;
                     self.texture = None;
                     self.status = "Source accepted; waiting for its first frame".into();
+                    self.reconcile_gamepad();
                 }
                 SessionCommand::Activity {
                     id,
@@ -990,6 +1047,7 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.reconcile_clipboard();
                     self.confirmed = false;
                     self.error = reason;
+                    self.reconcile_gamepad();
                 }
                 SessionCommand::Unsubscribed { id } if id==self.video_id && self.camera_replacement.is_some() => {
                     self.source=self.camera_replacement.take().unwrap();
@@ -1131,10 +1189,16 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                 _ => {}
             }
         }
+        self.reconcile_gamepad();
     }
 }
 impl<Texture, Pan: Default> Drop for SessionState<Texture, Pan> {
     fn drop(&mut self) {
+        self.gamepad_can_send.store(false, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        {
+            self.gamepad_worker = None;
+        }
         self.release_input();
         self.clipboard.stop();
         *self.conn.clipboard_file_owner.lock().unwrap() = None;

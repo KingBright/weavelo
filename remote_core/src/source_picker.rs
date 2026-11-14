@@ -17,6 +17,7 @@ pub fn sort(sources: &mut [CaptureSourceInfo]) {
             CaptureSource::Display(id) => (0, u64::from(id)),
             CaptureSource::Window(id) => (1, u64::from(id)),
             CaptureSource::Camera(id) => (2, id),
+            CaptureSource::Console(id) => (3, id),
         };
         let app = if category == 1 {
             source.application.trim().to_lowercase()

@@ -211,19 +211,52 @@ fn accessible_window_size(pid: i32, title: &str) -> Option<(f64, f64)> {
 }
 
 pub fn list() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
-    let screens=list_screens();
+    let screens = list_screens();
+    let consoles = crate::ps5_bridge::list_capture_sources_blocking();
     #[cfg(any(target_os="macos",target_os="linux",target_os="windows"))]
     {
-        let cameras=crate::cameras::list();
-        return match (screens,cameras) {
-            (Ok(mut screens),Ok(cameras))=>{screens.extend(cameras);Ok(screens)},
-            (Err(_),Ok(cameras)) if !cameras.is_empty()=>Ok(cameras),
-            (Ok(screens),Err(_))=>Ok(screens),
-            (Err(error),_)=>Err(error),
+        let cameras = crate::cameras::list();
+        return match (screens, cameras) {
+            (Ok(mut screens), Ok(cameras)) => {
+                screens.extend(cameras);
+                screens.extend(consoles);
+                Ok(screens)
+            }
+            (Ok(mut screens), Err(_)) => {
+                screens.extend(consoles);
+                Ok(screens)
+            }
+            (Err(error), Ok(mut cameras)) => {
+                cameras.extend(consoles);
+                if cameras.is_empty() {
+                    Err(error)
+                } else {
+                    Ok(cameras)
+                }
+            }
+            (Err(error), Err(_)) => {
+                if consoles.is_empty() {
+                    Err(error)
+                } else {
+                    Ok(consoles)
+                }
+            }
         };
     }
     #[cfg(not(any(target_os="macos",target_os="linux",target_os="windows")))]
-    screens
+    match screens {
+        Ok(mut screens) => {
+            screens.extend(consoles);
+            Ok(screens)
+        }
+        Err(error) => {
+            if consoles.is_empty() {
+                Err(error)
+            } else {
+                Ok(consoles)
+            }
+        }
+    }
 }
 
 fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>> {
@@ -363,6 +396,7 @@ pub(crate) fn capture_plan(
     let content = SCShareableContent::get()?;
     match source {
         CaptureSource::Camera(_) => Err("Camera source requires native camera capture".into()),
+        CaptureSource::Console(_) => Err("Console source requires PS5 Remote Play session".into()),
         CaptureSource::Window(id) => {
             let all_windows = content.windows();
             let window = all_windows

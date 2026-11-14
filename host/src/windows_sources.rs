@@ -416,7 +416,7 @@ pub(crate) fn resolve(source: CaptureSource) -> Result<Selection, String> {
     }
     let id = match source {
         CaptureSource::Window(id) | CaptureSource::Display(id) => id,
-        _ => unreachable!(),
+        _ => return Err("Source is not a native Windows display or window".into()),
     };
     let selected = registry()
         .lock()

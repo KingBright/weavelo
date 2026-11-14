@@ -17,6 +17,7 @@ mod macos_shared_capture;
 mod capture_readiness;
 pub mod capture_sources;
 pub mod cameras;
+pub mod ps5_bridge;
 mod source_catalog;
 mod source_artwork;
 mod connection_services;
@@ -292,7 +293,7 @@ fn log_discovery_event(label: &str, event: DiscoveryEvent) {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -411,30 +412,30 @@ pub struct StreamSettings {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-struct StreamingRunConfig {
-    session_id: u32,
-    client_addr: SocketAddr,
-    width: u32,
-    height: u32,
-    fps: u32,
-    bitrate_kbps: u32,
-    udp_sender: UdpSender,
-    stats: Arc<Statistics>,
-    resources: Arc<lifecycle::Resources>,
-    cancel_rx: broadcast::Receiver<()>,
-    scheduled_sender: ScheduledDataSender,
-    source: protocol::session::CaptureSource,
-    stream_settings_rx: Option<watch::Receiver<StreamSettings>>,
-    keyframe_requested: Arc<std::sync::atomic::AtomicBool>,
-    video_sequence: Arc<std::sync::atomic::AtomicU16>,
+pub(crate) struct StreamingRunConfig {
+    pub(crate) session_id: u32,
+    pub(crate) client_addr: SocketAddr,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) fps: u32,
+    pub(crate) bitrate_kbps: u32,
+    pub(crate) udp_sender: UdpSender,
+    pub(crate) stats: Arc<Statistics>,
+    pub(crate) resources: Arc<lifecycle::Resources>,
+    pub(crate) cancel_rx: broadcast::Receiver<()>,
+    pub(crate) scheduled_sender: ScheduledDataSender,
+    pub(crate) source: protocol::session::CaptureSource,
+    pub(crate) stream_settings_rx: Option<watch::Receiver<StreamSettings>>,
+    pub(crate) keyframe_requested: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) video_sequence: Arc<std::sync::atomic::AtomicU16>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
-    native_capture: Option<linux_portal::runtime::PreparedPortalCapture>,
+    pub(crate) native_capture: Option<linux_portal::runtime::PreparedPortalCapture>,
     #[cfg(target_os = "linux")]
-    kwin_capture: Option<linux_pipewire::native::PreparedKwinCapture>,
+    pub(crate) kwin_capture: Option<linux_pipewire::native::PreparedKwinCapture>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-async fn send_media_packet(
+pub(crate) async fn send_media_packet(
     udp_sender: &UdpSender,
     scheduled_sender: Option<&ScheduledDataSender>,
     packet: &RtpPacket,
@@ -471,7 +472,7 @@ async fn send_media_packet(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-async fn send_audio_stream_config(
+pub(crate) async fn send_audio_stream_config(
     udp_sender: &UdpSender,
     scheduled_sender: Option<&ScheduledDataSender>,
     config: &AudioStreamConfig,
@@ -1125,6 +1126,34 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         bitrate_kbps,
         ..
     } = initial;
+
+    if let protocol::session::CaptureSource::Console(console_id) = source {
+        return crate::ps5_bridge::run_ps5_streaming(
+            console_id,
+            StreamingRunConfig {
+                session_id,
+                client_addr,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                udp_sender,
+                stats,
+                resources,
+                cancel_rx,
+                scheduled_sender,
+                source,
+                stream_settings_rx,
+                keyframe_requested,
+                video_sequence,
+                #[cfg(all(unix, any(test, target_os = "linux")))]
+                native_capture,
+                #[cfg(target_os = "linux")]
+                kwin_capture,
+            },
+        )
+        .await;
+    }
 
     #[cfg(target_os = "macos")]
     let _display_power = (!matches!(source,protocol::session::CaptureSource::Camera(_)))

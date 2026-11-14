@@ -1229,7 +1229,9 @@ impl OriginalOwner {
     pub(crate) fn queue_viewport(&self,target:&ViewportTarget,demand:protocol::viewport::ViewportDemand)->Option<bool> {
         if demand.validate().is_err()||demand.id!=target.id||demand.source_revision!=target.source_revision{return None;}
         let mut pool=self.pool.lock().unwrap();let session=&mut pool.active_mut()?.session;
-        Self::viewport_matches(session,target).then(||session.control(SessionCommand::Viewport(demand)))
+        if !Self::viewport_matches(session,target) {return None;}
+        if matches!(session.source, CaptureSource::Console(_)) {return Some(true);}
+        Some(session.control(SessionCommand::Viewport(demand)))
     }
     fn viewport_matches(session:&OriginalGuiSession,target:&ViewportTarget)->bool {
         session.connected&&session.video_id==target.id&&session.source_revision()==target.source_revision
@@ -1262,6 +1264,16 @@ impl OriginalOwner {
         let pool=self.pool.lock().unwrap();let entry=pool.active()?;
         (entry.session.connected && binding.matches(&entry.session.conn,remote_core::shared_files::current_share_scope()))
             .then_some(entry.session.source_catalog_revision)
+    }
+    pub(crate) fn bound_workspace_connection(
+        &self,
+        binding: &SourceViewBinding,
+    ) -> Option<Arc<WorkspaceConnection>> {
+        let pool = self.pool.lock().unwrap();
+        let entry = pool.active()?;
+        (entry.session.connected
+            && binding.matches(&entry.session.conn, remote_core::shared_files::current_share_scope()))
+        .then(|| entry.session.conn.clone())
     }
     pub(crate) fn computer_use_target_binding(&self, device: &str, source: CaptureSource, connection: u32) -> Option<SourceViewBinding> {
         let p=self.pool.lock().ok()?;

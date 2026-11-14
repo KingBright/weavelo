@@ -17,11 +17,56 @@ use protocol::session::{CaptureSource, SESSION_VERSION, SessionCommand, Subscrip
 use protocol::{ContentKind, ControlMessage, DataEnvelope, FrameTimingCheckpoints, RtpPacket};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
+
+static CONSOLE_CONTROL_BUS: LazyLock<Mutex<HashMap<u32, broadcast::Sender<SessionCommand>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static GAMEPAD_FEEDBACK_BUS: LazyLock<
+    Mutex<HashMap<u32, broadcast::Sender<protocol::gamepad::GamepadFeedback>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_CONSOLE_REQUEST_ID: AtomicU32 = AtomicU32::new(0x7000_0001);
+
+fn subscribe_console_control_bus(connection_id: u32) -> broadcast::Receiver<SessionCommand> {
+    let mut map = CONSOLE_CONTROL_BUS.lock().unwrap();
+    map.entry(connection_id)
+        .or_insert_with(|| broadcast::channel(64).0)
+        .subscribe()
+}
+
+fn console_control_bus_if_exists(connection_id: u32) -> Option<broadcast::Sender<SessionCommand>> {
+    CONSOLE_CONTROL_BUS.lock().unwrap().get(&connection_id).cloned()
+}
+
+fn subscribe_gamepad_feedback_bus(
+    connection_id: u32,
+) -> broadcast::Receiver<protocol::gamepad::GamepadFeedback> {
+    let mut map = GAMEPAD_FEEDBACK_BUS.lock().unwrap();
+    map.entry(connection_id)
+        .or_insert_with(|| broadcast::channel(128).0)
+        .subscribe()
+}
+
+fn gamepad_feedback_bus_if_exists(
+    connection_id: u32,
+) -> Option<broadcast::Sender<protocol::gamepad::GamepadFeedback>> {
+    GAMEPAD_FEEDBACK_BUS
+        .lock()
+        .unwrap()
+        .get(&connection_id)
+        .cloned()
+}
+
+struct ActorBusCleanup(u32);
+impl Drop for ActorBusCleanup {
+    fn drop(&mut self) {
+        CONSOLE_CONTROL_BUS.lock().unwrap().remove(&self.0);
+        GAMEPAD_FEEDBACK_BUS.lock().unwrap().remove(&self.0);
+    }
+}
 
 type VideoIngress = crate::video_queue::VideoSender;
 type PointerUpdate =
@@ -974,6 +1019,119 @@ impl WorkspaceConnection {
             .send(Command::Clipboard(ingress))
             .await
             .map_err(|_| "connection closed".into())
+    }
+
+    pub fn subscribe_gamepad_feedback(&self) -> broadcast::Receiver<protocol::gamepad::GamepadFeedback> {
+        subscribe_gamepad_feedback_bus(self.id)
+    }
+
+    pub fn try_send_gamepad(
+        &self,
+        subscription_id: u32,
+        state: protocol::gamepad::GamepadState,
+    ) -> bool {
+        self.try_control(SessionCommand::Input {
+            id: subscription_id,
+            event: protocol::InputEvent::Gamepad(Box::new(state)),
+        })
+    }
+
+    pub fn try_send_bound_gamepad(
+        &self,
+        binding: protocol::realtime_input::InputBinding,
+        state: protocol::gamepad::GamepadState,
+    ) -> bool {
+        self.try_bound_input(binding, Some(protocol::InputEvent::Gamepad(Box::new(state))))
+    }
+
+    async fn console_rpc<T>(
+        &self,
+        command: SessionCommand,
+        expected_request_id: u32,
+        wait_timeout: Duration,
+        mut matcher: impl FnMut(SessionCommand) -> Option<Result<T, String>>,
+    ) -> Result<T, String> {
+        let mut rx = subscribe_console_control_bus(self.id);
+        self.control(command).await?;
+        let deadline = tokio::time::sleep(wait_timeout);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => return Err("console request timed out".into()),
+                msg = rx.recv() => match msg {
+                    Ok(SessionCommand::Error { request_id, reason }) if request_id == expected_request_id => {
+                        return Err(reason);
+                    }
+                    Ok(cmd) => {
+                        if let Some(res) = matcher(cmd) {
+                            return res;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return Err("connection closed".into()),
+                }
+            }
+        }
+    }
+
+    pub async fn list_consoles(&self) -> Result<Vec<protocol::session::ConsoleSummary>, String> {
+        let req_id = NEXT_CONSOLE_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.console_rpc(
+            SessionCommand::ListConsoles { request_id: req_id },
+            req_id,
+            Duration::from_secs(6),
+            |cmd| match cmd {
+                SessionCommand::Consoles { request_id, consoles } if request_id == req_id => {
+                    Some(Ok(consoles))
+                }
+                _ => None,
+            },
+        )
+        .await
+    }
+
+    pub async fn pair_console(
+        &self,
+        request: protocol::session::PairConsoleRequest,
+    ) -> Result<protocol::session::PairConsoleResponse, String> {
+        let req_id = NEXT_CONSOLE_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.console_rpc(
+            SessionCommand::PairConsole {
+                request_id: req_id,
+                request: Box::new(request),
+            },
+            req_id,
+            Duration::from_secs(35),
+            |cmd| match cmd {
+                SessionCommand::PairConsoleResult { request_id, response } if request_id == req_id => {
+                    Some(Ok(*response))
+                }
+                _ => None,
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_console(
+        &self,
+        console_id: u64,
+    ) -> Result<Vec<protocol::session::ConsoleSummary>, String> {
+        let req_id = NEXT_CONSOLE_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.console_rpc(
+            SessionCommand::RemoveConsole {
+                request_id: req_id,
+                console_id,
+            },
+            req_id,
+            Duration::from_secs(6),
+            |cmd| match cmd {
+                SessionCommand::Consoles { request_id, consoles } if request_id == req_id => {
+                    Some(Ok(consoles))
+                }
+                _ => None,
+            },
+        )
+        .await
     }
 }
 
@@ -1960,6 +2118,7 @@ impl Actor {
         self.last_response_tx.send_replace(*last_response);
     }
     async fn run(&mut self, mut cancel: broadcast::Receiver<()>) {
+        let _bus_cleanup = ActorBusCleanup(self.id);
         let mut last_pong = Instant::now();
         let mut rejected_count = 0u64;
         let mut rejection_log_at: Option<Instant> = None;
@@ -2184,8 +2343,24 @@ impl Actor {
                                     }
                                 }
                             }
+                            if matches!(
+                                &command,
+                                SessionCommand::Consoles { .. }
+                                    | SessionCommand::PairConsoleResult { .. }
+                                    | SessionCommand::Error { .. }
+                            ) {
+                                if let Some(bus) = console_control_bus_if_exists(self.id) {
+                                    let _ = bus.send(command.clone());
+                                }
+                            }
                             let _ = self.control_tx.send(command);
                             if closed { self.close_confirmed.store(true, std::sync::atomic::Ordering::Release); return; }
+                        }
+                        Ok(MultiplexedPacket::Control(ControlMessage::GamepadFeedback(feedback), addr)) if addr == self.target => {
+                            self.note_peer_response(&mut last_pong);
+                            if let Some(bus) = gamepad_feedback_bus_if_exists(self.id) {
+                                let _ = bus.send(*feedback);
+                            }
                         }
                         Ok(MultiplexedPacket::ClockReply(reply,received_us,addr)) if addr==self.target => {
                             // Liveness follows authenticated session traffic, never clock fit quality.
