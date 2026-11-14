@@ -216,7 +216,10 @@ impl EisSession {
 
         // Once `ConnectToEIS` succeeds on D-Bus, the portal requires all input on
         // this session to flow over EIS rather than `Notify*` D-Bus methods.
-        tokio::task::block_in_place(|| Self::from_fd(lib, fd.into_raw_fd(), source))
+        tokio::task::block_in_place(|| {
+            let raw_fd = std::os::fd::IntoRawFd::into_raw_fd(std::os::fd::OwnedFd::from(fd));
+            Self::from_fd(lib, raw_fd, source)
+        })
     }
 
     fn from_fd(lib: &'static LibEi, raw_fd: c_int, source: SelectedPortalSource) -> ConnectOutcome {
