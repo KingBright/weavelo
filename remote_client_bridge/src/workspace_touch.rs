@@ -70,11 +70,14 @@ impl WorkspaceTouch {
             && self.visible
             && self.supported
             && self.binding.is_some()
-            && self.tracker.has_active_pointers()
+            && (self.tracker.has_active_pointers() || self.tracker.has_momentum())
         {
             self.last_intent = Some(now);
         }
         release
+    }
+    pub fn has_momentum(&self) -> bool {
+        self.tracker.has_momentum()
     }
     /// An old surface's heartbeat cannot attest the replacement gesture.
     pub fn healthy_binding(&self, token: u64) -> Option<InputBinding> {
@@ -345,8 +348,65 @@ impl WorkspaceTouch {
             pressure,
             now,
         );
-        self.last_intent = self.tracker.has_active_pointers().then_some(now);
+        self.last_intent =
+            (self.tracker.has_active_pointers() || self.tracker.has_momentum()).then_some(now);
         (release, self.normalized_trackpad(events))
+    }
+    pub fn touch_batch(
+        &mut self,
+        token: u64,
+        contacts: &[protocol::touch::Contact],
+        current: Option<InputBinding>,
+        now: Instant,
+    ) -> (Option<InputBinding>, Vec<InputEvent>) {
+        if token != self.surface || !self.attached {
+            return (None, Vec::new());
+        }
+        if !self.visible || !self.frame_ready || !self.supported || current.is_none() {
+            return (self.cancel(), Vec::new());
+        }
+        let expired = self.expire(now);
+        let release = if self.binding != current {
+            let release = self.cancel().or(expired);
+            self.binding = current;
+            release
+        } else {
+            expired
+        };
+        if contacts.is_empty() {
+            return (release, Vec::new());
+        }
+        if contacts.iter().any(|c| c.action == TouchAction::Cancel)
+            && self.tracker.mode != TouchMode::NativeTouch
+        {
+            return (release, self.cancel_pointer());
+        }
+        let events = self.tracker.process_touch_batch(contacts, now);
+        self.last_intent =
+            (self.tracker.has_active_pointers() || self.tracker.has_momentum()).then_some(now);
+        (release, self.normalized_trackpad(events))
+    }
+    pub fn step_momentum(
+        &mut self,
+        token: u64,
+        current: Option<InputBinding>,
+        now: Instant,
+    ) -> (Option<InputBinding>, Vec<InputEvent>) {
+        if token != self.surface || !self.attached {
+            return (None, Vec::new());
+        }
+        if !self.visible || !self.frame_ready || !self.supported || current.is_none() {
+            return (self.cancel(), Vec::new());
+        }
+        let expired = self.expire(now);
+        if self.binding != current {
+            let release = self.cancel().or(expired);
+            return (release, Vec::new());
+        }
+        let events = self.tracker.step_momentum(now);
+        self.last_intent =
+            (self.tracker.has_active_pointers() || self.tracker.has_momentum()).then_some(now);
+        (expired, self.normalized_trackpad(events))
     }
     pub fn touch_frame(
         &mut self,

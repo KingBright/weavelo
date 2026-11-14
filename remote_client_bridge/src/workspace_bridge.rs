@@ -798,17 +798,25 @@ impl MobileWorkspace {
             mode: u8,
             width: u16,
             height: u16,
-            event: protocol::InputEvent,
+            #[serde(default)]
+            event: Option<protocol::InputEvent>,
+            #[serde(default)]
+            batch: Option<Vec<protocol::touch::Contact>>,
+            #[serde(default)]
+            momentum_step: bool,
             #[serde(default)]
             geometry: Option<protocol::viewport::FrameGeometry>,
             #[serde(default = "default_natural_scroll")]
             natural_scroll: bool,
         }
         let event: Touch = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        if !matches!(
-            event.event,
-            protocol::InputEvent::Touch { .. } | protocol::InputEvent::TouchFrame(_)
-        ) {
+        if !event.momentum_step
+            && event.batch.is_none()
+            && !matches!(
+                event.event,
+                Some(protocol::InputEvent::Touch { .. } | protocol::InputEvent::TouchFrame(_))
+            )
+        {
             return Err("expected a local touch gesture".into());
         }
         let mut touches = self.touches.lock().unwrap();
@@ -839,19 +847,51 @@ impl MobileWorkspace {
             }
             return Err("The displayed source geometry changed".into());
         }
-        let starting = matches!(
-            &event.event,
-            protocol::InputEvent::Touch {
-                action: protocol::TouchAction::Down,
-                ..
+        if event.momentum_step {
+            let (release, events) =
+                touch.step_momentum(event.token, current, std::time::Instant::now());
+            if let Some(binding) = release {
+                self.connection.try_bound_input(binding, None);
             }
-        ) || matches!(&event.event,protocol::InputEvent::TouchFrame(c) if c.iter().any(|p|p.action==protocol::TouchAction::Down));
+            if let Some(binding) = touch.binding() {
+                for ev in events {
+                    if !self.connection.try_bound_input(binding, Some(ev)) {
+                        touch.cancel();
+                        self.connection.try_bound_input(binding, None);
+                        break;
+                    }
+                }
+                return Ok(serde_json::json!({
+                    "cursor": touch.cursor(event.token, current),
+                    "focus_sequence": serde_json::Value::Null,
+                    "momentum": touch.has_momentum(),
+                }));
+            }
+            return Ok(serde_json::Value::Null);
+        }
+
+        let starting = event
+            .batch
+            .as_ref()
+            .is_some_and(|c| c.iter().any(|p| p.action == protocol::TouchAction::Down))
+            || matches!(
+                &event.event,
+                Some(protocol::InputEvent::Touch {
+                    action: protocol::TouchAction::Down,
+                    ..
+                })
+            )
+            || matches!(
+                &event.event,
+                Some(protocol::InputEvent::TouchFrame(c))
+                    if c.iter().any(|p| p.action == protocol::TouchAction::Down)
+            );
         let unavailable = touch.unavailable_reason(event.token, current);
         let mode = match event.mode {
             0 => crate::touch_mapper::TouchMode::DirectTouch,
             1 => crate::touch_mapper::TouchMode::VirtualTrackpad,
             3 if touch.native_touch_points() > 0
-                && matches!(&event.event, protocol::InputEvent::TouchFrame(_)) =>
+                && matches!(&event.event, Some(protocol::InputEvent::TouchFrame(_))) =>
             {
                 crate::touch_mapper::TouchMode::NativeTouch
             }
@@ -878,11 +918,17 @@ impl MobileWorkspace {
                 self.connection.try_bound_input(binding, Some(release));
             }
         }
-        let (release, events) = match event.event {
-            protocol::InputEvent::TouchFrame(contacts) => {
-                touch.touch_frame(event.token, contacts, current, std::time::Instant::now())
+        let now = std::time::Instant::now();
+        let (release, events) = if let Some(contacts) = event.batch {
+            touch.touch_batch(event.token, &contacts, current, now)
+        } else {
+            match event.event {
+                Some(protocol::InputEvent::TouchFrame(contacts)) => {
+                    touch.touch_frame(event.token, contacts, current, now)
+                }
+                Some(event_data) => touch.touch(event.token, event_data, current, now),
+                None => return Err("expected a local touch gesture".into()),
             }
-            event_data => touch.touch(event.token, event_data, current, std::time::Instant::now()),
         };
         if let Some(binding) = release {
             self.connection.try_bound_input(binding, None);
@@ -916,11 +962,17 @@ impl MobileWorkspace {
                     break;
                 }
             }
-            return Ok(
-                serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":probe.map(|sequence|sequence.to_string())}),
-            );
+            return Ok(serde_json::json!({
+                "cursor": touch.cursor(event.token, current),
+                "focus_sequence": probe.map(|sequence| sequence.to_string()),
+                "momentum": touch.has_momentum(),
+            }));
         }
-        Ok(serde_json::json!({"cursor":touch.cursor(event.token,current), "focus_sequence":null}))
+        Ok(serde_json::json!({
+            "cursor": touch.cursor(event.token, current),
+            "focus_sequence": null,
+            "momentum": touch.has_momentum(),
+        }))
     }
     pub async fn send_file(&self, path: PathBuf) -> Result<(), String> {
         if !self.connection.files_available {

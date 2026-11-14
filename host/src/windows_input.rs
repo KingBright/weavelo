@@ -1,5 +1,5 @@
-use crate::windows_keymap::mac_key_to_vk;
 use super::windows_sources as native_sources;
+use crate::windows_keymap::mac_key_to_vk;
 use protocol::{InputEvent, input_modifiers};
 use remote_core::InputInjector;
 use std::collections::BTreeSet;
@@ -16,33 +16,32 @@ fn check_deadline(deadline: Option<Instant>) -> InputResult {
 fn fresh_window_intent(event: &InputEvent, current_modifiers: u8) -> bool {
     matches!(
         event,
-        InputEvent::Text(_)
-            | InputEvent::Key { pressed: true, .. }
-            | InputEvent::KeyDown(_)
+        InputEvent::Text(_) | InputEvent::Key { pressed: true, .. } | InputEvent::KeyDown(_)
     ) || matches!(event, InputEvent::MouseScroll { delta_x, delta_y, gesture }
         if gesture.can_take_control(*delta_x, *delta_y))
-      || matches!(event, InputEvent::ModifiersChanged(modifiers)
+        || matches!(event, InputEvent::ModifiersChanged(modifiers)
         if modifiers & !current_modifiers & 0x0f != 0)
 }
 fn pointer_activation_intent(event: &InputEvent) -> bool {
-    matches!(event, InputEvent::MouseMoveAbsolute { .. } | InputEvent::MouseDown(_))
+    matches!(
+        event,
+        InputEvent::MouseMoveAbsolute { .. } | InputEvent::MouseDown(_)
+    )
 }
 fn window_release_event(event: &InputEvent, current_modifiers: u8) -> bool {
     matches!(
         event,
-        InputEvent::MouseUp(_)
-            | InputEvent::KeyUp(_)
-            | InputEvent::Key { pressed: false, .. }
+        InputEvent::MouseUp(_) | InputEvent::KeyUp(_) | InputEvent::Key { pressed: false, .. }
     ) || matches!(event, InputEvent::ModifiersChanged(modifiers)
         if modifiers & !current_modifiers & 0x0f == 0)
 }
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEINPUT, SendInput, VIRTUAL_KEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GA_ROOT, GetAncestor, GetForegroundWindow, SPI_GETKEYBOARDDELAY, SPI_GETWHEELSCROLLCHARS,
@@ -183,7 +182,14 @@ fn belongs_to_selected_window(
 
 fn repeat_delay() -> Duration {
     let mut setting = 0_u32;
-    let read = unsafe { SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, (&mut setting as *mut u32).cast(), 0) };
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETKEYBOARDDELAY,
+            0,
+            (&mut setting as *mut u32).cast(),
+            0,
+        )
+    };
     let quarters = if read != 0 { setting.min(3) + 1 } else { 2 };
     Duration::from_millis(250 * u64::from(quarters))
 }
@@ -195,19 +201,29 @@ pub struct WindowsInputInjector {
     keyboard: Mutex<KeyboardState>,
     unicode_up: Mutex<Option<u16>>,
     scroll_remainders: Mutex<WheelDeltaRemainders>,
-    source: Option<(native_sources::Selection,(u32,u32))>,
+    source: Option<(native_sources::Selection, (u32, u32))>,
 }
 
 impl WindowsInputInjector {
     pub fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let selection=native_sources::resolve(protocol::session::CaptureSource::MainDisplay)?;
-        let bounds=selection.bounds;
-        Self::for_source(selection.source,(bounds.width,bounds.height),(bounds.width,bounds.height))
+        let selection = native_sources::resolve(protocol::session::CaptureSource::MainDisplay)?;
+        let bounds = selection.bounds;
+        Self::for_source(
+            selection.source,
+            (bounds.width, bounds.height),
+            (bounds.width, bounds.height),
+        )
     }
-    pub fn for_source(source:protocol::session::CaptureSource,canvas:(u32,u32),expected:(u32,u32))->InputResult<Self> {
-        let selection=native_sources::resolve(source)?;
-        let bounds=selection.current_bounds()?;
-        if (bounds.width,bounds.height)!=expected{return Err("Source geometry changed before control was enabled".into());}
+    pub fn for_source(
+        source: protocol::session::CaptureSource,
+        canvas: (u32, u32),
+        expected: (u32, u32),
+    ) -> InputResult<Self> {
+        let selection = native_sources::resolve(source)?;
+        let bounds = selection.current_bounds()?;
+        if (bounds.width, bounds.height) != expected {
+            return Err("Source geometry changed before control was enabled".into());
+        }
         Ok(Self {
             pressed: AtomicU8::new(0),
             cleanup_unconfirmed: AtomicBool::new(false),
@@ -215,32 +231,46 @@ impl WindowsInputInjector {
             keyboard: Mutex::new(KeyboardState::default()),
             unicode_up: Mutex::new(None),
             scroll_remainders: Mutex::new(WheelDeltaRemainders::default()),
-            source:Some((selection,canvas)),
+            source: Some((selection, canvas)),
         })
     }
 
-    fn prepare_source(&self,event:InputEvent,deadline:Option<Instant>)->InputResult<Option<InputEvent>> {
-        use windows_sys::Win32::{Foundation::{HWND,POINT},UI::WindowsAndMessaging::*};
-        let Some((source,canvas))=&self.source else {return Ok(Some(event));};
-        let bounds=source.same_size()?;
-        let desktop=crate::windows_capture_plan::Rect{x:unsafe{GetSystemMetrics(SM_XVIRTUALSCREEN)},y:unsafe{GetSystemMetrics(SM_YVIRTUALSCREEN)},
-            width:unsafe{GetSystemMetrics(SM_CXVIRTUALSCREEN)}.try_into()?,height:unsafe{GetSystemMetrics(SM_CYVIRTUALSCREEN)}.try_into()?};
+    fn prepare_source(
+        &self,
+        event: InputEvent,
+        deadline: Option<Instant>,
+    ) -> InputResult<Option<InputEvent>> {
+        use windows_sys::Win32::{
+            Foundation::{HWND, POINT},
+            UI::WindowsAndMessaging::*,
+        };
+        let Some((source, canvas)) = &self.source else {
+            return Ok(Some(event));
+        };
+        let bounds = source.same_size()?;
+        let desktop = crate::windows_capture_plan::Rect {
+            x: unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) },
+            y: unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) },
+            width: unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.try_into()?,
+            height: unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) }.try_into()?,
+        };
         if source.window {
-            let hwnd=source.handle as usize as HWND;
+            let hwnd = source.handle as usize as HWND;
             if !belongs_to_selected_window(unsafe { GetForegroundWindow() }, hwnd, source.pid) {
                 let pointer = pointer_activation_intent(&event);
                 let current_modifiers = self.modifiers.load(Ordering::Relaxed);
-                let fresh = fresh_window_intent(
-                    &event,
-                    current_modifiers,
-                );
+                let fresh = fresh_window_intent(&event, current_modifiers);
                 if pointer || fresh {
                     check_deadline(deadline)?;
                     native_sources::activate_hwnd(hwnd);
                     check_deadline(deadline)?;
                     if fresh
                         && !pointer
-                        && !belongs_to_selected_window(unsafe { GetForegroundWindow() }, hwnd, source.pid)
+                        && !belongs_to_selected_window(
+                            unsafe { GetForegroundWindow() },
+                            hwnd,
+                            source.pid,
+                        )
                     {
                         return Err("The selected window is not focused".into());
                     }
@@ -252,40 +282,78 @@ impl WindowsInputInjector {
                     return Err("The selected window is not focused".into());
                 }
             }
-            if let InputEvent::MouseMoveAbsolute{x,y}=&event {
-                let (vx,vy)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,*x,*y)?;
-                let point=POINT{x:desktop.x+(f64::from(vx)/65535.0*f64::from(desktop.width-1)).round() as i32,
-                    y:desktop.y+(f64::from(vy)/65535.0*f64::from(desktop.height-1)).round() as i32};
-                if !belongs_to_selected_window(unsafe { WindowFromPoint(point) }, hwnd, source.pid) {
+            if let InputEvent::MouseMoveAbsolute { x, y } = &event {
+                let (vx, vy) =
+                    crate::windows_capture_plan::absolute(bounds, desktop, *canvas, *x, *y)?;
+                let point = POINT {
+                    x: desktop.x
+                        + (f64::from(vx) / 65535.0 * f64::from(desktop.width - 1)).round() as i32,
+                    y: desktop.y
+                        + (f64::from(vy) / 65535.0 * f64::from(desktop.height - 1)).round() as i32,
+                };
+                if !belongs_to_selected_window(unsafe { WindowFromPoint(point) }, hwnd, source.pid)
+                {
                     return Err("The selected window is covered at this pointer position".into());
                 }
-            } else if matches!(&event,InputEvent::MouseDown(_)|InputEvent::MouseUp(_)|InputEvent::MouseScroll{..}) {
-                let mut point=POINT{x:0,y:0};
-                if unsafe{GetCursorPos(&mut point)}==0 || !belongs_to_selected_window(unsafe { WindowFromPoint(point) }, hwnd, source.pid) {
+            } else if matches!(
+                &event,
+                InputEvent::MouseDown(_) | InputEvent::MouseUp(_) | InputEvent::MouseScroll { .. }
+            ) {
+                let mut point = POINT { x: 0, y: 0 };
+                if unsafe { GetCursorPos(&mut point) } == 0
+                    || !belongs_to_selected_window(
+                        unsafe { WindowFromPoint(point) },
+                        hwnd,
+                        source.pid,
+                    )
+                {
                     if matches!(&event, InputEvent::MouseScroll {delta_x,delta_y,gesture}
-                        if !gesture.can_take_control(*delta_x,*delta_y)) { return Ok(None); }
+                        if !gesture.can_take_control(*delta_x,*delta_y))
+                    {
+                        return Ok(None);
+                    }
                     return Err("Pointer is no longer inside the selected window".into());
                 }
-            } else if matches!(&event,InputEvent::MouseMove{..}) {
+            } else if matches!(&event, InputEvent::MouseMove { .. }) {
                 return Err("Window control requires a position in the visible content".into());
             }
         }
         check_deadline(deadline)?;
         match event {
-            InputEvent::MouseMoveAbsolute{x,y}=>{
-                let (x,y)=crate::windows_capture_plan::absolute(bounds,desktop,*canvas,x,y)?;
-                Ok(Some(InputEvent::MouseMoveAbsolute{x:x.try_into()?,y:y.try_into()?}))
+            InputEvent::MouseMoveAbsolute { x, y } => {
+                let (x, y) = crate::windows_capture_plan::absolute(bounds, desktop, *canvas, x, y)?;
+                Ok(Some(InputEvent::MouseMoveAbsolute {
+                    x: x.try_into()?,
+                    y: y.try_into()?,
+                }))
             }
-            event=>Ok(Some(event)),
+            event => Ok(Some(event)),
         }
     }
 
     fn release_unicode(&self) -> bool {
-        let mut pending=self.unicode_up.lock().unwrap();
-        let Some(unit)=*pending else {return true;};
-        let mut input=INPUT {r#type:INPUT_KEYBOARD,Anonymous:INPUT_0 {ki:KEYBDINPUT {
-            wVk:0,wScan:unit,dwFlags:KEYEVENTF_UNICODE|KEYEVENTF_KEYUP,time:0,dwExtraInfo:0}}};
-        if unsafe {SendInput(1,&mut input,std::mem::size_of::<INPUT>() as i32)}==1 {*pending=None;true} else {false}
+        let mut pending = self.unicode_up.lock().unwrap();
+        let Some(unit) = *pending else {
+            return true;
+        };
+        let mut input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: 0,
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        if unsafe { SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32) } == 1 {
+            *pending = None;
+            true
+        } else {
+            false
+        }
     }
 
     fn post_key(&self, vk: VIRTUAL_KEY, pressed: bool, deadline: Option<Instant>) -> InputResult {
@@ -303,7 +371,8 @@ impl WindowsInputInjector {
             // Repeat editing/navigation keys, excluding Ctrl, Alt and Meta chords.
             let repeatable = matches!(vk, 0x08 | 0x21..=0x28 | 0x2e)
                 && self.modifiers.load(Ordering::Relaxed)
-                    & (input_modifiers::CONTROL | input_modifiers::ALT | input_modifiers::META) == 0;
+                    & (input_modifiers::CONTROL | input_modifiers::ALT | input_modifiers::META)
+                    == 0;
             let foreground = if repeatable { foreground_root() } else { 0 };
             keyboard.repeat = (foreground != 0).then(|| HeldKeyRepeat {
                 key: vk,
@@ -312,7 +381,10 @@ impl WindowsInputInjector {
             });
         } else {
             keyboard.pressed.remove(&vk);
-            if keyboard.repeat.as_ref().is_some_and(|repeat| repeat.key == vk)
+            if keyboard
+                .repeat
+                .as_ref()
+                .is_some_and(|repeat| repeat.key == vk)
                 || matches!(vk, 0xA0..=0xA5 | 0x5B | 0x5C)
             {
                 keyboard.repeat = None;
@@ -409,8 +481,15 @@ impl WindowsInputInjector {
         if self.cleanup_unconfirmed.load(Ordering::Acquire) {
             return Err("Windows input cleanup is unconfirmed; new input is disabled".into());
         }
-        let _coordinates=native_sources::PhysicalCoordinates::enter()?;
-        let event=match self.prepare_source(event,deadline) {Ok(Some(event))=>event,Ok(None)=>return Ok(()),Err(error)=>{self.release_all_input();return Err(error);}};
+        let _coordinates = native_sources::PhysicalCoordinates::enter()?;
+        let event = match self.prepare_source(event, deadline) {
+            Ok(Some(event)) => event,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                self.release_all_input();
+                return Err(error);
+            }
+        };
         match event {
             InputEvent::Text(text) => {
                 if self.modifiers.load(Ordering::Relaxed) & 0x0f != 0 {
@@ -419,21 +498,44 @@ impl WindowsInputInjector {
                 self.keyboard.lock().unwrap().repeat = None;
                 // SendInput inserts this UTF-16 array in order; the zero VK
                 // selects VK_PACKET rather than the machine's keyboard layout.
-                let mut inputs: Vec<INPUT> = text.as_str().encode_utf16().flat_map(|unit| {
-                    [0, KEYEVENTF_KEYUP].map(|up| INPUT { r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {ki: KEYBDINPUT {wVk:0,wScan:unit,
-                            dwFlags:KEYEVENTF_UNICODE|up,time:0,dwExtraInfo:0}}})
-                }).collect();
+                let mut inputs: Vec<INPUT> = text
+                    .as_str()
+                    .encode_utf16()
+                    .flat_map(|unit| {
+                        [0, KEYEVENTF_KEYUP].map(|up| INPUT {
+                            r#type: INPUT_KEYBOARD,
+                            Anonymous: INPUT_0 {
+                                ki: KEYBDINPUT {
+                                    wVk: 0,
+                                    wScan: unit,
+                                    dwFlags: KEYEVENTF_UNICODE | up,
+                                    time: 0,
+                                    dwExtraInfo: 0,
+                                },
+                            },
+                        })
+                    })
+                    .collect();
                 check_deadline(deadline)?;
-                let accepted=unsafe {SendInput(inputs.len() as u32,inputs.as_mut_ptr(),std::mem::size_of::<INPUT>() as i32)};
+                let accepted = unsafe {
+                    SendInput(
+                        inputs.len() as u32,
+                        inputs.as_mut_ptr(),
+                        std::mem::size_of::<INPUT>() as i32,
+                    )
+                };
                 if accepted != inputs.len() as u32 {
                     // A partial positive prefix may end in our known down.
                     // Release that exact Unicode unit, without replaying text.
-                    if accepted % 2 == 1 && (accepted as usize)<inputs.len() {
-                        *self.unicode_up.lock().unwrap()=Some(unsafe {inputs[accepted as usize].Anonymous.ki.wScan});
-                        self.cleanup_unconfirmed.store(!self.release_unicode(),Ordering::Release);
+                    if accepted % 2 == 1 && (accepted as usize) < inputs.len() {
+                        *self.unicode_up.lock().unwrap() =
+                            Some(unsafe { inputs[accepted as usize].Anonymous.ki.wScan });
+                        self.cleanup_unconfirmed
+                            .store(!self.release_unicode(), Ordering::Release);
                     }
-                    return Err("Windows did not accept the complete text; it will not be replayed".into());
+                    return Err(
+                        "Windows did not accept the complete text; it will not be replayed".into(),
+                    );
                 }
             }
             InputEvent::MouseMove { dx, dy } => {
@@ -478,15 +580,48 @@ impl WindowsInputInjector {
                     }
                 }
             }
-            InputEvent::MouseScroll { delta_x, delta_y, .. } => {
+            InputEvent::MouseScroll {
+                delta_x,
+                delta_y,
+                gesture,
+            } => {
+                let continuous = gesture != protocol::ScrollGesture::default();
+                if delta_x == 0 && delta_y == 0 && continuous {
+                    if matches!(
+                        gesture.phase,
+                        protocol::ScrollPhase::Began
+                            | protocol::ScrollPhase::Ended
+                            | protocol::ScrollPhase::Cancelled
+                    ) || matches!(gesture.momentum, protocol::MomentumPhase::Ended)
+                    {
+                        *self.scroll_remainders.lock().unwrap() = Default::default();
+                    }
+                    return Ok(());
+                }
                 let preferences = wheel_scroll_preferences()?;
-                let (horizontal, vertical) = {
+                let (mut horizontal, mut vertical) = {
                     let mut remainder = self.scroll_remainders.lock().unwrap();
                     (
-                        remainder.horizontal.convert(delta_x, preferences.chars, true),
-                        remainder.vertical.convert(delta_y, preferences.lines, false),
+                        remainder
+                            .horizontal
+                            .convert(delta_x, preferences.chars, true),
+                        remainder
+                            .vertical
+                            .convert(delta_y, preferences.lines, false),
                     )
                 };
+                if continuous {
+                    // Chromium/Electron on Windows classify exact non-zero multiples of
+                    // WHEEL_DELTA (120) as discrete mouse-wheel notches (triggering a delayed
+                    // smooth-scroll animation curve mid-gesture) and non-multiples as
+                    // high-precision touchpad pixel deltas.
+                    if horizontal != 0 && horizontal % 120 == 0 {
+                        horizontal -= horizontal.signum();
+                    }
+                    if vertical != 0 && vertical % 120 == 0 {
+                        vertical -= vertical.signum();
+                    }
+                }
                 let (mut inputs, count) = match (horizontal != 0, vertical != 0) {
                     (true, true) => (
                         [
@@ -552,9 +687,14 @@ impl InputInjector for WindowsInputInjector {
             return Ok(());
         }
         let mut keyboard = self.keyboard.lock().unwrap();
-        let Some(repeat) = keyboard.repeat.as_mut() else { return Ok(()); };
+        let Some(repeat) = keyboard.repeat.as_mut() else {
+            return Ok(());
+        };
         if foreground_root() != repeat.foreground
-            || self.source.as_ref().is_some_and(|(source, _)| source.same_size().is_err())
+            || self
+                .source
+                .as_ref()
+                .is_some_and(|(source, _)| source.same_size().is_err())
         {
             keyboard.repeat = None;
             return Ok(());
@@ -564,12 +704,13 @@ impl InputInjector for WindowsInputInjector {
         }
         // A repeat is a down on the already-owned key. It never refocuses a window.
         match send_key(repeat.key, true, Some(deadline)) {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => return Err("Windows did not accept the held-key repeat".into()),
             Err(_) if Instant::now() >= deadline => return Ok(()),
             Err(error) => return Err(error),
         }
-        repeat.due = Instant::now() + Duration::from_millis(protocol::realtime_input::INPUT_REFRESH_INTERVAL_MS);
+        repeat.due = Instant::now()
+            + Duration::from_millis(protocol::realtime_input::INPUT_REFRESH_INTERVAL_MS);
         Ok(())
     }
     fn release_all_input(&self) {

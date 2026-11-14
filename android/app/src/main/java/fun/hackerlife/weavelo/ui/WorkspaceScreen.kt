@@ -1386,6 +1386,74 @@ private fun WorkspaceVideo(
                 }
                 }
             },
+            sendTouchBatch = { sample ->
+                if (sample.any { it.action == 0 }) {
+                    focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
+                    if (sideDrawerOpen && !sideMoreOpen) sideDrawerOpen = false
+                }
+                val gestureIntent = focusGate.intent()
+                val globalIntent = WorkspaceClient.editorFocusIntent()
+                val presentation = nativeViewport.get()?.presentation
+                val geometry = presentation?.geometry
+                val invalid = sample.any { it.action != 3 } && (
+                    presentation?.ready != true || (geometry != null && (
+                        geometry.sourceRevision != 0 ||
+                        geometry.sourceWidth != dimensions.width ||
+                        geometry.sourceHeight != dimensions.height ||
+                        (touchMode == TouchMode.DIRECT && sample.any { it.action != 3 && !geometry.contains(it.x, it.y) })
+                    ))
+                )
+                if (invalid) {
+                    pointers.clear(); touching = false
+                    WorkspaceClient.surface(pane.id, sessionKey, generation, token, "cancel")
+                } else if (sample.isNotEmpty()) {
+                    val contacts = org.json.JSONArray()
+                    sample.forEach { c ->
+                        when (c.action) {
+                            0 -> pointers.add(c.pointerId)
+                            2 -> pointers.remove(c.pointerId)
+                            3 -> pointers.clear()
+                        }
+                        contacts.put(
+                            JSONObject()
+                                .put("action", when (c.action) { 0 -> "Down"; 1 -> "Move"; 2 -> "Up"; else -> "Cancel" })
+                                .put("pointer_id", Integer.toUnsignedLong(c.pointerId))
+                                .put("normalized_x", c.x)
+                                .put("normalized_y", c.y)
+                                .put("pressure", c.pressure)
+                        )
+                    }
+                    touching = pointers.isNotEmpty()
+                    WorkspaceClient.touchBatch(
+                        pane.id,
+                        sessionKey,
+                        generation,
+                        token,
+                        sample.minOf { it.time },
+                        touchMode,
+                        geometry?.sourceWidth ?: pane.source.width,
+                        geometry?.sourceHeight ?: pane.source.height,
+                        contacts,
+                        geometry,
+                        onProbe = { sequence, geom ->
+                            if (surfaceToken == token) focusGate.record(gestureIntent, sequence, sample.last().time, geom to globalIntent)
+                        }
+                    ) { cx, cy ->
+                        if (surfaceToken == token) {
+                            val nextCursor = Offset(cx, cy)
+                            val cursorMoved = (nextCursor - cursor).getDistance() > 0.0005f
+                            cursor = nextCursor
+                            if (cursorMoved && touchMode == TouchMode.TRACKPAD && transform.value.scale > 1f) {
+                                val bw = baseMeasured.width.coerceAtLeast(1).toFloat()
+                                val bh = baseMeasured.height.coerceAtLeast(1).toFloat()
+                                val cw = containerMeasured.width.coerceAtLeast(baseMeasured.width).coerceAtLeast(1).toFloat()
+                                val ch = containerMeasured.height.coerceAtLeast(baseMeasured.height).coerceAtLeast(1).toFloat()
+                                transform.value = transform.value.reveal(cx, cy, bw, bh, cw, ch)
+                            }
+                        }
+                    }
+                }
+            },
             sendTouchFrame = { sample ->
                 if (sideDrawerOpen && !sideMoreOpen) sideDrawerOpen = false
                 val presentation=nativeViewport.get()?.presentation

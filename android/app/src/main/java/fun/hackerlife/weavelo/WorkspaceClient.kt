@@ -136,6 +136,11 @@ object WorkspaceClient {
     private var clipboardEntrySeq = 1_000L
     private val localDecodeLatencies = java.util.concurrent.ConcurrentHashMap<Int, Float>()
     private val activeSurfaceTokens = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val momentumJobs = HashMap<Int, Job>()
+
+    private fun stopMomentum(id: Int) {
+        momentumJobs.remove(id)?.cancel()
+    }
 
     fun reportLocalDecodeLatency(id: Int, decodeMs: Float) {
         if (decodeMs.isFinite() && decodeMs >= 0f) {
@@ -343,7 +348,7 @@ object WorkspaceClient {
             clipboardHistory = mutable.value.clipboardHistory.ifEmpty { loadPinnedClipboardEntries(context) })
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
-    private fun closeNative() { polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); activeSurfaceTokens.clear(); localDecodeLatencies.clear(); if (active) action(1); active = false; retainingConnection = false }
+    private fun closeNative() { momentumJobs.values.forEach { it.cancel() }; momentumJobs.clear(); polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); activeSurfaceTokens.clear(); localDecodeLatencies.clear(); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
         ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
     }
@@ -833,7 +838,9 @@ object WorkspaceClient {
         val currentPhase = if (phase == "alive" && SystemClock.uptimeMillis() - eventTime !in 0L..250L) "cancel" else phase
         if (currentPhase == "begin" || currentPhase == "ready" || currentPhase == "alive") {
             activeSurfaceTokens[id] = token
+            if (currentPhase != "alive") stopMomentum(id)
         } else {
+            stopMomentum(id)
             activeSurfaceTokens.remove(id, token)
         }
         action(11, JSONObject().put("id", id).put("token", token).put("phase", currentPhase).toString())
@@ -854,12 +861,74 @@ object WorkspaceClient {
             action(15, JSONObject().put("id", id).put("token", token).put("geometry", geometry.toJson()).toString())
         }
     }
+    private fun encodePresentedGeometry(geometry: VideoFrameGeometry?): JSONObject? =
+        geometry?.let { g ->
+            JSONObject()
+                .put("source_revision", Integer.toUnsignedLong(g.sourceRevision))
+                .put("demand_revision", java.math.BigInteger(java.lang.Long.toUnsignedString(g.demandRevision)))
+                .put("revision", java.math.BigInteger(java.lang.Long.toUnsignedString(g.revision)))
+                .put("source_width", g.sourceWidth)
+                .put("source_height", g.sourceHeight)
+                .put("width", g.width)
+                .put("height", g.height)
+                .put("crop", JSONObject().put("x", g.x).put("y", g.y).put("width", g.cropWidth).put("height", g.cropHeight))
+        }
+
+    private fun scheduleMomentum(
+        id: Int,
+        sessionKey: String,
+        generation: Long,
+        token: Long,
+        mode: TouchMode,
+        width: Int,
+        height: Int,
+        geometry: VideoFrameGeometry?,
+        onCursor: (Float, Float) -> Unit
+    ) {
+        stopMomentum(id)
+        momentumJobs[id] = scope.launch {
+            while (isActive) {
+                delay(8)
+                var keepGoing = false
+                runCatching {
+                    if (!currentView(id, sessionKey, generation, true)) return@runCatching
+                    val presented = encodePresentedGeometry(geometry)
+                    val result = action(
+                        12,
+                        JSONObject()
+                            .put("id", id)
+                            .put("token", token)
+                            .put("mode", mode.code)
+                            .put("width", width)
+                            .put("height", height)
+                            .put("natural_scroll", WeaveloClient.naturalScroll)
+                            .put("geometry", presented ?: JSONObject.NULL)
+                            .put("momentum_step", true)
+                            .toString()
+                    )
+                    if (result != "null") {
+                        val response = JSONObject(result)
+                        keepGoing = response.optBoolean("momentum", false)
+                        response.optJSONArray("cursor")?.let { cursor ->
+                            if (currentView(id, sessionKey, generation, true)) {
+                                onCursor(cursor.getDouble(0).toFloat(), cursor.getDouble(1).toFloat())
+                            }
+                        }
+                    }
+                }
+                if (!keepGoing) break
+            }
+            momentumJobs.remove(id)
+        }
+    }
+
     internal fun touch(id: Int, sessionKey: String, generation: Long, token: Long, eventTime: Long,
         mode: TouchMode, width: Int, height: Int, event: JSONObject,
         geometry: VideoFrameGeometry? = null,
         contacts: JSONArray? = null,
         onProbe: (String, JSONObject) -> Unit = { _, _ -> },
         onCursor: (Float, Float) -> Unit = { _, _ -> }) = guarded {
+        stopMomentum(id)
         if (!currentView(id, sessionKey, generation, true)) {
             inputViewIssue(id,sessionKey,generation)
             return@guarded
@@ -870,11 +939,7 @@ object WorkspaceClient {
             if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.", AppText("Input arrived too late. Try again."))
             return@guarded
         }
-        val presented = geometry?.let { g -> JSONObject().put("source_revision",Integer.toUnsignedLong(g.sourceRevision))
-            .put("demand_revision",java.math.BigInteger(java.lang.Long.toUnsignedString(g.demandRevision)))
-            .put("revision",java.math.BigInteger(java.lang.Long.toUnsignedString(g.revision)))
-            .put("source_width",g.sourceWidth).put("source_height",g.sourceHeight).put("width",g.width).put("height",g.height)
-            .put("crop",JSONObject().put("x",g.x).put("y",g.y).put("width",g.cropWidth).put("height",g.cropHeight)) }
+        val presented = encodePresentedGeometry(geometry)
         runCatching { action(12, JSONObject().put("id", id).put("token", token)
             .put("mode", mode.code).put("width", width).put("height", height)
             .put("natural_scroll", WeaveloClient.naturalScroll)
@@ -887,11 +952,76 @@ object WorkspaceClient {
                     val response = JSONObject(result)
                     if (!response.isNull("focus_sequence") && presented != null && currentView(id, sessionKey, generation, true))
                         onProbe(response.getString("focus_sequence"), presented)
+                    if (response.optBoolean("momentum", false) && currentView(id, sessionKey, generation, true)) {
+                        scheduleMomentum(id, sessionKey, generation, token, mode, width, height, geometry, onCursor)
+                    }
                     val cursor = response.optJSONArray("cursor") ?: return@onSuccess
                     // Compose snapshot state accepts this serialized update;
                     // no extra UI queue may accumulate old pointer positions.
                     if (currentView(id, sessionKey, generation, true))
                         onCursor(cursor.getDouble(0).toFloat(), cursor.getDouble(1).toFloat())
+                }
+            }
+    }
+
+    internal fun touchBatch(
+        id: Int,
+        sessionKey: String,
+        generation: Long,
+        token: Long,
+        eventTime: Long,
+        mode: TouchMode,
+        width: Int,
+        height: Int,
+        batch: JSONArray,
+        geometry: VideoFrameGeometry? = null,
+        onProbe: (String, JSONObject) -> Unit = { _, _ -> },
+        onCursor: (Float, Float) -> Unit = { _, _ -> }
+    ) = guarded {
+        stopMomentum(id)
+        if (!currentView(id, sessionKey, generation, true)) {
+            inputViewIssue(id, sessionKey, generation)
+            return@guarded
+        }
+        val hasDown = (0 until batch.length()).any { batch.optJSONObject(it)?.optString("action") == "Down" }
+        if (SystemClock.uptimeMillis() - eventTime !in 0L..250L) {
+            action(11, JSONObject().put("id", id).put("token", token).put("phase", "cancel").toString())
+            if (hasDown) inputIssue(id, "Input arrived too late. Try again.", AppText("Input arrived too late. Try again."))
+            return@guarded
+        }
+        val presented = encodePresentedGeometry(geometry)
+        runCatching {
+            action(
+                12,
+                JSONObject()
+                    .put("id", id)
+                    .put("token", token)
+                    .put("mode", mode.code)
+                    .put("width", width)
+                    .put("height", height)
+                    .put("natural_scroll", WeaveloClient.naturalScroll)
+                    .put("geometry", presented ?: JSONObject.NULL)
+                    .put("batch", batch)
+                    .toString()
+            )
+        }
+            .onFailure {
+                inputIssue(id, it.message ?: "Control is unavailable", if (it.message == null) AppText("Control is unavailable") else null)
+            }
+            .onSuccess { result ->
+                if (hasDown) inputIssue(id, null)
+                if (result != "null") {
+                    val response = JSONObject(result)
+                    if (!response.isNull("focus_sequence") && presented != null && currentView(id, sessionKey, generation, true)) {
+                        onProbe(response.getString("focus_sequence"), presented)
+                    }
+                    if (response.optBoolean("momentum", false) && currentView(id, sessionKey, generation, true)) {
+                        scheduleMomentum(id, sessionKey, generation, token, mode, width, height, geometry, onCursor)
+                    }
+                    val cursor = response.optJSONArray("cursor") ?: return@onSuccess
+                    if (currentView(id, sessionKey, generation, true)) {
+                        onCursor(cursor.getDouble(0).toFloat(), cursor.getDouble(1).toFloat())
+                    }
                 }
             }
     }

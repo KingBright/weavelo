@@ -37,6 +37,7 @@ internal fun RemoteViewport(
     onViewportSizeChanged: (IntSize) -> Unit = {},
     onContainerSizeChanged: (IntSize) -> Unit = {},
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
+    sendTouchBatch: ((List<RemoteTouchChange>) -> Unit)? = null,
     sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {},
     overlay: @Composable BoxScope.() -> Unit = {},
     description: String? = null,
@@ -81,6 +82,7 @@ internal fun RemoteViewport(
                         enabled = enabled && touchMode != TouchMode.VIEW,
                         contentKey = contentKey to rotation,
                         sendTouch = sendTouch,
+                        sendTouchBatch = sendTouchBatch,
                         sendTouchFrame = sendTouchFrame
                     )
             ) {
@@ -138,6 +140,7 @@ internal fun RemoteViewport(
                         enabled = enabled && touchMode != TouchMode.VIEW,
                         contentKey = (contentKey to rotation) to nextBasePx,
                         sendTouch = sendTouch,
+                        sendTouchBatch = sendTouchBatch,
                         sendTouchFrame = sendTouchFrame
                     ),
                 contentAlignment = Alignment.Center

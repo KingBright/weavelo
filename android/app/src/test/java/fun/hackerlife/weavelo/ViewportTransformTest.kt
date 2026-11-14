@@ -292,4 +292,33 @@ class ViewportTransformTest {
             assertEquals(ny, my, 0.0005f)
         }
     }
+
+    @Test
+    fun trackpadModePrefersSmoothRemoteScrollOverMinorFingerSplay() {
+        val initialCentroid = Offset(500f, 300f)
+        // Slight 22px natural finger splay during a 10px vertical swipe stays REMOTE_GESTURE in trackpad mode.
+        assertEquals(
+            TwoFingerGestureMode.REMOTE_GESTURE,
+            classifyTwoFingerGesture(
+                currentScale = 1f,
+                initialDistance = 180f,
+                currentDistance = 202f,
+                initialCentroid = initialCentroid,
+                currentCentroid = Offset(500f, 310f),
+                preferRemoteScroll = true
+            )
+        )
+        // Deliberate wide pinch (>=36px & >=16%) still engages LOCAL_TRANSFORM cleanly.
+        assertEquals(
+            TwoFingerGestureMode.LOCAL_TRANSFORM,
+            classifyTwoFingerGesture(
+                currentScale = 1f,
+                initialDistance = 180f,
+                currentDistance = 230f,
+                initialCentroid = initialCentroid,
+                currentCentroid = Offset(502f, 304f),
+                preferRemoteScroll = true
+            )
+        )
+    }
 }

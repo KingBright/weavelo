@@ -288,8 +288,14 @@ impl LinuxUinputInjector {
             held.remove(&key);
         }
         // Native ownership is recorded only after the corresponding write.
-        let modifiers = held.iter().fold(0, |mask, key| mask | match key {
-            42 | 54 => 1, 29 | 97 => 2, 56 | 100 => 4, 125 | 126 => 8, _ => 0,
+        let modifiers = held.iter().fold(0, |mask, key| {
+            mask | match key {
+                42 | 54 => 1,
+                29 | 97 => 2,
+                56 | 100 => 4,
+                125 | 126 => 8,
+                _ => 0,
+            }
         });
         self.active_modifiers.store(modifiers, Ordering::Relaxed);
         Ok(())
@@ -323,7 +329,11 @@ impl LinuxUinputInjector {
             return Err("input expired before uinput dispatch".into());
         }
         match event {
-            InputEvent::Text(_) => return Err("Unicode text requires the consented desktop portal input session".into()),
+            InputEvent::Text(_) => {
+                return Err(
+                    "Unicode text requires the consented desktop portal input session".into(),
+                );
+            }
             InputEvent::MouseMove { dx, dy } => {
                 let mut batch = Vec::new();
                 if dx != 0 {
@@ -361,28 +371,42 @@ impl LinuxUinputInjector {
                 }
             }
             InputEvent::MouseScroll {
-                delta_x, delta_y, ..
+                delta_x,
+                delta_y,
+                gesture,
             } => {
-                let mut remainders = self.scroll_remainders.lock().unwrap();
-                let mut next_remainders = *remainders;
-                let mut batch = Vec::new();
-                append_scroll_axis(
-                    &mut batch,
-                    delta_y,
-                    REL_WHEEL_HI_RES,
-                    REL_WHEEL,
-                    &mut next_remainders.vertical_pixels,
-                );
-                append_scroll_axis(
-                    &mut batch,
-                    delta_x,
-                    REL_HWHEEL_HI_RES,
-                    REL_HWHEEL,
-                    &mut next_remainders.horizontal_pixels,
-                );
-                if !batch.is_empty() {
-                    self.write_events(&batch, deadline)?;
-                    *remainders = next_remainders;
+                if delta_x == 0 && delta_y == 0 {
+                    if matches!(
+                        gesture.phase,
+                        protocol::ScrollPhase::Began
+                            | protocol::ScrollPhase::Ended
+                            | protocol::ScrollPhase::Cancelled
+                    ) || matches!(gesture.momentum, protocol::MomentumPhase::Ended)
+                    {
+                        *self.scroll_remainders.lock().unwrap() = ScrollRemainders::default();
+                    }
+                } else {
+                    let mut remainders = self.scroll_remainders.lock().unwrap();
+                    let mut next_remainders = *remainders;
+                    let mut batch = Vec::new();
+                    append_scroll_axis(
+                        &mut batch,
+                        delta_y,
+                        REL_WHEEL_HI_RES,
+                        REL_WHEEL,
+                        &mut next_remainders.vertical_pixels,
+                    );
+                    append_scroll_axis(
+                        &mut batch,
+                        delta_x,
+                        REL_HWHEEL_HI_RES,
+                        REL_HWHEEL,
+                        &mut next_remainders.horizontal_pixels,
+                    );
+                    if !batch.is_empty() {
+                        self.write_events(&batch, deadline)?;
+                        *remainders = next_remainders;
+                    }
                 }
             }
             InputEvent::KeyDown(code) | InputEvent::KeyUp(code) => {
@@ -405,7 +429,10 @@ impl LinuxUinputInjector {
                 self.key(key, pressed, deadline)?;
                 if !pressed {
                     // A release may remove owned modifiers, never introduce one.
-                    self.set_modifiers(modifiers & self.active_modifiers.load(Ordering::Relaxed), deadline)?;
+                    self.set_modifiers(
+                        modifiers & self.active_modifiers.load(Ordering::Relaxed),
+                        deadline,
+                    )?;
                 }
             }
             InputEvent::ModifiersChanged(modifiers) => {
@@ -674,28 +701,61 @@ mod deadline_tests {
     fn modifier_chord_posts_control_before_c_and_cleans_accepted_keys() {
         let (input, calls) = fixture(None);
         let deadline = Instant::now() + std::time::Duration::from_secs(1);
-        input.inject_input_before(InputEvent::ModifiersChanged(2), deadline).unwrap();
-        input.inject_input_before(InputEvent::Key {
-            key_code: 0x08, pressed: true, modifiers: 2,
-        }, deadline).unwrap();
+        input
+            .inject_input_before(InputEvent::ModifiersChanged(2), deadline)
+            .unwrap();
+        input
+            .inject_input_before(
+                InputEvent::Key {
+                    key_code: 0x08,
+                    pressed: true,
+                    modifiers: 2,
+                },
+                deadline,
+            )
+            .unwrap();
         input.release_all_input();
-        assert_eq!(*calls.lock().unwrap(), vec![
-            (EV_KEY, 29, 1), (EV_SYN, 0, 0), (EV_KEY, 46, 1), (EV_SYN, 0, 0),
-            (EV_KEY, 29, 0), (EV_SYN, 0, 0), (EV_KEY, 46, 0), (EV_SYN, 0, 0),
-        ]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (EV_KEY, 29, 1),
+                (EV_SYN, 0, 0),
+                (EV_KEY, 46, 1),
+                (EV_SYN, 0, 0),
+                (EV_KEY, 29, 0),
+                (EV_SYN, 0, 0),
+                (EV_KEY, 46, 0),
+                (EV_SYN, 0, 0),
+            ]
+        );
     }
 
     #[test]
     fn modifier_chord_expiry_after_control_never_posts_bare_c() {
         let until = Instant::now() + std::time::Duration::from_millis(40);
         let (input, calls) = fixture(Some(until + std::time::Duration::from_millis(2)));
-        assert!(input.inject_input_before(InputEvent::Key {
-            key_code: 0x08, pressed: true, modifiers: 2,
-        }, until).is_err());
+        assert!(
+            input
+                .inject_input_before(
+                    InputEvent::Key {
+                        key_code: 0x08,
+                        pressed: true,
+                        modifiers: 2,
+                    },
+                    until
+                )
+                .is_err()
+        );
         input.release_all_input();
-        assert_eq!(*calls.lock().unwrap(), vec![
-            (EV_KEY, 29, 1), (EV_SYN, 0, 0), (EV_KEY, 29, 0), (EV_SYN, 0, 0),
-        ]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (EV_KEY, 29, 1),
+                (EV_SYN, 0, 0),
+                (EV_KEY, 29, 0),
+                (EV_SYN, 0, 0),
+            ]
+        );
     }
 
     #[test]
@@ -704,12 +764,23 @@ mod deadline_tests {
         let mut input = Arc::try_unwrap(input).ok().unwrap();
         let sink = calls.clone();
         input.record = Some(Arc::new(move |events| {
-            sink.lock().unwrap().extend(events.iter().map(|e| (e.r#type, e.code, e.value)));
+            sink.lock()
+                .unwrap()
+                .extend(events.iter().map(|e| (e.r#type, e.code, e.value)));
             -1
         }));
-        assert!(input.inject_input_before(InputEvent::Key {
-            key_code: 0x08, pressed: true, modifiers: 2,
-        }, Instant::now() + std::time::Duration::from_secs(1)).is_err());
+        assert!(
+            input
+                .inject_input_before(
+                    InputEvent::Key {
+                        key_code: 0x08,
+                        pressed: true,
+                        modifiers: 2,
+                    },
+                    Instant::now() + std::time::Duration::from_secs(1)
+                )
+                .is_err()
+        );
         let before = calls.lock().unwrap().clone();
         assert_eq!(before, vec![(EV_KEY, 29, 1), (EV_SYN, 0, 0)]);
         input.release_all_input();

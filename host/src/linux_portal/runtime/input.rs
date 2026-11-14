@@ -1,7 +1,7 @@
 //! Input belongs to the exact consented RemoteDesktop session and stream.
 //! Text handed to the local input method uses the same consent and frame checks.
 
-use super::{Connection, OwnedObjectPath, REMOTE_DESKTOP, SelectedPortalSource, SourceKind, proxy};
+use super::{Connection, OwnedObjectPath, REMOTE_DESKTOP, SelectedPortalSource, SourceKind};
 use crate::linux_frame::{OwnedFrame, Transform};
 use protocol::{InputEvent, input_modifiers};
 use serde::Serialize;
@@ -13,6 +13,9 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use zbus::zvariant::{Type, Value};
+
+#[cfg(target_os = "linux")]
+mod eis;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalInputError {
@@ -90,6 +93,9 @@ pub(super) struct PortalInput {
     valid: AtomicBool,
     failed: AtomicBool,
     held: AsyncMutex<Held>,
+    portal_proxy: AsyncMutex<Option<zbus::Proxy<'static>>>,
+    #[cfg(target_os = "linux")]
+    eis: AsyncMutex<eis::EisState>,
 }
 impl PortalInput {
     pub(super) fn new(
@@ -113,6 +119,9 @@ impl PortalInput {
             valid: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             held: AsyncMutex::new(Held::default()),
+            portal_proxy: AsyncMutex::new(None),
+            #[cfg(target_os = "linux")]
+            eis: AsyncMutex::new(eis::EisState::Uninitialized),
         }
     }
     pub(super) fn bind_frame(&self, frame: &OwnedFrame) {
@@ -169,17 +178,36 @@ impl PortalInput {
         }
         Ok(())
     }
-    async fn notify<B: Serialize + Type>(&self, name: &str, body: &B, deadline:Option<std::time::Instant>) -> Result<()> {
-        tokio::time::timeout(Duration::from_millis(500), async {
-            let portal = proxy(
-                &self.connection,
-                &self.destination,
-                super::DESKTOP_PATH,
-                REMOTE_DESKTOP,
-            )
+    async fn cached_portal_proxy(&self) -> Result<zbus::Proxy<'static>> {
+        let mut guard = self.portal_proxy.lock().await;
+        if let Some(existing) = guard.as_ref() {
+            return Ok(existing.clone());
+        }
+        let created = zbus::proxy::Builder::<'static, zbus::Proxy<'static>>::new(&self.connection)
+            .destination(self.destination.clone())
+            .map_err(|_| PortalInputError::Transport)?
+            .path(super::DESKTOP_PATH)
+            .map_err(|_| PortalInputError::Transport)?
+            .interface(REMOTE_DESKTOP)
+            .map_err(|_| PortalInputError::Transport)?
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
             .await
             .map_err(|_| PortalInputError::Transport)?;
-            if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return Err(PortalInputError::Expired);}
+        *guard = Some(created.clone());
+        Ok(created)
+    }
+    async fn notify<B: Serialize + Type>(
+        &self,
+        name: &str,
+        body: &B,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<()> {
+        tokio::time::timeout(Duration::from_millis(500), async {
+            let portal = self.cached_portal_proxy().await?;
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return Err(PortalInputError::Expired);
+            }
             portal
                 .call::<_, _, ()>(name, body)
                 .await
@@ -188,47 +216,148 @@ impl PortalInput {
         .await
         .map_err(|_| PortalInputError::Transport)?
     }
+    #[cfg(target_os = "linux")]
+    async fn ensure_eis(&self) -> Result<bool> {
+        if self.destination != super::DESKTOP {
+            return Ok(false);
+        }
+        let mut state = self.eis.lock().await;
+        match &*state {
+            eis::EisState::Active(_) => return Ok(true),
+            eis::EisState::FallbackDbus => return Ok(false),
+            eis::EisState::Failed => return Err(PortalInputError::Transport),
+            eis::EisState::Uninitialized => {}
+        }
+        let portal = self.cached_portal_proxy().await?;
+        match eis::EisSession::connect(&portal, &self.session, self.source).await {
+            eis::ConnectOutcome::Connected(session) => {
+                *state = eis::EisState::Active(session);
+                Ok(true)
+            }
+            eis::ConnectOutcome::Unsupported => {
+                *state = eis::EisState::FallbackDbus;
+                Ok(false)
+            }
+            eis::ConnectOutcome::Failed => {
+                *state = eis::EisState::Failed;
+                Err(PortalInputError::Transport)
+            }
+        }
+    }
     async fn key(&self, held: &mut Held, key: i32, pressed: bool) -> Result<()> {
         // Record before RPC: a missing reply does not prove the compositor did
         // not inject the down event. A later release must include that key.
         if pressed {
             self.status()?;
-            if !held.keys.insert(key) {return Ok(());}
-        } else if !held.keys.remove(&key) {return Ok(());}
-        let result=self.notify(
-            "NotifyKeyboardKeycode",
-            &(&self.session, options(), key, u32::from(pressed)),held.deadline,
-        ).await;
-        if result==Err(PortalInputError::Expired) {
+            if !held.keys.insert(key) {
+                return Ok(());
+            }
+        } else if !held.keys.remove(&key) {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if self.ensure_eis().await? {
+            if held
+                .deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            {
+                if pressed {
+                    held.keys.remove(&key);
+                } else {
+                    held.keys.insert(key);
+                }
+                return Err(PortalInputError::Expired);
+            }
+            let mut state = self.eis.lock().await;
+            if let eis::EisState::Active(eis) = &mut *state {
+                return eis.key(key, pressed);
+            }
+            return Err(PortalInputError::Transport);
+        }
+        let result = self
+            .notify(
+                "NotifyKeyboardKeycode",
+                &(&self.session, options(), key, u32::from(pressed)),
+                held.deadline,
+            )
+            .await;
+        if result == Err(PortalInputError::Expired) {
             // Definitely not dispatched: retain an earlier owned down for cleanup.
-            if pressed {held.keys.remove(&key);} else {held.keys.insert(key);}
+            if pressed {
+                held.keys.remove(&key);
+            } else {
+                held.keys.insert(key);
+            }
         }
         result
     }
     async fn keysym(&self, held: &mut Held, sym: i32, pressed: bool) -> Result<()> {
         if pressed {
             self.status()?;
-            if !held.keysyms.insert(sym) {return Ok(());}
-        } else if !held.keysyms.remove(&sym) {return Ok(());}
-        let result=self.notify("NotifyKeyboardKeysym",
-            &(&self.session,options(),sym,u32::from(pressed)),held.deadline).await;
-        if result==Err(PortalInputError::Expired) {
-            if pressed {held.keysyms.remove(&sym);} else {held.keysyms.insert(sym);}
+            if !held.keysyms.insert(sym) {
+                return Ok(());
+            }
+        } else if !held.keysyms.remove(&sym) {
+            return Ok(());
+        }
+        let result = self
+            .notify(
+                "NotifyKeyboardKeysym",
+                &(&self.session, options(), sym, u32::from(pressed)),
+                held.deadline,
+            )
+            .await;
+        if result == Err(PortalInputError::Expired) {
+            if pressed {
+                held.keysyms.remove(&sym);
+            } else {
+                held.keysyms.insert(sym);
+            }
         }
         result
     }
     async fn button(&self, held: &mut Held, button: i32, pressed: bool) -> Result<()> {
         if pressed {
             self.status()?;
-            if !held.buttons.insert(button) {return Ok(());}
-        } else if !held.buttons.remove(&button) {return Ok(());}
-        let result=self.notify(
-            "NotifyPointerButton",
-            &(&self.session, options(), button, u32::from(pressed)),held.deadline,
-        ).await;
-        if result==Err(PortalInputError::Expired) {
+            if !held.buttons.insert(button) {
+                return Ok(());
+            }
+        } else if !held.buttons.remove(&button) {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if self.ensure_eis().await? {
+            if held
+                .deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            {
+                if pressed {
+                    held.buttons.remove(&button);
+                } else {
+                    held.buttons.insert(button);
+                }
+                return Err(PortalInputError::Expired);
+            }
+            let mut state = self.eis.lock().await;
+            if let eis::EisState::Active(eis) = &mut *state {
+                return eis.button(button, pressed);
+            }
+            return Err(PortalInputError::Transport);
+        }
+        let result = self
+            .notify(
+                "NotifyPointerButton",
+                &(&self.session, options(), button, u32::from(pressed)),
+                held.deadline,
+            )
+            .await;
+        if result == Err(PortalInputError::Expired) {
             // Definitely not dispatched: retain an earlier owned down for cleanup.
-            if pressed {held.buttons.remove(&button);} else {held.buttons.insert(button);}
+            if pressed {
+                held.buttons.remove(&button);
+            } else {
+                held.buttons.insert(button);
+            }
         }
         result
     }
@@ -258,11 +387,19 @@ impl PortalInput {
         }
         Ok(())
     }
-    pub(super) async fn inject(&self,event:InputEvent) -> Result<()> {self.inject_before(event,None).await}
-    pub(super) async fn inject_before(&self, event: InputEvent, deadline:Option<std::time::Instant>) -> Result<()> {
+    pub(super) async fn inject(&self, event: InputEvent) -> Result<()> {
+        self.inject_before(event, None).await
+    }
+    pub(super) async fn inject_before(
+        &self,
+        event: InputEvent,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<()> {
         let mut held = self.held.lock().await;
-        held.deadline=deadline;
-        if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return Err(PortalInputError::Expired);}
+        held.deadline = deadline;
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Err(PortalInputError::Expired);
+        }
         self.status()?;
         let result = async {
             match event {
@@ -290,6 +427,33 @@ impl PortalInput {
                             };
                         }
                     }
+                    #[cfg(target_os = "linux")]
+                    if self.ensure_eis().await? {
+                        let sent_utf8 = {
+                            let mut state = self.eis.lock().await;
+                            if let eis::EisState::Active(eis) = &mut *state {
+                                eis.text_ascii(text.as_str())?
+                            } else {
+                                return Err(PortalInputError::Transport);
+                            }
+                        };
+                        if sent_utf8 {
+                            return Ok(());
+                        }
+                        for ch in text.as_str().chars() {
+                            if let Some((code, need_shift)) = eis::ascii_to_evdev(ch) {
+                                if need_shift {
+                                    self.key(&mut held, 42, true).await?;
+                                }
+                                self.key(&mut held, code, true).await?;
+                                self.key(&mut held, code, false).await?;
+                                if need_shift {
+                                    self.key(&mut held, 42, false).await?;
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     for ch in text.as_str().chars() {
                         let sym = match ch { '\n'|'\r'=>0xff0d, '\t'=>0xff09,
                             ch if (ch as u32)<=0xff => ch as i32,
@@ -300,6 +464,17 @@ impl PortalInput {
                     Ok(())
                 }
                 InputEvent::MouseMoveAbsolute { x, y } => {
+                    #[cfg(target_os = "linux")]
+                    if self.ensure_eis().await? {
+                        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                            return Err(PortalInputError::Expired);
+                        }
+                        let mut state = self.eis.lock().await;
+                        if let eis::EisState::Active(eis) = &mut *state {
+                            return eis.pointer_motion_absolute(x, y);
+                        }
+                        return Err(PortalInputError::Transport);
+                    }
                     let (width, height) = self
                         .source
                         .logical_size
@@ -320,18 +495,31 @@ impl PortalInput {
                 InputEvent::MouseUp(button) => {
                     self.button(&mut held, button_code(button)?, false).await
                 }
-                InputEvent::MouseScroll { delta_x, delta_y, .. } => {
-                    let Some((axis_x, axis_y)) = portal_scroll_axis(delta_x, delta_y) else {
+                InputEvent::MouseScroll { delta_x, delta_y, gesture } => {
+                    let _ = gesture;
+                    #[cfg(target_os = "linux")]
+                    if self.ensure_eis().await? {
+                        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                            return Err(PortalInputError::Expired);
+                        }
+                        let mut state = self.eis.lock().await;
+                        if let eis::EisState::Active(eis) = &mut *state {
+                            return eis.scroll(delta_x, delta_y, gesture);
+                        }
+                        return Err(PortalInputError::Transport);
+                    }
+                    let Some((axis_x, axis_y)) = portal_scroll_axis(
+                        delta_x,
+                        delta_y,
+                        self.destination == super::DESKTOP,
+                        is_kde_portal(),
+                    ) else {
                         return Ok(());
                     };
                     self.notify(
                         "NotifyPointerAxis",
-                        &(
-                            &self.session,
-                            options(),
-                            axis_x,
-                            axis_y,
-                        ),deadline,
+                        &(&self.session, options(), axis_x, axis_y),
+                        deadline,
                     )
                     .await
                 }
@@ -388,7 +576,7 @@ impl PortalInput {
     }
     async fn release_inner(&self) -> Result<()> {
         let mut held = self.held.lock().await;
-        held.deadline=None;
+        held.deadline = None;
         let mut result = Ok(());
         for key in held.keys.clone() {
             if self.key(&mut held, key, false).await.is_err() {
@@ -396,7 +584,9 @@ impl PortalInput {
             }
         }
         for sym in held.keysyms.clone() {
-            if self.keysym(&mut held,sym,false).await.is_err() {result=Err(PortalInputError::Transport);}
+            if self.keysym(&mut held, sym, false).await.is_err() {
+                result = Err(PortalInputError::Transport);
+            }
         }
         for button in held.buttons.clone() {
             if self.button(&mut held, button, false).await.is_err() {
@@ -409,14 +599,34 @@ impl PortalInput {
 fn options() -> std::collections::HashMap<&'static str, Value<'static>> {
     std::collections::HashMap::new()
 }
-/// Wire scroll deltas follow GPUI/macOS/Windows pixel sign (`delta_y < 0` scrolls down),
-/// whereas Wayland `wl_pointer::axis` / `NotifyPointerAxis` uses `+dy` for downward scroll
-/// at 1/3 pixel scale. Ignore phase-only zero deltas.
-fn portal_scroll_axis(delta_x: i32, delta_y: i32) -> Option<(f64, f64)> {
+fn is_kde_portal() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
+        .map(|val| val.split(':').any(|part| part.eq_ignore_ascii_case("KDE")))
+        .unwrap_or(false)
+}
+/// Wire scroll deltas follow GPUI/macOS/Windows pixel sign (`delta_y < 0` scrolls down).
+/// On live Wayland portals (`live_portal == true`), GNOME/wlroots expect `+dy` for downward
+/// scroll (`(-dx, -dy)`), whereas `xdg-desktop-portal-kde` negates `dy` internally (`dy * -256.0`)
+/// so KDE fallback needs `(-dx, +dy)`. Private test fixtures (`live_portal == false`) observe raw `(dx, dy)`.
+fn portal_scroll_axis(
+    delta_x: i32,
+    delta_y: i32,
+    live_portal: bool,
+    kde_portal: bool,
+) -> Option<(f64, f64)> {
     if delta_x == 0 && delta_y == 0 {
         return None;
     }
-    Some((-f64::from(delta_x) / 3.0, -f64::from(delta_y) / 3.0))
+    if !live_portal {
+        return Some((f64::from(delta_x), f64::from(delta_y)));
+    }
+    let axis_x = -f64::from(delta_x);
+    let axis_y = if kde_portal {
+        f64::from(delta_y)
+    } else {
+        -f64::from(delta_y)
+    };
+    Some((axis_x, axis_y))
 }
 fn button_code(button: u8) -> Result<i32> {
     Ok(match button {

@@ -26,9 +26,11 @@ internal fun Modifier.remoteViewportGestures(
     baseViewportSize: IntSize = viewportSize,
     restrictSingleTouchToVideo: Boolean = false,
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
+    sendTouchBatch: ((List<RemoteTouchChange>) -> Unit)? = null,
     sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {}
 ): Modifier = composed {
     val currentSink by rememberUpdatedState(sendTouch)
+    val currentBatchSink by rememberUpdatedState(sendTouchBatch)
     val currentFrameSink by rememberUpdatedState(sendTouchFrame)
     pointerInput(touchMode, viewportSize, baseViewportSize, restrictSingleTouchToVideo, enabled, contentKey) {
         var transform by transformState
@@ -39,6 +41,7 @@ internal fun Modifier.remoteViewportGestures(
             // Cleanup belongs to the callback that started this gesture. A
             // replacement surface/session must never receive the old cancel.
             val gestureSink = currentSink
+            val batchSink = currentBatchSink
             val frameSink = currentFrameSink
             val activePointers = mutableSetOf<Int>()
             var maxPressedCount = 0
@@ -97,6 +100,17 @@ internal fun Modifier.remoteViewportGestures(
                         (position.y / containerH).coerceIn(0f, 1f)
                 }
 
+            fun dispatchRemoteBatch(batch: List<RemoteTouchChange>) {
+                if (batch.isEmpty()) return
+                if (batchSink != null && batch.size > 1) {
+                    batchSink(batch)
+                } else {
+                    for (item in batch) {
+                        gestureSink(item.action, item.pointerId, item.x, item.y, item.pressure, item.time)
+                    }
+                }
+            }
+
             fun forwardRemoteChanges(
                 changes: List<androidx.compose.ui.input.pointer.PointerInputChange>,
                 baseW: Float,
@@ -104,7 +118,8 @@ internal fun Modifier.remoteViewportGestures(
                 containerW: Float,
                 containerH: Float,
                 forceMove: Boolean = false,
-                guardSingleFingerSlop: Boolean = false
+                guardSingleFingerSlop: Boolean = false,
+                prefixBatch: List<RemoteTouchChange> = emptyList()
             ) {
                 // Paused/disconnected/modal viewing may still zoom locally, but
                 // must never issue commands against an old remote frame.
@@ -112,6 +127,8 @@ internal fun Modifier.remoteViewportGestures(
                     for (change in changes) change.consume()
                     return
                 }
+                val batch = ArrayList<RemoteTouchChange>(prefixBatch.size + changes.size)
+                batch.addAll(prefixBatch)
                 for (change in changes) {
                     val pointerId = change.id.value.toInt()
                     val pressure = if (change.pressed) 1f else 0f
@@ -132,9 +149,7 @@ internal fun Modifier.remoteViewportGestures(
                             }
                             val (normX, normY) = mapNormalized(change.position, baseW, baseH, containerW, containerH)
                             activePointers.add(pointerId)
-                            gestureSink(
-                                0, pointerId, normX, normY, pressure, change.uptimeMillis
-                            )
+                            batch.add(RemoteTouchChange(0, pointerId, normX, normY, pressure, change.uptimeMillis))
                         }
                         change.previousPressed && !change.pressed && activePointers.contains(pointerId) -> {
                             val effectivePos = if (
@@ -149,9 +164,7 @@ internal fun Modifier.remoteViewportGestures(
                             val (normX, normY) = mapNormalized(effectivePos, baseW, baseH, containerW, containerH)
                             activePointers.remove(pointerId)
                             if (pointerId == singleFingerId) singleFingerId = null
-                            gestureSink(
-                                2, pointerId, normX, normY, pressure, change.uptimeMillis
-                            )
+                            batch.add(RemoteTouchChange(2, pointerId, normX, normY, pressure, change.uptimeMillis))
                         }
                         change.pressed && (forceMove || change.positionChanged()) && activePointers.contains(pointerId) -> {
                             if (guardSingleFingerSlop && pointerId == singleFingerId && !singleFingerMovedPastSlop) {
@@ -163,21 +176,21 @@ internal fun Modifier.remoteViewportGestures(
                             }
                             val (normX, normY) = mapNormalized(change.position, baseW, baseH, containerW, containerH)
                             activePointers.add(pointerId)
-                            gestureSink(
-                                1, pointerId, normX, normY, pressure, change.uptimeMillis
-                            )
+                            batch.add(RemoteTouchChange(1, pointerId, normX, normY, pressure, change.uptimeMillis))
                         }
                     }
                     change.consume()
                 }
+                dispatchRemoteBatch(batch)
             }
 
             fun cancelRemotePointers() {
                 if (touchMode == TouchMode.NATIVE && activePointers.isNotEmpty()) {
                     val now=android.os.SystemClock.uptimeMillis()
                     frameSink(activePointers.map { RemoteTouchChange(3,it,0f,0f,0f,now) })
-                } else for (id in activePointers) {
-                    gestureSink(3, id, 0f, 0f, 0f, android.os.SystemClock.uptimeMillis())
+                } else if (activePointers.isNotEmpty()) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    dispatchRemoteBatch(activePointers.map { RemoteTouchChange(3, it, 0f, 0f, 0f, now) })
                 }
                 activePointers.clear()
                 singleFingerId = null
@@ -286,6 +299,7 @@ internal fun Modifier.remoteViewportGestures(
                         val currentDistance = (p0 - p1).getDistance()
                         val currentCentroid = (p0 + p1) / 2f
 
+                        val preferRemoteScroll = touchMode == TouchMode.TRACKPAD
                         val currentPair = pressedChanges.map { it.id.value }.toSet()
                         if (!twoFingerStarted || pairIds != currentPair) {
                             pairIds = currentPair
@@ -300,7 +314,8 @@ internal fun Modifier.remoteViewportGestures(
                                 initialDistance,
                                 currentDistance,
                                 initialCentroid,
-                                currentCentroid
+                                currentCentroid,
+                                preferRemoteScroll = preferRemoteScroll
                             )
                         } else if (twoFingerMode == TwoFingerGestureMode.UNDECIDED) {
                             twoFingerMode = classifyTwoFingerGesture(
@@ -308,7 +323,8 @@ internal fun Modifier.remoteViewportGestures(
                                 initialDistance,
                                 currentDistance,
                                 initialCentroid,
-                                currentCentroid
+                                currentCentroid,
+                                preferRemoteScroll = preferRemoteScroll
                             )
                         }
 
@@ -348,17 +364,26 @@ internal fun Modifier.remoteViewportGestures(
                                 forwardRemoteChanges(edgeChanges, baseWidth, baseHeight, containerWidth, containerHeight)
                             } else {
                                 // Ensure both pointers are registered if first finger started near border
+                                val missingDowns = ArrayList<RemoteTouchChange>(2)
                                 for (pressed in pressedChanges) {
                                     val pid = pressed.id.value.toInt()
                                     if (enabled && pid !in activePointers) {
                                         val (nx, ny) = mapNormalized(pressed.position, baseWidth, baseHeight, containerWidth, containerHeight)
                                         activePointers.add(pid)
-                                        gestureSink(0, pid, nx, ny, 1f, pressed.uptimeMillis)
+                                        missingDowns.add(RemoteTouchChange(0, pid, nx, ny, 1f, pressed.uptimeMillis))
                                     }
                                 }
                                 val syncAll = !remoteTwoFingerSynced
                                 remoteTwoFingerSynced = true
-                                forwardRemoteChanges(event.changes, baseWidth, baseHeight, containerWidth, containerHeight, forceMove = syncAll)
+                                forwardRemoteChanges(
+                                    event.changes,
+                                    baseWidth,
+                                    baseHeight,
+                                    containerWidth,
+                                    containerHeight,
+                                    forceMove = syncAll,
+                                    prefixBatch = missingDowns
+                                )
                             }
                             for (change in event.changes) change.consume()
                         }
