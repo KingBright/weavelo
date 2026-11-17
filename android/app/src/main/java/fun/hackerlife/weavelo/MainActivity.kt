@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (WorkspaceClient.dispatchGamepadKeyEvent(event)) return true
         return super.dispatchKeyEvent(event)
