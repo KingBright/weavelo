@@ -973,11 +973,12 @@ impl MobilePublisher {
                                 if let Some(p) = peers.get_mut(&addr) { p.seen = Instant::now(); }
                                 match message {
                                     ControlMessage::Session(command) => match *command {
-                                        SessionCommand::Open { connection_id, version:SESSION_VERSION } => {
+                                        SessionCommand::Open { connection_id, version } if connection_id != 0 && protocol::session::negotiate_session_version(version).is_some() => {
+                                            let negotiated = protocol::session::negotiate_session_version(version).unwrap();
                                             if peers.get(&addr).is_some_and(|p| p.id != connection_id) { reply(&sender, addr, SessionCommand::Error { request_id:connection_id, reason:"close the previous connection first".into() }).await; continue; }
                                             peers.entry(addr).or_insert_with(|| Peer::new(addr, connection_id, &sender, directory.clone(), peer_files.load(Ordering::Relaxed)));
                                             let window_capture=shared.lock().unwrap().sources.values().any(|source|source.enabled&&matches!(source.info.source,CaptureSource::Window(_)));
-                                            reply(&sender, addr, SessionCommand::Opened { connection_id, version:SESSION_VERSION, max_subscriptions:MAX_SUBSCRIPTIONS as u32, files:peers[&addr].files.is_some(), clipboard:false, window_capture }).await;
+                                            reply(&sender, addr, SessionCommand::Opened { connection_id, version:negotiated, max_subscriptions:MAX_SUBSCRIPTIONS as u32, files:peers[&addr].files.is_some(), clipboard:false, window_capture }).await;
                                         }
                                         SessionCommand::Open { connection_id, .. } => {
                                             reply(&sender,addr,SessionCommand::Error {request_id:connection_id,reason:"unsupported connection version".into()}).await;
@@ -2956,13 +2957,30 @@ mod tests {
             publisher.address,
             SessionCommand::Open {
                 connection_id: 17,
-                version: SESSION_VERSION - 1,
+                version: protocol::session::MIN_COMPATIBLE_SESSION_VERSION - 1,
             },
         )
         .await;
         assert!(matches!(
             reply(&receiver).await,
             SessionCommand::Error { request_id: 17, .. }
+        ));
+        command(
+            &sender,
+            publisher.address,
+            SessionCommand::Open {
+                connection_id: 17,
+                version: protocol::session::MIN_COMPATIBLE_SESSION_VERSION,
+            },
+        )
+        .await;
+        assert!(matches!(
+            reply(&receiver).await,
+            SessionCommand::Opened {
+                connection_id: 17,
+                version: protocol::session::MIN_COMPATIBLE_SESSION_VERSION,
+                ..
+            }
         ));
         command(
             &sender,

@@ -98,7 +98,6 @@ internal class GpuVideoSurface @JvmOverloads constructor(
             window = if (output != null) EGL14.eglCreateWindowSurface(display,config,output,intArrayOf(EGL14.EGL_NONE),0)
                 else EGL14.eglCreatePbufferSurface(display,config,intArrayOf(EGL14.EGL_WIDTH,1,EGL14.EGL_HEIGHT,1,EGL14.EGL_NONE),0)
             check(window != EGL14.EGL_NO_SURFACE && EGL14.eglMakeCurrent(display,window,window,context))
-            if (output != null) runCatching { EGL14.eglSwapInterval(display, 0) }
             program = GLES20.glCreateProgram()
             for ((type, source) in listOf(GLES20.GL_VERTEX_SHADER to VERTEX, GLES20.GL_FRAGMENT_SHADER to FRAGMENT)) {
                 val shader = GLES20.glCreateShader(type)

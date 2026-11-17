@@ -24,9 +24,9 @@ fun classifyTwoFingerGesture(
     preferRemoteScroll: Boolean = false,
     firstDelta: Offset? = null,
     secondDelta: Offset? = null,
-    pinchRatioThreshold: Float = if (preferRemoteScroll) 0.16f else 0.085f,
-    minPinchPx: Float = if (preferRemoteScroll) 36f else 16f,
-    panThresholdPx: Float = if (preferRemoteScroll) 5f else 12f
+    pinchRatioThreshold: Float = if (preferRemoteScroll) 0.15f else 0.085f,
+    minPinchPx: Float = if (preferRemoteScroll) 32f else 16f,
+    panThresholdPx: Float = if (preferRemoteScroll) 8f else 12f
 ): TwoFingerGestureMode {
     @Suppress("UNUSED_PARAMETER")
     val scale = currentScale
@@ -41,13 +41,41 @@ fun classifyTwoFingerGesture(
         if (len0 >= 2.5f && len1 >= 2.5f) {
             val cosSim = ((firstDelta.x * secondDelta.x + firstDelta.y * secondDelta.y) / (len0 * len1))
                 .coerceIn(-1f, 1f)
-            if (cosSim >= 0.45f && centroidDelta >= 5f && centroidDelta >= distanceDelta * 0.65f) {
+            // Opposing finger movement is unambiguously pinch/spread regardless of initial span
+            // (critical on large phones & foldables where two-finger span is 450-900px).
+            if (cosSim <= -0.15f) {
+                return if (distanceDelta >= 14f) {
+                    TwoFingerGestureMode.LOCAL_TRANSFORM
+                } else {
+                    TwoFingerGestureMode.UNDECIDED
+                }
+            }
+            // Parallel two-finger translation in the same hemisphere -> remote scroll.
+            if (cosSim >= 0.30f &&
+                len0 >= 4.0f &&
+                len1 >= 4.0f &&
+                centroidDelta >= panThresholdPx &&
+                centroidDelta >= distanceDelta * 0.55f
+            ) {
                 return TwoFingerGestureMode.REMOTE_GESTURE
             }
-            if (cosSim <= -0.25f && distanceDelta >= 18f && distanceRatio >= 0.09f) {
+            // Oblique V-spread/pinch where span change clearly dominates centroid drift.
+            if (distanceDelta >= 22f && distanceDelta >= centroidDelta * 1.25f) {
                 return TwoFingerGestureMode.LOCAL_TRANSFORM
             }
+            if (centroidDelta >= 18f && cosSim >= 0.15f && centroidDelta > distanceDelta * 1.15f) {
+                return TwoFingerGestureMode.REMOTE_GESTURE
+            }
+            return TwoFingerGestureMode.UNDECIDED
         }
+
+        // Thumb-anchored / single-pivot pinch: one finger rests as an anchor while the other
+        // finger spreads radially outward or pinches inward. Never misclassify single-finger
+        // motion as parallel two-finger scrolling.
+        if (distanceDelta >= 18f && distanceDelta >= centroidDelta * 1.25f) {
+            return TwoFingerGestureMode.LOCAL_TRANSFORM
+        }
+        return TwoFingerGestureMode.UNDECIDED
     }
 
     val pinchOverPanSlope = if (preferRemoteScroll) 0.95f else 0.65f

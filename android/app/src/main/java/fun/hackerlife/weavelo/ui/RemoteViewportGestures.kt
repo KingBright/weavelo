@@ -27,11 +27,13 @@ internal fun Modifier.remoteViewportGestures(
     restrictSingleTouchToVideo: Boolean = false,
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
     sendTouchBatch: ((List<RemoteTouchChange>) -> Unit)? = null,
-    sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {}
+    sendTouchFrame: (List<RemoteTouchChange>) -> Unit = {},
+    onTransformUpdated: ((ViewportTransform) -> Unit)? = null
 ): Modifier = composed {
     val currentSink by rememberUpdatedState(sendTouch)
     val currentBatchSink by rememberUpdatedState(sendTouchBatch)
     val currentFrameSink by rememberUpdatedState(sendTouchFrame)
+    val currentTransformListener by rememberUpdatedState(onTransformUpdated)
     pointerInput(touchMode, viewportSize, baseViewportSize, restrictSingleTouchToVideo, enabled, contentKey) {
         var transform by transformState
         val singleFingerSlopPx = minOf(viewConfiguration.touchSlop * 0.8f, 14f)
@@ -287,15 +289,18 @@ internal fun Modifier.remoteViewportGestures(
                     }
                     if (touchMode == TouchMode.VIEW && pressedChanges.size == 1 && !localTransformGesture && maxPressedCount == 1) {
                         val change=pressedChanges.single()
-                        if(change.previousPressed) transform=transform.update(
-                            1f,
-                            change.position - change.previousPosition,
-                            baseWidth,
-                            baseHeight,
-                            change.previousPosition,
-                            containerWidth,
-                            containerHeight
-                        )
+                        if(change.previousPressed) {
+                            transform=transform.update(
+                                1f,
+                                change.position - change.previousPosition,
+                                baseWidth,
+                                baseHeight,
+                                change.previousPosition,
+                                containerWidth,
+                                containerHeight
+                            )
+                            currentTransformListener?.invoke(transform)
+                        }
                         event.changes.forEach { it.consume() }
                         continue
                     }
@@ -329,6 +334,7 @@ internal fun Modifier.remoteViewportGestures(
                                 containerWidth,
                                 containerHeight
                             )
+                            currentTransformListener?.invoke(transform)
                         }
                         for (change in event.changes) change.consume()
                     } else if (maxPressedCount >= 3) {
@@ -393,6 +399,18 @@ internal fun Modifier.remoteViewportGestures(
                                 firstDelta = p0 - initialP0,
                                 secondDelta = p1 - initialP1
                             )
+                        } else if (twoFingerMode == TwoFingerGestureMode.REMOTE_GESTURE &&
+                            maxTwoFingerCentroidDrift < 36f
+                        ) {
+                            val d0 = p0 - initialP0
+                            val d1 = p1 - initialP1
+                            val spanDelta = kotlin.math.abs(currentDistance - initialDistance)
+                            if (spanDelta >= 36f &&
+                                spanDelta > maxTwoFingerCentroidDrift * 1.35f &&
+                                (d0.x * d1.x + d0.y * d1.y <= 0f || spanDelta >= 52f)
+                            ) {
+                                twoFingerMode = TwoFingerGestureMode.LOCAL_TRANSFORM
+                            }
                         }
 
                         if (touchMode == TouchMode.VIEW || twoFingerMode == TwoFingerGestureMode.LOCAL_TRANSFORM) {
@@ -413,6 +431,7 @@ internal fun Modifier.remoteViewportGestures(
                                 containerWidth,
                                 containerHeight
                             )
+                            currentTransformListener?.invoke(transform)
                             for (change in event.changes) change.consume()
                         } else if (twoFingerMode == TwoFingerGestureMode.UNDECIDED) {
                             // Hold two-finger Down edges until gesture arbitration resolves so

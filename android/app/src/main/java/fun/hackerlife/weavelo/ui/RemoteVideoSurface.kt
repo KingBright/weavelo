@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.SurfaceView
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ internal fun RemoteViewport(
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     val onSize by rememberUpdatedState(onViewportSizeChanged)
     val onContainerSize by rememberUpdatedState(onContainerSizeChanged)
+    val onDirectViewport by rememberUpdatedState(onDirectViewportChanged)
     require(rotation in listOf(0, 90, 180, 270)) { "Unsupported video rotation" }
     val quarterTurn = rotation % 180 != 0
     val displayAspect = if (quarterTurn) 1f / dimensions.aspectRatio else dimensions.aspectRatio
@@ -116,24 +118,48 @@ internal fun RemoteViewport(
                     baseHeight.toPx().roundToInt().coerceAtLeast(1)
                 )
             }
-            val useDirectGpu = directGpuViewport && rotation == 0 && onDirectViewportChanged != null
+            val useDirectGpu = directGpuViewport && rotation == 0 && onDirectViewport != null
+            fun pushDirectViewport(
+                currentTransform: ViewportTransform,
+                basePx: IntSize,
+                currentContainer: IntSize
+            ) {
+                if (useDirectGpu && currentContainer.width > 0 && currentContainer.height > 0) {
+                    onDirectViewport?.invoke(
+                        GpuVideoSurface.ViewportSpec(
+                            scale = currentTransform.scale,
+                            offsetX = currentTransform.offset.x,
+                            offsetY = currentTransform.offset.y,
+                            baseWidth = basePx.width.toFloat(),
+                            baseHeight = basePx.height.toFloat(),
+                            containerWidth = currentContainer.width.toFloat(),
+                            containerHeight = currentContainer.height.toFloat(),
+                        )
+                    )
+                }
+            }
+            LaunchedEffect(nextBasePx, containerSize) {
+                if (containerSize.width > 0 && containerSize.height > 0 && baseSize != nextBasePx) {
+                    val previousBase = baseSize
+                    baseSize = nextBasePx
+                    val resized = transformState.value.resized(
+                        previousBase.width.toFloat(),
+                        previousBase.height.toFloat(),
+                        nextBasePx.width.toFloat(),
+                        nextBasePx.height.toFloat(),
+                        containerSize.width.toFloat(),
+                        containerSize.height.toFloat()
+                    )
+                    transformState.value = resized
+                    onSize(nextBasePx)
+                    pushDirectViewport(resized, nextBasePx, containerSize)
+                }
+            }
             if (useDirectGpu) {
                 val currentTransform = transformState.value
                 val currentContainer = containerSize
                 SideEffect {
-                    if (currentContainer.width > 0 && currentContainer.height > 0) {
-                        onDirectViewportChanged(
-                            GpuVideoSurface.ViewportSpec(
-                                scale = currentTransform.scale,
-                                offsetX = currentTransform.offset.x,
-                                offsetY = currentTransform.offset.y,
-                                baseWidth = nextBasePx.width.toFloat(),
-                                baseHeight = nextBasePx.height.toFloat(),
-                                containerWidth = currentContainer.width.toFloat(),
-                                containerHeight = currentContainer.height.toFloat(),
-                            )
-                        )
-                    }
+                    pushDirectViewport(currentTransform, nextBasePx, currentContainer)
                 }
             }
 
@@ -144,7 +170,7 @@ internal fun RemoteViewport(
                         val previousBase = baseSize
                         baseSize = nextBasePx
                         containerSize = nextContainer
-                        transformState.value = transformState.value.resized(
+                        val resized = transformState.value.resized(
                             previousBase.width.toFloat(),
                             previousBase.height.toFloat(),
                             nextBasePx.width.toFloat(),
@@ -152,8 +178,10 @@ internal fun RemoteViewport(
                             nextContainer.width.toFloat(),
                             nextContainer.height.toFloat()
                         )
+                        transformState.value = resized
                         onSize(nextBasePx)
                         onContainerSize(nextContainer)
+                        pushDirectViewport(resized, nextBasePx, nextContainer)
                     }
                     .remoteViewportGestures(
                         transformState = transformState,
@@ -165,7 +193,10 @@ internal fun RemoteViewport(
                         contentKey = (contentKey to rotation) to nextBasePx,
                         sendTouch = sendTouch,
                         sendTouchBatch = sendTouchBatch,
-                        sendTouchFrame = sendTouchFrame
+                        sendTouchFrame = sendTouchFrame,
+                        onTransformUpdated = { updated ->
+                            pushDirectViewport(updated, nextBasePx, containerSize)
+                        }
                     ),
                 contentAlignment = Alignment.Center
             ) {

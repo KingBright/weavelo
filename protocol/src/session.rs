@@ -1,10 +1,30 @@
 //! Versioned connection and independent media subscription control.
 use serde::{Deserialize, Serialize};
 
-// Scroll gesture metadata is part of the current input payload. Reject older
-// session layouts before admitting input; authentication and device keys stay unchanged.
+// Scroll gesture metadata is part of the current input payload. Reject pre-v11
+// session layouts before admitting input; v11..=v12 share identical screen,
+// window, camera, audio, input, clipboard, and file wire layouts (v12 only
+// appends optional PS5 console variants at the end of enums).
+pub const MIN_COMPATIBLE_SESSION_VERSION: u32 = 11;
+pub const CONSOLE_SESSION_VERSION: u32 = 12;
 pub const SESSION_VERSION: u32 = 12;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
+
+#[inline]
+pub const fn is_compatible_session_version(version: u32) -> bool {
+    version >= MIN_COMPATIBLE_SESSION_VERSION && version <= SESSION_VERSION
+}
+
+#[inline]
+pub const fn negotiate_session_version(peer_version: u32) -> Option<u32> {
+    if peer_version < MIN_COMPATIBLE_SESSION_VERSION {
+        None
+    } else if peer_version > SESSION_VERSION {
+        Some(SESSION_VERSION)
+    } else {
+        Some(peer_version)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum CaptureSource {

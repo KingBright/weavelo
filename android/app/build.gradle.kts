@@ -23,9 +23,9 @@ android {
         applicationId = "fun.hackerlife.weavelo"
         minSdk = 26
         targetSdk = 35
-        versionCode = 133
+        versionCode = 134
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionName = "2.0.0-alpha.17"
+        versionName = "2.0.0-alpha.18"
 
         ndk {
             abiFilters.addAll(setOf("arm64-v8a"))

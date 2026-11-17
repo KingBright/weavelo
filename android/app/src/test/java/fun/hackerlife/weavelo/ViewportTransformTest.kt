@@ -356,4 +356,80 @@ class ViewportTransformTest {
             )
         )
     }
+
+    @Test
+    fun foldableWideSpanAsymmetricAndThumbAnchoredPinchesNeverGetLockedOutByDirectScroll() {
+        // 1. Wide 700px foldable span at 120Hz: frame 1 index moves faster than thumb (centroid shifts 5.6px),
+        // must stay UNDECIDED on frame 1 rather than prematurely locking REMOTE_GESTURE, then lock LOCAL_TRANSFORM on frame 2.
+        val initP0 = Offset(700f, 1200f)
+        val initP1 = Offset(1260f, 780f) // span = 700px
+        val initCentroid = (initP0 + initP1) / 2f
+        val initDist = (initP0 - initP1).getDistance()
+
+        val f1P0 = initP0 + Offset(-1f, 1f)
+        val f1P1 = initP1 + Offset(11f, -6f)
+        assertEquals(
+            TwoFingerGestureMode.UNDECIDED,
+            classifyTwoFingerGesture(
+                currentScale = 1.0f,
+                initialDistance = initDist,
+                currentDistance = (f1P0 - f1P1).getDistance(),
+                initialCentroid = initCentroid,
+                currentCentroid = (f1P0 + f1P1) / 2f,
+                preferRemoteScroll = true,
+                firstDelta = f1P0 - initP0,
+                secondDelta = f1P1 - initP1
+            )
+        )
+
+        val f2P0 = initP0 + Offset(-3f, 2f)
+        val f2P1 = initP1 + Offset(16f, -11f)
+        assertEquals(
+            TwoFingerGestureMode.LOCAL_TRANSFORM,
+            classifyTwoFingerGesture(
+                currentScale = 1.0f,
+                initialDistance = initDist,
+                currentDistance = (f2P0 - f2P1).getDistance(),
+                initialCentroid = initCentroid,
+                currentCentroid = (f2P0 + f2P1) / 2f,
+                preferRemoteScroll = true,
+                firstDelta = f2P0 - initP0,
+                secondDelta = f2P1 - initP1
+            )
+        )
+
+        // 2. Thumb-anchored pinch: thumb stays completely motionless while index finger spreads 22px radially.
+        val anchorP0 = Offset(800f, 1300f)
+        val spreadP1 = initP1 + Offset(18f, -13f)
+        val initAnchorDist = (anchorP0 - initP1).getDistance()
+        val initAnchorCentroid = (anchorP0 + initP1) / 2f
+        assertEquals(
+            TwoFingerGestureMode.LOCAL_TRANSFORM,
+            classifyTwoFingerGesture(
+                currentScale = 1.0f,
+                initialDistance = initAnchorDist,
+                currentDistance = (anchorP0 - spreadP1).getDistance(),
+                initialCentroid = initAnchorCentroid,
+                currentCentroid = (anchorP0 + spreadP1) / 2f,
+                preferRemoteScroll = true,
+                firstDelta = Offset.Zero,
+                secondDelta = spreadP1 - initP1
+            )
+        )
+
+        // 3. Pinch-in zoom-out from 3.0x on an 800px wide span (only 2.5% ratio change = 20px).
+        assertEquals(
+            TwoFingerGestureMode.LOCAL_TRANSFORM,
+            classifyTwoFingerGesture(
+                currentScale = 3.0f,
+                initialDistance = 800f,
+                currentDistance = 780f,
+                initialCentroid = Offset(1000f, 1000f),
+                currentCentroid = Offset(998f, 1000f),
+                preferRemoteScroll = true,
+                firstDelta = Offset(8f, 0f),
+                secondDelta = Offset(-12f, 0f)
+            )
+        )
+    }
 }

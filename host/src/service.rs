@@ -457,6 +457,7 @@ struct Connection {
     source_catalog: crate::source_catalog::SourceCatalog,
     artwork: crate::source_artwork::Requests,
     versioned_control: bool,
+    session_version: u32,
     delivery_owner: Option<(crate::directed_delivery::Peer,[u8;32])>,
     delivery_cancel: Option<watch::Receiver<bool>>,
     id: u32,
@@ -1069,7 +1070,11 @@ impl Connection {
             Err(_) => {}
         }
         let mut unique = std::collections::HashSet::new();
-        sources.retain(|source| unique.insert(source.source));
+        let supports_console = self.session_version >= protocol::session::CONSOLE_SESSION_VERSION;
+        sources.retain(|source| {
+            (supports_console || !matches!(source.source, CaptureSource::Console(_)))
+                && unique.insert(source.source)
+        });
         sources.truncate(256);
         Ok(sources)
     }
@@ -1143,6 +1148,7 @@ impl Connection {
             source_catalog: crate::source_catalog::SourceCatalog::default(),
             artwork: Default::default(),
             versioned_control: false,
+            session_version: SESSION_VERSION,
             delivery_owner: None,
             delivery_cancel: None,
             id,
@@ -2848,13 +2854,14 @@ async fn run_host_service_inner(
                                     let window_capture = local_shares.is_some();
                                     #[cfg(not(target_os = "linux"))]
                                     let window_capture = cfg!(any(target_os = "macos",target_os="windows"));
-                                    let reply = if version != SESSION_VERSION || connection_id == 0 { SessionCommand::Error { request_id: connection_id, reason: "unsupported connection version or ID".into() } }
+                                    let negotiated_version = protocol::session::negotiate_session_version(version);
+                                    let reply = if negotiated_version.is_none() || connection_id == 0 { SessionCommand::Error { request_id: connection_id, reason: "unsupported connection version or ID".into() } }
                                     else if let Some(reason) = connection_admission_error(addr, &peers, &closing, &closed) { SessionCommand::Error { request_id: connection_id, reason: reason.into() } }
                                     else if peers.get(&addr).is_some_and(|p| p.id != connection_id) { SessionCommand::Error { request_id: connection_id, reason: "close the existing connection first".into() } }
-                                    else { closed.remove(&addr); let peer = peers.entry(addr).or_insert_with(|| Connection::new(connection_id, addr, udp_sender.clone(), &config));
+                                    else { let negotiated = negotiated_version.unwrap(); closed.remove(&addr); let peer = peers.entry(addr).or_insert_with(|| Connection::new(connection_id, addr, udp_sender.clone(), &config));
                                         #[cfg(all(unix, any(test, target_os = "linux")))]
                                         {peer.shared_sources=shared_portal_sources.clone();peer.share_scope=psk.as_ref().map(|key|remote_core::shared_files::share_scope_for_key(key));}
-                                        peer.versioned_control=true; SessionCommand::Opened { connection_id, version: SESSION_VERSION, max_subscriptions: MAX_SUBSCRIPTIONS as u32, files: peer.files.is_some(), clipboard: config.enable_clipboard_sync, window_capture } };
+                                        peer.versioned_control=true; peer.session_version=negotiated; SessionCommand::Opened { connection_id, version: negotiated, max_subscriptions: MAX_SUBSCRIPTIONS as u32, files: peer.files.is_some(), clipboard: config.enable_clipboard_sync, window_capture } };
                                     input_owner.during_control(&injector,send_session(&udp_sender, addr, reply)).await;
                                 }
                                 SessionCommand::DeliveryOffer{request_id,source_device_id,target_device_id,ticket,revision,sources} => {

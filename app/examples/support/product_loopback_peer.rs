@@ -437,7 +437,8 @@ async fn serve(
                         let command=*command; events.push(serde_json::json!({"at_ms":begun.elapsed().as_millis(),"command":format!("{command:?}")}));
                         if events.len()>256 {events.remove(0);}
                         match command {
-                            SessionCommand::Open{connection_id,version} if version==SESSION_VERSION=>{
+                            SessionCommand::Open{connection_id,version} if protocol::session::negotiate_session_version(version).is_some()=>{
+                                let version = protocol::session::negotiate_session_version(version).unwrap();
                                 open_count+=1;connections.entry(addr).or_insert(Connection{id:connection_id,subscriptions:BTreeMap::new()});
                                 if !silent && open_count==1 {continue;}
                                 reply(&sender,addr,SessionCommand::Opened{connection_id,version,max_subscriptions:8,files:false,clipboard:false,window_capture:true}).await;

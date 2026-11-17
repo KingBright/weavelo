@@ -13,7 +13,10 @@ use crate::scheduled_sender::{ScheduledDataSender, ScheduledDataSenderConfig};
 use crate::session_crypto::*;
 use crate::workspace_input::InputState;
 pub use crate::workspace_input::TextInputOwner;
-use protocol::session::{CaptureSource, SESSION_VERSION, SessionCommand, SubscriptionRequest};
+use protocol::session::{
+    CONSOLE_SESSION_VERSION, CaptureSource, MIN_COMPATIBLE_SESSION_VERSION, SESSION_VERSION,
+    SessionCommand, SubscriptionRequest, is_compatible_session_version,
+};
 use protocol::{ContentKind, ControlMessage, DataEnvelope, FrameTimingCheckpoints, RtpPacket};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -347,6 +350,7 @@ pub struct WorkspaceConnection {
     clipboard_revision: std::sync::atomic::AtomicU64,
     pub id: u32,
     pub sender: UdpSender,
+    pub peer_version: u32,
     pub target: SocketAddr,
     pub file_commands: mpsc::Sender<FileTransferCommand>,
     pub file_activity: Arc<std::sync::atomic::AtomicBool>,
@@ -506,13 +510,15 @@ impl WorkspaceConnection {
             version: SESSION_VERSION,
         };
         let reply = initial_open(&sender, &receiver, target, open).await?;
-        let (max_subscriptions, files_available, clipboard_available) = match &reply {
+        let (peer_version, max_subscriptions, files_available, clipboard_available) = match &reply {
             SessionCommand::Opened {
+                version,
                 max_subscriptions,
                 files,
                 clipboard,
                 ..
             } => (
+                *version,
                 (*max_subscriptions as usize).min(protocol::session::MAX_SUBSCRIPTIONS),
                 *files,
                 *clipboard,
@@ -606,6 +612,7 @@ impl WorkspaceConnection {
                 clipboard_revision: Default::default(),
                 id,
                 sender,
+                peer_version,
                 target,
                 file_commands,
                 file_activity,
@@ -776,6 +783,23 @@ impl WorkspaceConnection {
         if let SessionCommand::ListSources { known_icons, .. } = &mut command {
             *known_icons = self.source_icons.lock().unwrap().known_ids();
         }
+        if self.peer_version < CONSOLE_SESSION_VERSION
+            && matches!(
+                &command,
+                SessionCommand::SwitchSource {
+                    source: CaptureSource::Console(_),
+                    ..
+                } | SessionCommand::ListConsoles { .. }
+                    | SessionCommand::PairConsole { .. }
+                    | SessionCommand::RemoveConsole { .. }
+                    | SessionCommand::Input {
+                        event: protocol::InputEvent::Gamepad(_),
+                        ..
+                    }
+            )
+        {
+            return Err("Peer host needs an update to support PS5 Remote Play".into());
+        }
         if matches!(
             command,
             SessionCommand::CommitText(_)
@@ -945,6 +969,11 @@ impl WorkspaceConnection {
         stats: Arc<Statistics>,
         host_stats: Arc<SharedHostStats>,
     ) -> Result<(), String> {
+        if self.peer_version < CONSOLE_SESSION_VERSION
+            && matches!(request.source, CaptureSource::Console(_))
+        {
+            return Err("Peer host needs an update to support PS5 Remote Play".into());
+        }
         self.input.lock().unwrap().source(request.id, 0);
         self.commands
             .send(Command::Subscribe(request, video, stats, host_stats))
@@ -1006,6 +1035,9 @@ impl WorkspaceConnection {
         subscription_id: u32,
         state: protocol::gamepad::GamepadState,
     ) -> bool {
+        if self.peer_version < CONSOLE_SESSION_VERSION {
+            return false;
+        }
         self.try_control(SessionCommand::Input {
             id: subscription_id,
             event: protocol::InputEvent::Gamepad(Box::new(state)),
@@ -1017,6 +1049,9 @@ impl WorkspaceConnection {
         binding: protocol::realtime_input::InputBinding,
         state: protocol::gamepad::GamepadState,
     ) -> bool {
+        if self.peer_version < CONSOLE_SESSION_VERSION {
+            return false;
+        }
         self.try_bound_input(binding, Some(protocol::InputEvent::Gamepad(Box::new(state))))
     }
 
@@ -1051,6 +1086,9 @@ impl WorkspaceConnection {
     }
 
     pub async fn list_consoles(&self) -> Result<Vec<protocol::session::ConsoleSummary>, String> {
+        if self.peer_version < CONSOLE_SESSION_VERSION {
+            return Ok(Vec::new());
+        }
         let req_id = self
             .console_channels
             .next_request_id
@@ -1073,6 +1111,9 @@ impl WorkspaceConnection {
         &self,
         request: protocol::session::PairConsoleRequest,
     ) -> Result<protocol::session::PairConsoleResponse, String> {
+        if self.peer_version < CONSOLE_SESSION_VERSION {
+            return Err("Peer host needs an update to support PS5 Remote Play".into());
+        }
         let req_id = self
             .console_channels
             .next_request_id
@@ -1098,6 +1139,9 @@ impl WorkspaceConnection {
         &self,
         console_id: u64,
     ) -> Result<Vec<protocol::session::ConsoleSummary>, String> {
+        if self.peer_version < CONSOLE_SESSION_VERSION {
+            return Err("Peer host needs an update to support PS5 Remote Play".into());
+        }
         let req_id = self
             .console_channels
             .next_request_id
@@ -1206,6 +1250,7 @@ mod input_api_tests {
                 clipboard_revision: Default::default(),
                 id: 1,
                 sender,
+                peer_version: SESSION_VERSION,
                 target,
                 file_commands,
                 file_activity: Default::default(),
@@ -1514,6 +1559,7 @@ mod input_api_tests {
             clipboard_revision: Default::default(),
             id: 1,
             sender,
+            peer_version: SESSION_VERSION,
             target,
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2482,13 +2528,20 @@ async fn initial_open(
     target: SocketAddr,
     open: SessionCommand,
 ) -> Result<SessionCommand, String> {
-    let expected_id = match open {
-        SessionCommand::Open { connection_id, .. } => connection_id,
+    let (expected_id, mut requested_version) = match open {
+        SessionCommand::Open {
+            connection_id,
+            version,
+        } => (connection_id, version),
         _ => return Err("expected connection open".into()),
     };
-    for _ in 0..4 {
+    for _ in 0..5 {
+        let attempt_open = SessionCommand::Open {
+            connection_id: expected_id,
+            version: requested_version,
+        };
         sender
-            .send_control(&ControlMessage::Session(Box::new(open.clone())), target)
+            .send_control(&ControlMessage::Session(Box::new(attempt_open)), target)
             .await
             .map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_millis(750);
@@ -2506,11 +2559,24 @@ async fn initial_open(
             match message {
                 ControlMessage::Session(reply) => match *reply {
                     SessionCommand::Opened {
-                        version: SESSION_VERSION,
+                        version,
                         connection_id,
                         ..
-                    } if connection_id == expected_id => return Ok(*reply),
-                    SessionCommand::Error { reason, .. } => return Err(reason),
+                    } if connection_id == expected_id
+                        && is_compatible_session_version(version)
+                        && version <= requested_version =>
+                    {
+                        return Ok(*reply);
+                    }
+                    SessionCommand::Error { reason, .. } => {
+                        if requested_version > MIN_COMPATIBLE_SESSION_VERSION
+                            && reason.to_ascii_lowercase().contains("version")
+                        {
+                            requested_version = MIN_COMPATIBLE_SESSION_VERSION;
+                            break;
+                        }
+                        return Err(reason);
+                    }
                     _ => {}
                 },
                 _ => {}
@@ -2518,7 +2584,7 @@ async fn initial_open(
         }
     }
     Err(format!(
-        "Peer did not acknowledge session version {SESSION_VERSION}"
+        "Peer did not acknowledge compatible session version ({MIN_COMPATIBLE_SESSION_VERSION}..={SESSION_VERSION})"
     ))
 }
 
@@ -2642,6 +2708,7 @@ mod tests {
             clipboard_revision: Default::default(),
             id: 42,
             sender: actor.sender.clone(),
+            peer_version: SESSION_VERSION,
             target: actor.target,
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2739,6 +2806,7 @@ mod tests {
             clipboard_revision: Default::default(),
             id: 82,
             sender: actor.sender.clone(),
+            peer_version: SESSION_VERSION,
             target: actor.target,
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2793,6 +2861,7 @@ mod tests {
             clipboard_revision: Default::default(),
             id: 81,
             sender: actor.sender.clone(),
+            peer_version: SESSION_VERSION,
             target: actor.target,
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3019,6 +3088,7 @@ mod tests {
             clipboard_revision: Default::default(),
             id: 1,
             sender,
+            peer_version: SESSION_VERSION,
             target,
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -5111,5 +5181,89 @@ mod console_isolation_tests {
         drop(conn_b);
         host_a.abort();
         host_b.abort();
+    }
+
+    #[tokio::test]
+    async fn v12_client_negotiates_down_to_legacy_v11_host_without_failing_connection() {
+        let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target = mux.local_addr().unwrap();
+        let (sender, receiver) = mux.split();
+        let seen_versions = Arc::new(std::sync::Mutex::new(Vec::<u32>::new()));
+        let seen_clone = seen_versions.clone();
+
+        let legacy_host = tokio::spawn(async move {
+            while let Ok(pkt) = receiver.recv().await {
+                if let MultiplexedPacket::Control(ControlMessage::Session(cmd), addr) = pkt {
+                    match *cmd {
+                        SessionCommand::Open {
+                            connection_id,
+                            version,
+                        } => {
+                            seen_clone.lock().unwrap().push(version);
+                            let reply = if version != MIN_COMPATIBLE_SESSION_VERSION {
+                                SessionCommand::Error {
+                                    request_id: connection_id,
+                                    reason: "unsupported connection version or ID".into(),
+                                }
+                            } else {
+                                SessionCommand::Opened {
+                                    connection_id,
+                                    version: MIN_COMPATIBLE_SESSION_VERSION,
+                                    max_subscriptions: 8,
+                                    files: false,
+                                    clipboard: true,
+                                    window_capture: true,
+                                }
+                            };
+                            sender
+                                .send_control(&ControlMessage::Session(Box::new(reply)), addr)
+                                .await
+                                .unwrap();
+                        }
+                        SessionCommand::ListSources { request_id, .. } => {
+                            sender
+                                .send_control(
+                                    &ControlMessage::Session(Box::new(SessionCommand::Sources {
+                                        request_id,
+                                        sources: vec![protocol::session::CaptureSourceInfo {
+                                            source: CaptureSource::MainDisplay,
+                                            title: "Built-in Retina Display".into(),
+                                            application: String::new(),
+                                            process_id: None,
+                                            width: 3456,
+                                            height: 2234,
+                                            supports_input: true,
+                                            camera: None,
+                                        }],
+                                        icons: Vec::new(),
+                                        source_icons: Vec::new(),
+                                    })),
+                                    addr,
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        SessionCommand::ListConsoles { .. } => {
+                            panic!("v11 host must never receive v12 ListConsoles wire command");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+
+        let (conn, _events) = WorkspaceConnection::connect_media(target).await.unwrap();
+        assert_eq!(conn.peer_version, MIN_COMPATIBLE_SESSION_VERSION);
+        assert_eq!(
+            *seen_versions.lock().unwrap(),
+            vec![SESSION_VERSION, MIN_COMPATIBLE_SESSION_VERSION]
+        );
+        // Console listing returns empty immediately without sending v12 wire tags.
+        let consoles = conn.list_consoles().await.unwrap();
+        assert!(consoles.is_empty());
+        assert!(!conn.try_send_gamepad(1, protocol::gamepad::GamepadState::default()));
+
+        drop(conn);
+        legacy_host.abort();
     }
 }
