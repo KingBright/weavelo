@@ -11,6 +11,11 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     if std::env::args().skip(1).eq(["--native-clipboard-worker"]) {
         return remote_platform::run_windows_clipboard_worker().await;
     }
+    #[cfg(target_os = "windows")]
+    if std::env::args().skip(1).eq([host::windows_audio_route::WORKER_ARG]) {
+        host::windows_audio_route::worker_main()?;
+        return Ok(());
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     #[cfg(target_os = "windows")]
     set_windows_application_identity()?;

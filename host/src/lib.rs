@@ -86,6 +86,8 @@ mod windows_capture_plan;
 mod windows_sources;
 #[cfg(target_os = "windows")]
 mod windows_input;
+#[cfg(target_os = "windows")]
+pub mod windows_audio_route;
 #[cfg(any(target_os = "windows", test))]
 mod windows_keymap;
 // The recording API shadows SendInput inside this test module on every target.
