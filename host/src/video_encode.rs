@@ -319,12 +319,12 @@ impl MacVideoEncoder {
                 CFBoolean::true_value().as_concrete_TypeRef() as _,
             );
 
-            // Prioritize encoding speed over quality for ultra-low latency gaming
+            // Preserve Apple Silicon hardware RDO text clarity while keeping zero-delay RealTime mode
             let speed_key = CFString::from_static_string("PrioritizeEncodingSpeedOverQuality");
             let _ = VTSessionSetProperty(
                 session,
                 speed_key.as_concrete_TypeRef() as _,
-                CFBoolean::true_value().as_concrete_TypeRef() as _,
+                CFBoolean::false_value().as_concrete_TypeRef() as _,
             );
 
             let power_key = CFString::from_static_string("MaximizePowerEfficiency");
@@ -345,8 +345,8 @@ impl MacVideoEncoder {
                 bitrate_value.as_concrete_TypeRef() as _,
             );
 
-            // Fast single-pass CBR rate limit (eliminates multi-pass RDO lag)
-            let bytes_per_sec = final_bitrate / 8;
+            // 1.5x peak VBR burst ceiling over 1s so IDR keyframes and zoomed text bursts retain crispness
+            let bytes_per_sec = (final_bitrate.saturating_mul(3) / 2) / 8;
             let one_sec = 1_i32;
             let num_bytes = CFNumber::from(bytes_per_sec);
             let num_sec = CFNumber::from(one_sec);
@@ -370,10 +370,10 @@ impl MacVideoEncoder {
                 fps_value.as_concrete_TypeRef() as _,
             );
 
-            // Steady keyframe interval (10s) to eliminate periodic network bursts
+            // 4s closed GOP interval for rapid text clarity recovery without network spikes
             let keyframe_interval_key =
                 CFString::wrap_under_get_rule(kVTCompressionPropertyKey_MaxKeyFrameInterval as _);
-            let keyframe_interval_value = CFNumber::from((fps * 10) as i32);
+            let keyframe_interval_value = CFNumber::from((fps.saturating_mul(4).max(1)) as i32);
             let _ = VTSessionSetProperty(
                 session,
                 keyframe_interval_key.as_concrete_TypeRef() as _,
@@ -383,7 +383,7 @@ impl MacVideoEncoder {
             let keyframe_duration_key = CFString::wrap_under_get_rule(
                 kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration as _,
             );
-            let keyframe_duration_value = CFNumber::from(10_i32);
+            let keyframe_duration_value = CFNumber::from(4_i32);
             let _ = VTSessionSetProperty(
                 session,
                 keyframe_duration_key.as_concrete_TypeRef() as _,
@@ -431,7 +431,8 @@ impl MacVideoEncoder {
         if state.source_revision!=settings.source_revision {state.planner.reset();}
         state.source_revision=settings.source_revision;state.cap=[settings.width,settings.height];state.bitrate_cap=settings.bitrate_kbps;
         if let Some(demand)=settings.viewport {state.planner.update(demand,std::time::Instant::now())?;}
-        let target_kbps=remote_core::viewport::bitrate_for_pixels(self.width,self.height,settings.fps,settings.bitrate_kbps);
+        let full_crop=state.last_geometry.is_none_or(|g|g.crop.width>=g.source_width&&g.crop.height>=g.source_height);
+        let target_kbps=if full_crop {settings.bitrate_kbps} else {remote_core::viewport::bitrate_for_pixels(self.width,self.height,settings.fps,settings.bitrate_kbps)};
         self.update_rate_settings(settings.fps,target_kbps)?;
         Ok(())
     }
@@ -440,7 +441,7 @@ impl MacVideoEncoder {
     /// Reuse their actual latest IOSurface only when geometry or an IDR changed.
     pub(crate) async fn redraw_if_needed(&mut self,frame:MacVideoFrame)->Result<bool,Box<dyn Error+Send+Sync>> {
         if let Some(state)=&mut self.viewport {
-            let geometry=state.planner.plan([frame.width(),frame.height()],state.cap,state.source_revision,std::time::Instant::now())?;
+            let geometry=state.planner.plan_with_receiver_density([frame.width(),frame.height()],state.cap,state.source_revision,std::time::Instant::now(),false)?;
             let force_redraw=std::mem::replace(&mut state.force_redraw,false);
             if !self.force_keyframe && !force_redraw && state.last_geometry.is_some_and(|last|last.revision==geometry.revision
                 &&last.source_revision==geometry.source_revision){return Ok(false);}
@@ -525,7 +526,7 @@ impl MacVideoEncoder {
                         bitrate_value.as_concrete_TypeRef() as _,
                     );
 
-                    let bytes_per_sec = final_bitrate / 8;
+                    let bytes_per_sec = (final_bitrate.saturating_mul(3) / 2) / 8;
                     let one_sec = 1_i32;
                     let num_bytes = CFNumber::from(bytes_per_sec);
                     let num_sec = CFNumber::from(one_sec);
@@ -611,7 +612,7 @@ impl VideoEncoder for MacVideoEncoder {
         });
         let (source_width, source_height) = base_crop.map_or((raw_width, raw_height), |c| (c.width, c.height));
         let geometry=if let Some(state)=&mut self.viewport {
-            let planned = state.planner.plan([source_width,source_height],state.cap,state.source_revision,std::time::Instant::now())?;
+            let planned = state.planner.plan_with_receiver_density([source_width,source_height],state.cap,state.source_revision,std::time::Instant::now(),false)?;
             state.last_geometry = Some(planned);
             Some(planned)
         } else {None};
@@ -647,8 +648,9 @@ impl VideoEncoder for MacVideoEncoder {
         } else {None};
         let pixel_buffer=cropped.as_ref().map_or(cv_pixel_buffer.as_ptr().cast(),|buffer|buffer.0);
         let (width,height)=geometry.map_or(((source_width & !1).max(2),(source_height & !1).max(2)),|g|(g.width,g.height));
+        let full_crop=geometry.is_none_or(|g|g.crop.width>=source_width&&g.crop.height>=source_height);
         let bitrate=self.viewport.as_ref().map_or(self.bitrate_kbps,|state|
-            remote_core::viewport::bitrate_for_pixels(width,height,self.fps,state.bitrate_cap));
+            if full_crop {state.bitrate_cap} else {remote_core::viewport::bitrate_for_pixels(width,height,self.fps,state.bitrate_cap)});
         if (self.width, self.height, self.bitrate_kbps) != (width, height, bitrate) {
             self.update_settings(width, height, self.fps, bitrate)?;
         }

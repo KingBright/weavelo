@@ -99,28 +99,46 @@ public:
         check(MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER,MFT_ENUM_FLAG_HARDWARE|MFT_ENUM_FLAG_SORTANDFILTER,&in,&out,&list.items,&list.count),"Hardware HEVC enumeration");
         HRESULT last=MF_E_TOPO_CODEC_NOT_FOUND;
         for(UINT32 i=0;i<list.count;++i) {
-            try {
-                ComPtr<IMFTransform> candidate;check(list.items[i]->ActivateObject(IID_PPV_ARGS(&candidate)),"Hardware HEVC activation");
-                ComPtr<IMFAttributes> attrs;check(candidate->GetAttributes(&attrs),"Hardware HEVC attributes");
-                UINT32 aware=0;attrs->GetUINT32(MF_SA_D3D11_AWARE,&aware);if(!aware)throw Failure{MF_E_UNSUPPORTED_D3D_TYPE,"HEVC encoder is not D3D11-aware"};
-                UINT32 async=0;attrs->GetUINT32(MF_TRANSFORM_ASYNC,&async);asynchronous=async!=0;
-                if(asynchronous)check(attrs->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK,TRUE),"Async HEVC unlock");
-                check(candidate->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER,reinterpret_cast<ULONG_PTR>(device.manager.Get())),"HEVC DXGI manager");
-                DWORD inputs=0,outputs=0;check(candidate->GetStreamCount(&inputs,&outputs),"HEVC streams");
-                if(inputs!=1||outputs!=1)throw Failure{E_NOTIMPL,"Unexpected HEVC stream count"};
-                HRESULT ids=candidate->GetStreamIDs(1,&input,1,&output);if(ids==E_NOTIMPL)input=output=0;else check(ids,"HEVC stream identifiers");
-                candidate.As(&codec);
-                if(codec) {VARIANT v;VariantInit(&v);v.vt=VT_BOOL;v.boolVal=VARIANT_TRUE;codec->SetValue(&CODECAPI_AVLowLatencyMode,&v);
-                    v.vt=VT_UI4;v.ulVal=0;codec->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount,&v);
-                    v.ulVal=fps;codec->SetValue(&CODECAPI_AVEncMPVGOPSize,&v);}
-                auto encoded=media_type(MFVideoFormat_HEVC,w,h,fps,color);encoded->SetUINT32(MF_MT_AVG_BITRATE,bitrate);
-                check(candidate->SetOutputType(output,encoded.Get(),0),"HEVC output type");
-                auto raw=media_type(MFVideoFormat_NV12,w,h,fps,color);check(candidate->SetInputType(input,raw.Get(),0),"Native NV12 HEVC input");
-                if(asynchronous)check(candidate.As(&events),"Async HEVC events");
-                transform=candidate;activation=list.items[i];
-                check(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,0),"HEVC begin");
-                check(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM,0),"HEVC start");return;
-            } catch(Failure f) {last=f.hr;codec.Reset();events.Reset();list.items[i]->ShutdownObject();}
+            for(bool use_peak_vbr:{true,false}) {
+                try {
+                    ComPtr<IMFTransform> candidate;check(list.items[i]->ActivateObject(IID_PPV_ARGS(&candidate)),"Hardware HEVC activation");
+                    ComPtr<IMFAttributes> attrs;check(candidate->GetAttributes(&attrs),"Hardware HEVC attributes");
+                    UINT32 aware=0;attrs->GetUINT32(MF_SA_D3D11_AWARE,&aware);if(!aware)throw Failure{MF_E_UNSUPPORTED_D3D_TYPE,"HEVC encoder is not D3D11-aware"};
+                    UINT32 async=0;attrs->GetUINT32(MF_TRANSFORM_ASYNC,&async);asynchronous=async!=0;
+                    if(asynchronous)check(attrs->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK,TRUE),"Async HEVC unlock");
+                    check(candidate->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER,reinterpret_cast<ULONG_PTR>(device.manager.Get())),"HEVC DXGI manager");
+                    DWORD inputs=0,outputs=0;check(candidate->GetStreamCount(&inputs,&outputs),"HEVC streams");
+                    if(inputs!=1||outputs!=1)throw Failure{E_NOTIMPL,"Unexpected HEVC stream count"};
+                    HRESULT ids=candidate->GetStreamIDs(1,&input,1,&output);if(ids==E_NOTIMPL)input=output=0;else check(ids,"HEVC stream identifiers");
+                    candidate.As(&codec);
+                    const unsigned long long peak64=(static_cast<unsigned long long>(bitrate)*3ULL)/2ULL;
+                    const UINT32 peak_bitrate=peak64>0xFFFFFFFFULL?0xFFFFFFFFU:static_cast<UINT32>(peak64);
+                    const UINT32 gop_frames=fps>0?fps*4U:120U;
+                    if(codec) {
+                        VARIANT v;VariantInit(&v);
+                        v.vt=VT_BOOL;v.boolVal=VARIANT_TRUE;codec->SetValue(&CODECAPI_AVLowLatencyMode,&v);
+                        v.vt=VT_UI4;v.ulVal=0;codec->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount,&v);
+                        v.ulVal=gop_frames;codec->SetValue(&CODECAPI_AVEncMPVGOPSize,&v);
+                        v.ulVal=70;codec->SetValue(&CODECAPI_AVEncCommonQualityVsSpeed,&v);
+                        if(use_peak_vbr) {
+                            v.ulVal=eAVEncCommonRateControlMode_PeakConstrainedVBR;
+                            if(FAILED(codec->SetValue(&CODECAPI_AVEncCommonRateControlMode,&v)))
+                                throw Failure{MF_E_ATTRIBUTENOTFOUND,"PeakConstrainedVBR unsupported"};
+                            v.ulVal=bitrate;codec->SetValue(&CODECAPI_AVEncCommonMeanBitRate,&v);
+                            v.ulVal=peak_bitrate;codec->SetValue(&CODECAPI_AVEncCommonMaxBitRate,&v);
+                            v.ulVal=peak_bitrate;codec->SetValue(&CODECAPI_AVEncCommonBufferSize,&v);
+                        }
+                    }
+                    auto encoded=media_type(MFVideoFormat_HEVC,w,h,fps,color);encoded->SetUINT32(MF_MT_AVG_BITRATE,bitrate);
+                    encoded->SetUINT32(MF_MT_MAX_KEYFRAME_SPACING,gop_frames);
+                    check(candidate->SetOutputType(output,encoded.Get(),0),"HEVC output type");
+                    auto raw=media_type(MFVideoFormat_NV12,w,h,fps,color);check(candidate->SetInputType(input,raw.Get(),0),"Native NV12 HEVC input");
+                    if(asynchronous)check(candidate.As(&events),"Async HEVC events");
+                    transform=candidate;activation=list.items[i];
+                    check(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,0),"HEVC begin");
+                    check(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM,0),"HEVC start");return;
+                } catch(Failure f) {last=f.hr;codec.Reset();events.Reset();list.items[i]->ShutdownObject();}
+            }
         }throw Failure{last,"No usable D3D11 hardware HEVC encoder"};
     }
     ~Encoder(){if(transform){transform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH,0);transform->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING,0);}if(activation)activation->ShutdownObject();}

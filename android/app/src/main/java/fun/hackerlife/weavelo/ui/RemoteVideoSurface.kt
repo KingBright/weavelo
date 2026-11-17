@@ -5,6 +5,7 @@ import android.view.SurfaceView
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -18,6 +19,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
+import `fun`.hackerlife.weavelo.GpuVideoSurface
 import `fun`.hackerlife.weavelo.TouchMode
 import `fun`.hackerlife.weavelo.VideoDimensions
 import kotlin.math.roundToInt
@@ -34,6 +36,8 @@ internal fun RemoteViewport(
     touchMode: TouchMode = TouchMode.DIRECT,
     rotation: Int = 0,
     expandToContainer: Boolean = false,
+    directGpuViewport: Boolean = false,
+    onDirectViewportChanged: ((GpuVideoSurface.ViewportSpec) -> Unit)? = null,
     onViewportSizeChanged: (IntSize) -> Unit = {},
     onContainerSizeChanged: (IntSize) -> Unit = {},
     sendTouch: (Int, Int, Float, Float, Float, Long) -> Unit,
@@ -112,6 +116,26 @@ internal fun RemoteViewport(
                     baseHeight.toPx().roundToInt().coerceAtLeast(1)
                 )
             }
+            val useDirectGpu = directGpuViewport && rotation == 0 && onDirectViewportChanged != null
+            if (useDirectGpu) {
+                val currentTransform = transformState.value
+                val currentContainer = containerSize
+                SideEffect {
+                    if (currentContainer.width > 0 && currentContainer.height > 0) {
+                        onDirectViewportChanged(
+                            GpuVideoSurface.ViewportSpec(
+                                scale = currentTransform.scale,
+                                offsetX = currentTransform.offset.x,
+                                offsetY = currentTransform.offset.y,
+                                baseWidth = nextBasePx.width.toFloat(),
+                                baseHeight = nextBasePx.height.toFloat(),
+                                containerWidth = currentContainer.width.toFloat(),
+                                containerHeight = currentContainer.height.toFloat(),
+                            )
+                        )
+                    }
+                }
+            }
 
             Box(
                 Modifier
@@ -145,25 +169,41 @@ internal fun RemoteViewport(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
-                    viewportModifier
-                        .width(visibleWidth)
-                        .height(visibleHeight)
-                        .clipToBounds()
-                ) {
-                    RemoteVideoSurface(
-                        transformState.value,
-                        Modifier
-                            .align(Alignment.Center)
-                            .requiredSize(
-                                if (quarterTurn) baseHeight else baseWidth,
-                                if (quarterTurn) baseWidth else baseHeight
-                            ),
-                        rotation,
-                        description,
-                        factory
+                if (useDirectGpu) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = factory,
+                        update = { if (description != null) it.contentDescription = description }
                     )
-                    overlay()
+                    Box(
+                        viewportModifier
+                            .width(visibleWidth)
+                            .height(visibleHeight)
+                            .clipToBounds()
+                    ) {
+                        overlay()
+                    }
+                } else {
+                    Box(
+                        viewportModifier
+                            .width(visibleWidth)
+                            .height(visibleHeight)
+                            .clipToBounds()
+                    ) {
+                        RemoteVideoSurface(
+                            transformState.value,
+                            Modifier
+                                .align(Alignment.Center)
+                                .requiredSize(
+                                    if (quarterTurn) baseHeight else baseWidth,
+                                    if (quarterTurn) baseWidth else baseHeight
+                                ),
+                            rotation,
+                            description,
+                            factory
+                        )
+                        overlay()
+                    }
                 }
             }
         }

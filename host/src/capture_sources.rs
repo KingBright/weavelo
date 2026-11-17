@@ -112,6 +112,24 @@ pub(crate) fn filter_windows_catalog_entries<T>(
 }
 
 #[cfg(target_os = "macos")]
+fn display_pixel_size(
+    display: &screencapturekit::shareable_content::SCDisplay,
+) -> (screencapturekit::prelude::SCContentFilter, (u32, u32)) {
+    use screencapturekit::prelude::*;
+    let filter = SCContentFilter::create().with_display(display).build();
+    let scale = f64::from(filter.point_pixel_scale()).clamp(1.0, 4.0);
+    let rect = filter.content_rect();
+    let (logical_w, logical_h) = if rect.size().width >= 2.0 && rect.size().height >= 2.0 {
+        (rect.size().width, rect.size().height)
+    } else {
+        (f64::from(display.width()), f64::from(display.height()))
+    };
+    let px_w = (((logical_w * scale).round() as u32) & !1).max(2);
+    let px_h = (((logical_h * scale).round() as u32) & !1).max(2);
+    (filter, (px_w, px_h))
+}
+
+#[cfg(target_os = "macos")]
 fn window_pixel_size(
     window: &screencapturekit::shareable_content::SCWindow,
     filter: &screencapturekit::prelude::SCContentFilter,
@@ -276,8 +294,7 @@ fn list_screens() -> Result<Vec<CaptureSourceInfo>, Box<dyn Error + Send + Sync>
             let display_id = display.display_id();
             let is_builtin = core_graphics::display::CGDisplay::new(display_id).is_builtin();
             let is_main = display_id == main_display_id;
-            let width = display.width();
-            let height = display.height();
+            let (_, (width, height)) = display_pixel_size(&display);
             sources.push(CaptureSourceInfo {
                 source: CaptureSource::Display(display_id),
                 title: mac_display_catalog_title(index, width, height, is_builtin, is_main),
@@ -493,9 +510,10 @@ pub(crate) fn capture_plan(
                 .into_iter()
                 .find(|display| display.display_id() == id)
                 .ok_or("selected display is no longer available")?;
+            let (filter, stream_size) = display_pixel_size(&display);
             Ok(CapturePlan {
-                filter: SCContentFilter::create().with_display(&display).build(),
-                stream_size: (display.width(), display.height()),
+                filter,
+                stream_size,
                 window_crop: None,
                 includes_children: false,
                 family_display_mode: false,

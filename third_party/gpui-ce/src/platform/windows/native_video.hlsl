@@ -24,7 +24,20 @@ VideoVarying video_vertex(uint vertex_id:SV_VertexID) {
 float4 video_fragment(VideoVarying i):SV_Target {
     float3 q=float3(i.unit,1);
     float2 uv=clamp(float2(dot(uv_row0.xyz,q),dot(uv_row1.xyz,q)),visible_uv.xy,visible_uv.zw);
-    float4 sample_y=plane_y.SampleLevel(video_sampler,uv,0);
+    uint tw=1,th=1;
+    plane_y.GetDimensions(tw,th);
+    float2 y_dims=float2(float(tw),float(th));
+    float2 p=uv*y_dims-0.5;
+    float2 fw=fwidth(p);
+    float2 y_uv=uv;
+    if(fw.x<0.85||fw.y<0.85) {
+        float2 band=clamp(fw*1.15,0.06,1.0);
+        float2 idx=floor(p);
+        float2 f=p-idx;
+        float2 sf=smoothstep(0.5-0.5*band,0.5+0.5*band,f);
+        y_uv=clamp((idx+0.5+sf)/y_dims,visible_uv.xy,visible_uv.zw);
+    }
+    float4 sample_y=plane_y.SampleLevel(video_sampler,y_uv,0);
     if(view_and_format.z>0.5) return float4(sample_y.rgb,1);
     float2 c=plane_uv.SampleLevel(video_sampler,uv+float2(view_and_format.w,0),0);
     float4 yuv=float4(sample_y.r,c,1);

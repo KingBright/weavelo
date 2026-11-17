@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The same primitive can sample a source ROI into an encoder's native Surface.
  * There is no CPU image readback and no extra full/detail video subscription.
  */
-internal class GpuVideoSurface(
+internal class GpuVideoSurface @JvmOverloads constructor(
     private val output: Surface?,
     sourceWidth: Int,
     sourceHeight: Int,
@@ -27,9 +27,21 @@ internal class GpuVideoSurface(
     private val sourceRotation: Int = 0,
     private val onFrame: (VideoFrameGeometry?) -> Unit = {}
 ) : AutoCloseable {
+    internal data class ViewportSpec(
+        val scale: Float,
+        val offsetX: Float,
+        val offsetY: Float,
+        val baseWidth: Float,
+        val baseHeight: Float,
+        val containerWidth: Float,
+        val containerHeight: Float,
+    )
     data class Presentation(val ready: Boolean = false, val geometry: VideoFrameGeometry? = null)
     @Volatile var presentation = Presentation()
         private set
+    @Volatile private var viewportSpec: ViewportSpec? = null
+    @Volatile private var viewportDirty = false
+    private var lastViewportRenderNs = 0L
     var outputFrames = 0L
         private set
     private val thread = Thread.currentThread()
@@ -86,6 +98,7 @@ internal class GpuVideoSurface(
             window = if (output != null) EGL14.eglCreateWindowSurface(display,config,output,intArrayOf(EGL14.EGL_NONE),0)
                 else EGL14.eglCreatePbufferSurface(display,config,intArrayOf(EGL14.EGL_WIDTH,1,EGL14.EGL_HEIGHT,1,EGL14.EGL_NONE),0)
             check(window != EGL14.EGL_NO_SURFACE && EGL14.eglMakeCurrent(display,window,window,context))
+            if (output != null) runCatching { EGL14.eglSwapInterval(display, 0) }
             program = GLES20.glCreateProgram()
             for ((type, source) in listOf(GLES20.GL_VERTEX_SHADER to VERTEX, GLES20.GL_FRAGMENT_SHADER to FRAGMENT)) {
                 val shader = GLES20.glCreateShader(type)
@@ -171,6 +184,13 @@ internal class GpuVideoSurface(
         checkThread(); ignoreThroughPts = lastRegisteredPts; metadata.clear(); presentation = Presentation()
         if (resetCount) outputFrames = 0
     }
+    fun updateViewport(spec: ViewportSpec) {
+        if (viewportSpec != spec) {
+            viewportSpec = spec
+            viewportDirty = true
+            java.util.concurrent.locks.LockSupport.unpark(thread)
+        }
+    }
     /** Called by the existing decoder worker; callbacks only signal availability. */
     fun renderPending() {
         checkThread()
@@ -183,20 +203,113 @@ internal class GpuVideoSurface(
         check(metadata.containsKey(pts)) { "Decoded image has no matching viewport geometry" }
         val g = metadata[pts]
         metadata.headMap(pts,true).clear()
-        val draw = g?.let { floatArrayOf(it.x.toFloat()/it.sourceWidth,
-            1f-(it.y+it.cropHeight).toFloat()/it.sourceHeight,it.cropWidth.toFloat()/it.sourceWidth,it.cropHeight.toFloat()/it.sourceHeight) }
-            ?: floatArrayOf(0f,0f,1f,1f)
-        draw(matrix,draw,floatArrayOf(0f,0f,1f,1f),null)
+        viewportDirty = false
+        lastViewportRenderNs = System.nanoTime()
+        drawViewerFrame(g)
         presentation = Presentation(true,g); outputFrames++; onFrame(g)
         lastRenderedPts = pts
     }
-    private fun draw(textureMatrix: FloatArray, destination: FloatArray, sample: FloatArray, timestampNs: Long?, target: Output? = null) {
+    fun renderViewportIfDirty(): Boolean {
+        checkThread()
+        if (!viewportDirty || !presentation.ready || output == null || closed) return false
+        val now = System.nanoTime()
+        if (now - lastViewportRenderNs < 4_000_000L) return false
+        viewportDirty = false
+        lastViewportRenderNs = now
+        drawViewerFrame(presentation.geometry)
+        return true
+    }
+    private fun drawViewerFrame(g: VideoFrameGeometry?) {
+        val spec = viewportSpec
+        if (spec == null || spec.containerWidth < 2f || spec.containerHeight < 2f) {
+            val legacyDest = g?.let {
+                floatArrayOf(
+                    it.x.toFloat() / it.sourceWidth,
+                    1f - (it.y + it.cropHeight).toFloat() / it.sourceHeight,
+                    it.cropWidth.toFloat() / it.sourceWidth,
+                    it.cropHeight.toFloat() / it.sourceHeight,
+                )
+            } ?: floatArrayOf(0f, 0f, 1f, 1f)
+            draw(matrix, legacyDest, floatArrayOf(0f, 0f, 1f, 1f), null)
+            return
+        }
+        check(EGL14.eglMakeCurrent(display, window, window, context))
+        val sw = IntArray(1)
+        val sh = IntArray(1)
+        check(
+            EGL14.eglQuerySurface(display, window, EGL14.EGL_WIDTH, sw, 0) &&
+                EGL14.eglQuerySurface(display, window, EGL14.EGL_HEIGHT, sh, 0)
+        )
+        val cw = sw[0].coerceAtLeast(2).toFloat()
+        val ch = sh[0].coerceAtLeast(2).toFloat()
+        val sx = cw / spec.containerWidth.coerceAtLeast(1f)
+        val sy = ch / spec.containerHeight.coerceAtLeast(1f)
+        val bw = (spec.baseWidth * sx).coerceAtLeast(1f)
+        val bh = (spec.baseHeight * sy).coerceAtLeast(1f)
+        val s = spec.scale.coerceAtLeast(0.01f)
+        val ox = spec.offsetX * sx
+        val oy = spec.offsetY * sy
+        val normLeft = g?.let { it.x.toFloat() / it.sourceWidth } ?: 0f
+        val normRight = g?.let { (it.x + it.cropWidth).toFloat() / it.sourceWidth } ?: 1f
+        val normTop = g?.let { it.y.toFloat() / it.sourceHeight } ?: 0f
+        val normBottom = g?.let { (it.y + it.cropHeight).toFloat() / it.sourceHeight } ?: 1f
+        val leftPx = cw * 0.5f + (normLeft - 0.5f) * bw * s + ox
+        val rightPx = cw * 0.5f + (normRight - 0.5f) * bw * s + ox
+        val topPx = ch * 0.5f + (normTop - 0.5f) * bh * s + oy
+        val bottomPx = ch * 0.5f + (normBottom - 0.5f) * bh * s + oy
+        val quadW = (rightPx - leftPx).coerceAtLeast(1f)
+        val quadH = (bottomPx - topPx).coerceAtLeast(1f)
+        val dest = floatArrayOf(
+            leftPx / cw,
+            1f - bottomPx / ch,
+            quadW / cw,
+            quadH / ch,
+        )
+        val visW = minOf(cw, bw * s)
+        val visH = minOf(ch, bh * s)
+        val scX = ((cw - visW) * 0.5f).toInt().coerceIn(0, sw[0] - 1)
+        val scY = ((ch - visH) * 0.5f).toInt().coerceIn(0, sh[0] - 1)
+        val scW = kotlin.math.ceil(visW.toDouble()).toInt().coerceIn(1, sw[0] - scX)
+        val scH = kotlin.math.ceil(visH.toDouble()).toInt().coerceIn(1, sh[0] - scY)
+        val sharp = if (g != null && g.width >= 2 && g.height >= 2) {
+            val bandX = ((g.width.toFloat() * 1.15f) / quadW).coerceIn(0.06f, 1.0f)
+            val bandY = ((g.height.toFloat() * 1.15f) / quadH).coerceIn(0.06f, 1.0f)
+            floatArrayOf(g.width.toFloat(), g.height.toFloat(), bandX, bandY)
+        } else {
+            DEFAULT_SHARP
+        }
+        draw(
+            matrix,
+            dest,
+            floatArrayOf(0f, 0f, 1f, 1f),
+            null,
+            scissor = intArrayOf(scX, scY, scW, scH),
+            sharpParams = sharp,
+            surfaceSize = sw[0] to sh[0],
+        )
+    }
+    private fun draw(
+        textureMatrix: FloatArray,
+        destination: FloatArray,
+        sample: FloatArray,
+        timestampNs: Long?,
+        target: Output? = null,
+        scissor: IntArray? = null,
+        sharpParams: FloatArray = DEFAULT_SHARP,
+        surfaceSize: Pair<Int, Int>? = null,
+    ) {
         val targetSurface=target?.surface ?: window
         check(EGL14.eglMakeCurrent(display,targetSurface,targetSurface,context))
         val w=IntArray(1);val h=IntArray(1)
-        if (target == null) check(EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0) && EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0))
+        if (surfaceSize != null) { w[0]=surfaceSize.first; h[0]=surfaceSize.second }
+        else if (target == null) check(EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0) && EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0))
         else { w[0]=target.width;h[0]=target.height }
+        GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         GLES20.glViewport(0,0,w[0],h[0]);GLES20.glClearColor(0f,0f,0f,1f);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        if (scissor != null) {
+            GLES20.glEnable(GLES20.GL_SCISSOR_TEST)
+            GLES20.glScissor(scissor[0], scissor[1], scissor[2], scissor[3])
+        }
         GLES20.glUseProgram(program)
         val position=GLES20.glGetAttribLocation(program,"position");val tex=GLES20.glGetAttribLocation(program,"texCoord")
         quad.position(0);GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,16,quad);GLES20.glEnableVertexAttribArray(position)
@@ -204,9 +317,11 @@ internal class GpuVideoSurface(
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program,"textureMatrix"),1,false,textureMatrix,0)
         GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"destination"),1,destination,0)
         GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"sampleRect"),1,sample,0)
+        GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"sharpParams"),1,sharpParams,0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,texture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"image"),0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+        if (scissor != null) GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         check(GLES20.glGetError()==GLES20.GL_NO_ERROR) { "Native viewport drawing failed" }
         if (timestampNs != null) check(EGLExt.eglPresentationTimeANDROID(display,targetSurface,timestampNs))
         check(EGL14.eglSwapBuffers(display,targetSurface)) { "Native video surface was lost" }
@@ -233,20 +348,37 @@ internal class GpuVideoSurface(
         catch (_: InterruptedException) { Thread.currentThread().interrupt() }
     }
     companion object {
+        private val DEFAULT_SHARP = floatArrayOf(1f, 1f, 1f, 1f)
         private const val VERTEX = """
             attribute vec2 position; attribute vec2 texCoord;
-            uniform mat4 textureMatrix; uniform vec4 destination; uniform vec4 sampleRect;
-            varying vec2 uv;
+            uniform vec4 destination; uniform vec4 sampleRect;
+            varying vec2 vSampleUv;
             void main() {
                 gl_Position=vec4(2.0*(destination.xy+(position+1.0)*0.5*destination.zw)-1.0,0.0,1.0);
-                uv=(textureMatrix*vec4(sampleRect.xy+texCoord*sampleRect.zw,0.0,1.0)).xy;
+                vSampleUv=sampleRect.xy+texCoord*sampleRect.zw;
             }
         """
         private const val FRAGMENT = """
             #extension GL_OES_EGL_image_external : require
             precision highp float;
-            uniform samplerExternalOES image; varying vec2 uv;
-            void main() { gl_FragColor=texture2D(image,uv); }
+            uniform samplerExternalOES image;
+            uniform mat4 textureMatrix;
+            uniform vec4 sharpParams;
+            varying vec2 vSampleUv;
+            void main() {
+                vec2 uv = vSampleUv;
+                if (sharpParams.z < 0.999 || sharpParams.w < 0.999) {
+                    vec2 p = uv * sharpParams.xy - vec2(0.5);
+                    vec2 i = floor(p);
+                    vec2 f = p - i;
+                    vec2 lo = vec2(0.5) - 0.5 * sharpParams.zw;
+                    vec2 hi = vec2(0.5) + 0.5 * sharpParams.zw;
+                    vec2 sf = smoothstep(lo, hi, f);
+                    uv = clamp((i + vec2(0.5) + sf) / sharpParams.xy, vec2(0.0), vec2(1.0));
+                }
+                vec2 mappedUv = (textureMatrix * vec4(uv, 0.0, 1.0)).xy;
+                gl_FragColor = texture2D(image, mappedUv);
+            }
         """
     }
 }

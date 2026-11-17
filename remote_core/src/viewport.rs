@@ -289,7 +289,7 @@ impl ViewportPlanner {
 
 /// Automatic text-friendly target, always below the existing user/network cap.
 pub fn bitrate_for_pixels(width: u32, height: u32, fps: u32, cap_kbps: u32) -> u32 {
-    ((u64::from(width) * u64::from(height) * u64::from(fps) * 22 / 100_000)
+    ((u64::from(width) * u64::from(height) * u64::from(fps) * 48 / 100_000)
         .max(500)
         .min(u64::from(cap_kbps))) as u32
 }

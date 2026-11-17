@@ -878,8 +878,19 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
                                  texture2d<float> cb_cr_texture
                                  [[texture(SurfaceInputIndex_CbCrTexture)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
+  float2 y_dims = float2(y_texture.get_width(), y_texture.get_height());
+  float2 p = input.texture_position * y_dims - 0.5;
+  float2 fw = fwidth(p);
+  float2 y_uv = input.texture_position;
+  if (fw.x < 0.85 || fw.y < 0.85) {
+    float2 band = clamp(fw * 1.15, float2(0.06), float2(1.0));
+    float2 i = floor(p);
+    float2 f = p - i;
+    float2 sf = smoothstep(0.5 - 0.5 * band, 0.5 + 0.5 * band, f);
+    y_uv = clamp((i + 0.5 + sf) / y_dims, float2(0.5) / y_dims, (y_dims - 0.5) / y_dims);
+  }
   float4 ycbcr = float4(
-      y_texture.sample(texture_sampler, input.texture_position).r,
+      y_texture.sample(texture_sampler, y_uv).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
   return float4(dot(color_rows[0], ycbcr), dot(color_rows[1], ycbcr),

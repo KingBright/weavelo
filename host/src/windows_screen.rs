@@ -37,11 +37,13 @@ extern "C" fn plan(context:*mut c_void,w:u32,h:u32,out:*mut Plan)->bool {
     let context=unsafe{&*context.cast::<Context>()};let mut state=context.settings.lock().unwrap_or_else(|e|e.into_inner());
     if out.is_null(){context.fail("Missing native viewport plan".into());return false;}
     let settings=state.value.clone();
-    match state.planner.plan([w,h],[settings.width,settings.height],settings.source_revision,Instant::now()) {
+    match state.planner.plan_with_receiver_density([w,h],[settings.width,settings.height],settings.source_revision,Instant::now(),false) {
         Ok(g)=>{
             let mut header=Vec::with_capacity(60);g.write_header(&mut header);
+            let full_crop=g.crop.width>=w&&g.crop.height>=h;
+            let kbps=if full_crop {settings.bitrate_kbps} else {bitrate_for_pixels(g.width,g.height,settings.fps,settings.bitrate_kbps)};
             unsafe{out.write(Plan{x:g.crop.x,y:g.crop.y,crop_width:g.crop.width,crop_height:g.crop.height,
-                width:g.width,height:g.height,fps:settings.fps,kbps:bitrate_for_pixels(g.width,g.height,settings.fps,settings.bitrate_kbps),
+                width:g.width,height:g.height,fps:settings.fps,kbps,
                 geometry:header.try_into().expect("Fixed viewport header")})};true
         }
         Err(reason)=>{context.fail(reason.into());false}

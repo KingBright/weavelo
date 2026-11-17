@@ -70,13 +70,22 @@ internal class SurfaceHevcEncoder(val plan: Plan) : AutoCloseable {
     init {
         var input: Surface? = null
         try {
+            val encCaps = runCatching {
+                codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC).encoderCapabilities
+            }.getOrNull()
             fun buildFormat(withExplicitSrgb: Boolean) =
                 MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, plan.width, plan.height).apply {
                     setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                     setInteger(MediaFormat.KEY_BIT_RATE, Math.multiplyExact(plan.bitrateKbps, 1000))
                     setInteger(MediaFormat.KEY_FRAME_RATE, plan.fps)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 4)
                     setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    if (encCaps?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) == true) {
+                        setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+                    }
+                    encCaps?.complexityRange?.upper?.takeIf { it > 0 }?.let {
+                        setInteger(MediaFormat.KEY_COMPLEXITY, it)
+                    }
                     if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                     if (withExplicitSrgb) {
                         setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)

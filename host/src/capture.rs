@@ -216,6 +216,9 @@ impl MacVideoCapturer {
         config.set_pixel_format(screencapturekit::stream::configuration::PixelFormat::YCbCr_420v);
         config.set_color_matrix(&crate::video_color::capture_yuv_matrix());
         config.set_shows_cursor(false);
+        config.set_capture_resolution_type(
+            screencapturekit::stream::configuration::SCCaptureResolutionType::Best,
+        );
         if matches!(self.source, protocol::session::CaptureSource::Window(_)) && !family_display_mode {
             // Shadows are decorations outside the AX/CG window bounds.
             config.set_ignores_shadows_single_window(true);
@@ -224,9 +227,6 @@ impl MacVideoCapturer {
             config.set_includes_child_windows(includes_children);
             config.set_scales_to_fit(true);
             config.set_ignore_global_clip_single_window(true);
-            config.set_capture_resolution_type(
-                screencapturekit::stream::configuration::SCCaptureResolutionType::Best,
-            );
         }
         config
     }
@@ -280,12 +280,11 @@ impl MacVideoCapturer {
                 else {Err("Camera stopped or its permission was revoked".into())};
         }
         if let protocol::session::CaptureSource::MainDisplay | protocol::session::CaptureSource::Display(_) = self.source {
-            let id = match self.source {
-                protocol::session::CaptureSource::Display(id) => id,
-                _ => core_graphics::display::CGDisplay::main().id,
-            };
-            let cg = core_graphics::display::CGDisplay::new(id);
-            let stream_size = (cg.pixels_wide() as u32, cg.pixels_high() as u32);
+            let source = self.source;
+            let plan = tokio::task::spawn_blocking(move || crate::capture_sources::capture_plan(source))
+                .await
+                .map_err(|e| -> Box<dyn Error + Send + Sync> { format!("Display geometry worker ended: {e}").into() })??;
+            let stream_size = plan.stream_size;
             if stream_size.0 < 2 || stream_size.1 < 2 {
                 return Err("selected display is no longer available".into());
             }

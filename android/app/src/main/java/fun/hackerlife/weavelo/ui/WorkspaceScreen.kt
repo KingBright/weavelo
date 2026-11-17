@@ -1283,6 +1283,7 @@ private fun WorkspaceVideo(
     var cursor by remember(pane.id, sessionKey, generation) { mutableStateOf(Offset(.5f, .5f)) }
     val currentError by rememberUpdatedState(onError)
     val nativeViewport = remember(pane.id, sessionKey, generation) { java.util.concurrent.atomic.AtomicReference<GpuVideoSurface?>() }
+    val latestViewportSpec = remember(pane.id, sessionKey, generation) { java.util.concurrent.atomic.AtomicReference<GpuVideoSurface.ViewportSpec?>() }
     LaunchedEffect(baseMeasured, dimensions, pane.windowScalePercent, pane.accepted, keyboardVisible, imeVisible) {
         if (!pane.accepted || keyboardVisible || imeVisible) return@LaunchedEffect
         delay(200)
@@ -1361,6 +1362,11 @@ private fun WorkspaceVideo(
             dimensions = dimensions, transformState = transform, description = tr("Remote screen"),
             rotation = pane.source.rotation,
             expandToContainer = true,
+            directGpuViewport = !pane.source.isCamera && pane.source.rotation == 0,
+            onDirectViewportChanged = { spec ->
+                latestViewportSpec.set(spec)
+                nativeViewport.get()?.updateViewport(spec)
+            },
             enabled = pane.input && token != 0L,
             touchMode = touchMode,
             contentKey = token to dimensions,
@@ -1562,6 +1568,7 @@ private fun WorkspaceVideo(
                                                 if (running.get() && surfaceToken == token) dimensions=VideoDimensions(geometry.sourceWidth,geometry.sourceHeight)
                                             }
                                         }
+                                        latestViewportSpec.get()?.let(target::updateViewport)
                                         nativeViewport.set(target)
                                     }
                                     val player=MediaCodecPlayer(target?.input ?: holder.surface,target) { decoded -> post {
@@ -1643,6 +1650,9 @@ private fun WorkspaceVideo(
                                         if (drained) {
                                             didWork = true
                                             WorkspaceClient.reportLocalDecodeLatency(pane.id, player.lastDecodeLatencyMs)
+                                        }
+                                        if (target?.renderViewportIfDirty() == true) {
+                                            didWork = true
                                         }
                                         if (!reportedFirstFrame && player.outputFrames > framesBeforeReset) {
                                             post { if (running.get() && surfaceToken == token) videoStatus = null }

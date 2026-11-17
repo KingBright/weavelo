@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 const PREFERENCES_FILE_NAME: &str = "preferences.json";
 
 fn default_width() -> u32 {
-    1920
+    3840
 }
 
 fn default_height() -> u32 {
-    1080
+    2160
 }
 
 fn default_fps() -> u32 {
@@ -457,8 +457,8 @@ mod tests {
     #[test]
     fn preferences_default_values_are_valid() {
         let prefs = UserPreferences::default();
-        assert_eq!(prefs.stream.width, 1920);
-        assert_eq!(prefs.stream.height, 1080);
+        assert_eq!(prefs.stream.width, 3840);
+        assert_eq!(prefs.stream.height, 2160);
         assert_eq!(prefs.stream.fps, 60);
         assert_eq!(prefs.stream.bitrate_kbps, 20_000);
         assert!(prefs.side_services.clipboard_sync);

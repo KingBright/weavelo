@@ -32,10 +32,21 @@ struct NativeVarying { @builtin(position) position:vec4<f32>, @location(0) unit:
     return out;
 }
 @fragment fn fs_native(input:NativeVarying)->@location(0) vec4<f32> {
-    if any(input.clipped < vec4<f32>(0.0)){discard;}
     let u=vec3<f32>(input.unit,1.0);
     let uv=clamp(vec2<f32>(dot(native_params.uv0.xyz,u),dot(native_params.uv1.xyz,u)),native_params.visible_uv.xy,native_params.visible_uv.zw);
-    let y=textureSampleLevel(native_y,native_sampler,uv,0.0).r;
+    let y_dims=vec2<f32>(textureDimensions(native_y));
+    let p=uv*y_dims-vec2<f32>(0.5);
+    let fw=fwidth(p);
+    if any(input.clipped < vec4<f32>(0.0)){discard;}
+    var y_uv=uv;
+    if fw.x<0.85 || fw.y<0.85 {
+        let band=clamp(fw*1.15,vec2<f32>(0.06),vec2<f32>(1.0));
+        let idx=floor(p);
+        let f=p-idx;
+        let sf=smoothstep(vec2<f32>(0.5)-0.5*band,vec2<f32>(0.5)+0.5*band,f);
+        y_uv=clamp((idx+vec2<f32>(0.5)+sf)/y_dims,native_params.visible_uv.xy,native_params.visible_uv.zw);
+    }
+    let y=textureSampleLevel(native_y,native_sampler,y_uv,0.0).r;
     let chroma=textureSampleLevel(native_uv,native_sampler,uv+vec2<f32>(native_params.view.z,0.0),0.0).rg;
     let value=vec4<f32>(y,chroma,1.0);
     var rgb=clamp(vec3<f32>(dot(native_params.red,value),dot(native_params.green,value),dot(native_params.blue,value)),vec3<f32>(0.0),vec3<f32>(1.0));
