@@ -83,7 +83,7 @@ pub struct CpuRgba {
     color: ColorMetadata,
 }
 impl CpuRgba {
-    pub(crate) fn from_decoded(width: u32, height: u32, pixels: Arc<Vec<u8>>,
+    pub fn from_decoded(width: u32, height: u32, pixels: Arc<Vec<u8>>,
         maximum: usize) -> Result<Self, PixelError> {
         let stride = usize::try_from(width).ok().and_then(|w| w.checked_mul(4))
             .ok_or(PixelError::ArithmeticOverflow)?;
@@ -234,6 +234,74 @@ impl CpuRgba {
             (diff_sum as f32) / ((samples * 255) as f32)
         })
     }
+
+    /// Downscales high-DPI / 4K frames so the longest edge does not exceed `max_edge`
+    /// (e.g. 1568px for VLM optimal token/latency efficiency) using area-averaged box
+    /// filtering while leaving frames already within `max_edge` zero-copy untouched.
+    pub fn downscale_max_edge(&self, max_edge: u32) -> Self {
+        let src_w = self.layout.width;
+        let src_h = self.layout.height;
+        let longest = src_w.max(src_h);
+        if max_edge == 0 || longest <= max_edge {
+            return self.clone();
+        }
+        let scale = f64::from(max_edge) / f64::from(longest);
+        let dst_w = ((f64::from(src_w) * scale).round() as u32).max(1);
+        let dst_h = ((f64::from(src_h) * scale).round() as u32).max(1);
+        let Some(dst_stride) = (dst_w as usize).checked_mul(4) else {
+            return self.clone();
+        };
+        let Some(dst_bytes) = dst_stride.checked_mul(dst_h as usize) else {
+            return self.clone();
+        };
+        let Ok(layout) =
+            RgbaLayout::validate(dst_w, dst_h, dst_stride, dst_bytes, MAX_OBSERVATION_BYTES)
+        else {
+            return self.clone();
+        };
+        let mut out = Vec::with_capacity(dst_bytes);
+        let src = self.pixels.as_slice();
+        let src_stride = self.layout.row_stride;
+        for dy in 0..dst_h {
+            let sy0 = ((u64::from(dy) * u64::from(src_h)) / u64::from(dst_h)) as usize;
+            let sy1 = (((u64::from(dy + 1) * u64::from(src_h)).div_ceil(u64::from(dst_h)))
+                as usize)
+                .clamp(sy0 + 1, src_h as usize);
+            for dx in 0..dst_w {
+                let sx0 = ((u64::from(dx) * u64::from(src_w)) / u64::from(dst_w)) as usize;
+                let sx1 = (((u64::from(dx + 1) * u64::from(src_w)).div_ceil(u64::from(dst_w)))
+                    as usize)
+                    .clamp(sx0 + 1, src_w as usize);
+                let mut r = 0u32;
+                let mut g = 0u32;
+                let mut b = 0u32;
+                let mut a = 0u32;
+                let count = ((sy1 - sy0) * (sx1 - sx0)) as u32;
+                for sy in sy0..sy1 {
+                    let row_base = sy * src_stride;
+                    for sx in sx0..sx1 {
+                        let idx = row_base + sx * 4;
+                        r += u32::from(src[idx]);
+                        g += u32::from(src[idx + 1]);
+                        b += u32::from(src[idx + 2]);
+                        a += u32::from(src[idx + 3]);
+                    }
+                }
+                let div = count.max(1);
+                out.extend_from_slice(&[
+                    ((r + div / 2) / div) as u8,
+                    ((g + div / 2) / div) as u8,
+                    ((b + div / 2) / div) as u8,
+                    ((a + div / 2) / div) as u8,
+                ]);
+            }
+        }
+        Self {
+            layout,
+            pixels: Arc::new(out),
+            color: self.color,
+        }
+    }
 }
 
 fn draw_drag_line(buf: &mut [u8], w: i32, h: i32, x0: i32, y0: i32, x1: i32, y1: i32) {
@@ -334,5 +402,25 @@ mod tests {
         assert_eq!(&marked.pixels()[ring_idx..ring_idx + 4], &[255, 40, 200, 255]);
         assert!(frame.frame_diff_ratio(&marked).unwrap() > 0.0);
         assert_eq!(frame.frame_diff_ratio(&frame), Some(0.0));
+    }
+    #[test]
+    fn downscale_max_edge_preserves_aspect_and_leaves_small_frames_zero_copy() {
+        let small_raw = Arc::new(vec![80u8; 64 * 32 * 4]);
+        let small = CpuRgba::from_decoded(64, 32, small_raw.clone(), 64 * 32 * 4).unwrap();
+        let untouched = small.downscale_max_edge(1568);
+        assert_eq!(
+            (untouched.layout().width(), untouched.layout().height()),
+            (64, 32)
+        );
+        assert_eq!(Arc::strong_count(&small_raw), 3);
+
+        let large_raw = Arc::new(vec![200u8; 2000 * 1000 * 4]);
+        let large = CpuRgba::from_decoded(2000, 1000, large_raw, MAX_OBSERVATION_BYTES).unwrap();
+        let scaled = large.downscale_max_edge(1000);
+        assert_eq!(
+            (scaled.layout().width(), scaled.layout().height()),
+            (1000, 500)
+        );
+        assert_eq!(&scaled.pixels()[0..4], &[200, 200, 200, 200]);
     }
 }

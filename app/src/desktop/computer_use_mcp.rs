@@ -416,7 +416,8 @@ fn selected_cdp_page(args:&Value)->Result<Value,String> {
 #[derive(Default)]
 pub(crate) struct McpSessionState {
     active_lease: Option<ActiveMcpLease>,
-    initialized:bool,
+    last_observed_frame: Option<client::observation_pixels::CpuRgba>,
+    initialized: bool,
 }
 
 #[derive(Clone)]
@@ -468,6 +469,7 @@ impl McpSessionState {
 
         // Close the exact prior lease before replacing its private authority.
         if let Some(previous)=self.active_lease.take() {
+            self.last_observed_frame = None;
             let request=super::directed_receive::Request::ComputerUse{generation:previous.generation,
                 request_id:format!("mcp-close-{}",generate_boundary_nonce()),deadline_ms:crate::unix_now_ms()+4500,
                 call:Call::Close{actor:previous.actor,lease_id:previous.lease_id}};
@@ -985,7 +987,28 @@ fn dispatch_mcp_tool(
                     }
                     let w = body["size"][0].as_u64().unwrap_or(0) as u32;
                     let h = body["size"][1].as_u64().unwrap_or(0) as u32;
-                    match encode_rgba_to_png(w, h, &rgba) {
+                    let rgba_arc = std::sync::Arc::new(rgba);
+                    let (out_w, out_h, png_result) = if let Ok(frame) =
+                        client::observation_pixels::CpuRgba::from_decoded(
+                            w,
+                            h,
+                            rgba_arc.clone(),
+                            client::observation_pixels::MAX_OBSERVATION_BYTES,
+                        ) {
+                        let scaled = frame.downscale_max_edge(1568);
+                        let sw = scaled.layout().width();
+                        let sh = scaled.layout().height();
+                        let encoded = encode_rgba_to_png(sw, sh, scaled.pixels());
+                        session.last_observed_frame = Some(scaled);
+                        (sw, sh, encoded)
+                    } else {
+                        session.last_observed_frame = None;
+                        (w, h, encode_rgba_to_png(w, h, &rgba_arc))
+                    };
+                    let mut meta = body.clone();
+                    meta["native_size"] = json!([w, h]);
+                    meta["display_size"] = json!([out_w, out_h]);
+                    match png_result {
                         Ok(png) => json!({
                             "isError": false,
                             "content": [
@@ -996,7 +1019,7 @@ fn dispatch_mcp_tool(
                                 },
                                 {
                                     "type": "text",
-                                    "text": serde_json::to_string_pretty(&body).unwrap_or_default()
+                                    "text": serde_json::to_string_pretty(&meta).unwrap_or_default()
                                 }
                             ]
                         }),
@@ -1105,6 +1128,20 @@ fn dispatch_mcp_tool(
                     lease = updated.clone();
                 }
             }
+            let pre_frame = session.last_observed_frame.clone();
+            let ends_with_wait = matches!(
+                actions.last(),
+                Some(Action::Wait { .. } | Action::WaitForStability { .. })
+            );
+            let expects_visual_effect = actions.iter().any(|act| {
+                !matches!(
+                    act,
+                    Action::Move { .. }
+                        | Action::MoveRef { .. }
+                        | Action::Wait { .. }
+                        | Action::WaitForStability { .. }
+                )
+            });
             let req = super::directed_receive::Request::ComputerUse {
                 generation,
                 request_id: format!("mcp-batch-{}", crate::unix_now_ms()),
@@ -1119,20 +1156,61 @@ fn dispatch_mcp_tool(
                 },
             };
             match super::directed_receive::exchange_with_pixels(&gui_dir, &req) {
-                Ok((body, _)) => {
+                Ok((mut body, _)) => {
                     let is_err = body["ok"] != true;
                     if !keep_lease {
                         session.active_lease = None;
+                        session.last_observed_frame = None;
+                    }
+                    let mut post_obs = None;
+                    if !is_err && keep_lease && auto_observe {
+                        if !ends_with_wait {
+                            std::thread::sleep(Duration::from_millis(140));
+                        }
+                        let mut obs = dispatch_mcp_tool(
+                            profile_dir,
+                            session,
+                            "weavelo_cua_observe",
+                            &json!({}),
+                        );
+                        if expects_visual_effect
+                            && let (Some(pre), Some(first_post)) =
+                                (&pre_frame, &session.last_observed_frame)
+                            && pre
+                                .frame_diff_ratio(first_post)
+                                .is_some_and(|diff| diff < 0.0005)
+                        {
+                            std::thread::sleep(Duration::from_millis(180));
+                            obs = dispatch_mcp_tool(
+                                profile_dir,
+                                session,
+                                "weavelo_cua_observe",
+                                &json!({}),
+                            );
+                        }
+                        if let (Some(pre), Some(post)) = (&pre_frame, &session.last_observed_frame)
+                            && let Some(diff) = pre.frame_diff_ratio(post)
+                        {
+                            let changed = diff >= 0.0005;
+                            body["visual_changed"] = json!(changed);
+                            body["visual_change_ratio"] =
+                                json!((f64::from(diff) * 10000.0).round() / 10000.0);
+                            if expects_visual_effect && !changed {
+                                body["unchanged_warning"] = json!(
+                                    "Screen pixels remained unchanged after batch execution; verify focus or target coordinates before repeating."
+                                );
+                            }
+                        }
+                        post_obs = Some(obs);
                     }
                     let mut content = vec![json!({
                         "type": "text",
                         "text": serde_json::to_string_pretty(&body).unwrap_or_default()
                     })];
-                    if !is_err && keep_lease && auto_observe {
-                        let obs = dispatch_mcp_tool(profile_dir, session, "weavelo_cua_observe", &json!({}));
-                        if let Some(obs_items) = obs["content"].as_array() {
-                            content.extend(obs_items.iter().cloned());
-                        }
+                    if let Some(obs) = post_obs
+                        && let Some(obs_items) = obs["content"].as_array()
+                    {
+                        content.extend(obs_items.iter().cloned());
                     }
                     json!({
                         "isError": is_err,
@@ -1167,21 +1245,59 @@ fn dispatch_mcp_tool(
                             r#"(() => {{
                                 const vw = Math.max(window.innerWidth || 1, 1);
                                 const vh = Math.max(window.innerHeight || 1, 1);
-                                const sel = 'a,button,input,select,textarea,[role],[tabindex],h1,h2,h3,nav,main';
-                                const nodes = Array.from(document.querySelectorAll(sel)).filter(el => {{ const r=el.getBoundingClientRect();
-                                  return r.width>0 && r.height>0 && r.right>0 && r.bottom>0 && r.left<vw && r.top<vh; }}).slice(0,80);
-                                window.__weaveloRefs={{id:'{snap_id}',nodes:new Map()}};
-                                return nodes.map((el, idx) => {{
-                                    const r = el.getBoundingClientRect();
-                                    const x0 = Math.max(0, Math.min(1000, Math.round((r.left / vw) * 1000)));
-                                    const y0 = Math.max(0, Math.min(1000, Math.round((r.top / vh) * 1000)));
-                                    const x1 = Math.max(0, Math.min(1000, Math.round((r.right / vw) * 1000)));
-                                    const y1 = Math.max(0, Math.min(1000, Math.round((r.bottom / vh) * 1000)));
-                                    const role = el.getAttribute('role') || el.tagName.toLowerCase();
-                                    const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || '').trim().slice(0, 80);
+                                const sel = 'a,button,input,select,textarea,summary,[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"]),h1,h2,h3,nav,main';
+                                const interactiveTags = new Set(['a','button','input','select','textarea','summary']);
+                                const interactiveRoles = new Set(['button','link','textbox','searchbox','checkbox','radio','switch','combobox','menuitem','tab','option','slider']);
+                                const collected = [];
+                                const seen = new Set();
+                                const isVisible = (el) => {{
+                                    if (!el || seen.has(el)) return false;
+                                    if (el.closest && el.closest('[aria-hidden="true"],[hidden],[inert]')) return false;
+                                    const win = el.ownerDocument?.defaultView || window;
+                                    const st = win.getComputedStyle ? win.getComputedStyle(el) : null;
+                                    if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0)) return false;
+                                    return true;
+                                }};
+                                const walk = (root, ox, oy, depth) => {{
+                                    if (!root || collected.length >= 200 || depth > 8) return;
+                                    for (const el of root.querySelectorAll(sel)) {{
+                                        if (collected.length >= 200) break;
+                                        if (!isVisible(el)) continue;
+                                        const r = el.getBoundingClientRect();
+                                        const left = r.left + ox, top = r.top + oy, right = r.right + ox, bottom = r.bottom + oy;
+                                        if (r.width <= 1 || r.height <= 1 || right <= 0 || bottom <= 0 || left >= vw || top >= vh) continue;
+                                        seen.add(el);
+                                        collected.push({{ el, left, top, right, bottom, depth }});
+                                    }}
+                                    for (const host of root.querySelectorAll('*')) {{
+                                        if (collected.length >= 200) break;
+                                        if (host.shadowRoot) walk(host.shadowRoot, ox, oy, depth + 1);
+                                        if (host.tagName === 'IFRAME') {{
+                                            try {{
+                                                const doc = host.contentDocument;
+                                                if (doc) {{
+                                                    const ir = host.getBoundingClientRect();
+                                                    walk(doc, ox + ir.left, oy + ir.top, depth + 1);
+                                                }}
+                                            }} catch (_) {{}}
+                                        }}
+                                    }}
+                                }};
+                                walk(document, 0, 0, 1);
+                                window.__weaveloRefs = {{ id: '{snap_id}', nodes: new Map() }};
+                                return collected.map((item, idx) => {{
+                                    const {{ el, left, top, right, bottom, depth }} = item;
+                                    const x0 = Math.max(0, Math.min(1000, Math.round((left / vw) * 1000)));
+                                    const y0 = Math.max(0, Math.min(1000, Math.round((top / vh) * 1000)));
+                                    const x1 = Math.max(0, Math.min(1000, Math.round((right / vw) * 1000)));
+                                    const y1 = Math.max(0, Math.min(1000, Math.round((bottom / vh) * 1000)));
+                                    const tag = el.tagName.toLowerCase();
+                                    const role = (el.getAttribute('role') || tag).toLowerCase();
+                                    const interactive = interactiveTags.has(tag) || interactiveRoles.has(role) || el.isContentEditable || el.hasAttribute('onclick');
+                                    const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 100);
                                     const refId = '@{snap_id}:e' + (idx + 1);
-                                    window.__weaveloRefs.nodes.set(refId,el);
-                                    return {{ role, name, bounds_norm: [x0, y0, x1, y1], interactive: true, depth: 1 }};
+                                    window.__weaveloRefs.nodes.set(refId, el);
+                                    return {{ role, name, bounds_norm: [x0, y0, x1, y1], interactive, depth: Math.min(depth, 6) }};
                                 }}).filter(n => n.bounds_norm[2] > n.bounds_norm[0] && n.bounds_norm[3] > n.bounds_norm[1]);
                             }})()"#
                         );
@@ -1226,8 +1342,11 @@ fn dispatch_mcp_tool(
                 r#"(async () => {{
                     const weavelo = {{
                         ref: (id) => {{ const key=id.startsWith('@')?id:'@'+id; const refs=window.__weaveloRefs; if (!refs || !key.startsWith('@'+refs.id+':')) throw new Error('Stale snapshot ref'); const el=refs.nodes.get(key); if (!el || !el.isConnected) throw new Error('Missing snapshot element'); return el; }},
-                        click: (id) => {{ const el = weavelo.ref(id); if (!el) throw new Error('Stale or missing ref: ' + id); el.click(); return true; }},
-                        fill: (id, val) => {{ const el = weavelo.ref(id); if (!el) throw new Error('Stale or missing ref: ' + id); el.focus(); el.value = val; el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }}
+                        click: (id) => {{ const el = weavelo.ref(id); el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }}); el.click(); return true; }},
+                        fill: (id, val) => {{ const el = weavelo.ref(id); el.focus(); if (el.isContentEditable) {{ el.textContent = String(val); }} else {{ el.value = val; }} el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }},
+                        press: (id, key) => {{ const el = id ? weavelo.ref(id) : (document.activeElement || document.body); el.focus?.(); const init = {{ key, bubbles: true, cancelable: true }}; el.dispatchEvent(new KeyboardEvent('keydown', init)); el.dispatchEvent(new KeyboardEvent('keyup', init)); if (key === 'Enter' && el.form) el.form.requestSubmit?.(); return true; }},
+                        scroll: (id, dy = 480) => {{ if (id) {{ const el = weavelo.ref(id); el.scrollBy({{ top: dy, behavior: 'instant' }}); }} else {{ window.scrollBy({{ top: dy, behavior: 'instant' }}); }} return true; }},
+                        text: (id) => {{ const el = weavelo.ref(id); return (el.innerText || el.value || el.textContent || '').trim(); }}
                     }};
                     return await ({user_code});
                 }})()"#
