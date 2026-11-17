@@ -107,7 +107,13 @@ impl NativeSource {
                     let crop=geometry.map_or(base,|g|crate::linux_frame::Crop {
                         x:base.x+g.crop.x,y:base.y+g.crop.y,width:g.crop.width,height:g.crop.height});
                     let output=geometry.map_or([settings.width.min(frame.width),settings.height.min(frame.height)],|g|[g.width,g.height]);
-                    let bitrate=if geometry.is_some(){remote_core::viewport::bitrate_for_pixels(output[0],output[1],settings.fps,settings.bitrate_kbps)}else{settings.bitrate_kbps};
+                    let full_crop=crop.width>=base.width && crop.height>=base.height
+                        && output==[settings.width.min(frame.width),settings.height.min(frame.height)];
+                    let bitrate=if geometry.is_some() && !full_crop {
+                        remote_core::viewport::bitrate_for_pixels(output[0],output[1],settings.fps,settings.bitrate_kbps)
+                    } else {
+                        settings.bitrate_kbps
+                    };
                     // Only source storage/color and actual codec dimensions/rate
                     // identify an encoder. Per-frame crop origins do not.
                     let wanted=(source.width,source.height,source.pixel_format,source.color,dmabuf,width,height,

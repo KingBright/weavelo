@@ -12,6 +12,7 @@
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -119,7 +120,7 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
         fit = "";
     }
     if (exact_output) fit = "";
-    snprintf(args, sizeof(args), "w=%d:h=%d%s:format=nv12:out_color_matrix=%s:out_range=%s:out_color_primaries=bt709:out_color_transfer=%s",
+    snprintf(args, sizeof(args), "w=%d:h=%d%s:mode=hq:format=nv12:out_color_matrix=%s:out_range=%s:out_color_primaries=bt709:out_color_transfer=%s",
         output_width, output_height, fit, matrix == 1 ? "bt709" : "smpte170m",
         range == 2 ? "full" : "limited", transfer == 13 ? "iec61966-2-1" : "bt709");
     result = avfilter_graph_create_filter(&scale, avfilter_get_by_name("scale_vaapi"), "scale", args, NULL, e->graph);
@@ -140,13 +141,17 @@ static int encoder_create(const char *device, const char *pixel, int width, int 
     if (!e->codec->hw_frames_ctx) goto nomem;
     e->codec->time_base = (AVRational){1, fps}; e->codec->framerate = (AVRational){fps, 1};
     if (exact_output) e->codec->sample_aspect_ratio = (AVRational){1,1};
-    e->codec->bit_rate = (int64_t)bitrate * 1000;
-    e->codec->rc_max_rate = (int64_t)bitrate * 1000;
-    /* Real-time capture cannot amortize a startup burst over a second of video.
-     * Give hardware BRC one frame's reservoir; retain every encoded reference. */
-    e->codec->rc_buffer_size = (int)((int64_t)bitrate * 1000 / fps);
-    e->codec->rc_initial_buffer_occupancy = e->codec->rc_buffer_size;
-    e->codec->gop_size = fps; e->codec->max_b_frames = 0; e->codec->thread_count = 1;
+    int64_t target_bps = (int64_t)bitrate * 1000;
+    int64_t max_bps = target_bps + target_bps / 2;
+    int64_t hrd_bits = FFMIN(max_bps, (int64_t)(INT_MAX / 2));
+    e->codec->bit_rate = target_bps;
+    e->codec->rc_max_rate = max_bps;
+    /* One-second VBR HRD reservoir at 50% initial fullness gives IDR keyframes
+     * crisp UI text headroom without bursting past UDP/Relay socket buffers,
+     * while keeping static desktop P-frames near zero filler bytes. */
+    e->codec->rc_buffer_size = (int)hrd_bits;
+    e->codec->rc_initial_buffer_occupancy = (int)(hrd_bits / 2);
+    e->codec->gop_size = fps * 4; e->codec->max_b_frames = 0; e->codec->thread_count = 1;
     e->codec->flags |= AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_CLOSED_GOP;
     e->codec->color_range = range; e->codec->colorspace = matrix;
     e->codec->color_trc = transfer; e->codec->color_primaries = primaries;

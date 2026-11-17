@@ -372,9 +372,14 @@ fn raw_command_with_encoder(frame:&OwnedFrame,settings:RawSettings,hardware:Opti
         "-vf", &scale,
         "-fps_mode", "passthrough", "-pix_fmt", "yuv420p", "-c:v", "libx265", "-preset", "ultrafast", "-tune", "zerolatency",
         "-x265-params", &format!("keyint={}:min-keyint={}:repeat-headers=1:bframes=0:rc-lookahead=0:aud=1:pools=2:frame-threads=1:log-level=error:colorprim={primaries}:transfer={transfer}:colormatrix={matrix}", settings.fps, settings.fps)]);}
+    let maxrate_kbps = if hardware.is_some() {
+        settings.bitrate_kbps.saturating_add(settings.bitrate_kbps / 2)
+    } else {
+        settings.bitrate_kbps
+    };
     command.args([
         "-color_range", &range.to_string(), "-colorspace", &matrix.to_string(), "-color_trc", &transfer.to_string(), "-color_primaries", &primaries.to_string(),
-        "-b:v", &format!("{}k", settings.bitrate_kbps), "-maxrate", &format!("{}k", settings.bitrate_kbps), "-bufsize", &format!("{}k", settings.bitrate_kbps),
+        "-b:v", &format!("{}k", settings.bitrate_kbps), "-maxrate", &format!("{maxrate_kbps}k"), "-bufsize", &format!("{maxrate_kbps}k"),
         "-f", "hevc", "-flush_packets", "1", "pipe:1"]);
     Ok(command)
 }

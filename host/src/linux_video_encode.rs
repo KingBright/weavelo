@@ -148,7 +148,7 @@ impl LinuxVideoEncoder {
 
     pub(crate) async fn redraw_if_needed(&mut self,frame:crate::linux_frame::OwnedFrame)->Result<bool,Box<dyn Error+Send+Sync>> {
         let Some(viewport)=&mut self.viewport else{return Ok(false);};
-        let geometry=viewport.planner.plan([frame.width,frame.height],[self.width,self.height],viewport.source_revision,std::time::Instant::now())?;
+        let geometry=viewport.planner.plan_with_receiver_density([frame.width,frame.height],[self.width,self.height],viewport.source_revision,std::time::Instant::now(),false)?;
         if !viewport.force_redraw&&viewport.last_geometry.is_some_and(|last|last.revision==geometry.revision&&last.source_revision==geometry.source_revision){return Ok(false);}
         self.submit_frame(LinuxVideoFrame::from_owned(frame)).await?;Ok(true)
     }
@@ -303,8 +303,8 @@ impl VideoEncoder for LinuxVideoEncoder {
                 return Err("native capture generation is stale".into());
             }
             if let Some(viewport)=&mut self.viewport {
-                frame.viewport=Some(viewport.planner.plan([frame.width,frame.height],[self.width,self.height],
-                    viewport.source_revision,std::time::Instant::now())?);
+                frame.viewport=Some(viewport.planner.plan_with_receiver_density([frame.width,frame.height],[self.width,self.height],
+                    viewport.source_revision,std::time::Instant::now(),false)?);
             }
             if self
                 .native

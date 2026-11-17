@@ -69,14 +69,14 @@ impl HardwareEncoder {
         let matrix=if signal.matrix==Some(1){"bt709"}else{"smpte170m"};
         let transfer=if signal.transfer==Some(13){"iec61966-2-1"}else{"bt709"};
         let range=if signal.full_range {"full"}else{"limited"};
-        let filter=format!("hwupload,scale_vaapi=w={}:h={}:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12:out_color_matrix={matrix}:out_range={range}:out_color_primaries=bt709:out_color_transfer={transfer}",
+        let filter=format!("hwupload,scale_vaapi=w={}:h={}:mode=hq:force_original_aspect_ratio=decrease:force_divisible_by=2:format=nv12:out_color_matrix={matrix}:out_range={range}:out_color_primaries=bt709:out_color_transfer={transfer}",
             settings.width.min(frame.width),settings.height.min(frame.height));
         // Mesa's HEVC encoder omits primaries/transfer even when AVCodecContext
         // is explicit. Signal the actual input/VPP contract in SPS; never infer
         // missing camera metadata. The reader verifies the resulting bitstream.
         let metadata=format!("hevc_metadata=aud=insert:video_full_range_flag={}:colour_primaries=1:transfer_characteristics={}:matrix_coefficients={}",
             u8::from(signal.full_range),signal.transfer.unwrap(),signal.matrix.unwrap());
-        command.args(["-vf",&filter,"-c:v","hevc_vaapi","-bf","0","-g",&settings.fps.to_string(),"-bsf:v",&metadata]);
+        command.args(["-vf",&filter,"-c:v","hevc_vaapi","-bf","0","-g",&settings.fps.saturating_mul(4).max(1).to_string(),"-bsf:v",&metadata]);
         Ok(())
     }
 }
