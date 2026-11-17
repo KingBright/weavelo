@@ -18,6 +18,8 @@ pub(crate) struct WorkspaceTouch {
     keyboard: crate::touch_mapper::VirtualKeyboard,
     cursor: (f64, f64),
     geometry: Option<protocol::viewport::FrameGeometry>,
+    touch_clock_anchor: Option<(u64, Instant)>,
+    last_tracker_instant: Option<Instant>,
 }
 
 impl WorkspaceTouch {
@@ -37,19 +39,48 @@ impl WorkspaceTouch {
             keyboard: Default::default(),
             cursor: (0.5, 0.5),
             geometry: None,
+            touch_clock_anchor: None,
+            last_tracker_instant: None,
         }
     }
     pub fn cancel(&mut self) -> Option<InputBinding> {
         self.tracker.cancel_all();
         self.keyboard = Default::default();
         self.last_intent = None;
+        self.touch_clock_anchor = None;
+        self.last_tracker_instant = None;
         self.binding.take()
     }
     fn cancel_pointer(&mut self) -> Vec<InputEvent> {
         // A local layout/IME inset change ends the gesture, not composition in
         // the same source. Full suspension/end still uses cancel() above.
         self.last_intent = None;
+        self.touch_clock_anchor = None;
+        self.last_tracker_instant = None;
         self.tracker.cancel_all()
+    }
+    fn resolve_tracker_instant(&mut self, event_time_ms: Option<u64>, wall_now: Instant) -> Instant {
+        let Some(ms) = event_time_ms else {
+            return wall_now;
+        };
+        if !self.tracker.has_active_pointers() && !self.tracker.has_momentum() {
+            self.touch_clock_anchor = Some((ms, wall_now));
+            self.last_tracker_instant = Some(wall_now);
+            return wall_now;
+        }
+        if let Some((base_ms, base_instant)) = self.touch_clock_anchor {
+            let delta_ms = ms.saturating_sub(base_ms).min(60_000);
+            let candidate = base_instant + std::time::Duration::from_millis(delta_ms);
+            let monotonic = self
+                .last_tracker_instant
+                .map_or(candidate, |prev| candidate.max(prev));
+            self.last_tracker_instant = Some(monotonic);
+            monotonic
+        } else {
+            self.touch_clock_anchor = Some((ms, wall_now));
+            self.last_tracker_instant = Some(wall_now);
+            wall_now
+        }
     }
     pub fn expire(&mut self, now: Instant) -> Option<InputBinding> {
         if self.last_intent.is_some_and(|last| {
@@ -177,11 +208,19 @@ impl WorkspaceTouch {
                     output.push(position(self.cursor));
                 }
                 InputEvent::MouseMoveAbsolute { x, y } => {
-                    self.cursor = (
+                    let raw = (
                         f64::from(x) / f64::from(u16::MAX),
                         f64::from(y) / f64::from(u16::MAX),
                     );
-                    output.push(InputEvent::MouseMoveAbsolute { x, y });
+                    if self.tracker.is_two_finger_scrolling()
+                        && let Some(g) = self.geometry
+                    {
+                        self.cursor = g.clamp_source_point(raw);
+                        output.push(position(self.cursor));
+                    } else {
+                        self.cursor = raw;
+                        output.push(InputEvent::MouseMoveAbsolute { x, y });
+                    }
                 }
                 event @ InputEvent::MouseDown(_) if trackpad => {
                     if let Some(g) = self.geometry {
@@ -313,6 +352,16 @@ impl WorkspaceTouch {
         current: Option<InputBinding>,
         now: Instant,
     ) -> (Option<InputBinding>, Vec<InputEvent>) {
+        self.touch_with_event_time(token, event, current, None, now)
+    }
+    pub fn touch_with_event_time(
+        &mut self,
+        token: u64,
+        event: InputEvent,
+        current: Option<InputBinding>,
+        event_time_ms: Option<u64>,
+        now: Instant,
+    ) -> (Option<InputBinding>, Vec<InputEvent>) {
         if token != self.surface || !self.attached {
             return (None, Vec::new());
         }
@@ -340,23 +389,35 @@ impl WorkspaceTouch {
         if action == TouchAction::Cancel && self.tracker.mode != TouchMode::NativeTouch {
             return (release, self.cancel_pointer());
         }
+        let tracker_now = self.resolve_tracker_instant(event_time_ms, now);
         let events = self.tracker.process_touch(
             action,
             pointer_id,
             normalized_x,
             normalized_y,
             pressure,
-            now,
+            tracker_now,
         );
         self.last_intent =
             (self.tracker.has_active_pointers() || self.tracker.has_momentum()).then_some(now);
         (release, self.normalized_trackpad(events))
     }
+    #[cfg(test)]
     pub fn touch_batch(
         &mut self,
         token: u64,
         contacts: &[protocol::touch::Contact],
         current: Option<InputBinding>,
+        now: Instant,
+    ) -> (Option<InputBinding>, Vec<InputEvent>) {
+        self.touch_batch_with_event_time(token, contacts, current, None, now)
+    }
+    pub fn touch_batch_with_event_time(
+        &mut self,
+        token: u64,
+        contacts: &[protocol::touch::Contact],
+        current: Option<InputBinding>,
+        event_time_ms: Option<u64>,
         now: Instant,
     ) -> (Option<InputBinding>, Vec<InputEvent>) {
         if token != self.surface || !self.attached {
@@ -381,15 +442,26 @@ impl WorkspaceTouch {
         {
             return (release, self.cancel_pointer());
         }
-        let events = self.tracker.process_touch_batch(contacts, now);
+        let tracker_now = self.resolve_tracker_instant(event_time_ms, now);
+        let events = self.tracker.process_touch_batch(contacts, tracker_now);
         self.last_intent =
             (self.tracker.has_active_pointers() || self.tracker.has_momentum()).then_some(now);
         (release, self.normalized_trackpad(events))
     }
+    #[cfg(test)]
     pub fn step_momentum(
         &mut self,
         token: u64,
         current: Option<InputBinding>,
+        now: Instant,
+    ) -> (Option<InputBinding>, Vec<InputEvent>) {
+        self.step_momentum_with_event_time(token, current, None, now)
+    }
+    pub fn step_momentum_with_event_time(
+        &mut self,
+        token: u64,
+        current: Option<InputBinding>,
+        event_time_ms: Option<u64>,
         now: Instant,
     ) -> (Option<InputBinding>, Vec<InputEvent>) {
         if token != self.surface || !self.attached {
@@ -403,7 +475,8 @@ impl WorkspaceTouch {
             let release = self.cancel().or(expired);
             return (release, Vec::new());
         }
-        let events = self.tracker.step_momentum(now);
+        let tracker_now = self.resolve_tracker_instant(event_time_ms, now);
+        let events = self.tracker.step_momentum(tracker_now);
         self.last_intent =
             (self.tracker.has_active_pointers() || self.tracker.has_momentum()).then_some(now);
         (expired, self.normalized_trackpad(events))
@@ -892,5 +965,117 @@ mod tests {
         assert_eq!(touch.healthy_binding(2), None);
         touch.alive(1, now + std::time::Duration::from_millis(500));
         assert_eq!(touch.healthy_binding(1), None);
+    }
+    #[test]
+    fn monotonic_event_time_preserves_momentum_despite_jni_wall_clock_jitter() {
+        use std::time::Duration;
+        let mut touch = ready();
+        let grant = Some(binding(1));
+        let wall_t0 = Instant::now();
+        let down = [
+            protocol::touch::Contact {
+                action: TouchAction::Down,
+                pointer_id: 0,
+                normalized_x: 0.4,
+                normalized_y: 0.7,
+                pressure: 1.0,
+            },
+            protocol::touch::Contact {
+                action: TouchAction::Down,
+                pointer_id: 1,
+                normalized_x: 0.6,
+                normalized_y: 0.7,
+                pressure: 1.0,
+            },
+        ];
+        touch.touch_batch_with_event_time(1, &down, grant, Some(1_000), wall_t0);
+
+        // Simulate two 8ms 120Hz batches arriving burst-queued at wall_t0 + 20ms,
+        // followed by finger lift arriving 75ms later in wall-clock time (wall_t0 + 95ms)
+        // when actual hardware lift was only 8ms after the last move (1_024ms).
+        let move1 = [
+            protocol::touch::Contact {
+                action: TouchAction::Move,
+                pointer_id: 0,
+                normalized_x: 0.4,
+                normalized_y: 0.58,
+                pressure: 1.0,
+            },
+            protocol::touch::Contact {
+                action: TouchAction::Move,
+                pointer_id: 1,
+                normalized_x: 0.6,
+                normalized_y: 0.58,
+                pressure: 1.0,
+            },
+        ];
+        let move2 = [
+            protocol::touch::Contact {
+                action: TouchAction::Move,
+                pointer_id: 0,
+                normalized_x: 0.4,
+                normalized_y: 0.44,
+                pressure: 1.0,
+            },
+            protocol::touch::Contact {
+                action: TouchAction::Move,
+                pointer_id: 1,
+                normalized_x: 0.6,
+                normalized_y: 0.44,
+                pressure: 1.0,
+            },
+        ];
+        touch.touch_batch_with_event_time(
+            1,
+            &move1,
+            grant,
+            Some(1_008),
+            wall_t0 + Duration::from_millis(20),
+        );
+        touch.touch_batch_with_event_time(
+            1,
+            &move2,
+            grant,
+            Some(1_016),
+            wall_t0 + Duration::from_millis(20),
+        );
+        let up = [
+            protocol::touch::Contact {
+                action: TouchAction::Up,
+                pointer_id: 0,
+                normalized_x: 0.4,
+                normalized_y: 0.44,
+                pressure: 0.0,
+            },
+            protocol::touch::Contact {
+                action: TouchAction::Up,
+                pointer_id: 1,
+                normalized_x: 0.6,
+                normalized_y: 0.44,
+                pressure: 0.0,
+            },
+        ];
+        touch.touch_batch_with_event_time(
+            1,
+            &up,
+            grant,
+            Some(1_024),
+            wall_t0 + Duration::from_millis(95),
+        );
+        assert!(
+            touch.has_momentum(),
+            "hardware touch timestamps must keep kinetic momentum alive across JNI queue jitter"
+        );
+        let (_, coast) = touch.step_momentum_with_event_time(
+            1,
+            grant,
+            Some(1_032),
+            wall_t0 + Duration::from_millis(103),
+        );
+        assert!(!coast.is_empty());
+
+        // Also cover non-timestamped convenience wrappers used by unit tests.
+        let _ = touch.touch_batch(1, &[], grant, wall_t0 + Duration::from_millis(110));
+        let _ = touch.step_momentum(1, grant, wall_t0 + Duration::from_millis(118));
     }
 }

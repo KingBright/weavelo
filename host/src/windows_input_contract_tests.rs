@@ -739,3 +739,41 @@ fn window_family_requires_same_process_even_for_matching_root_owner() {
     assert!(!actual::family_member(13, 1, 1), "foreign popup");
     assert!(!actual::family_member(2, 1, 1), "foreign occlusion");
 }
+
+#[test]
+fn continuous_touchpad_scroll_avoids_120_notches_conserves_remainder_and_resets_on_reversal() {
+    let _serial = SERIAL.lock().unwrap();
+    *CALLS.lock().unwrap() = Calls {
+        wheel_lines: Some(3),
+        wheel_chars: Some(3),
+        ..Default::default()
+    };
+    let input = actual::WindowsInputInjector::new().unwrap();
+    let changed = protocol::ScrollGesture {
+        phase: protocol::ScrollPhase::Changed,
+        momentum: protocol::MomentumPhase::None,
+    };
+    input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 0,
+            delta_y: -120,
+            gesture: changed,
+        })
+        .unwrap();
+    input
+        .inject_input(InputEvent::MouseScroll {
+            delta_x: 0,
+            delta_y: -10,
+            gesture: changed,
+        })
+        .unwrap();
+    let calls = CALLS.lock().unwrap();
+    assert_eq!(
+        calls.posted,
+        vec![
+            Posted::Mouse(MOUSEEVENTF_WHEEL, (-119_i32) as u32),
+            Posted::Mouse(MOUSEEVENTF_WHEEL, (-11_i32) as u32),
+        ],
+        "1-unit precision-touchpad adjustment at -120 must carry into the next frame"
+    );
+}

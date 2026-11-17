@@ -321,4 +321,39 @@ class ViewportTransformTest {
             )
         )
     }
+
+    @Test
+    fun parallelFingerVectorsStayRemoteScrollWhileOpposingVectorsClaimPinch() {
+        val initialCentroid = Offset(500f, 300f)
+        // Both fingers moving downward in the same direction with unequal finger-pad roll
+        // (18px distance change on 180px span, centroid moved 19px) must scroll remotely, not zoom.
+        assertEquals(
+            TwoFingerGestureMode.REMOTE_GESTURE,
+            classifyTwoFingerGesture(
+                currentScale = 2.0f,
+                initialDistance = 180f,
+                currentDistance = 198f,
+                initialCentroid = initialCentroid,
+                currentCentroid = Offset(501f, 319f),
+                preferRemoteScroll = true,
+                firstDelta = Offset(-4f, 12f),
+                secondDelta = Offset(6f, 26f)
+            )
+        )
+
+        // Opposing radial finger vectors immediately claim local pinch-to-zoom.
+        assertEquals(
+            TwoFingerGestureMode.LOCAL_TRANSFORM,
+            classifyTwoFingerGesture(
+                currentScale = 1.0f,
+                initialDistance = 180f,
+                currentDistance = 206f,
+                initialCentroid = initialCentroid,
+                currentCentroid = Offset(501f, 301f),
+                preferRemoteScroll = true,
+                firstDelta = Offset(-13f, -4f),
+                secondDelta = Offset(15f, 6f)
+            )
+        )
+    }
 }

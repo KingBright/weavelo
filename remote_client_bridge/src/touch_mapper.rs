@@ -5,14 +5,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const DIRECT_SCROLL_EXTENT_PX: f32 = 1440.0;
-const TRACKPAD_SCROLL_EXTENT_PX: f32 = 1680.0;
+const DIRECT_SCROLL_EXTENT_PX: f32 = 2100.0;
+const TRACKPAD_SCROLL_EXTENT_PX: f32 = 2280.0;
 const TRACKPAD_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(320);
 const TRACKPAD_DOUBLE_TAP_RADIUS: f32 = 0.08;
-const MIN_MOMENTUM_SPEED_PX_PER_SEC: f32 = 200.0;
-const STOP_MOMENTUM_SPEED_PX_PER_SEC: f32 = 28.0;
-const MAX_MOMENTUM_IDLE_BEFORE_LIFT: Duration = Duration::from_millis(55);
-const MOMENTUM_FRICTION: f32 = 5.0;
+const MIN_MOMENTUM_SPEED_PX_PER_SEC: f32 = 160.0;
+const STOP_MOMENTUM_SPEED_PX_PER_SEC: f32 = 24.0;
+const MAX_MOMENTUM_IDLE_BEFORE_LIFT: Duration = Duration::from_millis(80);
+const MOMENTUM_FRICTION: f32 = 2.6;
+const TWO_FINGER_TAP_MAX_DURATION: Duration = Duration::from_millis(300);
+const TWO_FINGER_TAP_MAX_TRAVEL: f32 = 0.015;
+const DIRECT_STAGGER_GUARD_WINDOW: Duration = Duration::from_millis(28);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ScrollAxisLock {
+    #[default]
+    Unlocked,
+    Vertical,
+    Horizontal,
+    Free,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TouchMode {
@@ -57,7 +69,12 @@ pub struct TouchStateTracker {
     two_finger_scroll_positioned: bool,
     two_finger_scrolling: bool,
     long_press_triggered: bool,
+    initial_two_finger_centroid: Option<(f32, f32)>,
     last_two_finger_centroid: Option<(f32, f32)>,
+    two_finger_down_time: Option<Instant>,
+    two_finger_max_travel: f32,
+    scroll_axis_lock: ScrollAxisLock,
+    scroll_axis_accum: (f32, f32),
     relative_remainder: (f32, f32),
     scroll_remainder: (f32, f32),
     last_scroll_sample_at: Option<Instant>,
@@ -97,7 +114,12 @@ impl TouchStateTracker {
             two_finger_scroll_positioned: false,
             two_finger_scrolling: false,
             long_press_triggered: false,
+            initial_two_finger_centroid: None,
             last_two_finger_centroid: None,
+            two_finger_down_time: None,
+            two_finger_max_travel: 0.0,
+            scroll_axis_lock: ScrollAxisLock::Unlocked,
+            scroll_axis_accum: (0.0, 0.0),
             relative_remainder: (0., 0.),
             scroll_remainder: (0., 0.),
             last_scroll_sample_at: None,
@@ -118,6 +140,20 @@ impl TouchStateTracker {
 
     pub fn has_momentum(&self) -> bool {
         self.momentum_active
+    }
+
+    pub(crate) fn is_two_finger_scrolling(&self) -> bool {
+        self.two_finger_scrolling || self.two_finger_scroll_positioned || self.momentum_active
+    }
+
+    fn can_emit_two_finger_right_click(&self, now: Instant) -> bool {
+        !self.has_dragged
+            && !self.two_finger_scrolling
+            && !self.two_finger_right_clicked
+            && self.two_finger_max_travel <= TWO_FINGER_TAP_MAX_TRAVEL
+            && self
+                .two_finger_down_time
+                .is_none_or(|t| now.saturating_duration_since(t) <= TWO_FINGER_TAP_MAX_DURATION)
     }
 
     fn scroll_phase_event(delta_x: i32, delta_y: i32, phase: ScrollPhase) -> InputEvent {
@@ -143,10 +179,62 @@ impl TouchStateTracker {
     }
 
     fn scroll_velocity_gain(norm_speed_per_sec: f32) -> f32 {
-        if norm_speed_per_sec <= 0.35 {
+        if norm_speed_per_sec <= 0.28 {
             1.0
         } else {
-            (1.0 + (norm_speed_per_sec - 0.35) * 0.72).clamp(1.0, 2.8)
+            (1.0 + (norm_speed_per_sec - 0.28) * 0.95).clamp(1.0, 3.4)
+        }
+    }
+
+    fn apply_scroll_axis_lock(&mut self, norm_dx: f32, norm_dy: f32) -> (f32, f32) {
+        self.scroll_axis_accum.0 += norm_dx.abs();
+        self.scroll_axis_accum.1 += norm_dy.abs();
+        if self.scroll_axis_lock == ScrollAxisLock::Unlocked {
+            let (ax, ay) = self.scroll_axis_accum;
+            let total = ax.hypot(ay);
+            if total >= 0.0035 {
+                if ay >= ax * 1.55 {
+                    self.scroll_axis_lock = ScrollAxisLock::Vertical;
+                } else if ax >= ay * 1.55 {
+                    self.scroll_axis_lock = ScrollAxisLock::Horizontal;
+                } else if total >= 0.024 {
+                    self.scroll_axis_lock = ScrollAxisLock::Free;
+                }
+            }
+        }
+        match self.scroll_axis_lock {
+            ScrollAxisLock::Vertical => {
+                if norm_dx.abs() > 0.022 && norm_dx.abs() > norm_dy.abs() * 1.85 {
+                    self.scroll_axis_lock = ScrollAxisLock::Free;
+                    (norm_dx, norm_dy)
+                } else {
+                    self.scroll_remainder.0 = 0.0;
+                    self.scroll_velocity.0 = 0.0;
+                    self.pending_scroll_px.0 = 0.0;
+                    (0.0, norm_dy)
+                }
+            }
+            ScrollAxisLock::Horizontal => {
+                if norm_dy.abs() > 0.022 && norm_dy.abs() > norm_dx.abs() * 1.85 {
+                    self.scroll_axis_lock = ScrollAxisLock::Free;
+                    (norm_dx, norm_dy)
+                } else {
+                    self.scroll_remainder.1 = 0.0;
+                    self.scroll_velocity.1 = 0.0;
+                    self.pending_scroll_px.1 = 0.0;
+                    (norm_dx, 0.0)
+                }
+            }
+            ScrollAxisLock::Unlocked => {
+                if norm_dy.abs() >= norm_dx.abs() * 1.55 {
+                    (0.0, norm_dy)
+                } else if norm_dx.abs() >= norm_dy.abs() * 1.55 {
+                    (norm_dx, 0.0)
+                } else {
+                    (norm_dx, norm_dy)
+                }
+            }
+            ScrollAxisLock::Free => (norm_dx, norm_dy),
         }
     }
 
@@ -263,10 +351,15 @@ impl TouchStateTracker {
             return;
         };
         let cur_centroid = ((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0);
+        if let Some(init_c) = self.initial_two_finger_centroid {
+            let drift = (cur_centroid.0 - init_c.0).hypot(cur_centroid.1 - init_c.1);
+            self.two_finger_max_travel = self.two_finger_max_travel.max(drift);
+        }
         if let Some(prev_centroid) = self.last_two_finger_centroid {
             let sign = self.scroll_direction_sign();
-            let norm_dx = cur_centroid.0 - prev_centroid.0;
-            let norm_dy = cur_centroid.1 - prev_centroid.1;
+            let raw_norm_dx = cur_centroid.0 - prev_centroid.0;
+            let raw_norm_dy = cur_centroid.1 - prev_centroid.1;
+            let (norm_dx, norm_dy) = self.apply_scroll_axis_lock(raw_norm_dx, raw_norm_dy);
             let base_dx = norm_dx * extent_px * sign;
             let base_dy = norm_dy * extent_px * sign;
 
@@ -278,18 +371,31 @@ impl TouchStateTracker {
                     let scaled_dx = base_dx * gain;
                     let scaled_dy = base_dy * gain;
                     let inst_vx =
-                        ((scaled_dx + self.pending_scroll_px.0) / dt).clamp(-9600.0, 9600.0);
+                        ((scaled_dx + self.pending_scroll_px.0) / dt).clamp(-12000.0, 12000.0);
                     let inst_vy =
-                        ((scaled_dy + self.pending_scroll_px.1) / dt).clamp(-9600.0, 9600.0);
+                        ((scaled_dy + self.pending_scroll_px.1) / dt).clamp(-12000.0, 12000.0);
+                    if self.scroll_velocity.0 != 0.0 && inst_vx != 0.0 && self.scroll_velocity.0.signum() != inst_vx.signum() {
+                        self.scroll_velocity.0 = 0.0;
+                        self.scroll_remainder.0 = 0.0;
+                    }
+                    if self.scroll_velocity.1 != 0.0 && inst_vy != 0.0 && self.scroll_velocity.1.signum() != inst_vy.signum() {
+                        self.scroll_velocity.1 = 0.0;
+                        self.scroll_remainder.1 = 0.0;
+                    }
                     self.scroll_velocity = if dt > 0.065 {
                         (inst_vx * 0.65, inst_vy * 0.65)
-                    } else if self.scroll_velocity == (0., 0.) {
-                        (inst_vx, inst_vy)
                     } else {
-                        (
-                            self.scroll_velocity.0 * 0.45 + inst_vx * 0.55,
-                            self.scroll_velocity.1 * 0.45 + inst_vy * 0.55,
-                        )
+                        let next_vx = if self.scroll_velocity.0 == 0.0 || inst_vx == 0.0 {
+                            inst_vx
+                        } else {
+                            self.scroll_velocity.0 * 0.42 + inst_vx * 0.58
+                        };
+                        let next_vy = if self.scroll_velocity.1 == 0.0 || inst_vy == 0.0 {
+                            inst_vy
+                        } else {
+                            self.scroll_velocity.1 * 0.42 + inst_vy * 0.58
+                        };
+                        (next_vx, next_vy)
                     };
                     self.pending_scroll_px = (0., 0.);
                     self.last_scroll_sample_at = Some(now);
@@ -408,7 +514,12 @@ impl TouchStateTracker {
         self.two_finger_scroll_positioned = false;
         self.two_finger_scrolling = false;
         self.long_press_triggered = false;
+        self.initial_two_finger_centroid = None;
         self.last_two_finger_centroid = None;
+        self.two_finger_down_time = None;
+        self.two_finger_max_travel = 0.0;
+        self.scroll_axis_lock = ScrollAxisLock::Unlocked;
+        self.scroll_axis_accum = (0.0, 0.0);
         self.scroll_remainder = (0., 0.);
         self.trackpad_drag_armed = false;
     }
@@ -430,32 +541,39 @@ impl TouchStateTracker {
         {
             return self.cancel_all();
         }
-        if matches!(
-            self.mode,
-            TouchMode::DirectTouch | TouchMode::VirtualTrackpad
-        ) && self.active_pointers.len() == 2
-            && contacts.iter().all(|c| {
-                c.action == TouchAction::Move && self.active_pointers.contains(&c.pointer_id)
-            })
-        {
-            for c in contacts {
-                let cx = c.normalized_x.clamp(0.0, 1.0);
-                let cy = c.normalized_y.clamp(0.0, 1.0);
-                self.pointer_positions.insert(c.pointer_id, (cx, cy));
-                self.last_touch_pos = Some((cx, cy));
-            }
-            let mut events = Vec::new();
-            let (extent, position_cursor) = if self.mode == TouchMode::DirectTouch {
-                (DIRECT_SCROLL_EXTENT_PX, true)
-            } else {
-                (TRACKPAD_SCROLL_EXTENT_PX, false)
-            };
-            self.emit_two_finger_scroll_move(extent, position_cursor, now, &mut events);
-            return events;
-        }
-
         let mut events = Vec::new();
-        for c in contacts {
+        let mut idx = 0;
+        while idx < contacts.len() {
+            if matches!(
+                self.mode,
+                TouchMode::DirectTouch | TouchMode::VirtualTrackpad
+            ) && self.active_pointers.len() == 2
+                && contacts[idx].action == TouchAction::Move
+                && self.active_pointers.contains(&contacts[idx].pointer_id)
+            {
+                let start = idx;
+                while idx < contacts.len()
+                    && contacts[idx].action == TouchAction::Move
+                    && self.active_pointers.contains(&contacts[idx].pointer_id)
+                {
+                    let c = &contacts[idx];
+                    let cx = c.normalized_x.clamp(-4.0, 5.0);
+                    let cy = c.normalized_y.clamp(-4.0, 5.0);
+                    self.pointer_positions.insert(c.pointer_id, (cx, cy));
+                    self.last_touch_pos = Some((cx.clamp(0.0, 1.0), cy.clamp(0.0, 1.0)));
+                    idx += 1;
+                }
+                if idx > start {
+                    let (extent, position_cursor) = if self.mode == TouchMode::DirectTouch {
+                        (DIRECT_SCROLL_EXTENT_PX, true)
+                    } else {
+                        (TRACKPAD_SCROLL_EXTENT_PX, false)
+                    };
+                    self.emit_two_finger_scroll_move(extent, position_cursor, now, &mut events);
+                }
+                continue;
+            }
+            let c = &contacts[idx];
             events.extend(self.process_touch(
                 c.action,
                 c.pointer_id,
@@ -464,6 +582,7 @@ impl TouchStateTracker {
                 c.pressure,
                 now,
             ));
+            idx += 1;
         }
         events
     }
@@ -492,6 +611,8 @@ impl TouchStateTracker {
         // not decoded-video pixels. Bounds only determine relative-motion sensitivity.
         let clamped_x = norm_x.clamp(0.0, 1.0);
         let clamped_y = norm_y.clamp(0.0, 1.0);
+        let track_x = norm_x.clamp(-4.0, 5.0);
+        let track_y = norm_y.clamp(-4.0, 5.0);
 
         let abs_x = (clamped_x * f32::from(u16::MAX)).round() as u16;
         let abs_y = (clamped_y * f32::from(u16::MAX)).round() as u16;
@@ -542,7 +663,7 @@ impl TouchStateTracker {
                             self.active_pointers.push(pointer_id);
                         }
                         self.pointer_positions
-                            .insert(pointer_id, (clamped_x, clamped_y));
+                            .insert(pointer_id, (track_x, track_y));
                         self.session_max_pointers =
                             self.session_max_pointers.max(self.active_pointers.len());
 
@@ -557,7 +678,12 @@ impl TouchStateTracker {
                             self.two_finger_right_clicked = false;
                             self.two_finger_scroll_positioned = false;
                             self.two_finger_scrolling = false;
+                            self.initial_two_finger_centroid = None;
                             self.last_two_finger_centroid = None;
+                            self.two_finger_down_time = None;
+                            self.two_finger_max_travel = 0.0;
+                            self.scroll_axis_lock = ScrollAxisLock::Unlocked;
+                            self.scroll_axis_accum = (0.0, 0.0);
                             self.scroll_remainder = (0., 0.);
                             self.clear_momentum_state();
 
@@ -570,6 +696,10 @@ impl TouchStateTracker {
                             }
                             self.two_finger_scroll_positioned = false;
                             self.two_finger_scrolling = false;
+                            self.two_finger_down_time = Some(now);
+                            self.two_finger_max_travel = 0.0;
+                            self.scroll_axis_lock = ScrollAxisLock::Unlocked;
+                            self.scroll_axis_accum = (0.0, 0.0);
                             self.scroll_remainder = (0., 0.);
                             self.clear_momentum_state();
                             self.last_scroll_sample_at = Some(now);
@@ -577,8 +707,9 @@ impl TouchStateTracker {
                                 self.pointer_positions.get(&self.active_pointers[0]),
                                 self.pointer_positions.get(&self.active_pointers[1]),
                             ) {
-                                self.last_two_finger_centroid =
-                                    Some(((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0));
+                                let c = ((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0);
+                                self.initial_two_finger_centroid = Some(c);
+                                self.last_two_finger_centroid = Some(c);
                             }
                         } else if self.active_pointers.len() > 2 {
                             if self.is_left_down {
@@ -594,7 +725,7 @@ impl TouchStateTracker {
                     }
                     TouchAction::Move => {
                         self.pointer_positions
-                            .insert(pointer_id, (clamped_x, clamped_y));
+                            .insert(pointer_id, (track_x, track_y));
                         self.last_touch_pos = Some((clamped_x, clamped_y));
 
                         if self.active_pointers.len() == 1 && self.session_max_pointers == 1 {
@@ -605,8 +736,14 @@ impl TouchStateTracker {
                                         (clamped_x - start_x) * (self.bounds.width as f32);
                                     let dy_total_px =
                                         (clamped_y - start_y) * (self.bounds.height as f32);
-
-                                    if dx_total_px.hypot(dy_total_px) > drag_slop {
+                                    let dist_px = dx_total_px.hypot(dy_total_px);
+                                    let past_stagger_window = self.touch_down_time.is_none_or(|t| {
+                                        now.saturating_duration_since(t)
+                                            >= DIRECT_STAGGER_GUARD_WINDOW
+                                    });
+                                    if dist_px > drag_slop * 1.75
+                                        || (dist_px > drag_slop && past_stagger_window)
+                                    {
                                         self.has_dragged = true;
                                     }
                                 }
@@ -685,7 +822,7 @@ impl TouchStateTracker {
                                 events.push(InputEvent::MouseUp(0));
                                 self.is_left_down = false;
                             }
-                            if !self.has_dragged && !self.two_finger_right_clicked {
+                            if self.can_emit_two_finger_right_click(now) {
                                 // 双指轻点：触发鼠标右键，且整轮手势仅触发一次，不污染后续抬指
                                 events.push(InputEvent::MouseDown(1));
                                 events.push(InputEvent::MouseUp(1));
@@ -701,6 +838,7 @@ impl TouchStateTracker {
                                 events.push(Self::scroll_phase_event(0, 0, ScrollPhase::Ended));
                                 self.arm_momentum(now);
                             }
+                            self.initial_two_finger_centroid = None;
                             self.last_two_finger_centroid = None;
                             self.two_finger_scroll_positioned = false;
                         }
@@ -741,7 +879,7 @@ impl TouchStateTracker {
                             self.active_pointers.push(pointer_id);
                         }
                         self.pointer_positions
-                            .insert(pointer_id, (clamped_x, clamped_y));
+                            .insert(pointer_id, (track_x, track_y));
                         self.session_max_pointers =
                             self.session_max_pointers.max(self.active_pointers.len());
 
@@ -755,7 +893,12 @@ impl TouchStateTracker {
                             self.has_dragged = false;
                             self.two_finger_right_clicked = false;
                             self.two_finger_scrolling = false;
+                            self.initial_two_finger_centroid = None;
                             self.last_two_finger_centroid = None;
+                            self.two_finger_down_time = None;
+                            self.two_finger_max_travel = 0.0;
+                            self.scroll_axis_lock = ScrollAxisLock::Unlocked;
+                            self.scroll_axis_accum = (0.0, 0.0);
                             // 双击不松手拖拽（Double-Tap-and-Hold Drag）：轻点后 320ms 内再次按下并滑动即可拖拽窗口/滚动条/选区
                             if let Some((tap_time, (tx, ty))) = self.last_trackpad_tap.take() {
                                 if now.saturating_duration_since(tap_time)
@@ -774,6 +917,10 @@ impl TouchStateTracker {
                             self.trackpad_drag_armed = false;
                             self.two_finger_scrolling = false;
                             self.last_trackpad_tap = None;
+                            self.two_finger_down_time = Some(now);
+                            self.two_finger_max_travel = 0.0;
+                            self.scroll_axis_lock = ScrollAxisLock::Unlocked;
+                            self.scroll_axis_accum = (0.0, 0.0);
                             self.scroll_remainder = (0., 0.);
                             self.clear_momentum_state();
                             self.last_scroll_sample_at = Some(now);
@@ -786,8 +933,9 @@ impl TouchStateTracker {
                                 .get(&self.active_pointers[1])
                                 .copied();
                             if let (Some(p0), Some(p1)) = (p0, p1) {
-                                self.last_two_finger_centroid =
-                                    Some(((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0));
+                                let c = ((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0);
+                                self.initial_two_finger_centroid = Some(c);
+                                self.last_two_finger_centroid = Some(c);
                             }
                         } else if self.active_pointers.len() > 2 {
                             if self.is_left_down {
@@ -805,11 +953,11 @@ impl TouchStateTracker {
                     TouchAction::Move => {
                         let prev_pos = self
                             .pointer_positions
-                            .insert(pointer_id, (clamped_x, clamped_y));
+                            .insert(pointer_id, (track_x, track_y));
                         if self.active_pointers.len() == 1 && self.session_max_pointers == 1 {
                             if let Some((lx, ly)) = prev_pos {
-                                let raw_dx = (clamped_x - lx) * (self.bounds.width as f32) * 1.5;
-                                let raw_dy = (clamped_y - ly) * (self.bounds.height as f32) * 1.5;
+                                let raw_dx = (track_x - lx) * (self.bounds.width as f32) * 1.5;
+                                let raw_dy = (track_y - ly) * (self.bounds.height as f32) * 1.5;
 
                                 let (start_x, start_y) =
                                     self.touch_down_pos.unwrap_or((clamped_x, clamped_y));
@@ -857,13 +1005,13 @@ impl TouchStateTracker {
                         if self
                             .pointer_positions
                             .get(&pointer_id)
-                            .is_some_and(|point| *point != (clamped_x, clamped_y))
+                            .is_some_and(|point| *point != (track_x, track_y))
                         {
                             events.extend(self.process_touch(
                                 TouchAction::Move,
                                 pointer_id,
-                                clamped_x,
-                                clamped_y,
+                                norm_x,
+                                norm_y,
                                 pressure,
                                 now,
                             ));
@@ -883,7 +1031,7 @@ impl TouchStateTracker {
                                     Some((now, (clamped_x, clamped_y)))
                                 };
                             } else if self.session_max_pointers == 2
-                                && !self.two_finger_right_clicked
+                                && self.can_emit_two_finger_right_click(now)
                             {
                                 // 双指轻触点击：鼠标右键单击（仅触发一次）
                                 events.push(InputEvent::MouseDown(1));
@@ -2305,5 +2453,156 @@ mod virtual_keyboard_tests {
             t0 + Duration::from_millis(102),
         );
         assert!(!tracker.has_momentum());
+    }
+
+    #[test]
+    fn vertical_scroll_locks_primary_axis_eliminating_horizontal_crosstalk() {
+        let mut tracker =
+            TouchStateTracker::new(TouchMode::DirectTouch, RemoteScreenBounds::default());
+        let t0 = Instant::now();
+        tracker.process_touch_batch(
+            &[
+                protocol::touch::Contact {
+                    action: TouchAction::Down,
+                    pointer_id: 0,
+                    normalized_x: 0.40,
+                    normalized_y: 0.70,
+                    pressure: 1.0,
+                },
+                protocol::touch::Contact {
+                    action: TouchAction::Down,
+                    pointer_id: 1,
+                    normalized_x: 0.60,
+                    normalized_y: 0.70,
+                    pressure: 1.0,
+                },
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 0,
+                    normalized_x: 0.415,
+                    normalized_y: 0.58,
+                    pressure: 1.0,
+                },
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 1,
+                    normalized_x: 0.615,
+                    normalized_y: 0.58,
+                    pressure: 1.0,
+                },
+            ],
+            t0 + Duration::from_millis(8),
+        );
+        let swipe2 = tracker.process_touch_batch(
+            &[
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 0,
+                    normalized_x: 0.425,
+                    normalized_y: 0.44,
+                    pressure: 1.0,
+                },
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 1,
+                    normalized_x: 0.625,
+                    normalized_y: 0.44,
+                    pressure: 1.0,
+                },
+            ],
+            t0 + Duration::from_millis(16),
+        );
+        assert!(swipe2.iter().all(|ev| match ev {
+            InputEvent::MouseScroll { delta_x, delta_y, .. } => *delta_x == 0 && *delta_y < 0,
+            _ => true,
+        }));
+
+        tracker.process_touch(TouchAction::Up, 0, 0.425, 0.44, 0.0, t0 + Duration::from_millis(20));
+        tracker.process_touch(TouchAction::Up, 1, 0.625, 0.44, 0.0, t0 + Duration::from_millis(24));
+        assert!(tracker.has_momentum());
+        let coast = tracker.step_momentum(t0 + Duration::from_millis(32));
+        assert!(coast.iter().all(|ev| match ev {
+            InputEvent::MouseScroll { delta_x, .. } => *delta_x == 0,
+            _ => true,
+        }));
+    }
+
+    #[test]
+    fn direct_touch_two_finger_scroll_stays_continuous_beyond_zero_one_video_bounds() {
+        let mut tracker =
+            TouchStateTracker::new(TouchMode::DirectTouch, RemoteScreenBounds::default());
+        let t0 = Instant::now();
+        tracker.process_touch(TouchAction::Down, 0, 0.4, 0.08, 1.0, t0);
+        tracker.process_touch(TouchAction::Down, 1, 0.6, 0.08, 1.0, t0);
+        let _ = tracker.process_touch_batch(
+            &[
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 0,
+                    normalized_x: 0.4,
+                    normalized_y: -0.05,
+                    pressure: 1.0,
+                },
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 1,
+                    normalized_x: 0.6,
+                    normalized_y: -0.05,
+                    pressure: 1.0,
+                },
+            ],
+            t0 + Duration::from_millis(8),
+        );
+        // Continuing past 0.0 into letterbox/zoomed space must keep emitting scroll deltas!
+        let beyond = tracker.process_touch_batch(
+            &[
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 0,
+                    normalized_x: 0.4,
+                    normalized_y: -0.22,
+                    pressure: 1.0,
+                },
+                protocol::touch::Contact {
+                    action: TouchAction::Move,
+                    pointer_id: 1,
+                    normalized_x: 0.6,
+                    normalized_y: -0.22,
+                    pressure: 1.0,
+                },
+            ],
+            t0 + Duration::from_millis(16),
+        );
+        assert!(matches!(
+            beyond.as_slice(),
+            [InputEvent::MouseScroll {
+                delta_x: 0,
+                delta_y,
+                gesture: ScrollGesture {
+                    phase: ScrollPhase::Changed,
+                    ..
+                }
+            }] if *delta_y < -300
+        ));
+    }
+
+    #[test]
+    fn hesitant_two_finger_hold_does_not_emit_spurious_right_click() {
+        let mut tracker =
+            TouchStateTracker::new(TouchMode::DirectTouch, RemoteScreenBounds::default());
+        let t0 = Instant::now();
+        tracker.process_touch(TouchAction::Down, 0, 0.4, 0.5, 1.0, t0);
+        tracker.process_touch(TouchAction::Down, 1, 0.6, 0.5, 1.0, t0 + Duration::from_millis(10));
+        // Held > 300ms without scrolling (e.g., aborted two-finger gesture) -> zero right-click!
+        assert!(
+            tracker
+                .process_touch(TouchAction::Up, 0, 0.4, 0.5, 0.0, t0 + Duration::from_millis(420))
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .process_touch(TouchAction::Up, 1, 0.6, 0.5, 0.0, t0 + Duration::from_millis(430))
+                .is_empty()
+        );
     }
 }

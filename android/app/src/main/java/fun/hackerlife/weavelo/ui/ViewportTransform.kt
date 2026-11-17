@@ -22,6 +22,8 @@ fun classifyTwoFingerGesture(
     initialCentroid: Offset,
     currentCentroid: Offset,
     preferRemoteScroll: Boolean = false,
+    firstDelta: Offset? = null,
+    secondDelta: Offset? = null,
     pinchRatioThreshold: Float = if (preferRemoteScroll) 0.16f else 0.085f,
     minPinchPx: Float = if (preferRemoteScroll) 36f else 16f,
     panThresholdPx: Float = if (preferRemoteScroll) 5f else 12f
@@ -32,6 +34,22 @@ fun classifyTwoFingerGesture(
     val distanceDelta = abs(currentDistance - initialDistance)
     val distanceRatio = distanceDelta / baseline
     val centroidDelta = (currentCentroid - initialCentroid).getDistance()
+
+    if (firstDelta != null && secondDelta != null) {
+        val len0 = firstDelta.getDistance()
+        val len1 = secondDelta.getDistance()
+        if (len0 >= 2.5f && len1 >= 2.5f) {
+            val cosSim = ((firstDelta.x * secondDelta.x + firstDelta.y * secondDelta.y) / (len0 * len1))
+                .coerceIn(-1f, 1f)
+            if (cosSim >= 0.45f && centroidDelta >= 5f && centroidDelta >= distanceDelta * 0.65f) {
+                return TwoFingerGestureMode.REMOTE_GESTURE
+            }
+            if (cosSim <= -0.25f && distanceDelta >= 18f && distanceRatio >= 0.09f) {
+                return TwoFingerGestureMode.LOCAL_TRANSFORM
+            }
+        }
+    }
+
     val pinchOverPanSlope = if (preferRemoteScroll) 0.95f else 0.65f
     val panOverPinchSlope = if (preferRemoteScroll) 1.1f else 1.4f
 

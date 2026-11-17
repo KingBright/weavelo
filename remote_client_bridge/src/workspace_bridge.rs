@@ -825,6 +825,8 @@ impl MobileWorkspace {
             #[serde(default)]
             momentum_step: bool,
             #[serde(default)]
+            event_time_ms: Option<u64>,
+            #[serde(default)]
             geometry: Option<protocol::viewport::FrameGeometry>,
             #[serde(default = "default_natural_scroll")]
             natural_scroll: bool,
@@ -868,8 +870,12 @@ impl MobileWorkspace {
             return Err("The displayed source geometry changed".into());
         }
         if event.momentum_step {
-            let (release, events) =
-                touch.step_momentum(event.token, current, std::time::Instant::now());
+            let (release, events) = touch.step_momentum_with_event_time(
+                event.token,
+                current,
+                event.event_time_ms,
+                std::time::Instant::now(),
+            );
             if let Some(binding) = release {
                 self.connection.try_bound_input(binding, None);
             }
@@ -940,13 +946,25 @@ impl MobileWorkspace {
         }
         let now = std::time::Instant::now();
         let (release, events) = if let Some(contacts) = event.batch {
-            touch.touch_batch(event.token, &contacts, current, now)
+            touch.touch_batch_with_event_time(
+                event.token,
+                &contacts,
+                current,
+                event.event_time_ms,
+                now,
+            )
         } else {
             match event.event {
                 Some(protocol::InputEvent::TouchFrame(contacts)) => {
                     touch.touch_frame(event.token, contacts, current, now)
                 }
-                Some(event_data) => touch.touch(event.token, event_data, current, now),
+                Some(event_data) => touch.touch_with_event_time(
+                    event.token,
+                    event_data,
+                    current,
+                    event.event_time_ms,
+                    now,
+                ),
                 None => return Err("expected a local touch gesture".into()),
             }
         };

@@ -942,7 +942,7 @@ object WorkspaceClient {
         geometry: VideoFrameGeometry?,
         onCursor: (Float, Float) -> Unit
     ) {
-        stopMomentum(id)
+        if (momentumJobs[id]?.isActive == true) return
         momentumJobs[id] = scope.launch {
             while (isActive) {
                 delay(8)
@@ -959,6 +959,7 @@ object WorkspaceClient {
                             .put("width", width)
                             .put("height", height)
                             .put("natural_scroll", WeaveloClient.naturalScroll)
+                            .put("event_time_ms", SystemClock.uptimeMillis())
                             .put("geometry", presented ?: JSONObject.NULL)
                             .put("momentum_step", true)
                             .toString()
@@ -985,38 +986,51 @@ object WorkspaceClient {
         contacts: JSONArray? = null,
         onProbe: (String, JSONObject) -> Unit = { _, _ -> },
         onCursor: (Float, Float) -> Unit = { _, _ -> }) = guarded {
-        stopMomentum(id)
+        val actionName = event.optString("action")
+        if (contacts != null || actionName == "Down" || actionName == "Cancel") {
+            stopMomentum(id)
+        }
         if (!currentView(id, sessionKey, generation, true)) {
+            stopMomentum(id)
             inputViewIssue(id,sessionKey,generation)
             return@guarded
         }
         // Include time waiting on this serial executor; do not replay an old Android event as fresh input.
         if (SystemClock.uptimeMillis() - eventTime !in 0L..250L) {
+            stopMomentum(id)
             action(11, JSONObject().put("id", id).put("token", token).put("phase", "cancel").toString())
-            if (event.optString("action") == "Down") inputIssue(id, "Input arrived too late. Try again.", AppText("Input arrived too late. Try again."))
+            if (actionName == "Down") inputIssue(id, "Input arrived too late. Try again.", AppText("Input arrived too late. Try again."))
             return@guarded
         }
         val presented = encodePresentedGeometry(geometry)
         runCatching { action(12, JSONObject().put("id", id).put("token", token)
             .put("mode", mode.code).put("width", width).put("height", height)
             .put("natural_scroll", WeaveloClient.naturalScroll)
+            .put("event_time_ms", eventTime)
             .put("geometry",presented ?: JSONObject.NULL)
             .put("event", if(contacts==null) JSONObject().put("Touch",event) else JSONObject().put("TouchFrame",contacts)).toString()) }
-            .onFailure { inputIssue(id, it.message ?: "Control is unavailable", if (it.message == null) AppText("Control is unavailable") else null) }
+            .onFailure {
+                stopMomentum(id)
+                inputIssue(id, it.message ?: "Control is unavailable", if (it.message == null) AppText("Control is unavailable") else null)
+            }
             .onSuccess { result ->
-                if (event.optString("action") == "Down") inputIssue(id, null)
+                if (actionName == "Down") inputIssue(id, null)
                 if (result != "null") {
                     val response = JSONObject(result)
                     if (!response.isNull("focus_sequence") && presented != null && currentView(id, sessionKey, generation, true))
                         onProbe(response.getString("focus_sequence"), presented)
                     if (response.optBoolean("momentum", false) && currentView(id, sessionKey, generation, true)) {
                         scheduleMomentum(id, sessionKey, generation, token, mode, width, height, geometry, onCursor)
+                    } else {
+                        stopMomentum(id)
                     }
                     val cursor = response.optJSONArray("cursor") ?: return@onSuccess
                     // Compose snapshot state accepts this serialized update;
                     // no extra UI queue may accumulate old pointer positions.
                     if (currentView(id, sessionKey, generation, true))
                         onCursor(cursor.getDouble(0).toFloat(), cursor.getDouble(1).toFloat())
+                } else {
+                    stopMomentum(id)
                 }
             }
     }
@@ -1035,13 +1049,18 @@ object WorkspaceClient {
         onProbe: (String, JSONObject) -> Unit = { _, _ -> },
         onCursor: (Float, Float) -> Unit = { _, _ -> }
     ) = guarded {
-        stopMomentum(id)
+        val hasDown = (0 until batch.length()).any { batch.optJSONObject(it)?.optString("action") == "Down" }
+        val hasCancel = (0 until batch.length()).any { batch.optJSONObject(it)?.optString("action") == "Cancel" }
+        if (hasDown || hasCancel) {
+            stopMomentum(id)
+        }
         if (!currentView(id, sessionKey, generation, true)) {
+            stopMomentum(id)
             inputViewIssue(id, sessionKey, generation)
             return@guarded
         }
-        val hasDown = (0 until batch.length()).any { batch.optJSONObject(it)?.optString("action") == "Down" }
         if (SystemClock.uptimeMillis() - eventTime !in 0L..250L) {
+            stopMomentum(id)
             action(11, JSONObject().put("id", id).put("token", token).put("phase", "cancel").toString())
             if (hasDown) inputIssue(id, "Input arrived too late. Try again.", AppText("Input arrived too late. Try again."))
             return@guarded
@@ -1057,12 +1076,14 @@ object WorkspaceClient {
                     .put("width", width)
                     .put("height", height)
                     .put("natural_scroll", WeaveloClient.naturalScroll)
+                    .put("event_time_ms", eventTime)
                     .put("geometry", presented ?: JSONObject.NULL)
                     .put("batch", batch)
                     .toString()
             )
         }
             .onFailure {
+                stopMomentum(id)
                 inputIssue(id, it.message ?: "Control is unavailable", if (it.message == null) AppText("Control is unavailable") else null)
             }
             .onSuccess { result ->
@@ -1074,11 +1095,15 @@ object WorkspaceClient {
                     }
                     if (response.optBoolean("momentum", false) && currentView(id, sessionKey, generation, true)) {
                         scheduleMomentum(id, sessionKey, generation, token, mode, width, height, geometry, onCursor)
+                    } else {
+                        stopMomentum(id)
                     }
                     val cursor = response.optJSONArray("cursor") ?: return@onSuccess
                     if (currentView(id, sessionKey, generation, true)) {
                         onCursor(cursor.getDouble(0).toFloat(), cursor.getDouble(1).toFloat())
                     }
+                } else {
+                    stopMomentum(id)
                 }
             }
     }

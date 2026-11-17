@@ -1376,9 +1376,10 @@ private fun WorkspaceVideo(
                 val globalIntent = WorkspaceClient.editorFocusIntent()
                 val presentation = nativeViewport.get()?.presentation
                 val geometry = presentation?.geometry
+                val multiPointerDirect = pointers.size >= 2
                 if (action != 3 && (presentation?.ready != true || geometry != null &&
                     (geometry.sourceRevision != 0 || geometry.sourceWidth != dimensions.width || geometry.sourceHeight != dimensions.height ||
-                        touchMode == TouchMode.DIRECT && !geometry.contains(x,y)))) {
+                        touchMode == TouchMode.DIRECT && !multiPointerDirect && !geometry.contains(x,y)))) {
                     pointers.clear(); touching=false
                     WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
                 } else {
@@ -1417,12 +1418,14 @@ private fun WorkspaceVideo(
                 val globalIntent = WorkspaceClient.editorFocusIntent()
                 val presentation = nativeViewport.get()?.presentation
                 val geometry = presentation?.geometry
+                val distinctSamplePointers = sample.asSequence().filter { it.action != 3 }.map { it.pointerId }.toSet()
+                val multiPointerBatch = (pointers + distinctSamplePointers).size >= 2
                 val invalid = sample.any { it.action != 3 } && (
                     presentation?.ready != true || (geometry != null && (
                         geometry.sourceRevision != 0 ||
                         geometry.sourceWidth != dimensions.width ||
                         geometry.sourceHeight != dimensions.height ||
-                        (touchMode == TouchMode.DIRECT && sample.any { it.action != 3 && !geometry.contains(it.x, it.y) })
+                        (touchMode == TouchMode.DIRECT && !multiPointerBatch && sample.any { it.action != 3 && !geometry.contains(it.x, it.y) })
                     ))
                 )
                 if (invalid) {
@@ -1451,7 +1454,7 @@ private fun WorkspaceVideo(
                         sessionKey,
                         generation,
                         token,
-                        sample.minOf { it.time },
+                        sample.maxOf { it.time },
                         touchMode,
                         geometry?.sourceWidth ?: pane.source.width,
                         geometry?.sourceHeight ?: pane.source.height,

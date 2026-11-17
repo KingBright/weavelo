@@ -114,7 +114,11 @@ impl WheelDeltaRemainder {
         };
         // GPUI negates native horizontal wheel input when building ScrollDelta.
         let axis_sign = if horizontal { -1.0 } else { 1.0 };
-        let exact = f64::from(delta_pixels) * units_per_pixel * axis_sign + self.value;
+        let scaled = f64::from(delta_pixels) * units_per_pixel * axis_sign;
+        if self.value != 0.0 && scaled != 0.0 && self.value.signum() != scaled.signum() {
+            self.value = 0.0;
+        }
+        let exact = scaled + self.value;
         let whole = exact.trunc();
         self.value = exact - whole;
         whole.clamp(
@@ -586,42 +590,54 @@ impl WindowsInputInjector {
                 gesture,
             } => {
                 let continuous = gesture != protocol::ScrollGesture::default();
-                if delta_x == 0 && delta_y == 0 && continuous {
-                    if matches!(
+                let resets_start = continuous
+                    && (matches!(gesture.phase, protocol::ScrollPhase::Began)
+                        || matches!(gesture.momentum, protocol::MomentumPhase::Began));
+                let resets_end = continuous
+                    && (matches!(
                         gesture.phase,
-                        protocol::ScrollPhase::Began
-                            | protocol::ScrollPhase::Ended
-                            | protocol::ScrollPhase::Cancelled
-                    ) || matches!(gesture.momentum, protocol::MomentumPhase::Ended)
-                    {
+                        protocol::ScrollPhase::Ended | protocol::ScrollPhase::Cancelled
+                    ) || matches!(gesture.momentum, protocol::MomentumPhase::Ended));
+                if delta_x == 0 && delta_y == 0 && continuous {
+                    if resets_start || resets_end {
                         *self.scroll_remainders.lock().unwrap() = Default::default();
                     }
                     return Ok(());
                 }
                 let preferences = wheel_scroll_preferences()?;
-                let (mut horizontal, mut vertical) = {
+                let (horizontal, vertical) = {
                     let mut remainder = self.scroll_remainders.lock().unwrap();
-                    (
-                        remainder
-                            .horizontal
-                            .convert(delta_x, preferences.chars, true),
-                        remainder
-                            .vertical
-                            .convert(delta_y, preferences.lines, false),
-                    )
+                    if resets_start {
+                        *remainder = Default::default();
+                    }
+                    let mut h = remainder
+                        .horizontal
+                        .convert(delta_x, preferences.chars, true);
+                    let mut v = remainder
+                        .vertical
+                        .convert(delta_y, preferences.lines, false);
+                    if continuous {
+                        // Chromium/Electron on Windows classify exact non-zero multiples of
+                        // WHEEL_DELTA (120) as discrete mouse-wheel notches (triggering a delayed
+                        // smooth-scroll animation curve mid-gesture) and non-multiples as
+                        // high-precision touchpad pixel deltas. Carry the 1-unit adjustment in
+                        // remainder so total pixel travel stays exact.
+                        if h != 0 && h % 120 == 0 {
+                            let step = h.signum();
+                            h -= step;
+                            remainder.horizontal.value += f64::from(step);
+                        }
+                        if v != 0 && v % 120 == 0 {
+                            let step = v.signum();
+                            v -= step;
+                            remainder.vertical.value += f64::from(step);
+                        }
+                    }
+                    if resets_end {
+                        *remainder = Default::default();
+                    }
+                    (h, v)
                 };
-                if continuous {
-                    // Chromium/Electron on Windows classify exact non-zero multiples of
-                    // WHEEL_DELTA (120) as discrete mouse-wheel notches (triggering a delayed
-                    // smooth-scroll animation curve mid-gesture) and non-multiples as
-                    // high-precision touchpad pixel deltas.
-                    if horizontal != 0 && horizontal % 120 == 0 {
-                        horizontal -= horizontal.signum();
-                    }
-                    if vertical != 0 && vertical % 120 == 0 {
-                        vertical -= vertical.signum();
-                    }
-                }
                 let (mut inputs, count) = match (horizontal != 0, vertical != 0) {
                     (true, true) => (
                         [
