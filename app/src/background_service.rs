@@ -25,7 +25,22 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Request { CaptureSources { generation:String, executable_sha256:String }, Sharing { generation:String, executable_sha256:String, call:crate::sharing_permissions::SharingCall }, Permissions { generation:String, executable_sha256:String }, PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
+pub(crate) enum Ps5ConsoleIpcOp {
+    List,
+    Pair(protocol::session::PairConsoleRequest),
+    Remove(u64),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum Ps5ConsoleIpcResult {
+    Consoles(Vec<protocol::session::ConsoleSummary>),
+    Paired(protocol::session::PairConsoleResponse),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum Request { CaptureSources { generation:String, executable_sha256:String }, Ps5Console { generation:String, executable_sha256:String, op:Ps5ConsoleIpcOp }, Sharing { generation:String, executable_sha256:String, call:crate::sharing_permissions::SharingCall }, Permissions { generation:String, executable_sha256:String }, PublishShared { generation: String, executable_sha256: String, scope: remote_core::shared_files::ShareScope, publication: shared_publication::Publication }, ReadOnlyStatus { schema: u32 }, ShutdownIdle { generation: String, executable_sha256: String }, Shutdown { generation: String, executable_sha256: String }, Negotiate { generation: String, executable_sha256: String, offer: Offer }, Delivery { generation:String, executable_sha256:String, intent:host::directed_delivery::LocalIntent }, NetworkDiagnostics { generation: String, executable_sha256: String }, Snapshot, CreateGroup, JoinGroup(String), RenameDevice { expected_name: String, name: String }, Reload(String), InspectConnection { connection_id:u32 } }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -47,7 +62,7 @@ struct Snapshot {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-enum Response { CaptureSources { generation:String, executable_sha256:String, sources:Vec<protocol::session::CaptureSourceInfo> }, Sharing { generation:String, executable_sha256:String, snapshot:crate::sharing_permissions::SharingSnapshot }, Permissions { generation:String, executable_sha256:String, status:crate::sharing_permissions::Status }, Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
+enum Response { CaptureSources { generation:String, executable_sha256:String, sources:Vec<protocol::session::CaptureSourceInfo> }, Ps5Console { generation:String, executable_sha256:String, result:Ps5ConsoleIpcResult }, Sharing { generation:String, executable_sha256:String, snapshot:crate::sharing_permissions::SharingSnapshot }, Permissions { generation:String, executable_sha256:String, status:crate::sharing_permissions::Status }, Published(shared_publication::Receipt), ReadOnlyStatus(ReadOnlyStatus), StopPrepared { generation: String, executable_sha256: String, pid: u32, cleanup_verified: bool }, Negotiated { generation: String, executable_sha256: String, selection: Result<Selection, service_contract::Rejection> }, NetworkDiagnostics(ServiceNetworkSnapshot), Snapshot(Snapshot), Rejected(String), ConnectionDiagnostics(Vec<host::lifecycle::ConnectionLifecycleSnapshot>) }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,8 +174,22 @@ impl Service {
                         Ok(Ok(request)) => request,
                         _ => return,
                     };
-                    let timeout = if matches!(&request, Request::PublishShared {..}) { Duration::from_secs(60) } else { STOP_TIMEOUT };
+                    let timeout = if matches!(&request, Request::PublishShared {..}) { Duration::from_secs(60) } else if matches!(&request, Request::Ps5Console {..}) { Duration::from_secs(25) } else { STOP_TIMEOUT };
                     let _ = tokio::time::timeout(timeout, async {
+                        if let Request::Ps5Console {generation:expected,executable_sha256:hash,op}=request {
+                            let response=if expected!=generation || hash!=executable_sha256 || *closed.lock().unwrap() {
+                                Response::Rejected("Sharing owner changed or is stopping".into())
+                            } else {
+                                let result = match op {
+                                    Ps5ConsoleIpcOp::List => Ps5ConsoleIpcResult::Consoles(host::ps5_bridge::list_consoles().await),
+                                    Ps5ConsoleIpcOp::Pair(req) => Ps5ConsoleIpcResult::Paired(host::ps5_bridge::pair_console(req).await),
+                                    Ps5ConsoleIpcOp::Remove(id) => Ps5ConsoleIpcResult::Consoles(host::ps5_bridge::remove_console(id).await),
+                                };
+                                Response::Ps5Console { generation: generation.clone(), executable_sha256: executable_sha256.clone(), result }
+                            };
+                            socket.write_all(&frame(&serde_json::to_vec(&response)?)?).await?;
+                            return Ok::<(),Error>(());
+                        }
                         if let Request::CaptureSources {generation:expected,executable_sha256:hash}=request {
                             let response=if expected!=generation || hash!=executable_sha256 || *closed.lock().unwrap() {
                                 Response::Rejected("Sharing owner changed or is stopping".into())
@@ -388,7 +417,7 @@ fn answer(mut request: Request, runtime: &UnifiedRuntimeHandle, generation: Stri
         Request::JoinGroup(code) => pairing.join_from_invite_code(&code),
         Request::RenameDevice { expected_name, name } => pairing.rename_device(&expected_name, &name),
         Request::Reload(message) => pairing.request_runtime_reload(message),
-        Request::CaptureSources{..}|Request::Sharing{..}|Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
+        Request::CaptureSources{..}|Request::Ps5Console{..}|Request::Sharing{..}|Request::Permissions{..}|Request::PublishShared{..}|Request::ReadOnlyStatus{..}|Request::ShutdownIdle{..}|Request::Shutdown{..}|Request::Negotiate{..}|Request::InspectConnection{..}|Request::Delivery{..}|Request::NetworkDiagnostics{..}=>unreachable!(),
     };
     let peers = runtime.owner.discovery_snapshot_rx().map(|rx| rx.borrow().clone()).unwrap_or_default();
     Response::Snapshot(Snapshot { schema: SCHEMA, owner_mode, version: env!("CARGO_PKG_VERSION").into(), generation, executable_sha256, pid: std::process::id(), peers, pairing, outgoing_streams: host::lifecycle::active_video_streams(), outgoing_peers:host::lifecycle::peer_video_streams(), delivery:runtime.owner.delivery.diagnostics() })
@@ -498,6 +527,50 @@ impl Client {
         Ok(serde_json::json!({"kind":"verified-background-stop", "scope":"background-service-only", "generation":generation, "pid":pid,
             "executable_sha256":self.executable_sha256,"cleanup_verified":true,"process_exit_observed":true,
             "endpoint_absent":true,"persistent_startup_changed":false,"idle_only":idle_only}))
+    }
+
+    pub(crate) fn ps5_list_consoles(&self) -> Result<Vec<protocol::session::ConsoleSummary>, Error> {
+        match self.ps5_console_call(Ps5ConsoleIpcOp::List)? {
+            Ps5ConsoleIpcResult::Consoles(consoles) => Ok(consoles),
+            _ => Err("Unexpected PS5 console list response".into()),
+        }
+    }
+    pub(crate) fn ps5_pair_console(&self, req: protocol::session::PairConsoleRequest) -> Result<protocol::session::PairConsoleResponse, Error> {
+        match self.ps5_console_call(Ps5ConsoleIpcOp::Pair(req))? {
+            Ps5ConsoleIpcResult::Paired(resp) => Ok(resp),
+            _ => Err("Unexpected PS5 pairing response".into()),
+        }
+    }
+    pub(crate) fn ps5_remove_console(&self, console_id: u64) -> Result<Vec<protocol::session::ConsoleSummary>, Error> {
+        match self.ps5_console_call(Ps5ConsoleIpcOp::Remove(console_id))? {
+            Ps5ConsoleIpcResult::Consoles(consoles) => Ok(consoles),
+            _ => Err("Unexpected PS5 removal response".into()),
+        }
+    }
+    fn ps5_console_call(&self, op: Ps5ConsoleIpcOp) -> Result<Ps5ConsoleIpcResult, Error> {
+        let generation = self.cached.lock().unwrap().generation.clone();
+        match exchange_response_timeout(
+            &self.profile,
+            &Request::Ps5Console {
+                generation: generation.clone(),
+                executable_sha256: self.executable_sha256.clone(),
+                op,
+            },
+            Duration::from_secs(26),
+        )? {
+            Response::Ps5Console {
+                generation: actual,
+                executable_sha256,
+                result,
+            } if actual == generation
+                && executable_sha256 == self.executable_sha256
+                && self.cached.lock().unwrap().generation == generation =>
+            {
+                Ok(result)
+            }
+            Response::Rejected(error) => Err(error.into()),
+            _ => Err("Sharing owner changed; reopen PS5 consoles".into()),
+        }
     }
 
     pub(crate) fn capture_sources(&self)->Result<Vec<protocol::session::CaptureSourceInfo>,Error> {
@@ -610,7 +683,7 @@ fn request(profile: &Path, command: &Request, executable_sha256: &str) -> Result
     let snapshot = match exchange_response(profile, command)? {
         Response::Snapshot(snapshot) => snapshot,
         Response::Rejected(_) => return Err("Background service rejected the operation".into()),
-        Response::CaptureSources{..}|Response::Sharing{..}|Response::Permissions{..}|Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
+        Response::CaptureSources{..}|Response::Ps5Console{..}|Response::Sharing{..}|Response::Permissions{..}|Response::Published(_)|Response::ReadOnlyStatus(_)|Response::StopPrepared{..}|Response::ConnectionDiagnostics(_)|Response::Negotiated{..}|Response::NetworkDiagnostics(_)=>return Err("Expected background Snapshot".into()),
     };
     validate_snapshot(&snapshot, profile, executable_sha256)?;
     Ok(snapshot)

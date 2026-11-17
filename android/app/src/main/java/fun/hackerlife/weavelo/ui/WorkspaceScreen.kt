@@ -58,6 +58,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     onFileQueued: () -> Unit = {}, openMainDisplay: Boolean = false, onClose: () -> Unit) {
     val context = LocalContext.current
     var sourcePicker by remember { mutableStateOf(false) }
+    var ps5PairingOpen by remember { mutableStateOf(false) }
     var actionsOpen by remember { mutableStateOf(false) }
     var pickerGeneration by remember { mutableStateOf(0L) }
     val sessionKey = incoming?.sessionKey ?: rememberSaveable(endpoint, deviceId) { WorkspaceClient.sessionKeyFor(endpoint, deviceId) }
@@ -123,7 +124,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     BackHandler(enabled = foreground) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastImeClosedAtMs in 0..400L) return@BackHandler
-        val hasOverlay = sourcePicker || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || clipboardCenterOpen || backgroundSettings
+        val hasOverlay = sourcePicker || ps5PairingOpen || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || clipboardCenterOpen || backgroundSettings
         when {
             ZeroOcclusionHudPolicy.evaluateBackPress(hasOverlay) == BackPressAction.ToggleControls -> {
                 if (state.panes.isEmpty() || now - lastBackPressMs in 1..2000L) {
@@ -133,6 +134,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     android.widget.Toast.makeText(context, exitStreamHint, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
+            ps5PairingOpen -> ps5PairingOpen = false
             sourcePicker -> sourcePicker = false
             actionsOpen -> actionsOpen = false
             selectedSettings != null -> selectedSettings = null
@@ -305,10 +307,30 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
         if (sourcePicker) {
             if (state.connectionGeneration != pickerGeneration || state.sessionKey != sessionKey || !state.connected) {
                 LaunchedEffect(Unit) { sourcePicker = false }
-            } else SourcePicker(state.sources, onClose = { sourcePicker = false }) { source ->
+            } else SourcePicker(
+                sources = state.sources,
+                onClose = { sourcePicker = false },
+                onLinkPs5 = {
+                    sourcePicker = false
+                    ps5PairingOpen = true
+                },
+            ) { source ->
                 localError = null; localErrorText = null
                 WorkspaceClient.add(source, sessionKey, pickerGeneration)
                 sourcePicker = false
+            }
+        }
+
+        if (ps5PairingOpen) {
+            if (!state.connected || state.sessionKey != sessionKey) {
+                LaunchedEffect(Unit) { ps5PairingOpen = false }
+            } else {
+                Ps5PairingDialog(
+                    sessionKey = sessionKey,
+                    generation = state.connectionGeneration,
+                    onDismiss = { ps5PairingOpen = false },
+                    onPaired = {},
+                )
             }
         }
 
@@ -2093,7 +2115,7 @@ private fun SourceIcon(source: WorkspaceSource) {
             )
         } else {
             Icon(
-                (if (source.isCamera) MobileSymbol.Camera else if (source.isWindow) MobileSymbol.Sources else MobileSymbol.Devices).image,
+                (if (source.isConsole) MobileSymbol.Gamepad else if (source.isCamera) MobileSymbol.Camera else if (source.isWindow) MobileSymbol.Sources else MobileSymbol.Devices).image,
                 contentDescription = null,
                 tint = p.brand,
                 modifier = Modifier.size(15.dp)
@@ -2128,7 +2150,12 @@ private fun localizedSourceTitle(source: WorkspaceSource): String {
 }
 
 @Composable
-private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, onSelect: (WorkspaceSource) -> Unit) {
+private fun SourcePicker(
+    sources: List<WorkspaceSource>,
+    onClose: () -> Unit,
+    onLinkPs5: () -> Unit = {},
+    onSelect: (WorkspaceSource) -> Unit,
+) {
     val p = WeaveloTokens.colors
     var query by remember { mutableStateOf("") }
     val quickScreen = remember(sources) { primaryScreenSource(sources) }
@@ -2136,7 +2163,7 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
         val hasDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
         sources.filter { !(hasDisplay && it.source == "MainDisplay") }
             .filter { it.title.contains(query.trim(), true) || it.application.contains(query.trim(), true) }
-            .sortedBy { if (it.isCamera) 2 else if (it.isWindow) 1 else 0 }
+            .sortedBy { if (it.isConsole) 1 else if (it.isWindow) 2 else if (it.isCamera) 3 else 0 }
     }
     PrecisionDialog(
         title = tr("Sources"),
@@ -2163,11 +2190,25 @@ private fun SourcePicker(sources: List<WorkspaceSource>, onClose: () -> Unit, on
             )
         }
     ) {
-        PrecisionTextField(
-            value = query,
-            onValueChange = { query = it },
-            label = tr("Search apps and windows")
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PrecisionTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = tr("Search apps and windows"),
+                modifier = Modifier.weight(1f),
+            )
+            PrecisionButton(
+                text = tr("Link PS5"),
+                leadingSymbol = MobileSymbol.Gamepad,
+                style = PrecisionButtonStyle.TONAL,
+                compact = true,
+                onClick = onLinkPs5,
+            )
+        }
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()

@@ -5,6 +5,7 @@ use protocol::session::{
 use protocol::{ControlMessage, GamepadFeedback, InputEvent};
 use ps_remote::ddp::{DDP_PORT_PS5, ConsolePowerState, DiscoveredConsole, discover_ps5, probe_ps5};
 use ps_remote::feedback::{Ps5ControllerState, TouchPoint as Ps5TouchPoint, button as ps_btn};
+pub use ps_remote::psn_auth::PSN_AUTHORIZE_URL;
 use ps_remote::psn_auth::resolve_psn_account;
 use ps_remote::regist::pair_with_ps5;
 use ps_remote::session::{Ps5MediaEvent, Ps5SessionConfig, Ps5SessionHandle, start_ps5_session};
@@ -15,29 +16,14 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-use std::sync::atomic::Ordering::Relaxed;
-#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use tokio::sync::broadcast;
 
-static ACTIVE_CONSOLES: OnceLock<Mutex<HashMap<u64, Ps5SessionHandle>>> = OnceLock::new();
-
-fn active_consoles() -> &'static Mutex<HashMap<u64, Ps5SessionHandle>> {
-    ACTIVE_CONSOLES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-struct ActiveConsoleGuard(u64);
-
-impl Drop for ActiveConsoleGuard {
-    fn drop(&mut self) {
-        if let Ok(mut map) = active_consoles().lock() {
-            map.remove(&self.0);
-        }
-    }
-}
+static NEXT_CONSOLE_INJECTOR_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn store_path() -> PathBuf {
     if let Some(override_path) = std::env::var_os("WEAVELO_PS5_STORE_PATH").filter(|s| !s.is_empty())
@@ -84,7 +70,7 @@ fn ddp_state_label(state: ConsolePowerState) -> &'static str {
 /// Discovers LAN PS5 consoles via DDP (`9302`) and merges live power state with paired credentials.
 pub async fn list_consoles() -> Vec<ConsoleSummary> {
     let path = store_path();
-    let mut store = ConsoleStore::load(&path).unwrap_or_else(|_| {
+    let store = ConsoleStore::load(&path).unwrap_or_else(|_| {
         ConsoleStore::load(std::env::temp_dir().join("weavelo_ps5_empty.json"))
             .expect("missing store path still creates empty store")
     });
@@ -104,7 +90,7 @@ pub async fn list_consoles() -> Vec<ConsoleSummary> {
         by_host_id.insert(item.host_id.to_ascii_uppercase(), item);
     }
 
-    let mut store_dirty = false;
+    let mut updated_consoles: Vec<PairedConsole> = Vec::new();
     let mut summaries = Vec::with_capacity(store.list().len() + by_host_id.len());
     let paired_ids: Vec<u64> = store.list().iter().map(|c| c.console_id).collect();
 
@@ -114,15 +100,18 @@ pub async fn list_consoles() -> Vec<ConsoleSummary> {
         };
         let key = paired.host_id.to_ascii_uppercase();
         let status = if let Some(live) = by_host_id.remove(&key) {
+            let mut changed = false;
             if paired.host_addr != Some(live.ip) {
                 paired.host_addr = Some(live.ip);
-                store_dirty = true;
+                changed = true;
             }
             if !live.host_name.is_empty() && paired.nickname == "PlayStation 5" {
                 paired.nickname = live.host_name.clone();
-                store_dirty = true;
+                changed = true;
             }
-            store.upsert(paired.clone());
+            if changed {
+                updated_consoles.push(paired.clone());
+            }
             ddp_state_label(live.state).to_string()
         } else {
             "offline".to_string()
@@ -138,8 +127,21 @@ pub async fn list_consoles() -> Vec<ConsoleSummary> {
         });
     }
 
-    if store_dirty {
-        let _ = store.save();
+    if !updated_consoles.is_empty() {
+        let _ = ConsoleStore::update(&path, |locked| {
+            for updated in updated_consoles {
+                if let Some(existing) = locked.get(updated.console_id).cloned() {
+                    let mut merged = existing;
+                    if updated.host_addr.is_some() {
+                        merged.host_addr = updated.host_addr;
+                    }
+                    if merged.nickname == "PlayStation 5" && !updated.nickname.is_empty() {
+                        merged.nickname = updated.nickname;
+                    }
+                    locked.upsert(merged);
+                }
+            }
+        });
     }
 
     let mut unpaired: Vec<ConsoleSummary> = by_host_id
@@ -195,7 +197,7 @@ async fn pair_console_inner(req: PairConsoleRequest) -> Result<ConsoleSummary, S
         .parse()
         .map_err(|_| "PS5 PIN must contain 8 digits".to_string())?;
 
-    let account = resolve_psn_account(&req.psn_redirect_or_account)
+    let account = resolve_psn_account(&req.auth_credential)
         .await
         .map_err(|e| format!("PlayStation OAuth account resolution failed: {e}"))?;
 
@@ -263,12 +265,10 @@ async fn pair_console_inner(req: PairConsoleRequest) -> Result<ConsoleSummary, S
     }
 
     let path = store_path();
-    let mut store = ConsoleStore::load(&path)
-        .map_err(|e| format!("Failed to open PS5 console store: {e}"))?;
-    store.upsert(paired.clone());
-    store
-        .save()
-        .map_err(|e| format!("Failed to save paired PS5 console: {e}"))?;
+    ConsoleStore::update(&path, |store| {
+        store.upsert(paired.clone());
+    })
+    .map_err(|e| format!("Failed to save paired PS5 console: {e}"))?;
 
     Ok(ConsoleSummary {
         console_id: paired.console_id,
@@ -283,11 +283,9 @@ async fn pair_console_inner(req: PairConsoleRequest) -> Result<ConsoleSummary, S
 /// Removes a paired PS5 console from storage and returns the refreshed console list.
 pub async fn remove_console(console_id: u64) -> Vec<ConsoleSummary> {
     let path = store_path();
-    if let Ok(mut store) = ConsoleStore::load(&path)
-        && store.remove(console_id).is_some()
-    {
-        let _ = store.save();
-    }
+    let _ = ConsoleStore::update(&path, |store| {
+        let _ = store.remove(console_id);
+    });
     list_consoles().await
 }
 
@@ -453,17 +451,62 @@ fn gamepad_to_ps5_state(gs: &protocol::GamepadState) -> Ps5ControllerState {
     }
 }
 
-/// Routes `weavelo` universal/DualSense gamepad events & keyboard fallback into an active PS5 session.
+/// Routes `weavelo` universal/DualSense gamepad events & keyboard fallback into a subscription's PS5 session.
 pub(crate) struct ConsoleInputInjector {
-    console_id: u64,
+    injector_id: u64,
+    _console_id: u64,
+    next_session_gen: AtomicU64,
+    session: Mutex<Option<(u64, Ps5SessionHandle)>>,
     state: Mutex<ControllerFallbackState>,
+}
+
+pub(crate) struct AttachedConsoleSession {
+    injector: Arc<ConsoleInputInjector>,
+    generation: u64,
+}
+
+impl Drop for AttachedConsoleSession {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.injector.session.lock()
+            && slot.as_ref().is_some_and(|(g, _)| *g == self.generation)
+        {
+            *slot = None;
+        }
+    }
 }
 
 impl ConsoleInputInjector {
     pub(crate) fn new(console_id: u64) -> Self {
         Self {
-            console_id,
+            injector_id: NEXT_CONSOLE_INJECTOR_ID.fetch_add(1, Relaxed),
+            _console_id: console_id,
+            next_session_gen: AtomicU64::new(1),
+            session: Mutex::new(None),
             state: Mutex::new(ControllerFallbackState::default()),
+        }
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.injector_id
+    }
+
+    pub(crate) fn attach_session(
+        self: &Arc<Self>,
+        handle: Ps5SessionHandle,
+    ) -> AttachedConsoleSession {
+        let generation = self.next_session_gen.fetch_add(1, Relaxed);
+        let initial = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recompute();
+        handle.send_controller_state(initial);
+        if let Ok(mut slot) = self.session.lock() {
+            *slot = Some((generation, handle));
+        }
+        AttachedConsoleSession {
+            injector: Arc::clone(self),
+            generation,
         }
     }
 
@@ -507,9 +550,12 @@ impl ConsoleInputInjector {
     }
 
     fn push_state(&self, ps5_state: Ps5ControllerState) {
-        if let Ok(map) = active_consoles().lock()
-            && let Some(handle) = map.get(&self.console_id)
-        {
+        let handle = self
+            .session
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|(_, h)| h.clone()));
+        if let Some(handle) = handle {
             handle.send_controller_state(ps5_state);
         }
     }
@@ -604,12 +650,13 @@ pub(crate) async fn run_ps5_streaming(
         stream_settings_rx,
         keyframe_requested,
         video_sequence,
+        console_injector,
         ..
     } = config;
 
     let mut stream_settings_rx = stream_settings_rx;
     let path = store_path();
-    let mut store = ConsoleStore::load(&path)?;
+    let store = ConsoleStore::load(&path)?;
     let paired = store
         .get(console_id)
         .cloned()
@@ -623,7 +670,7 @@ pub(crate) async fn run_ps5_streaming(
     } else {
         (960, 540)
     };
-    let mut ps_cfg = Ps5SessionConfig::from_console(paired.clone());
+    let mut ps_cfg = Ps5SessionConfig::from_console(paired);
     ps_cfg.width = target_w;
     ps_cfg.height = target_h;
     ps_cfg.max_fps = if fps >= 50 { 60 } else { 30 };
@@ -631,16 +678,18 @@ pub(crate) async fn run_ps5_streaming(
 
     let (handle, mut events_rx) = start_ps5_session(ps_cfg).await?;
     if previous_ip != Some(handle.host) {
-        let mut updated = paired;
-        updated.host_addr = Some(handle.host);
-        store.upsert(updated);
-        let _ = store.save();
+        let host_ip = handle.host;
+        let _ = ConsoleStore::update(&path, |locked| {
+            if let Some(mut existing) = locked.get(console_id).cloned() {
+                existing.host_addr = Some(host_ip);
+                locked.upsert(existing);
+            }
+        });
     }
 
-    if let Ok(mut map) = active_consoles().lock() {
-        map.insert(console_id, handle.clone());
-    }
-    let _active_guard = ActiveConsoleGuard(console_id);
+    let _session_guard = console_injector
+        .as_ref()
+        .map(|inj| inj.attach_session(handle.clone()));
 
     let audio_stream_id = protocol::remote_system_audio_stream_id(session_id);
     let mut sample_rate = handle.audio_config.sample_rate.max(8_000);
@@ -679,6 +728,7 @@ pub(crate) async fn run_ps5_streaming(
     let mut last_fps_update = Instant::now();
     let mut frames_since_update: u32 = 0;
     let mut bytes_since_update: u64 = 0;
+    let mut passthrough_us_accum: u64 = 0;
     let mut telemetry_tick = tokio::time::interval(Duration::from_secs(1));
     telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut audio_cfg_repeat = tokio::time::interval_at(
@@ -712,6 +762,7 @@ pub(crate) async fn run_ps5_streaming(
                     last_fps_update = Instant::now();
                     frames_since_update = 0;
                     bytes_since_update = 0;
+                    passthrough_us_accum = 0;
                 }
             }
             _ = audio_cfg_repeat.tick(), if !paused => {
@@ -730,16 +781,23 @@ pub(crate) async fn run_ps5_streaming(
                 let now = Instant::now();
                 let elapsed = now.duration_since(last_fps_update).as_secs_f32();
                 if elapsed >= 0.5 {
+                    let avg_passthrough_ms = if frames_since_update > 0 {
+                        ((passthrough_us_accum as f32) / (frames_since_update as f32) / 1000.0)
+                            .max(0.05)
+                    } else {
+                        0.05
+                    };
                     let _ = udp_sender.send_control(&ControlMessage::HostTelemetry {
                         session_id,
                         fps: frames_since_update as f32 / elapsed,
-                        encode_latency_ms: 0.0,
+                        encode_latency_ms: avg_passthrough_ms,
                         jitter_ms: 0.0,
                         bitrate_kbps: (bytes_since_update as f64 * 8.0 / 1000.0 / f64::from(elapsed)) as u32,
                     }, client_addr).await;
                     last_fps_update = now;
                     frames_since_update = 0;
                     bytes_since_update = 0;
+                    passthrough_us_accum = 0;
                 }
             }
             ev = events_rx.recv() => {
@@ -770,6 +828,7 @@ pub(crate) async fn run_ps5_streaming(
                         handle.request_idr();
                     }
                     Ps5MediaEvent::VideoFrame { adaptive_stream_index, data, .. } => {
+                        let rx_us = remote_core::timing::quanta_now_us();
                         let evicted = scheduled_sender.take_video_evictions() > 0;
                         if keyframe_requested.swap(false, Relaxed) || evicted {
                             handle.request_idr();
@@ -815,10 +874,13 @@ pub(crate) async fn run_ps5_streaming(
                         bytes_since_update += payload.len() as u64;
                         frames_since_update += 1;
 
-                        let now_us = remote_core::timing::quanta_now_us();
-                        let mut timing = protocol::FrameTimingCheckpoints::new(now_us);
-                        timing.packetize_ts_us = 1;
-                        timing.send_ts_us = 1;
+                        let packetized_us = remote_core::timing::quanta_now_us();
+                        let prep_us = (packetized_us.saturating_sub(rx_us) as u32).max(2);
+                        let mut timing = protocol::FrameTimingCheckpoints::new(rx_us);
+                        timing.encode_queue_ts_us = 1;
+                        timing.encode_done_ts_us = prep_us;
+                        timing.packetize_ts_us = prep_us;
+                        timing.send_ts_us = prep_us;
 
                         let packet = protocol::RtpPacket {
                             header: protocol::RtpHeader {
@@ -839,7 +901,10 @@ pub(crate) async fn run_ps5_streaming(
                             client_addr,
                             true,
                         ).await?;
-                        resources.media_send.record(send_started.elapsed());
+                        let send_elapsed = send_started.elapsed();
+                        resources.media_send.record(send_elapsed);
+                        passthrough_us_accum = passthrough_us_accum
+                            .saturating_add(u64::from(prep_us) + send_elapsed.as_micros() as u64);
                         if packet_size > 0 {
                             stats.udp_packets_sent.fetch_add(1, Relaxed);
                             stats.udp_bytes_sent.fetch_add(packet_size, Relaxed);
@@ -898,16 +963,10 @@ pub(crate) async fn run_ps5_streaming(
                         ));
                         let _ = udp_sender.send_control(&msg, client_addr).await;
                     }
-                    Ps5MediaEvent::AudioHaptics(payload) => {
-                        if !payload.is_empty() {
-                            let msg = ControlMessage::GamepadFeedback(Box::new(
-                                GamepadFeedback::AudioHaptics {
-                                    controller_id: 0,
-                                    payload,
-                                },
-                            ));
-                            let _ = udp_sender.send_control(&msg, client_addr).await;
-                        }
+                    Ps5MediaEvent::AudioHaptics(_) => {
+                        // DualSense USB audio-endpoint haptics are high-rate PCM/Opus streams
+                        // not consumed by standard HID rumble/adaptive-trigger reports; drop
+                        // here so they do not flood the session control channel or evict rumble.
                     }
                     Ps5MediaEvent::Disconnected(reason) => {
                         break Err(format!("PS5 Remote Play disconnected: {reason}").into());

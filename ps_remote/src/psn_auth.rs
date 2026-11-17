@@ -2,9 +2,11 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
@@ -14,6 +16,10 @@ pub const PSN_AUTH_HOST: &str = "auth.api.sonyentertainmentnetwork.com";
 pub const PSN_CLIENT_ID: &str = "ba495a24-818c-472b-b12d-ff231c1b5745";
 pub const PSN_CLIENT_SECRET: &str = "mvaiZkRsAsI1IBkY";
 pub const PSN_REDIRECT_URI: &str = "https://remoteplay.dl.playstation.net/remoteplay/redirect";
+pub const PSN_AUTHORIZE_URL: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code&client_id=ba495a24-818c-472b-b12d-ff231c1b5745&redirect_uri=https://remoteplay.dl.playstation.net/remoteplay/redirect&scope=psn:clientapp&request_locale=en_US&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&prompt=always&PlatformPrivacyWs1=minimal&";
+
+const PSN_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_HTTP_RESPONSE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Error)]
 pub enum PsnAuthError {
@@ -49,12 +55,7 @@ pub enum ParsedAuthInput {
 
 /// Official Sony Remote Play OAuth authorization URL suitable for QR code rendering or opening in a browser.
 pub fn psn_authorize_url() -> String {
-    format!(
-        "https://{host}/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=psn:clientapp&request_locale=en_US&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&prompt=always&PlatformPrivacyWs1=minimal&",
-        host = PSN_AUTH_HOST,
-        client_id = PSN_CLIENT_ID,
-        redirect_uri = PSN_REDIRECT_URI,
-    )
+    PSN_AUTHORIZE_URL.to_string()
 }
 
 /// Parses a user-pasted Sony redirect URL, raw OAuth `code`, or 12-char Base64 8-byte `AccountID`.
@@ -249,12 +250,26 @@ async fn send_http_request(
     use_tls: bool,
     request_bytes: &[u8],
 ) -> Result<(u16, Vec<u8>), PsnAuthError> {
-    let tcp = TcpStream::connect((host, port)).await?;
+    let tcp = timeout(PSN_HTTP_TIMEOUT, TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "connecting to Sony OAuth server timed out",
+            )
+        })??;
     if use_tls {
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|_| PsnAuthError::InvalidServerName(host.to_string()))?;
         let connector = build_tls_connector();
-        let tls = connector.connect(server_name, tcp).await?;
+        let tls = timeout(PSN_HTTP_TIMEOUT, connector.connect(server_name, tcp))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "TLS handshake with Sony OAuth server timed out",
+                )
+            })??;
         write_and_read_http(tls, request_bytes).await
     } else {
         write_and_read_http(tcp, request_bytes).await
@@ -265,11 +280,36 @@ async fn write_and_read_http<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     request_bytes: &[u8],
 ) -> Result<(u16, Vec<u8>), PsnAuthError> {
-    stream.write_all(request_bytes).await?;
-    stream.flush().await?;
+    timeout(PSN_HTTP_TIMEOUT, async {
+        stream.write_all(request_bytes).await?;
+        stream.flush().await
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "sending Sony OAuth HTTP request timed out",
+        )
+    })??;
 
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).await?;
+    let mut raw = Vec::with_capacity(4096);
+    timeout(PSN_HTTP_TIMEOUT, async {
+        (&mut stream)
+            .take((MAX_HTTP_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut raw)
+            .await
+    })
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "reading Sony OAuth HTTP response timed out",
+        )
+    })??;
+
+    if raw.len() > MAX_HTTP_RESPONSE_BYTES {
+        return Err(PsnAuthError::MalformedHttp);
+    }
     parse_http_response(&raw)
 }
 
@@ -311,11 +351,14 @@ pub fn parse_http_response(raw: &[u8]) -> Result<(u16, Vec<u8>), PsnAuthError> {
     let body = if is_chunked {
         decode_chunked_body(body_raw)?
     } else if let Some(len) = content_length {
-        if body_raw.len() < len {
+        if len > MAX_HTTP_RESPONSE_BYTES || body_raw.len() < len {
             return Err(PsnAuthError::MalformedHttp);
         }
         body_raw[..len].to_vec()
     } else {
+        if body_raw.len() > MAX_HTTP_RESPONSE_BYTES {
+            return Err(PsnAuthError::MalformedHttp);
+        }
         body_raw.to_vec()
     };
 
@@ -336,7 +379,10 @@ fn decode_chunked_body(mut data: &[u8]) -> Result<Vec<u8>, PsnAuthError> {
         if size == 0 {
             break;
         }
-        if data.len() < size + 2 {
+        if size > MAX_HTTP_RESPONSE_BYTES
+            || out.len().saturating_add(size) > MAX_HTTP_RESPONSE_BYTES
+            || data.len() < size + 2
+        {
             return Err(PsnAuthError::MalformedHttp);
         }
         out.extend_from_slice(&data[..size]);

@@ -17,9 +17,10 @@ import java.util.concurrent.Executors
 data class WorkspaceSource(val source: Any, val title: String, val width: Int, val height: Int, val application: String = "", val icon: android.graphics.Bitmap? = null, val camera: JSONObject? = null) {
     val isWindow: Boolean get() = (source as? JSONObject)?.has("Window") == true
     val isCamera: Boolean get() = (source as? JSONObject)?.has("Camera") == true
+    val isConsole: Boolean get() = (source as? JSONObject)?.has("Console") == true
     val isDisplay: Boolean get() = source == "MainDisplay" || (source as? JSONObject)?.has("Display") == true
     val rotation: Int get() = camera?.optInt("rotation", 0) ?: 0
-    val group: String get() = if (isCamera) "Cameras" else if (isWindow) "App windows" else "Entire screens"
+    val group: String get() = if (isConsole) "Consoles" else if (isCamera) "Cameras" else if (isWindow) "App windows" else "Entire screens"
 }
 data class WorkspaceAudioOutput(val pendingRevision: Long? = null,
     val requestRevision: Long? = null, val stateGeneration: Long = -1,
@@ -41,7 +42,7 @@ internal fun isAndroidProjectionSource(source: String, application: String): Boo
 internal fun primaryScreenSource(sources: List<WorkspaceSource>): WorkspaceSource? {
     val hasConcreteDisplay = sources.any { (it.source as? JSONObject)?.has("Display") == true }
     val screens = sources.filter {
-        !it.isWindow && !it.isCamera && !(hasConcreteDisplay && it.source.toString() == "MainDisplay")
+        !it.isWindow && !it.isCamera && !it.isConsole && !(hasConcreteDisplay && it.source.toString() == "MainDisplay")
     }
     return screens.firstOrNull { it.width > 0 && it.height > 0 } ?: screens.firstOrNull()
 }
@@ -348,14 +349,17 @@ object WorkspaceClient {
             clipboardHistory = mutable.value.clipboardHistory.ifEmpty { loadPinnedClipboardEntries(context) })
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }
-    private fun closeNative() { momentumJobs.values.forEach { it.cancel() }; momentumJobs.clear(); polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); activeSurfaceTokens.clear(); localDecodeLatencies.clear(); if (active) action(1); active = false; retainingConnection = false }
+    private fun closeNative() { momentumJobs.values.forEach { it.cancel() }; momentumJobs.clear(); polling?.cancel(); polling = null; cameraReplacements.clear(); cameraSwitches.clear(); pendingAudioOutputs.clear(); activeSurfaceTokens.clear(); localDecodeLatencies.clear(); AndroidGamepadController.resetToNeutralJson(context); if (active) action(1); active = false; retainingConnection = false }
     fun reconnect() {
         ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it, forceReconnect = true) }
     }
     fun backgrounded(value: Boolean) = guarded {
         if (!active || background == value) return@guarded
+        if (value) {
+            sendNeutralGamepadIfActive()
+            backgroundAt = SystemClock.elapsedRealtime()
+        }
         background = value
-        if (value) backgroundAt = SystemClock.elapsedRealtime()
         if (!value && asleep) {
             ownership.request()?.takeIf(::canOpenRequest)?.let { SessionConnectionService.openWorkspace(checkNotNull(context), it) }
         }
@@ -506,7 +510,10 @@ object WorkspaceClient {
         activeSurfaceTokens.remove(id)
         localDecodeLatencies.remove(id)
         val previous = mutable.value
-        if (previous.panes.none { it.id == id }) return
+        val removedPane = previous.panes.firstOrNull { it.id == id } ?: return
+        if (removedPane.source.isConsole) {
+            AndroidGamepadController.resetToNeutralJson(context)
+        }
         val panes = previous.panes.filter { it.id != id }
         mutable.value = previous.copy(panes = panes,
             selected = previous.selected.takeIf { selected -> panes.any { it.id == selected } } ?: panes.firstOrNull()?.id ?: 0)
@@ -626,7 +633,7 @@ object WorkspaceClient {
     }
     fun viewport(id: Int,sessionKey: String,generation: Long,visible: IntArray,width: Int,height: Int) = guarded {
         if (!currentView(id,sessionKey,generation,false)) return@guarded
-        val pane=mutable.value.panes.firstOrNull { it.id==id && it.accepted && !it.source.isCamera } ?: return@guarded
+        val pane=mutable.value.panes.firstOrNull { it.id==id && it.accepted && !it.source.isCamera && !it.source.isConsole } ?: return@guarded
         require(visible.size==4 && width in 16..8192 && height in 16..8192)
         command("Viewport",JSONObject().put("id",pane.id).put("source_revision",0).put("revision",++revision)
             .put("width",width).put("height",height).put("visible",JSONObject().put("x",visible[0]).put("y",visible[1])
@@ -747,6 +754,56 @@ object WorkspaceClient {
         }
     }
     fun keyframe(id: Int) = guarded { action(6, id.toString()) }
+    private fun activeConsolePane(): WorkspacePane? {
+        val s = mutable.value
+        if (!active || background || !s.connected) return null
+        return if (s.grid) {
+            s.panes.firstOrNull { it.id == s.selected && it.source.isConsole && it.accepted && it.input }
+                ?: s.panes.firstOrNull { it.source.isConsole && it.accepted && it.input }
+        } else {
+            s.panes.firstOrNull { it.id == s.selected && it.source.isConsole && it.accepted && it.input }
+        }
+    }
+    private fun sendNeutralGamepadIfActive() {
+        val pane = activeConsolePane()
+        val neutral = AndroidGamepadController.resetToNeutralJson(context) ?: return
+        if (pane != null) {
+            runCatching {
+                val payload = JSONObject().put("id", pane.id).put("state", neutral)
+                activeSurfaceTokens[pane.id]?.let { payload.put("token", it) }
+                action(16, payload.toString())
+            }
+        }
+    }
+    fun dispatchGamepadKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (!AndroidGamepadController.isGamepadKeyEvent(event)) return false
+        val pane = activeConsolePane() ?: return false
+        AndroidGamepadController.onKeyEvent(event)?.let { sendGamepadState(pane.id, it) }
+        return true
+    }
+    fun dispatchGamepadMotionEvent(event: android.view.MotionEvent): Boolean {
+        if (!AndroidGamepadController.isGamepadMotionEvent(event)) return false
+        val pane = activeConsolePane() ?: return false
+        AndroidGamepadController.onMotionEvent(event)?.let { sendGamepadState(pane.id, it) }
+        return true
+    }
+    private fun sendGamepadState(id: Int, stateJson: JSONObject) = guarded {
+        if (!active || background || !mutable.value.connected) return@guarded
+        val payload = JSONObject().put("id", id).put("state", stateJson)
+        activeSurfaceTokens[id]?.let { payload.put("token", it) }
+        runCatching { action(16, payload.toString()) }
+    }
+    fun listConsoles(): List<Ps5ConsoleSummary> = AndroidGamepadController.parseConsoles(action(18))
+    fun pairConsole(authCredential: String, pin: String, hostAddr: String? = null, nicknameOverride: String? = null): Ps5PairResult {
+        val req = JSONObject()
+            .put("auth_credential", authCredential)
+            .put("pin", pin)
+            .put("host_addr", hostAddr ?: JSONObject.NULL)
+            .put("nickname_override", nicknameOverride ?: JSONObject.NULL)
+        return AndroidGamepadController.parsePairResult(action(19, req.toString()))
+    }
+    fun removeConsole(consoleId: Long): List<Ps5ConsoleSummary> =
+        AndroidGamepadController.parseConsoles(action(20, java.lang.Long.toUnsignedString(consoleId)))
     private fun currentView(id: Int, sessionKey: String, generation: Long, visible: Boolean): Boolean {
         val s = mutable.value
         return active && s.connected && s.sessionKey == sessionKey && s.connectionGeneration == generation &&
@@ -1168,6 +1225,11 @@ object WorkspaceClient {
             control?.optJSONObject("ClipboardState")?.let { mutable.value = mutable.value.copy(clipboard = it.getBoolean("enabled")) }
             event.optJSONObject("clipboard")?.let { applyClipboard(it) }
             event.optJSONObject("detail")?.takeIf { it.has("clipboard_files") }?.let { applyClipboard(it) }
+            event.optJSONObject("gamepad_feedback")?.let {
+                if (!background && activeConsolePane() != null) {
+                    AndroidGamepadController.applyFeedback(context, it)
+                }
+            }
             control?.optJSONObject("SourceAppearance")?.let { response ->
                 val id = response.getInt("id")
                 val source = response.get("source").toString()

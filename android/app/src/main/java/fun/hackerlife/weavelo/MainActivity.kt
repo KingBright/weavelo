@@ -55,6 +55,16 @@ class MainActivity : ComponentActivity() {
         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (WorkspaceClient.dispatchGamepadKeyEvent(event)) return true
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+        if (WorkspaceClient.dispatchGamepadMotionEvent(event)) return true
+        return super.dispatchGenericMotionEvent(event)
+    }
+
     override fun onStart() {
         super.onStart()
         WeaveloClient.setBackgrounded(false)

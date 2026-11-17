@@ -13,6 +13,19 @@ pub const DUALSENSE_EDGE_PID: u16 = 0x0DF2;
 
 const DUALSENSE_BT_OUTPUT_CRC_SEED: u8 = 0xA2;
 const STICK_AXIS_MAX: f32 = 32767.0;
+const STICK_DEADZONE_I16: i32 = 1800;
+
+#[inline]
+pub fn apply_stick_deadzone(raw: i16) -> i16 {
+    let v = i32::from(raw);
+    let abs = v.abs();
+    if abs <= STICK_DEADZONE_I16 {
+        return 0;
+    }
+    let sign = v.signum();
+    let rescaled = ((abs - STICK_DEADZONE_I16) * 32767) / (32767 - STICK_DEADZONE_I16);
+    (sign * rescaled).clamp(-32767, 32767) as i16
+}
 
 #[inline]
 fn stick_u8_to_i16(raw: u8) -> i16 {
@@ -22,7 +35,60 @@ fn stick_u8_to_i16(raw: u8) -> i16 {
     } else {
         (centered * 32767) / 128
     };
-    scaled.clamp(-32767, 32767) as i16
+    apply_stick_deadzone(scaled.clamp(-32767, 32767) as i16)
+}
+
+/// Returns `true` when all digital buttons, analog triggers, deadzoned sticks, and touch contacts are at rest.
+#[inline]
+pub fn is_gamepad_neutral(state: &GamepadState) -> bool {
+    state.buttons == 0
+        && state.left_trigger == 0
+        && state.right_trigger == 0
+        && state.left_stick_x == 0
+        && state.left_stick_y == 0
+        && state.right_stick_x == 0
+        && state.right_stick_y == 0
+        && !state.touches[0].active
+        && !state.touches[1].active
+        && (!state.has_imu
+            || (state.gyro[0].abs() < 0.035
+                && state.gyro[1].abs() < 0.035
+                && state.gyro[2].abs() < 0.035))
+}
+
+/// Compares two gamepad snapshots while suppressing inactive touchpad coordinate residue and MEMS IMU thermal noise.
+pub fn gamepad_state_changed(prev: Option<&GamepadState>, next: &GamepadState) -> bool {
+    let Some(prev) = prev else {
+        return !is_gamepad_neutral(next);
+    };
+    let active_touch = |t: &TouchPoint| {
+        if t.active {
+            Some((t.id, t.x, t.y))
+        } else {
+            None
+        }
+    };
+    if prev.controller_id != next.controller_id
+        || prev.kind != next.kind
+        || prev.buttons != next.buttons
+        || prev.left_trigger != next.left_trigger
+        || prev.right_trigger != next.right_trigger
+        || prev.left_stick_x != next.left_stick_x
+        || prev.left_stick_y != next.left_stick_y
+        || prev.right_stick_x != next.right_stick_x
+        || prev.right_stick_y != next.right_stick_y
+        || active_touch(&prev.touches[0]) != active_touch(&next.touches[0])
+        || active_touch(&prev.touches[1]) != active_touch(&next.touches[1])
+        || prev.has_imu != next.has_imu
+    {
+        return true;
+    }
+    if next.has_imu {
+        let gyro_delta = (0..3).any(|i| (next.gyro[i] - prev.gyro[i]).abs() >= 0.02);
+        let accel_delta = (0..3).any(|i| (next.accel[i] - prev.accel[i]).abs() >= 0.025);
+        return gyro_delta || accel_delta;
+    }
+    false
 }
 
 #[inline]
@@ -482,7 +548,7 @@ mod desktop {
 
             let axis_i16 = |val: f32, invert: bool| -> i16 {
                 let scaled = if invert { -val } else { val } * STICK_AXIS_MAX;
-                scaled.clamp(-STICK_AXIS_MAX, STICK_AXIS_MAX).round() as i16
+                apply_stick_deadzone(scaled.clamp(-STICK_AXIS_MAX, STICK_AXIS_MAX).round() as i16)
             };
 
             Some(GamepadState {
@@ -587,8 +653,8 @@ mod desktop {
                         was_allowed = true;
 
                         if let Some(state) = manager.poll() {
-                            let neutral = state == GamepadState::default();
-                            let changed = last_sent.as_ref() != Some(&state);
+                            let neutral = is_gamepad_neutral(&state);
+                            let changed = gamepad_state_changed(last_sent.as_ref(), &state);
                             let keepalive = !neutral && last_sent_at.elapsed() >= Duration::from_millis(40);
                             if (changed || keepalive) && send_state(state.clone()) {
                                 last_sent = Some(state);

@@ -17,54 +17,26 @@ use protocol::session::{CaptureSource, SESSION_VERSION, SessionCommand, Subscrip
 use protocol::{ContentKind, ControlMessage, DataEnvelope, FrameTimingCheckpoints, RtpPacket};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
-static CONSOLE_CONTROL_BUS: LazyLock<Mutex<HashMap<u32, broadcast::Sender<SessionCommand>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static GAMEPAD_FEEDBACK_BUS: LazyLock<
-    Mutex<HashMap<u32, broadcast::Sender<protocol::gamepad::GamepadFeedback>>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
-static NEXT_CONSOLE_REQUEST_ID: AtomicU32 = AtomicU32::new(0x7000_0001);
-
-fn subscribe_console_control_bus(connection_id: u32) -> broadcast::Receiver<SessionCommand> {
-    let mut map = CONSOLE_CONTROL_BUS.lock().unwrap();
-    map.entry(connection_id)
-        .or_insert_with(|| broadcast::channel(64).0)
-        .subscribe()
+#[derive(Clone)]
+struct ConsoleSessionChannels {
+    control_tx: broadcast::Sender<SessionCommand>,
+    feedback_tx: broadcast::Sender<protocol::gamepad::GamepadFeedback>,
+    next_request_id: Arc<AtomicU32>,
 }
 
-fn console_control_bus_if_exists(connection_id: u32) -> Option<broadcast::Sender<SessionCommand>> {
-    CONSOLE_CONTROL_BUS.lock().unwrap().get(&connection_id).cloned()
-}
-
-fn subscribe_gamepad_feedback_bus(
-    connection_id: u32,
-) -> broadcast::Receiver<protocol::gamepad::GamepadFeedback> {
-    let mut map = GAMEPAD_FEEDBACK_BUS.lock().unwrap();
-    map.entry(connection_id)
-        .or_insert_with(|| broadcast::channel(128).0)
-        .subscribe()
-}
-
-fn gamepad_feedback_bus_if_exists(
-    connection_id: u32,
-) -> Option<broadcast::Sender<protocol::gamepad::GamepadFeedback>> {
-    GAMEPAD_FEEDBACK_BUS
-        .lock()
-        .unwrap()
-        .get(&connection_id)
-        .cloned()
-}
-
-struct ActorBusCleanup(u32);
-impl Drop for ActorBusCleanup {
-    fn drop(&mut self) {
-        CONSOLE_CONTROL_BUS.lock().unwrap().remove(&self.0);
-        GAMEPAD_FEEDBACK_BUS.lock().unwrap().remove(&self.0);
+impl Default for ConsoleSessionChannels {
+    fn default() -> Self {
+        Self {
+            control_tx: broadcast::channel(64).0,
+            feedback_tx: broadcast::channel(128).0,
+            next_request_id: Arc::new(AtomicU32::new(0x7000_0001)),
+        }
     }
 }
 
@@ -379,6 +351,7 @@ pub struct WorkspaceConnection {
     pub file_commands: mpsc::Sender<FileTransferCommand>,
     pub file_activity: Arc<std::sync::atomic::AtomicBool>,
     pub clipboard_file_owner: crate::clipboard_file_runtime::ClipboardOwnerSlot,
+    console_channels: ConsoleSessionChannels,
     commands: mpsc::Sender<Command>,
     cancel: broadcast::Sender<()>,
     task: tokio::task::JoinHandle<()>,
@@ -586,6 +559,7 @@ impl WorkspaceConnection {
         ));
         let text = crate::committed_text::TextOutbox::default();
         let text_pending = text.pending.clone();
+        let console_channels = ConsoleSessionChannels::default();
         let mut actor = Actor {
             text,
             source_icons: source_icons.clone(),
@@ -598,6 +572,7 @@ impl WorkspaceConnection {
             receiver,
             commands: command_rx,
             control_tx,
+            console_channels: console_channels.clone(),
             audio_tx,
             files_tx,
             subscriptions: HashMap::new(),
@@ -635,6 +610,7 @@ impl WorkspaceConnection {
                 file_commands,
                 file_activity,
                 clipboard_file_owner,
+                console_channels,
                 commands,
                 cancel,
                 task,
@@ -1022,7 +998,7 @@ impl WorkspaceConnection {
     }
 
     pub fn subscribe_gamepad_feedback(&self) -> broadcast::Receiver<protocol::gamepad::GamepadFeedback> {
-        subscribe_gamepad_feedback_bus(self.id)
+        self.console_channels.feedback_tx.subscribe()
     }
 
     pub fn try_send_gamepad(
@@ -1051,7 +1027,7 @@ impl WorkspaceConnection {
         wait_timeout: Duration,
         mut matcher: impl FnMut(SessionCommand) -> Option<Result<T, String>>,
     ) -> Result<T, String> {
-        let mut rx = subscribe_console_control_bus(self.id);
+        let mut rx = self.console_channels.control_tx.subscribe();
         self.control(command).await?;
         let deadline = tokio::time::sleep(wait_timeout);
         tokio::pin!(deadline);
@@ -1075,7 +1051,10 @@ impl WorkspaceConnection {
     }
 
     pub async fn list_consoles(&self) -> Result<Vec<protocol::session::ConsoleSummary>, String> {
-        let req_id = NEXT_CONSOLE_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req_id = self
+            .console_channels
+            .next_request_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.console_rpc(
             SessionCommand::ListConsoles { request_id: req_id },
             req_id,
@@ -1094,7 +1073,10 @@ impl WorkspaceConnection {
         &self,
         request: protocol::session::PairConsoleRequest,
     ) -> Result<protocol::session::PairConsoleResponse, String> {
-        let req_id = NEXT_CONSOLE_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req_id = self
+            .console_channels
+            .next_request_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.console_rpc(
             SessionCommand::PairConsole {
                 request_id: req_id,
@@ -1116,7 +1098,10 @@ impl WorkspaceConnection {
         &self,
         console_id: u64,
     ) -> Result<Vec<protocol::session::ConsoleSummary>, String> {
-        let req_id = NEXT_CONSOLE_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req_id = self
+            .console_channels
+            .next_request_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.console_rpc(
             SessionCommand::RemoveConsole {
                 request_id: req_id,
@@ -1165,6 +1150,7 @@ struct Actor {
     receiver: UdpReceiver,
     commands: mpsc::Receiver<Command>,
     control_tx: mpsc::UnboundedSender<SessionCommand>,
+    console_channels: ConsoleSessionChannels,
     audio_tx: mpsc::Sender<AudioIngressEvent>,
     files_tx: mpsc::Sender<DataEnvelope>,
     subscriptions: HashMap<u32, View>,
@@ -1224,6 +1210,7 @@ mod input_api_tests {
                 file_commands,
                 file_activity: Default::default(),
                 clipboard_file_owner: Default::default(),
+                console_channels: Default::default(),
                 commands,
                 cancel: broadcast::channel(1).0,
                 task: tokio::spawn(async {}),
@@ -1531,6 +1518,7 @@ mod input_api_tests {
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_file_owner: Default::default(),
+            console_channels: Default::default(),
             commands,
             cancel,
             task: tokio::spawn(std::future::pending()),
@@ -2118,7 +2106,6 @@ impl Actor {
         self.last_response_tx.send_replace(*last_response);
     }
     async fn run(&mut self, mut cancel: broadcast::Receiver<()>) {
-        let _bus_cleanup = ActorBusCleanup(self.id);
         let mut last_pong = Instant::now();
         let mut rejected_count = 0u64;
         let mut rejection_log_at: Option<Instant> = None;
@@ -2349,18 +2336,14 @@ impl Actor {
                                     | SessionCommand::PairConsoleResult { .. }
                                     | SessionCommand::Error { .. }
                             ) {
-                                if let Some(bus) = console_control_bus_if_exists(self.id) {
-                                    let _ = bus.send(command.clone());
-                                }
+                                let _ = self.console_channels.control_tx.send(command.clone());
                             }
                             let _ = self.control_tx.send(command);
                             if closed { self.close_confirmed.store(true, std::sync::atomic::Ordering::Release); return; }
                         }
                         Ok(MultiplexedPacket::Control(ControlMessage::GamepadFeedback(feedback), addr)) if addr == self.target => {
                             self.note_peer_response(&mut last_pong);
-                            if let Some(bus) = gamepad_feedback_bus_if_exists(self.id) {
-                                let _ = bus.send(*feedback);
-                            }
+                            let _ = self.console_channels.feedback_tx.send(*feedback);
                         }
                         Ok(MultiplexedPacket::ClockReply(reply,received_us,addr)) if addr==self.target => {
                             // Liveness follows authenticated session traffic, never clock fit quality.
@@ -2663,6 +2646,7 @@ mod tests {
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_file_owner: Default::default(),
+            console_channels: Default::default(),
             commands,
             cancel: broadcast::channel(1).0,
             task: tokio::spawn(async {}),
@@ -2759,6 +2743,7 @@ mod tests {
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_file_owner: Default::default(),
+            console_channels: Default::default(),
             commands,
             cancel,
             task: tokio::spawn(std::future::pending::<()>()),
@@ -2812,6 +2797,7 @@ mod tests {
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_file_owner: Default::default(),
+            console_channels: Default::default(),
             commands,
             cancel: broadcast::channel(1).0,
             task,
@@ -2933,6 +2919,7 @@ mod tests {
                 receiver,
                 commands,
                 control_tx,
+                console_channels: Default::default(),
                 audio_tx,
                 files_tx,
                 subscriptions: HashMap::new(),
@@ -3036,6 +3023,7 @@ mod tests {
             file_commands,
             file_activity: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             clipboard_file_owner: Default::default(),
+            console_channels: Default::default(),
             commands,
             cancel,
             task,
@@ -4447,6 +4435,7 @@ mod tests {
             receiver,
             commands: command_rx,
             control_tx,
+            console_channels: Default::default(),
             audio_tx,
             files_tx,
             subscriptions: HashMap::from([(7, view)]),
@@ -4617,6 +4606,7 @@ mod tests {
             receiver,
             commands: command_rx,
             control_tx,
+            console_channels: Default::default(),
             audio_tx,
             files_tx,
             subscriptions: HashMap::new(),
@@ -4805,6 +4795,7 @@ mod rejected_datagram_tests {
             receiver,
             commands: commands_rx,
             control_tx,
+            console_channels: Default::default(),
             audio_tx,
             files_tx,
             subscriptions: HashMap::new(),
@@ -4993,5 +4984,132 @@ mod open_packet_isolation_tests {
         .await
         .unwrap_err();
         assert_eq!(error, "connection limit reached");
+    }
+}
+
+#[cfg(test)]
+mod console_isolation_tests {
+    use super::*;
+    use protocol::gamepad::GamepadFeedback;
+    use protocol::session::ConsoleSummary;
+
+    async fn spawn_mock_console_host(
+        console_id: u64,
+        nickname: &'static str,
+        emit_rumble_left: Option<u8>,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let server = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let target = server.local_addr().unwrap();
+        let (sender, receiver) = server.split();
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok(packet) = receiver.recv().await else {
+                    break;
+                };
+                let MultiplexedPacket::Control(ControlMessage::Session(cmd), addr) = packet else {
+                    continue;
+                };
+                match *cmd {
+                    SessionCommand::Open {
+                        connection_id,
+                        version,
+                    } => {
+                        sender
+                            .send_control(
+                                &ControlMessage::Session(Box::new(SessionCommand::Opened {
+                                    connection_id,
+                                    version,
+                                    max_subscriptions: 8,
+                                    files: false,
+                                    clipboard: false,
+                                    window_capture: true,
+                                })),
+                                addr,
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    SessionCommand::ListConsoles { request_id } => {
+                        sender
+                            .send_control(
+                                &ControlMessage::Session(Box::new(SessionCommand::Consoles {
+                                    request_id,
+                                    consoles: vec![ConsoleSummary {
+                                        console_id,
+                                        host_id: format!("HOST-{console_id}"),
+                                        nickname: nickname.into(),
+                                        host_addr: Some("192.168.1.88".into()),
+                                        status: "200 Ok".into(),
+                                        paired: true,
+                                    }],
+                                })),
+                                addr,
+                            )
+                            .await
+                            .unwrap();
+                        if let Some(left_large) = emit_rumble_left {
+                            sender
+                                .send_control(
+                                    &ControlMessage::GamepadFeedback(Box::new(
+                                        GamepadFeedback::Rumble {
+                                            controller_id: 0,
+                                            left_large,
+                                            right_small: 32,
+                                        },
+                                    )),
+                                    addr,
+                                )
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (target, handle)
+    }
+
+    #[tokio::test]
+    async fn console_rpc_and_gamepad_feedback_stay_isolated_per_connection() {
+        let (target_a, host_a) = spawn_mock_console_host(101, "PS5-Study", Some(210)).await;
+        let (target_b, host_b) = spawn_mock_console_host(202, "PS5-LivingRoom", None).await;
+
+        let (conn_a, _ev_a) = WorkspaceConnection::connect_media(target_a).await.unwrap();
+        let (conn_b, _ev_b) = WorkspaceConnection::connect_media(target_b).await.unwrap();
+        let mut fb_a = conn_a.subscribe_gamepad_feedback();
+        let mut fb_b = conn_b.subscribe_gamepad_feedback();
+
+        let (list_a, list_b) = tokio::join!(conn_a.list_consoles(), conn_b.list_consoles());
+        let list_a = list_a.unwrap();
+        let list_b = list_b.unwrap();
+        assert_eq!(list_a.len(), 1);
+        assert_eq!(list_a[0].console_id, 101);
+        assert_eq!(list_a[0].nickname, "PS5-Study");
+        assert_eq!(list_b.len(), 1);
+        assert_eq!(list_b[0].console_id, 202);
+        assert_eq!(list_b[0].nickname, "PS5-LivingRoom");
+
+        let rumble = tokio::time::timeout(Duration::from_secs(1), fb_a.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rumble,
+            GamepadFeedback::Rumble {
+                controller_id: 0,
+                left_large: 210,
+                right_small: 32,
+            }
+        );
+        assert!(matches!(
+            fb_b.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        drop(conn_a);
+        drop(conn_b);
+        host_a.abort();
+        host_b.abort();
     }
 }

@@ -361,6 +361,7 @@ struct Subscription {
     last_focus: (u32, u64),
     source_revision: u32,
     video_sequence: Arc<std::sync::atomic::AtomicU16>,
+    console_injector: Option<Arc<crate::ps5_bridge::ConsoleInputInjector>>,
     #[cfg(target_os = "windows")]
     _capture_reservation: Option<Arc<WindowsVideoCaptureReservation>>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
@@ -1650,6 +1651,12 @@ impl Connection {
         let (cancel, cancel_rx) = broadcast::channel(4);
         let (settings, rx) = watch::channel(initial_settings);
         let keyframe = Arc::new(AtomicBool::new(true));
+        let console_injector = match request.source {
+            CaptureSource::Console(console_id) => {
+                Some(Arc::new(crate::ps5_bridge::ConsoleInputInjector::new(console_id)))
+            }
+            _ => None,
+        };
         let stream_config = StreamingRunConfig {
             session_id: request.id,
             client_addr: addr,
@@ -1666,6 +1673,7 @@ impl Connection {
             stream_settings_rx: Some(rx),
             keyframe_requested: keyframe.clone(),
             video_sequence: video_sequence.clone(),
+            console_injector: console_injector.clone(),
             #[cfg(all(unix, any(test, target_os = "linux")))]
             native_capture: native_capture.clone(),
             #[cfg(target_os = "linux")]
@@ -1729,6 +1737,7 @@ impl Connection {
                 last_focus: (0, 0),
                 source_revision,
                 video_sequence,
+                console_injector,
                 #[cfg(target_os = "windows")]
                 _capture_reservation: capture_reservation,
                 #[cfg(all(unix, any(test, target_os = "linux")))]
@@ -1849,6 +1858,7 @@ struct ActiveInput {
     deadline:Option<std::time::Instant>,
     focus_release: Option<(InputBinding, u64, std::time::Instant)>,
     focus_pending: Option<(InputBinding, u64, std::time::Instant)>,
+    console_injector: Option<Arc<crate::ps5_bridge::ConsoleInputInjector>>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     capture: Option<PreparedPortalCapture>,
 }
@@ -1888,6 +1898,9 @@ impl ActiveInput {
         self.focus_release=None;
         self.focus_pending=None;
         injector.release_all_input();
+        if let Some(console) = self.console_injector.take() {
+            console.release_all_input();
+        }
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = self.capture.take()
             && let Err(error) = capture.release_input().await
@@ -2128,12 +2141,21 @@ async fn inject_fresh(
     let Some(target) = peer.subscriptions.get(&id).and_then(|s| s.input_target) else {
         return false;
     };
+    let console_injector = peer
+        .subscriptions
+        .get(&id)
+        .and_then(|s| s.console_injector.clone());
     #[cfg(all(unix, any(test, target_os = "linux")))]
     let capture = peer
         .subscriptions
         .get(&id)
         .and_then(|s| s.native_capture.clone());
-    let mut changed = owner.owner != Some((addr, id));
+    let mut changed = owner.owner != Some((addr, id))
+        || owner
+            .console_injector
+            .as_ref()
+            .map(|c| c.generation())
+            != console_injector.as_ref().map(|c| c.generation());
     #[cfg(all(unix, any(test, target_os = "linux")))]
     {
         changed |= owner
@@ -2148,6 +2170,7 @@ async fn inject_fresh(
             return false;
         }
         owner.owner = Some((addr, id));
+        owner.console_injector = console_injector.clone();
         #[cfg(all(unix, any(test, target_os = "linux")))]
         {
             owner.capture = capture.clone();
@@ -2155,23 +2178,37 @@ async fn inject_fresh(
     }
     if deadline.is_some_and(|deadline|std::time::Instant::now()>=deadline) {return false;}
     #[cfg(all(unix, any(test, target_os = "linux")))]
-    let result = match capture {
-        Some(capture) => {
-            let result=capture.inject_input_before(event,deadline).await;
-            if result==Err(crate::linux_portal::runtime::PortalInputError::Transport) {
-                // An unknown up outcome cannot be retried. Close this exact
-                // compositor lease to clear its state without a second up RPC.
-                capture.revoke_source();
-            }
-            result.map_err(|e| -> Box<dyn Error+Send+Sync> {
-                if e==crate::linux_portal::runtime::PortalInputError::Expired {Box::new(remote_core::InputExpired("before Linux portal dispatch"))}
-                else {Box::new(e)}
-            })
-        },
-        None => injector.inject_target_before(target, event,deadline),
+    let result = if let Some(console) = console_injector {
+        match deadline {
+            Some(deadline) => console.inject_input_before(event, deadline),
+            None => console.inject_input(event),
+        }
+    } else {
+        match capture {
+            Some(capture) => {
+                let result=capture.inject_input_before(event,deadline).await;
+                if result==Err(crate::linux_portal::runtime::PortalInputError::Transport) {
+                    // An unknown up outcome cannot be retried. Close this exact
+                    // compositor lease to clear its state without a second up RPC.
+                    capture.revoke_source();
+                }
+                result.map_err(|e| -> Box<dyn Error+Send+Sync> {
+                    if e==crate::linux_portal::runtime::PortalInputError::Expired {Box::new(remote_core::InputExpired("before Linux portal dispatch"))}
+                    else {Box::new(e)}
+                })
+            },
+            None => injector.inject_target_before(target, event,deadline),
+        }
     };
     #[cfg(not(all(unix, any(test, target_os = "linux"))))]
-    let result = injector.inject_target_before(target, event,deadline);
+    let result = if let Some(console) = console_injector {
+        match deadline {
+            Some(deadline) => console.inject_input_before(event, deadline),
+            None => console.inject_input(event),
+        }
+    } else {
+        injector.inject_target_before(target, event,deadline)
+    };
     if let Err(error) = result {
         // Cancel held state and revoke this exact lease, but a missed event
         // deadline is not a permanent loss of input capability. The existing
@@ -2295,8 +2332,8 @@ impl LazyInputInjector {
                         return Err("This host does not implement window-scoped input; no desktop fallback was used".into());
                     }
                 }
-                InputTarget::Console { console_id } => {
-                    Box::new(crate::ps5_bridge::ConsoleInputInjector::new(console_id))
+                InputTarget::Console { .. } => {
+                    return Err("Console input requires its bound subscription session".into());
                 }
                 #[cfg(all(unix, any(test, target_os = "linux")))]
                 InputTarget::Portal => {
@@ -5091,6 +5128,7 @@ mod failure_admission_tests {
                 last_focus: (0, 0),
                 source_revision: 10,
                 video_sequence: Arc::new(std::sync::atomic::AtomicU16::new(37)),
+                console_injector: None,
                 #[cfg(target_os = "windows")]
                 _capture_reservation: Some(Arc::new(WindowsVideoCaptureReservation::acquire().unwrap())),
                 #[cfg(all(unix, any(test, target_os = "linux")))]

@@ -722,6 +722,17 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WorkspaceClient_nativeAction(
             13 => return workspace.keyboard_context(&payload),
             14 => workspace.keyboard(&payload)?,
             15 => workspace.presented(&payload)?,
+            16 => workspace.send_gamepad(&payload)?,
+            17 => return Ok(workspace.poll_gamepad_feedback().unwrap_or_default()),
+            18 => return client.runtime().block_on(workspace.list_consoles()),
+            19 => return client.runtime().block_on(workspace.pair_console(&payload)),
+            20 => {
+                let console_id: u64 = payload
+                    .trim()
+                    .parse()
+                    .map_err(|_| "invalid console id".to_string())?;
+                return client.runtime().block_on(workspace.remove_console(console_id));
+            }
             _ => return Err("unknown workspace operation".into()),
         }
         Ok(String::new())

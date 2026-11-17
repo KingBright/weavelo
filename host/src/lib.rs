@@ -428,6 +428,7 @@ pub(crate) struct StreamingRunConfig {
     pub(crate) stream_settings_rx: Option<watch::Receiver<StreamSettings>>,
     pub(crate) keyframe_requested: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) video_sequence: Arc<std::sync::atomic::AtomicU16>,
+    pub(crate) console_injector: Option<Arc<ps5_bridge::ConsoleInputInjector>>,
     #[cfg(all(unix, any(test, target_os = "linux")))]
     pub(crate) native_capture: Option<linux_portal::runtime::PreparedPortalCapture>,
     #[cfg(target_os = "linux")]
@@ -1076,6 +1077,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
         mut stream_settings_rx,
         keyframe_requested,
         video_sequence,
+        console_injector,
         #[cfg(all(unix, any(test, target_os = "linux")))]
         native_capture,
         #[cfg(target_os = "linux")]
@@ -1146,6 +1148,7 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 stream_settings_rx,
                 keyframe_requested,
                 video_sequence,
+                console_injector,
                 #[cfg(all(unix, any(test, target_os = "linux")))]
                 native_capture,
                 #[cfg(target_os = "linux")]

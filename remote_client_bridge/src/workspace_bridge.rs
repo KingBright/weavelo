@@ -1189,16 +1189,38 @@ impl MobileWorkspace {
             #[serde(alias = "subscription_id")]
             id: u32,
             #[serde(default)]
+            token: Option<u64>,
+            #[serde(default)]
             source_revision: Option<u32>,
             state: protocol::gamepad::GamepadState,
         }
         let req: GamepadInputRequest = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let sent = if let Some(revision) = req.source_revision {
-            let binding = self
-                .connection
-                .input_binding(req.id, revision)
-                .ok_or_else(|| "remote input grant is not ready".to_string())?;
-            self.connection.try_send_bound_gamepad(binding, req.state)
+        let resolved_revision = {
+            let touches = self.touches.lock().unwrap();
+            if let Some(token) = req.token {
+                let touch = touches
+                    .get(&req.id)
+                    .ok_or_else(|| "video surface is unavailable".to_string())?;
+                if !touch.current_surface(token) {
+                    return Err("gamepad surface token is no longer active".into());
+                }
+                Some(req.source_revision.unwrap_or(touch.revision))
+            } else {
+                req.source_revision
+                    .or_else(|| touches.get(&req.id).map(|t| t.revision))
+            }
+        };
+        let sent = if let Some(revision) = resolved_revision {
+            if let Some(binding) = self.connection.input_binding(req.id, revision) {
+                self.connection.try_send_bound_gamepad(binding, req.state)
+            } else {
+                self.connection
+                    .try_control(protocol::session::SessionCommand::SourceInput {
+                        id: req.id,
+                        source_revision: revision,
+                        event: protocol::InputEvent::Gamepad(Box::new(req.state)),
+                    })
+            }
         } else {
             self.connection.try_send_gamepad(req.id, req.state)
         };

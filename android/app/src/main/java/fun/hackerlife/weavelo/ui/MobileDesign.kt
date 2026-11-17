@@ -209,7 +209,8 @@ enum class MobileSymbol(path: String) {
     FullscreenEnter("M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9 M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9 M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15 M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"),
     FullscreenExit("M9 4v3.5A1.5 1.5 0 0 1 7.5 9H4 M15 4v3.5A1.5 1.5 0 0 0 16.5 9H20 M20 15h-3.5A1.5 1.5 0 0 0 15 16.5V20 M4 15h3.5A1.5 1.5 0 0 1 9 16.5V20"),
     Collapse("M6 15l6-6 6 6"),
-    Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10");
+    Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10"),
+    Gamepad("M6 8h12a4 4 0 0 1 3.8 5.2l-1.1 3.6a2.5 2.5 0 0 1-4.2 1L14.5 16h-5l-2 1.8a2.5 2.5 0 0 1-4.2-1L2.2 13.2A4 4 0 0 1 6 8z M8 10.5v3 M6.5 12h3 M15.5 11h.01 M17.5 12.5h.01");
 
     val image: ImageVector = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
         .addPath(

@@ -289,8 +289,19 @@ impl RestoredDashboard {
         }
         let scope = selection.scope;
         let is_delivery = selection.is_delivery();
-        let conn = match &selection.target {
-            Target::Send(_) => None,
+        enum ConsoleTarget {
+            Local(crate::background_service::Client),
+            Remote(Arc<remote_core::workspace_session::WorkspaceConnection>),
+        }
+        let target = match &selection.target {
+            Target::Send(_) => {
+                let Some(bg) = self.background.clone() else {
+                    selection.ps5_pairing.error = Some("Sharing service is unavailable".into());
+                    cx.notify();
+                    return;
+                };
+                ConsoleTarget::Local(bg)
+            }
             Target::Open(binding) | Target::Replace(binding) => {
                 let Some(conn) = self.owner.bound_workspace_connection(binding) else {
                     selection.ps5_pairing.error =
@@ -298,15 +309,19 @@ impl RestoredDashboard {
                     cx.notify();
                     return;
                 };
-                Some(conn)
+                ConsoleTarget::Remote(conn)
             }
         };
         selection.ps5_pairing.busy = true;
         selection.ps5_pairing.error = None;
         let task = tokio::spawn(async move {
-            match conn {
-                Some(conn) => conn.list_consoles().await,
-                None => Ok(host::ps5_bridge::list_consoles().await),
+            match target {
+                ConsoleTarget::Remote(conn) => conn.list_consoles().await,
+                ConsoleTarget::Local(bg) => tokio::task::spawn_blocking(move || {
+                    bg.ps5_list_consoles().map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|_| "PS5 console discovery stopped; try again".to_string())?,
             }
         });
         cx.spawn(async move |view, cx| {
@@ -358,15 +373,26 @@ impl RestoredDashboard {
         let host_addr = (!selection.ps5_pairing.host_override.trim().is_empty())
             .then(|| selection.ps5_pairing.host_override.trim().to_owned());
         let request = protocol::session::PairConsoleRequest {
-            psn_redirect_or_account: psn_auth,
+            auth_credential: psn_auth,
             pin: clean_pin,
             host_addr,
             nickname_override: None,
         };
         let scope = selection.scope;
         let is_delivery = selection.is_delivery();
-        let conn = match &selection.target {
-            Target::Send(_) => None,
+        enum ConsoleTarget {
+            Local(crate::background_service::Client),
+            Remote(Arc<remote_core::workspace_session::WorkspaceConnection>),
+        }
+        let target = match &selection.target {
+            Target::Send(_) => {
+                let Some(bg) = self.background.clone() else {
+                    selection.ps5_pairing.error = Some("Sharing service is unavailable".into());
+                    cx.notify();
+                    return;
+                };
+                ConsoleTarget::Local(bg)
+            }
             Target::Open(binding) | Target::Replace(binding) => {
                 let Some(conn) = self.owner.bound_workspace_connection(binding) else {
                     selection.ps5_pairing.error =
@@ -374,16 +400,20 @@ impl RestoredDashboard {
                     cx.notify();
                     return;
                 };
-                Some(conn)
+                ConsoleTarget::Remote(conn)
             }
         };
         selection.ps5_pairing.busy = true;
         selection.ps5_pairing.error = None;
         selection.ps5_pairing.notice = None;
         let task = tokio::spawn(async move {
-            match conn {
-                Some(conn) => conn.pair_console(request).await,
-                None => Ok(host::ps5_bridge::pair_console(request).await),
+            match target {
+                ConsoleTarget::Remote(conn) => conn.pair_console(request).await,
+                ConsoleTarget::Local(bg) => tokio::task::spawn_blocking(move || {
+                    bg.ps5_pair_console(request).map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|_| "PS5 pairing task stopped; try again".to_string())?,
             }
         });
         cx.spawn(async move |view, cx| {
@@ -449,8 +479,19 @@ impl RestoredDashboard {
         }
         let scope = selection.scope;
         let is_delivery = selection.is_delivery();
-        let conn = match &selection.target {
-            Target::Send(_) => None,
+        enum ConsoleTarget {
+            Local(crate::background_service::Client),
+            Remote(Arc<remote_core::workspace_session::WorkspaceConnection>),
+        }
+        let target = match &selection.target {
+            Target::Send(_) => {
+                let Some(bg) = self.background.clone() else {
+                    selection.ps5_pairing.error = Some("Sharing service is unavailable".into());
+                    cx.notify();
+                    return;
+                };
+                ConsoleTarget::Local(bg)
+            }
             Target::Open(binding) | Target::Replace(binding) => {
                 let Some(conn) = self.owner.bound_workspace_connection(binding) else {
                     selection.ps5_pairing.error =
@@ -458,15 +499,19 @@ impl RestoredDashboard {
                     cx.notify();
                     return;
                 };
-                Some(conn)
+                ConsoleTarget::Remote(conn)
             }
         };
         selection.ps5_pairing.busy = true;
         selection.ps5_pairing.error = None;
         let task = tokio::spawn(async move {
-            match conn {
-                Some(conn) => conn.remove_console(console_id).await,
-                None => Ok(host::ps5_bridge::remove_console(console_id).await),
+            match target {
+                ConsoleTarget::Remote(conn) => conn.remove_console(console_id).await,
+                ConsoleTarget::Local(bg) => tokio::task::spawn_blocking(move || {
+                    bg.ps5_remove_console(console_id).map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|_| "PS5 removal task stopped; try again".to_string())?,
             }
         });
         cx.spawn(async move |view, cx| {
@@ -682,7 +727,7 @@ fn render_ps5_pairing_panel(
     let theme = cx.theme().clone();
     let pairing = &selection.ps5_pairing;
     let qr_matrix = remote_core::pairing_qr::qr_matrix_from_payload(
-        protocol::session::SONY_PSN_AUTHORIZE_URL,
+        host::ps5_bridge::PSN_AUTHORIZE_URL,
     )
     .ok();
 
@@ -778,7 +823,7 @@ fn render_ps5_pairing_panel(
         }
     }
 
-    let copy_url = protocol::session::SONY_PSN_AUTHORIZE_URL.to_owned();
+    let copy_url = host::ps5_bridge::PSN_AUTHORIZE_URL.to_owned();
     let header_and_qr = div()
         .flex()
         .items_start()
@@ -1085,7 +1130,7 @@ mod tests {
         selection.toggle(CaptureSource::Console(console_id));
         assert!(selection.selected.is_empty());
         let matrix = remote_core::pairing_qr::qr_matrix_from_payload(
-            protocol::session::SONY_PSN_AUTHORIZE_URL,
+            host::ps5_bridge::PSN_AUTHORIZE_URL,
         )
         .expect("PSN OAuth URL should encode as a QR matrix");
         assert!(matrix.width >= 21);

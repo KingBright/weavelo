@@ -50,7 +50,9 @@ struct ConsoleStoreFile {
     consoles: Vec<PairedConsole>,
 }
 
-/// Persistent credential store for paired PS5 consoles (`0o600` on Unix).
+const MAX_STORE_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Persistent credential store for paired PS5 consoles (`0o600` on Unix, owner-only DACL on Windows).
 #[derive(Debug, Clone)]
 pub struct ConsoleStore {
     path: PathBuf,
@@ -69,8 +71,8 @@ impl ConsoleStore {
             .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")));
 
         base.unwrap_or_else(|| PathBuf::from("."))
-            .join("weavelo")
-            .join("ps5_consoles.json")
+            .join("ps_remote")
+            .join("consoles.json")
     }
 
     pub fn load_default() -> io::Result<Self> {
@@ -84,6 +86,41 @@ impl ConsoleStore {
                 path,
                 consoles: Vec::new(),
             });
+        }
+        let _guard = StoreFileLock::acquire(&path, false)?;
+        Self::load_unlocked(path)
+    }
+
+    /// Atomically locks, loads, mutates, and saves the console store at `path`.
+    pub fn update<R>(
+        path: impl Into<PathBuf>,
+        mutate: impl FnOnce(&mut Self) -> R,
+    ) -> io::Result<R> {
+        let path = path.into();
+        ensure_private_parent_dir(&path)?;
+        let _guard = StoreFileLock::acquire(&path, true)?;
+        let mut store = Self::load_unlocked(path)?;
+        let out = mutate(&mut store);
+        store.save_unlocked()?;
+        Ok(out)
+    }
+
+    fn load_unlocked(path: PathBuf) -> io::Result<Self> {
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path,
+                    consoles: Vec::new(),
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        if meta.len() > MAX_STORE_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "console store exceeds 1 MiB size limit",
+            ));
         }
         let bytes = std::fs::read(&path)?;
         if bytes.is_empty() {
@@ -139,11 +176,13 @@ impl ConsoleStore {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
+        ensure_private_parent_dir(&self.path)?;
+        let _guard = StoreFileLock::acquire(&self.path, true)?;
+        self.save_unlocked()
+    }
+
+    fn save_unlocked(&self) -> io::Result<()> {
+        ensure_private_parent_dir(&self.path)?;
         let payload = ConsoleStoreFile {
             version: 1,
             consoles: self.consoles.clone(),
@@ -151,19 +190,88 @@ impl ConsoleStore {
         let json = serde_json::to_vec_pretty(&payload)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        let tmp_path = self.path.with_extension("json.tmp");
-        write_private_file(&tmp_path, &json)?;
-        if self.path.exists() {
-            let _ = std::fs::remove_file(&self.path);
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("consoles.json");
+        let nonce: u64 = rand::random();
+        let tmp_path = self
+            .path
+            .with_file_name(format!(".{file_name}.tmp-{}-{nonce:016x}", std::process::id()));
+        let write_res = (|| -> io::Result<()> {
+            write_private_file(&tmp_path, &json)?;
+            #[cfg(windows)]
+            if self.path.exists() {
+                let _ = std::fs::remove_file(&self.path);
+            }
+            std::fs::rename(&tmp_path, &self.path)?;
+            #[cfg(windows)]
+            restrict_windows_file_to_current_user(&self.path)?;
+            Ok(())
+        })();
+        if write_res.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
         }
-        std::fs::rename(&tmp_path, &self.path)
+        write_res
     }
+}
+
+struct StoreFileLock(std::fs::File);
+
+impl StoreFileLock {
+    fn acquire(store_path: &Path, exclusive: bool) -> io::Result<Self> {
+        ensure_private_parent_dir(store_path)?;
+        let file_name = store_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("consoles.json");
+        let lock_path = store_path.with_file_name(format!(".{file_name}.lock"));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts.open(&lock_path)?;
+        #[cfg(windows)]
+        let _ = restrict_windows_file_to_current_user(&lock_path);
+        if exclusive {
+            file.lock()?;
+        } else {
+            file.lock_shared()?;
+        }
+        Ok(Self(file))
+    }
+}
+
+impl Drop for StoreFileLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn ensure_private_parent_dir(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if !parent.exists() {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(parent)?;
+        }
+    }
+    Ok(())
 }
 
 fn write_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).write(true).truncate(true);
+    opts.create_new(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -177,7 +285,157 @@ fn write_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
+    #[cfg(windows)]
+    restrict_windows_file_to_current_user(path)?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_windows_file_to_current_user(path: &Path) -> io::Result<()> {
+    use core::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    struct SidAndAttributes {
+        sid: *mut c_void,
+        attributes: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn LocalFree(mem: *mut c_void) -> *mut c_void;
+    }
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn OpenProcessToken(
+            process: *mut c_void,
+            desired_access: u32,
+            token: *mut *mut c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            token: *mut c_void,
+            info_class: u32,
+            info: *mut c_void,
+            info_len: u32,
+            return_len: *mut u32,
+        ) -> i32;
+        fn ConvertSidToStringSidW(sid: *mut c_void, string_sid: *mut *mut u16) -> i32;
+        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            string_sd: *const u16,
+            revision: u32,
+            sd: *mut *mut c_void,
+            sd_size: *mut u32,
+        ) -> i32;
+        fn GetSecurityDescriptorDacl(
+            sd: *mut c_void,
+            dacl_present: *mut i32,
+            dacl: *mut *mut c_void,
+            dacl_defaulted: *mut i32,
+        ) -> i32;
+        fn SetNamedSecurityInfoW(
+            object_name: *const u16,
+            object_type: u32,
+            security_info: u32,
+            owner: *mut c_void,
+            group: *mut c_void,
+            dacl: *mut c_void,
+            sacl: *mut c_void,
+        ) -> u32;
+    }
+
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_USER_CLASS: u32 = 1;
+    const SDDL_REVISION_1: u32 = 1;
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x8000_0000;
+
+    unsafe {
+        let mut token: *mut c_void = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut needed: u32 = 0;
+        let _ = GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            core::ptr::null_mut(),
+            0,
+            &mut needed,
+        );
+        if needed == 0 {
+            let err = io::Error::last_os_error();
+            let _ = CloseHandle(token);
+            return Err(err);
+        }
+        let mut buf = vec![0u8; needed as usize];
+        if GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            buf.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            let err = io::Error::last_os_error();
+            let _ = CloseHandle(token);
+            return Err(err);
+        }
+        let _ = CloseHandle(token);
+
+        let user = &*(buf.as_ptr().cast::<SidAndAttributes>());
+        let mut sid_ptr: *mut u16 = core::ptr::null_mut();
+        if ConvertSidToStringSidW(user.sid, &mut sid_ptr) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut len = 0usize;
+        while *sid_ptr.add(len) != 0 {
+            len += 1;
+        }
+        let sid_str = String::from_utf16_lossy(core::slice::from_raw_parts(sid_ptr, len));
+        let _ = LocalFree(sid_ptr.cast());
+
+        let sddl = format!("D:P(A;;FA;;;{sid_str})(A;;FA;;;SY)(A;;FA;;;BA)");
+        let sddl_w: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+        let mut sd: *mut c_void = core::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_w.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            core::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut present: i32 = 0;
+        let mut defaulted: i32 = 0;
+        let mut dacl: *mut c_void = core::ptr::null_mut();
+        if GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) == 0
+            || present == 0
+        {
+            let err = io::Error::last_os_error();
+            let _ = LocalFree(sd);
+            return Err(err);
+        }
+        let path_w: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let status = SetNamedSecurityInfoW(
+            path_w.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            dacl,
+            core::ptr::null_mut(),
+        );
+        let _ = LocalFree(sd);
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

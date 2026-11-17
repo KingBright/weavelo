@@ -819,27 +819,84 @@ async fn send_protobuf_data(
     Ok(())
 }
 
+const MAX_REASSEMBLED_DATA_BYTES: usize = 1024 * 1024;
+const MAX_OUT_OF_ORDER_DATA_CHUNKS: usize = 64;
+
 #[derive(Default)]
 struct DataReassembler {
     buffers: HashMap<u16, (u8, Vec<u8>)>,
+    out_of_order: HashMap<u32, (u8, Vec<u8>)>,
+    expected_seq: Option<u32>,
     last_cum_seq: Option<u32>,
 }
 
 impl DataReassembler {
-    fn push(&mut self, flags: u8, payload: &[u8]) -> Option<(u32, u8, Vec<u8>)> {
+    fn with_initial_seq(initial_seq: u32) -> Self {
+        Self {
+            buffers: HashMap::new(),
+            out_of_order: HashMap::new(),
+            expected_seq: Some(initial_seq),
+            last_cum_seq: None,
+        }
+    }
+
+    fn push(&mut self, flags: u8, payload: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        if payload.len() < 8 {
+            return Vec::new();
+        }
+        let seq = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let expected = *self.expected_seq.get_or_insert(seq);
+        let diff = seq.wrapping_sub(expected);
+
+        if diff >= 0x8000_0000 {
+            // Duplicate / already-acknowledged TSN (`seq < expected` in wrapping order).
+            return Vec::new();
+        }
+        if diff > 0 {
+            if (diff as usize) <= MAX_OUT_OF_ORDER_DATA_CHUNKS
+                && self.out_of_order.len() < MAX_OUT_OF_ORDER_DATA_CHUNKS
+                && payload.len() <= 65_536
+            {
+                self.out_of_order
+                    .entry(seq)
+                    .or_insert_with(|| (flags, payload.to_vec()));
+            }
+            return Vec::new();
+        }
+
+        let mut completed = Vec::new();
+        if let Some(msg) = self.ingest_in_order(flags, payload) {
+            completed.push(msg);
+        }
+        let mut cur = seq;
+        let mut next = cur.wrapping_add(1);
+        while let Some((buffered_flags, buffered_payload)) = self.out_of_order.remove(&next) {
+            if let Some(msg) = self.ingest_in_order(buffered_flags, &buffered_payload) {
+                completed.push(msg);
+            }
+            cur = next;
+            next = cur.wrapping_add(1);
+        }
+        self.last_cum_seq = Some(cur);
+        self.expected_seq = Some(next);
+        completed
+    }
+
+    fn ingest_in_order(&mut self, flags: u8, payload: &[u8]) -> Option<(u8, Vec<u8>)> {
         if payload.len() < 8 {
             return None;
         }
-        let seq = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
         let channel = u16::from_be_bytes([payload[4], payload[5]]);
-        self.last_cum_seq = Some(seq);
-
         let is_end = (flags & DATA_FLAG_FIN) != 0;
 
         if let Some((dt, mut buf)) = self.buffers.remove(&channel) {
-            buf.extend_from_slice(&payload[8..]);
+            let chunk_body = &payload[8..];
+            if buf.len().saturating_add(chunk_body.len()) > MAX_REASSEMBLED_DATA_BYTES {
+                return None;
+            }
+            buf.extend_from_slice(chunk_body);
             if is_end {
-                return Some((seq, dt, buf));
+                return Some((dt, buf));
             }
             self.buffers.insert(channel, (dt, buf));
             return None;
@@ -850,8 +907,11 @@ impl DataReassembler {
         }
         let data_type = payload[8];
         let body = &payload[9..];
+        if body.len() > MAX_REASSEMBLED_DATA_BYTES {
+            return None;
+        }
         if is_end {
-            Some((seq, data_type, body.to_vec()))
+            Some((data_type, body.to_vec()))
         } else {
             self.buffers.insert(channel, (data_type, body.to_vec()));
             None
@@ -884,7 +944,7 @@ pub async fn connect_takion(config: TakionConfig) -> Result<TakionSession, Takio
     let init_pkt = encode_control_packet(0, CHUNK_INIT, 0, &init_payload, None);
     let mut recv_buf = vec![0u8; 65_536];
 
-    let (remote_tag, _remote_tsn, cookie) = {
+    let (remote_tag, remote_tsn, cookie) = {
         let mut attempts = 0;
         loop {
             attempts += 1;
@@ -950,7 +1010,7 @@ pub async fn connect_takion(config: TakionConfig) -> Result<TakionSession, Takio
     .await?;
 
     // 4. Wait for server BANG (ECDH key exchange) + STREAM_INFO
-    let mut reassembler = DataReassembler::default();
+    let mut reassembler = DataReassembler::with_initial_seq(remote_tsn);
     let mut tx_crypt: Option<TakionTxCrypt> = None;
     let mut rx_crypt: Option<TakionRxCrypt> = None;
     let mut audio_config = TakionAudioConfig::default();
@@ -984,10 +1044,9 @@ pub async fn connect_takion(config: TakionConfig) -> Result<TakionSession, Takio
                     let _ = sock.send(&ack).await;
                 }
                 CHUNK_DATA => {
-                    if let Some((seq, data_type, body)) =
-                        reassembler.push(chunk.chunk_flags, &chunk.payload)
-                    {
-                        let ack_body = encode_data_ack_chunk(seq);
+                    let completed = reassembler.push(chunk.chunk_flags, &chunk.payload);
+                    if let Some(cum) = reassembler.last_cum_seq {
+                        let ack_body = encode_data_ack_chunk(cum);
                         let ack_pkt = encode_control_packet(
                             remote_tag,
                             CHUNK_DATA_ACK,
@@ -996,7 +1055,8 @@ pub async fn connect_takion(config: TakionConfig) -> Result<TakionSession, Takio
                             tx_crypt.as_mut(),
                         );
                         let _ = sock.send(&ack_pkt).await;
-
+                    }
+                    for (data_type, body) in completed {
                         if data_type == DATA_TYPE_PROTOBUF {
                             let msg = proto::TakionMessage::decode(body.as_slice())?;
                             if let Some(bang) = msg.bang_payload {
@@ -1034,16 +1094,6 @@ pub async fn connect_takion(config: TakionConfig) -> Result<TakionSession, Takio
                                 got_stream_info = true;
                             }
                         }
-                    } else if let Some(cum) = reassembler.last_cum_seq {
-                        let ack_body = encode_data_ack_chunk(cum);
-                        let ack_pkt = encode_control_packet(
-                            remote_tag,
-                            CHUNK_DATA_ACK,
-                            0,
-                            &ack_body,
-                            tx_crypt.as_mut(),
-                        );
-                        let _ = sock.send(&ack_pkt).await;
                     }
                 }
                 _ => {}
@@ -1197,13 +1247,13 @@ async fn run_takion_loop(
                                                 let _ = sock.send(&ack).await;
                                             }
                                             CHUNK_DATA => {
-                                                if let Some((seq, dt, body)) = reassembler.push(chunk.chunk_flags, &chunk.payload) {
-                                                    let ack = encode_control_packet(remote_tag, CHUNK_DATA_ACK, 0, &encode_data_ack_chunk(seq), Some(&mut tx_crypt));
-                                                    let _ = sock.send(&ack).await;
-                                                    handle_takion_data(dt, &body, &event_tx).await;
-                                                } else if let Some(cum) = reassembler.last_cum_seq {
+                                                let completed = reassembler.push(chunk.chunk_flags, &chunk.payload);
+                                                if let Some(cum) = reassembler.last_cum_seq {
                                                     let ack = encode_control_packet(remote_tag, CHUNK_DATA_ACK, 0, &encode_data_ack_chunk(cum), Some(&mut tx_crypt));
                                                     let _ = sock.send(&ack).await;
+                                                }
+                                                for (dt, body) in completed {
+                                                    handle_takion_data(dt, &body, &event_tx).await;
                                                 }
                                             }
                                             _ => {}
@@ -1498,6 +1548,33 @@ mod tests {
     }
 
     #[test]
+    fn reassembler_holds_cum_ack_on_gap_and_reassembles_out_of_order() {
+        let mut r = DataReassembler::with_initial_seq(100);
+        let c0 = encode_data_chunk(100, 1, DATA_TYPE_PROTOBUF, b"hello ");
+        let c1 = encode_data_continuation_chunk(101, 1, b"beautiful ");
+        let c2 = encode_data_continuation_chunk(102, 1, b"world");
+
+        // Arrival order: 100 (frag), then 102 (fin, out of order!), then duplicate 100, then 101 (middle).
+        assert!(r.push(DATA_FLAG_FRAG, &c0).is_empty());
+        assert_eq!(r.last_cum_seq, Some(100));
+
+        // 102 arrives before 101: must NOT advance cum_ack past 100 or emit corrupt message!
+        assert!(r.push(DATA_FLAG_FIN, &c2).is_empty());
+        assert_eq!(r.last_cum_seq, Some(100));
+
+        // Duplicate 100 must NOT re-append "hello "
+        assert!(r.push(DATA_FLAG_FRAG, &c0).is_empty());
+        assert_eq!(r.last_cum_seq, Some(100));
+
+        // Missing middle 101 arrives -> completes 101 + 102 in order and advances cum_ack to 102!
+        let done = r.push(DATA_FLAG_FRAG, &c1);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].0, DATA_TYPE_PROTOBUF);
+        assert_eq!(done[0].1, b"hello beautiful world");
+        assert_eq!(r.last_cum_seq, Some(102));
+    }
+
+    #[test]
     fn video_processor_recovers_missing_unit_via_fec() {
         let mut proc = VideoFrameProcessor::default();
         let u0 = vec![0x00, 0x00, 0x00, 0x01, 0xaa, 0xbb];
@@ -1616,12 +1693,14 @@ mod tests {
         // Multi-fragment DATA reassembly (flags = 0 then flags = 1).
         let mut reasm = DataReassembler::default();
         let frag1 = encode_data_chunk(100, 1, DATA_TYPE_PROTOBUF, b"hello ");
-        assert!(reasm.push(DATA_FLAG_FRAG, &frag1).is_none());
+        assert!(reasm.push(DATA_FLAG_FRAG, &frag1).is_empty());
+        assert_eq!(reasm.last_cum_seq, Some(100));
         let frag2 = encode_data_continuation_chunk(101, 1, b"ps5");
-        let (seq, dt, body) = reasm.push(DATA_FLAG_FIN, &frag2).expect("reassembled");
-        assert_eq!(seq, 101);
-        assert_eq!(dt, DATA_TYPE_PROTOBUF);
-        assert_eq!(body, b"hello ps5");
+        let done = reasm.push(DATA_FLAG_FIN, &frag2);
+        assert_eq!(done.len(), 1);
+        assert_eq!(reasm.last_cum_seq, Some(101));
+        assert_eq!(done[0].0, DATA_TYPE_PROTOBUF);
+        assert_eq!(done[0].1, b"hello ps5");
 
         // 25-byte TRIGGER_EFFECTS offsets: left [5..15], right [15..25].
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();

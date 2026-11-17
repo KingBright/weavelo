@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 // session layouts before admitting input; authentication and device keys stay unchanged.
 pub const SESSION_VERSION: u32 = 12;
 pub const MAX_SUBSCRIPTIONS: usize = 8;
-pub const SONY_PSN_AUTHORIZE_URL: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code&client_id=ba495a24-818c-472b-b12d-ff231c1b5745&redirect_uri=https://remoteplay.dl.playstation.net/remoteplay/redirect&scope=psn:clientapp&request_locale=en_US&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&prompt=always&PlatformPrivacyWs1=minimal&";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum CaptureSource {
@@ -48,7 +47,8 @@ pub struct ConsoleSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairConsoleRequest {
-    pub psn_redirect_or_account: String,
+    #[serde(alias = "psn_redirect_or_account")]
+    pub auth_credential: String,
     pub pin: String,
     pub host_addr: Option<String>,
     pub nickname_override: Option<String>,
@@ -690,7 +690,7 @@ mod tests {
                 SessionCommand::PairConsole {
                     request_id: 101,
                     request: Box::new(PairConsoleRequest {
-                        psn_redirect_or_account: "AAAAAAAAAAA=".into(),
+                        auth_credential: "AAAAAAAAAAA=".into(),
                         pin: "12345678".into(),
                         host_addr: Some("192.168.1.55".into()),
                         nickname_override: None,
