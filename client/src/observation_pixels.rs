@@ -235,6 +235,114 @@ impl CpuRgba {
         })
     }
 
+    /// Divides the frame into an 8x8 spatial grid (`0..=1000` normalized coordinates),
+    /// merges adjacent changed cells into rectangular regions, and returns up to the top 8
+    /// sub-rectangles whose average RGB channel difference exceeds threshold so VLMs can
+    /// inspect them with `weavelo_cua_zoom`.
+    pub fn changed_regions(&self, other: &Self) -> Vec<[u16; 4]> {
+        const GRID: usize = 8;
+        const CELL_DIFF_THRESHOLD: f32 = 0.002;
+        const MAX_REGIONS: usize = 8;
+        const MAX_EXACT_PIXELS: usize = 2_500_000;
+
+        if self.layout != other.layout || self.pixels.is_empty() {
+            return Vec::new();
+        }
+        let w = self.layout.width as usize;
+        let h = self.layout.height as usize;
+        if w == 0 || h == 0 {
+            return Vec::new();
+        }
+        let step = if w.saturating_mul(h) <= MAX_EXACT_PIXELS {
+            1
+        } else {
+            (w.max(h) / 1024).max(1)
+        };
+        let a = self.pixels.as_slice();
+        let b = other.pixels.as_slice();
+        let stride = self.layout.row_stride;
+
+        let mut diff_sums = [[0u64; GRID]; GRID];
+        let mut sample_counts = [[0u64; GRID]; GRID];
+        for y in (0..h).step_by(step) {
+            let gy = ((y * GRID) / h).min(GRID - 1);
+            let row_base = y * stride;
+            for x in (0..w).step_by(step) {
+                let gx = ((x * GRID) / w).min(GRID - 1);
+                let idx = row_base + x * 4;
+                let diff = u64::from(a[idx].abs_diff(b[idx]))
+                    + u64::from(a[idx + 1].abs_diff(b[idx + 1]))
+                    + u64::from(a[idx + 2].abs_diff(b[idx + 2]));
+                diff_sums[gy][gx] += diff;
+                sample_counts[gy][gx] += 3;
+            }
+        }
+
+        let mut dirty = [[false; GRID]; GRID];
+        let mut scores = [[0.0f32; GRID]; GRID];
+        for gy in 0..GRID {
+            for gx in 0..GRID {
+                let samples = sample_counts[gy][gx];
+                if samples == 0 {
+                    continue;
+                }
+                let avg = (diff_sums[gy][gx] as f32) / ((samples * 255) as f32);
+                if avg > CELL_DIFF_THRESHOLD {
+                    dirty[gy][gx] = true;
+                    scores[gy][gx] = avg;
+                }
+            }
+        }
+
+        let mut visited = [[false; GRID]; GRID];
+        let mut regions: Vec<(f32, [u16; 4])> = Vec::new();
+        for gy0 in 0..GRID {
+            for gx0 in 0..GRID {
+                if !dirty[gy0][gx0] || visited[gy0][gx0] {
+                    continue;
+                }
+                let mut gx1 = gx0 + 1;
+                while gx1 < GRID && dirty[gy0][gx1] && !visited[gy0][gx1] {
+                    gx1 += 1;
+                }
+                let mut gy1 = gy0 + 1;
+                'rows: while gy1 < GRID {
+                    for gx in gx0..gx1 {
+                        if !dirty[gy1][gx] || visited[gy1][gx] {
+                            break 'rows;
+                        }
+                    }
+                    gy1 += 1;
+                }
+                let mut max_score = 0.0f32;
+                for gy in gy0..gy1 {
+                    for gx in gx0..gx1 {
+                        visited[gy][gx] = true;
+                        max_score = max_score.max(scores[gy][gx]);
+                    }
+                }
+                regions.push((
+                    max_score,
+                    [
+                        (gx0 * 125) as u16,
+                        (gy0 * 125) as u16,
+                        (gx1 * 125) as u16,
+                        (gy1 * 125) as u16,
+                    ],
+                ));
+            }
+        }
+
+        regions.sort_by(|lhs, rhs| {
+            rhs.0
+                .total_cmp(&lhs.0)
+                .then_with(|| lhs.1[1].cmp(&rhs.1[1]))
+                .then_with(|| lhs.1[0].cmp(&rhs.1[0]))
+        });
+        regions.truncate(MAX_REGIONS);
+        regions.into_iter().map(|(_, rect)| rect).collect()
+    }
+
     /// Downscales high-DPI / 4K frames so the longest edge does not exceed `max_edge`
     /// (e.g. 1568px for VLM optimal token/latency efficiency) using area-averaged box
     /// filtering while leaving frames already within `max_edge` zero-copy untouched.
@@ -422,5 +530,59 @@ mod tests {
             (1000, 500)
         );
         assert_eq!(&scaled.pixels()[0..4], &[200, 200, 200, 200]);
+    }
+    #[test]
+    fn changed_regions_merges_grid_rects_and_caps_at_top_eight() {
+        let base_raw = vec![40u8; 64 * 64 * 4];
+        let base = CpuRgba::from_decoded(64, 64, Arc::new(base_raw.clone()), 64 * 64 * 4).unwrap();
+        assert!(base.changed_regions(&base).is_empty());
+
+        let other_size = CpuRgba::from_decoded(32, 32, Arc::new(vec![40u8; 32 * 32 * 4]), 32 * 32 * 4).unwrap();
+        assert!(base.changed_regions(&other_size).is_empty());
+
+        // Modify a 2x2 cell block (cells x=2..4, y=3..5 -> px 16..32, py 24..40)
+        let mut block = base_raw.clone();
+        for y in 24..40 {
+            for x in 16..32 {
+                let idx = (y * 64 + x) * 4;
+                block[idx] = 240;
+            }
+        }
+        let block_frame = CpuRgba::from_decoded(64, 64, Arc::new(block), 64 * 64 * 4).unwrap();
+        let regions = base.changed_regions(&block_frame);
+        assert_eq!(regions, vec![[250, 375, 500, 625]]);
+        assert!(block_frame.zoom_crop(regions[0], 64 * 64 * 4).is_ok());
+
+        // Modify 10 disjoint checkerboard cells with increasing intensity; expect top 8 sorted desc.
+        let mut sparse = base_raw;
+        let coords = [
+            (0usize, 0usize, 50u8),
+            (2, 0, 70),
+            (4, 0, 90),
+            (6, 0, 110),
+            (1, 2, 130),
+            (3, 2, 150),
+            (5, 2, 170),
+            (7, 2, 190),
+            (0, 4, 210),
+            (2, 4, 255),
+        ];
+        for (gx, gy, val) in coords {
+            for dy in 0..8 {
+                for dx in 0..8 {
+                    let x = gx * 8 + dx;
+                    let y = gy * 8 + dy;
+                    let idx = (y * 64 + x) * 4;
+                    sparse[idx] = val;
+                }
+            }
+        }
+        let sparse_frame = CpuRgba::from_decoded(64, 64, Arc::new(sparse), 64 * 64 * 4).unwrap();
+        let top = base.changed_regions(&sparse_frame);
+        assert_eq!(top.len(), 8);
+        assert_eq!(top[0], [250, 500, 375, 625]);
+        assert_eq!(top[1], [0, 500, 125, 625]);
+        assert!(!top.contains(&[0, 0, 125, 125]));
+        assert!(!top.contains(&[250, 0, 375, 125]));
     }
 }

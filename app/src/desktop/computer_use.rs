@@ -33,6 +33,9 @@ pub(crate) enum Action {
         #[serde(default)]
         button: u8,
     },
+    RightClickRef {
+        target_ref: String,
+    },
     DoubleClick {
         x: u16,
         y: u16,
@@ -50,6 +53,11 @@ pub(crate) enum Action {
         #[serde(default)]
         button: u8,
     },
+    TripleClickRef {
+        target_ref: String,
+        #[serde(default)]
+        button: u8,
+    },
     Move {
         x: u16,
         y: u16,
@@ -62,6 +70,10 @@ pub(crate) enum Action {
         from_y: u16,
         to_x: u16,
         to_y: u16,
+    },
+    DragRef {
+        from_ref: String,
+        to_ref: String,
     },
     KeyPress {
         key_code: u16,
@@ -76,6 +88,11 @@ pub(crate) enum Action {
     Scroll {
         x: u16,
         y: u16,
+        delta_x: i32,
+        delta_y: i32,
+    },
+    ScrollRef {
+        target_ref: String,
         delta_x: i32,
         delta_y: i32,
     },
@@ -94,14 +111,29 @@ impl Action {
             | Self::DoubleClick { button, .. }
             | Self::TripleClick { button, .. } => *button <= 2,
             Self::ClickRef { target_ref, button }
-            | Self::DoubleClickRef { target_ref, button } => {
+            | Self::DoubleClickRef { target_ref, button }
+            | Self::TripleClickRef { target_ref, button } => {
                 *button <= 2 && Self::valid_ref_syntax(target_ref)
             }
-            Self::MoveRef { target_ref } => Self::valid_ref_syntax(target_ref),
+            Self::RightClickRef { target_ref } | Self::MoveRef { target_ref } => {
+                Self::valid_ref_syntax(target_ref)
+            }
+            Self::DragRef { from_ref, to_ref } => {
+                Self::valid_ref_syntax(from_ref) && Self::valid_ref_syntax(to_ref)
+            }
             Self::Move { .. } | Self::Drag { .. } => true,
             Self::Scroll {
                 delta_x, delta_y, ..
             } => delta_x.unsigned_abs() <= 1200 && delta_y.unsigned_abs() <= 1200,
+            Self::ScrollRef {
+                target_ref,
+                delta_x,
+                delta_y,
+            } => {
+                delta_x.unsigned_abs() <= 1200
+                    && delta_y.unsigned_abs() <= 1200
+                    && Self::valid_ref_syntax(target_ref)
+            }
             Self::KeyPress { key_code } | Self::KeyCombo { key_code, .. } => {
                 *key_code < 128 && ![54, 55, 56, 57, 58, 59, 60, 61, 62, 63].contains(key_code)
             }
@@ -136,6 +168,10 @@ impl Action {
                     button: *button,
                 })
             }
+            Self::RightClickRef { target_ref } => {
+                let (x, y) = resolver(target_ref)?;
+                Ok(Self::Click { x, y, button: 1 })
+            }
             Self::DoubleClickRef { target_ref, button } => {
                 let (x, y) = resolver(target_ref)?;
                 Ok(Self::DoubleClick {
@@ -144,9 +180,40 @@ impl Action {
                     button: *button,
                 })
             }
+            Self::TripleClickRef { target_ref, button } => {
+                let (x, y) = resolver(target_ref)?;
+                Ok(Self::TripleClick {
+                    x,
+                    y,
+                    button: *button,
+                })
+            }
             Self::MoveRef { target_ref } => {
                 let (x, y) = resolver(target_ref)?;
                 Ok(Self::Move { x, y })
+            }
+            Self::ScrollRef {
+                target_ref,
+                delta_x,
+                delta_y,
+            } => {
+                let (x, y) = resolver(target_ref)?;
+                Ok(Self::Scroll {
+                    x,
+                    y,
+                    delta_x: *delta_x,
+                    delta_y: *delta_y,
+                })
+            }
+            Self::DragRef { from_ref, to_ref } => {
+                let (from_x, from_y) = resolver(from_ref)?;
+                let (to_x, to_y) = resolver(to_ref)?;
+                Ok(Self::Drag {
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                })
             }
             other => Ok(other.clone()),
         }
@@ -157,7 +224,15 @@ impl Action {
     ) -> Option<((u16, u16), client::observation_pixels::ReticleStyle, String)> {
         use client::observation_pixels::ReticleStyle;
         match self {
-            Self::Click { x, y, .. } => Some(((*x, *y), ReticleStyle::Click, "Click".into())),
+            Self::Click { x, y, button } => Some((
+                (*x, *y),
+                ReticleStyle::Click,
+                if *button == 1 {
+                    "Right Click".into()
+                } else {
+                    "Click".into()
+                },
+            )),
             Self::DoubleClick { x, y, .. } => {
                 Some(((*x, *y), ReticleStyle::Click, "Double Click".into()))
             }
@@ -181,8 +256,12 @@ impl Action {
             Self::Scroll { x, y, .. } => Some(((*x, *y), ReticleStyle::Hover, "Scroll".into())),
             Self::CommitText { .. } | Self::KeyPress { .. } | Self::KeyCombo { .. }=>None,
             Self::ClickRef { .. }
+            | Self::RightClickRef { .. }
             | Self::DoubleClickRef { .. }
+            | Self::TripleClickRef { .. }
             | Self::MoveRef { .. }
+            | Self::ScrollRef { .. }
+            | Self::DragRef { .. }
             | Self::Wait { .. }
             | Self::WaitForStability { .. } => None,
         }
@@ -417,7 +496,13 @@ fn expand_action(action: &Action) -> Result<Vec<Event>, Rejection> {
         ]),
         Action::Wait { .. } | Action::WaitForStability { .. } => Ok(Vec::new()),
         // Unresolved ref actions must be resolved via Action::resolve_with before expansion.
-        Action::ClickRef { .. } | Action::DoubleClickRef { .. } | Action::MoveRef { .. } => {
+        Action::ClickRef { .. }
+        | Action::RightClickRef { .. }
+        | Action::DoubleClickRef { .. }
+        | Action::TripleClickRef { .. }
+        | Action::MoveRef { .. }
+        | Action::ScrollRef { .. }
+        | Action::DragRef { .. } => {
             Err(Rejection::StaleSnapshotRef)
         }
     }
@@ -575,10 +660,8 @@ impl<C, Fence: PartialEq, Frame> Observation<C, Fence, Frame> {
                 });
                 continue;
             }
-            if let Action::Wait { duration_ms }
-            | Action::WaitForStability {
-                timeout_ms: duration_ms,
-            } = action
+            if let Action::Wait { duration_ms: _ }
+            | Action::WaitForStability { timeout_ms: _ } = action
             {
                 if !action.valid() {
                     let _ = port.release();
@@ -1008,6 +1091,108 @@ mod tests {
             }
             .resolve_with(|_| Err("stale_snapshot_ref")),
             Err("stale_snapshot_ref")
+        );
+
+        let mut lookup = |r: &str| match r {
+            "@s3_1:e1" => Ok((111, 222)),
+            "@s3_1:e2" => Ok((333, 444)),
+            _ => Err("stale_snapshot_ref"),
+        };
+        let right = serde_json::from_str::<Action>(
+            r#"{"kind":"right_click_ref","target_ref":"@s3_1:e1"}"#,
+        )
+        .unwrap();
+        assert!(right.valid());
+        let resolved_right = right.resolve_with(&mut lookup).unwrap();
+        assert_eq!(
+            resolved_right,
+            Action::Click {
+                x: 111,
+                y: 222,
+                button: 1
+            }
+        );
+        assert_eq!(
+            resolved_right.visual_feedback(),
+            Some((
+                (111, 222),
+                client::observation_pixels::ReticleStyle::Click,
+                "Right Click".into()
+            ))
+        );
+
+        let triple = serde_json::from_str::<Action>(
+            r#"{"kind":"triple_click_ref","target_ref":"@s3_1:e1"}"#,
+        )
+        .unwrap();
+        assert!(triple.valid());
+        let resolved_triple = triple.resolve_with(&mut lookup).unwrap();
+        assert_eq!(
+            resolved_triple,
+            Action::TripleClick {
+                x: 111,
+                y: 222,
+                button: 0
+            }
+        );
+        assert_eq!(
+            resolved_triple.visual_feedback(),
+            Some((
+                (111, 222),
+                client::observation_pixels::ReticleStyle::Click,
+                "Triple Click".into()
+            ))
+        );
+
+        let scroll = serde_json::from_str::<Action>(
+            r#"{"kind":"scroll_ref","target_ref":"@s3_1:e1","delta_x":0,"delta_y":-120}"#,
+        )
+        .unwrap();
+        assert!(scroll.valid());
+        let resolved_scroll = scroll.resolve_with(&mut lookup).unwrap();
+        assert_eq!(
+            resolved_scroll,
+            Action::Scroll {
+                x: 111,
+                y: 222,
+                delta_x: 0,
+                delta_y: -120
+            }
+        );
+        assert_eq!(
+            resolved_scroll.visual_feedback(),
+            Some((
+                (111, 222),
+                client::observation_pixels::ReticleStyle::Hover,
+                "Scroll".into()
+            ))
+        );
+
+        let drag = serde_json::from_str::<Action>(
+            r#"{"kind":"drag_ref","from_ref":"@s3_1:e1","to_ref":"@s3_1:e2"}"#,
+        )
+        .unwrap();
+        assert!(drag.valid());
+        let resolved_drag = drag.resolve_with(&mut lookup).unwrap();
+        assert_eq!(
+            resolved_drag,
+            Action::Drag {
+                from_x: 111,
+                from_y: 222,
+                to_x: 333,
+                to_y: 444
+            }
+        );
+        assert_eq!(
+            resolved_drag.visual_feedback(),
+            Some((
+                (333, 444),
+                client::observation_pixels::ReticleStyle::Drag {
+                    from_x: 111,
+                    from_y: 222
+                },
+                "Drag".into()
+            ))
         );
     }
 }

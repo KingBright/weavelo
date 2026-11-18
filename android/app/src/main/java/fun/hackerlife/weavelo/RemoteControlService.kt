@@ -22,6 +22,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import `fun`.hackerlife.weavelo.managed.ManagedApplications
 import `fun`.hackerlife.weavelo.managed.ManagedApplicationInput
+import `fun`.hackerlife.weavelo.octendra.OctendraAiInput
+import `fun`.hackerlife.weavelo.octendra.OctendraAiViews
 
 /** Android owns the grant. The service never enables itself or records input. */
 class RemoteControlService : AccessibilityService() {
@@ -31,6 +33,12 @@ class RemoteControlService : AccessibilityService() {
         fun openSettings(context: Context) {
             context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
+        internal fun shouldPollInput(
+            serviceConnected: Boolean,
+            controlSize: Pair<Int, Int>?,
+            aiControlEnabled: Boolean,
+            aiHasActiveTargets: Boolean,
+        ): Boolean = serviceConnected && (controlSize != null || (aiControlEnabled && aiHasActiveTargets))
     }
     private val handler = Handler(Looper.getMainLooper())
     private var running = false
@@ -42,6 +50,8 @@ class RemoteControlService : AccessibilityService() {
     private var stroke: GestureDescription.StrokeDescription? = null
     private var appInput: ManagedApplicationInput? = null
     private var appSource: Any? = null
+    private var aiInput: OctendraAiInput? = null
+    private var aiSource: Any? = null
     private data class ContactStroke(val x: Float, val y: Float, val stroke: GestureDescription.StrokeDescription)
     private var contacts = linkedMapOf<Long, ContactStroke>()
     private var pollScheduled = false
@@ -58,7 +68,11 @@ class RemoteControlService : AccessibilityService() {
             if (appInput != null && ManagedApplications.target(appSource) != appInput?.target) {
                 appInput?.release(); appInput=null; appSource=null
             }
-            if (!mutableConnected.value || PublisherClient.controlSize == null) {
+            if (aiInput != null && OctendraAiViews.target(aiSource) != aiInput?.target) {
+                aiInput?.release(); aiInput=null; aiSource=null
+            }
+            if (!shouldPollInput(mutableConnected.value, PublisherClient.controlSize,
+                    OctendraAiViews.controlEnabled, OctendraAiViews.hasActiveTargets())) {
                 if (generation != -1L) reset(-1)
                 schedulePoll(250)
                 return
@@ -74,10 +88,25 @@ class RemoteControlService : AccessibilityService() {
                             if (busy || gen != generation) reject(gen,token,"native input generation is busy or changed")
                             else {
                                 val source=job.get("source")
-                                val target=ManagedApplications.target(source)
-                                if(source is JSONObject && target==null) { reject(gen,token,"application display is no longer owned");schedulePoll(0);return }
-                                if(appInput?.target!=target) { appInput?.release();appInput=target?.let(::ManagedApplicationInput) }
-                                appSource=source
+                                val aiTarget=OctendraAiViews.target(source)
+                                val target=if (aiTarget==null) ManagedApplications.target(source) else null
+                                if(source is JSONObject && target==null && aiTarget==null) { reject(gen,token,"application display is no longer owned");schedulePoll(0);return }
+                                if(aiTarget!=null) {
+                                    appInput?.release(); appInput=null; appSource=null
+                                    val aiClient=OctendraAiViews.clientOrNull()
+                                    if(!aiTarget.supportsInput || aiClient==null) { reject(gen,token,"AI view input is unavailable");schedulePoll(0);return }
+                                    if(aiInput?.target!=aiTarget) {
+                                        aiInput?.release()
+                                        aiInput=OctendraAiInput(aiTarget, aiClient) { stale, forceRebind ->
+                                            OctendraAiViews.invalidateTarget(stale, forceRebind)
+                                        }
+                                    }
+                                    aiSource=source
+                                } else {
+                                    aiInput?.release(); aiInput=null; aiSource=null
+                                    if(appInput?.target!=target) { appInput?.release();appInput=target?.let(::ManagedApplicationInput) }
+                                    appSource=source
+                                }
                                 busy = true
                                 execute(job.getJSONArray("events"),0,gen,token,work)
                             }
@@ -117,6 +146,8 @@ class RemoteControlService : AccessibilityService() {
         super.onDestroy()
     }
     private fun dimensions(): Pair<Int,Int>? {
+        aiInput?.let { input -> return if(OctendraAiViews.target(aiSource)==input.target)
+            input.target.width to input.target.height else null }
         appInput?.let { input -> return if(ManagedApplications.target(appSource)==input.target)
             input.target.width to input.target.height else null }
         val size = PublisherClient.controlSize ?: return null
@@ -126,6 +157,7 @@ class RemoteControlService : AccessibilityService() {
         return size.takeIf { it.first == metrics.widthPixels && it.second == metrics.heightPixels && it.first > 1 && it.second > 1 }
     }
     private fun reset(next: Long) {
+        aiInput?.release();aiInput=null;aiSource=null
         appInput?.release();appInput=null;appSource=null
         generation = next; val version = ++work; busy = true
         val old = stroke; stroke = null
@@ -167,8 +199,10 @@ class RemoteControlService : AccessibilityService() {
         fun done(accepted: Boolean) {
             if (version != work) return
             if (accepted) execute(events,index+1,gen,token,version)
-            else reject(gen,token,"native $name was not accepted on display ${appInput?.target?.displayId ?: Display.DEFAULT_DISPLAY}")
+            else reject(gen,token,"native $name was not accepted on display ${aiInput?.target?.displayId ?: appInput?.target?.displayId ?: Display.DEFAULT_DISPLAY}")
         }
+        val ai=aiInput
+        if(ai!=null) { done(ai.execute(event));return }
         val native=appInput
         if(native!=null && name!="Text") { done(native.execute(event));return }
         fun move(nx: Float, ny: Float) {

@@ -252,6 +252,71 @@ impl Call {
         }
     }
 }
+const TAKEOVER_HINT: &str = "Human took over remote input. Wait until the human releases input, then call weavelo_cua_observe(control: true) to inspect the screen and re-acquire control.";
+
+struct IpcError {
+    code: &'static str,
+    takeover_hint: Option<&'static str>,
+}
+
+impl IpcError {
+    fn code(code: &'static str) -> Self {
+        Self {
+            code,
+            takeover_hint: None,
+        }
+    }
+
+    fn paused_by_human() -> Self {
+        Self {
+            code: "paused_by_human",
+            takeover_hint: Some(TAKEOVER_HINT),
+        }
+    }
+
+    fn is_paused_by_human(&self) -> bool {
+        self.code == "paused_by_human"
+    }
+
+    fn into_output(self) -> Output {
+        let body = if let Some(hint) = self.takeover_hint {
+            serde_json::json!({
+                "ok": false,
+                "code": self.code,
+                "takeover_hint": hint,
+            })
+        } else {
+            serde_json::json!({
+                "ok": false,
+                "code": self.code,
+            })
+        };
+        Output { body, pixels: None }
+    }
+}
+
+impl From<&'static str> for IpcError {
+    fn from(code: &'static str) -> Self {
+        Self::code(code)
+    }
+}
+
+fn check_lease_scope(
+    owner: &OriginalOwner,
+    scope: &mut super::original_owner::ComputerUseObservation,
+    require_not_paused: bool,
+) -> Result<(), IpcError> {
+    if owner.validate_bound_computer_use(scope).is_err()
+        || (require_not_paused && owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman))
+    {
+        if owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman) {
+            return Err(IpcError::paused_by_human());
+        }
+        return Err(IpcError::code("source_changed"));
+    }
+    Ok(())
+}
+
 impl Dispatcher {
     pub fn new(directory: &std::path::Path, generation: &str, hash: &str) -> Self {
         Self(
@@ -278,14 +343,14 @@ impl Dispatcher {
         peer: Option<i32>,
         cancelled: impl Fn() -> bool,
     ) -> Output {
-        let result = (|| {
+        let result: Result<Output, IpcError> = (|| {
             if !call.valid() {
-                return Err("invalid_request");
+                return Err(IpcError::code("invalid_request"));
             }
             let saved = self
                 .0
                 .lock()
-                .map_err(|_| "state_unavailable")?
+                .map_err(|_| IpcError::code("state_unavailable"))?
                 .as_ref()
                 .map(|l| l.caller.clone());
             let caller = self
@@ -315,10 +380,7 @@ impl Dispatcher {
             }
             Ok(output)
         })();
-        result.unwrap_or_else(|code| Output {
-            body: serde_json::json!({"ok":false,"code":code}),
-            pixels: None,
-        })
+        result.unwrap_or_else(IpcError::into_output)
     }
     fn run(
         self: &Arc<Self>,
@@ -326,11 +388,11 @@ impl Dispatcher {
         call: Call,
         caller: super::computer_use_authority::Caller,
         cancelled: &impl Fn() -> bool,
-    ) -> Result<Output, &'static str> {
+    ) -> Result<Output, IpcError> {
         if !call.valid() {
-            return Err("invalid_request");
+            return Err(IpcError::code("invalid_request"));
         }
-        let mut state = self.0.lock().map_err(|_| "state_unavailable")?;
+        let mut state = self.0.lock().map_err(|_| IpcError::code("state_unavailable"))?;
         if state.as_ref().is_some_and(|l| Instant::now() >= l.expires) {
             state.take();
         }
@@ -343,8 +405,19 @@ impl Dispatcher {
                 max_bytes,
                 control,
             } => {
+                if let Some(existing) = state.as_mut()
+                    && existing.owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman)
+                {
+                    let existing_owner = existing.owner.clone();
+                    if existing_owner
+                        .validate_bound_computer_use(&mut existing.scope)
+                        .is_err()
+                    {
+                        state.take();
+                    }
+                }
                 if state.is_some() {
-                    return Err("observer_busy");
+                    return Err(IpcError::code("observer_busy"));
                 }
                 let mut matched = owners.iter().filter_map(|candidate| {
                     candidate
@@ -357,31 +430,49 @@ impl Dispatcher {
                 });
                 let (owner, binding) = matched.next().ok_or("target_not_selected")?;
                 if matched.next().is_some() {
-                    return Err("target_not_selected");
+                    return Err(IpcError::code("target_not_selected"));
                 }
+                let access = if control {
+                    Access::Control
+                } else {
+                    Access::Observe
+                };
                 let mut scope = owner
                     .observe_bound_computer_use(
                         &binding,
                         &target.peer_device_id,
                         target.source,
-                        Access::Observe,
+                        access,
                     )
-                    .map_err(|_| "session_unavailable")?;
+                    .map_err(|err| {
+                        if owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman)
+                            && matches!(
+                                err,
+                                super::computer_use::Rejection::InputBusy
+                                    | super::computer_use::Rejection::StaleSession
+                            )
+                        {
+                            IpcError::paused_by_human()
+                        } else if matches!(err, super::computer_use::Rejection::InputBusy) {
+                            IpcError::code("input_busy")
+                        } else {
+                            IpcError::code("session_unavailable")
+                        }
+                    })?;
                 owner
                     .validate_bound_computer_use(&mut scope)
-                    .map_err(|_| "frame_expired")?;
-                owner.set_computer_use_active(
-                    Some(if control {
-                        ComputerUseMode::Controlling
-                    } else {
-                        ComputerUseMode::Observing
-                    }),
-                    Some(if control {
-                        "AI Controlling — Move mouse or press Esc to take over".into()
-                    } else {
-                        "AI Observing screen".into()
-                    }),
-                );
+                    .map_err(|_| IpcError::code("frame_expired"))?;
+                if control {
+                    owner.set_computer_use_active(
+                        Some(ComputerUseMode::Controlling),
+                        Some("AI Controlling — Move mouse or press Esc to take over".into()),
+                    );
+                } else if owner.computer_use_mode() != Some(ComputerUseMode::PausedByHuman) {
+                    owner.set_computer_use_active(
+                        Some(ComputerUseMode::Observing),
+                        Some("AI Observing screen".into()),
+                    );
+                }
                 let expires = Instant::now() + Duration::from_millis(lease_ms.into());
                 let weak = Arc::downgrade(self);
                 let key = lease_id.clone();
@@ -425,7 +516,7 @@ impl Dispatcher {
                         .as_ref()
                         .is_some_and(|l| l.actor == actor && l.id == lease_id)
                 {
-                    return Err("lease_mismatch");
+                    return Err(IpcError::code("lease_mismatch"));
                 }
                 state.take();
                 Ok(Output {
@@ -444,16 +535,19 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id && l.control)
                     .ok_or("control_lease_mismatch")?;
+                let owner = lease.owner.clone();
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, true) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 let resolved_action = action.resolve_with(|target_ref| {
                     lease
                         .ref_store
                         .resolve(target_ref)
                         .map(|node| (grid_to_input(node.center_norm.0),grid_to_input(node.center_norm.1)))
                 })?;
-                let owner = lease.owner.clone();
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
                 let mut observation =
                     take_frame(&mut lease.pending, source_revision, frame_sequence)?;
                 let remaining = caller.expires_at_ms.saturating_sub(crate::unix_now_ms());
@@ -467,8 +561,17 @@ impl Dispatcher {
                 owner
                     .act_bound_computer_use(&mut observation, resolved_action, deadline, cancelled)
                     .map_err(|error| match error {
-                        super::computer_use::Rejection::QueueRejected { .. } => "outcome_unknown",
-                        _ => "input_rejected",
+                        super::computer_use::Rejection::QueueRejected { .. } => {
+                            IpcError::code("outcome_unknown")
+                        }
+                        super::computer_use::Rejection::StaleSession
+                        | super::computer_use::Rejection::InputBusy
+                        | super::computer_use::Rejection::InputNotAllowed
+                            if owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman) =>
+                        {
+                            IpcError::paused_by_human()
+                        }
+                        _ => IpcError::code("input_rejected"),
                     })?;
                 Ok(Output {
                     body: serde_json::json!({"ok":true,"effect_confirmed":false}),
@@ -487,6 +590,13 @@ impl Dispatcher {
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id && l.control)
                     .ok_or("control_lease_mismatch")?;
+                let owner = lease.owner.clone();
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, true) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 let mut resolved_actions = Vec::with_capacity(actions.len());
                 for act in &actions {
                     let resolved = act.resolve_with(|target_ref| {
@@ -497,10 +607,6 @@ impl Dispatcher {
                     })?;
                     resolved_actions.push(resolved);
                 }
-                let owner = lease.owner.clone();
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
                 let mut observation =
                     take_frame(&mut lease.pending, source_revision, frame_sequence)?;
                 let remaining = caller.expires_at_ms.saturating_sub(crate::unix_now_ms());
@@ -512,12 +618,46 @@ impl Dispatcher {
                 drop(state);
                 let outcome = owner
                     .act_batch_bound_computer_use(&mut observation, &resolved_actions, deadline, cancelled)
-                    .map_err(|error| match error {
-                        super::computer_use::Rejection::QueueRejected { .. } => "outcome_unknown",
-                        _ => "input_rejected",
+                    .map_err(|error| {
+                        if !matches!(error, super::computer_use::Rejection::QueueRejected { .. })
+                            && owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman)
+                        {
+                            if let Ok(mut state) = self.0.lock()
+                                && state
+                                    .as_ref()
+                                    .is_some_and(|l| l.actor == actor && l.id == lease_id)
+                            {
+                                state.take();
+                            }
+                            return IpcError::paused_by_human();
+                        }
+                        match error {
+                            super::computer_use::Rejection::QueueRejected { .. } => {
+                                IpcError::code("outcome_unknown")
+                            }
+                            _ => IpcError::code("input_rejected"),
+                        }
                     })?;
-                if keep_lease {
-                    let mut state = self.0.lock().map_err(|_| "state_unavailable")?;
+                let paused_by_human =
+                    owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman);
+                if paused_by_human
+                    && outcome.failed_at == Some(0)
+                    && outcome
+                        .results
+                        .first()
+                        .is_some_and(|step| step.events_queued == 0)
+                {
+                    if let Ok(mut state) = self.0.lock()
+                        && state
+                            .as_ref()
+                            .is_some_and(|l| l.actor == actor && l.id == lease_id)
+                    {
+                        state.take();
+                    }
+                    return Err(IpcError::paused_by_human());
+                }
+                if keep_lease && !paused_by_human {
+                    let mut state = self.0.lock().map_err(|_| IpcError::code("state_unavailable"))?;
                     // Refresh the lease scope fence to the post-batch owner epoch so a
                     // subsequent Observe in the same lease can mint a new frame receipt,
                     // or drop the lease if the source/session became unavailable.
@@ -540,19 +680,25 @@ impl Dispatcher {
                         }
                     }
                 }
-                if !keep_lease {
-                    let mut state=self.0.lock().map_err(|_|"state_unavailable")?;
+                if !keep_lease || paused_by_human {
+                    let mut state=self.0.lock().map_err(|_| IpcError::code("state_unavailable"))?;
                     if state.as_ref().is_some_and(|lease|lease.actor==actor&&lease.id==lease_id){state.take();}
                 }
                 let completed = outcome.failed_at.is_none();
+                let mut body = serde_json::json!({
+                    "ok": completed,
+                    "completed": completed,
+                    "failed_at": outcome.failed_at,
+                    "effect_confirmed": false,
+                    "steps": outcome.results,
+                });
+                if paused_by_human {
+                    body["code"] = serde_json::json!("paused_by_human");
+                    body["paused_by_human"] = serde_json::json!(true);
+                    body["takeover_hint"] = serde_json::json!(TAKEOVER_HINT);
+                }
                 Ok(Output {
-                    body: serde_json::json!({
-                        "ok": completed,
-                        "completed": completed,
-                        "failed_at": outcome.failed_at,
-                        "effect_confirmed": false,
-                        "steps": outcome.results,
-                    }),
+                    body,
                     pixels: None,
                 })
             }
@@ -568,18 +714,28 @@ impl Dispatcher {
                     .filter(|l| l.actor == actor && l.id == lease_id)
                     .ok_or("lease_mismatch")?;
                 let owner = lease.owner.clone();
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, false) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 let pending = lease
                     .pending
                     .as_mut()
                     .filter(|p| p.revision == source_revision && p.sequence == frame_sequence)
                     .ok_or("frame_mismatch_or_consumed")?;
                 let maximum = lease.maximum;
-                let cropped = owner
-                    .zoom_bound_computer_use(&mut pending.observation, region, maximum)
-                    .map_err(|_| "pixels_unavailable")?;
+                let cropped = match owner.zoom_bound_computer_use(&mut pending.observation, region, maximum) {
+                    Ok(cropped) => cropped,
+                    Err(super::original_owner::ComputerUseExportError::Session(_))
+                        if owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman) =>
+                    {
+                        state.take();
+                        return Err(IpcError::paused_by_human());
+                    }
+                    Err(_) => return Err(IpcError::code("pixels_unavailable")),
+                };
                 let decoded_at_utc_us = decoded_frame_utc_us(
                     pending.observation.frame().decoded_at, Instant::now(), SystemTime::now());
                 let body = serde_json::json!({
@@ -613,20 +769,26 @@ impl Dispatcher {
                     .filter(|l| l.actor == actor && l.id == lease_id)
                     .ok_or("lease_mismatch")?;
                 let owner = lease.owner.clone();
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, false) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 let ctx = owner
                     .computer_use_snapshot_context()
                     .ok_or("session_unavailable")?;
                 lease.sequence=lease.sequence.checked_add(1).ok_or("snapshot_sequence_exhausted")?;
-                let body = lease.ref_store.build_session_snapshot(
+                let mut body = lease.ref_store.build_session_snapshot(
                     &ctx,
                     lease.sequence,
                     skeleton,
                     interactive_only,
                     root_ref.as_deref(),
                 )?;
+                let (cua_mode, cua_label) = owner.computer_use_status_json();
+                body["computer_use_mode"] = cua_mode;
+                body["computer_use_label"] = cua_label;
                 Ok(Output { body, pixels: None })
             }
             Call::Validate { actor, lease_id } => {
@@ -635,9 +797,12 @@ impl Dispatcher {
                     .filter(|l| l.actor == actor && l.id == lease_id)
                     .ok_or("lease_mismatch")?;
                 let owner = lease.owner.clone();
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, false) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 Ok(Output {
                     body: serde_json::json!({"ok":true}),
                     pixels: None,
@@ -649,9 +814,12 @@ impl Dispatcher {
                     .filter(|l| l.actor == actor && l.id == lease_id)
                     .ok_or("lease_mismatch")?;
                 let owner = lease.owner.clone();
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, false) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 lease.pending.take();
                 let (binding, target, maximum, control) = (
                     lease.binding.clone(),
@@ -671,37 +839,85 @@ impl Dispatcher {
                             Access::Observe
                         },
                     )
-                    .map_err(|_| "session_unavailable")?;
+                    .map_err(|err| {
+                        if owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman)
+                            && matches!(
+                                err,
+                                super::computer_use::Rejection::InputBusy
+                                    | super::computer_use::Rejection::StaleSession
+                            )
+                        {
+                            if let Ok(mut state) = self.0.lock()
+                                && state
+                                    .as_ref()
+                                    .is_some_and(|l| l.actor == actor && l.id == lease_id)
+                            {
+                                state.take();
+                            }
+                            IpcError::paused_by_human()
+                        } else {
+                            IpcError::code("session_unavailable")
+                        }
+                    })?;
                 let revision = OriginalOwner::computer_use_source_revision(&observation);
                 let decoded_at_utc_us = decoded_frame_utc_us(
                     observation.frame().decoded_at, Instant::now(), SystemTime::now());
                 let pixels = owner
                     .export_bound_computer_use(&mut observation, maximum)
-                    .map_err(|_| "pixels_unavailable")?;
-                let mut state = self.0.lock().map_err(|_| "state_unavailable")?;
+                    .map_err(|err| {
+                        if matches!(
+                            err,
+                            super::original_owner::ComputerUseExportError::Session(_)
+                        ) && owner.computer_use_mode() == Some(ComputerUseMode::PausedByHuman)
+                        {
+                            if let Ok(mut state) = self.0.lock()
+                                && state
+                                    .as_ref()
+                                    .is_some_and(|l| l.actor == actor && l.id == lease_id)
+                            {
+                                state.take();
+                            }
+                            IpcError::paused_by_human()
+                        } else {
+                            IpcError::code("pixels_unavailable")
+                        }
+                    })?;
+                let mut state = self.0.lock().map_err(|_| IpcError::code("state_unavailable"))?;
                 let lease = state
                     .as_mut()
                     .filter(|l| l.actor == actor && l.id == lease_id && Instant::now() < l.expires)
                     .ok_or("lease_expired")?;
                 if !Arc::ptr_eq(&lease.owner, &owner) {
-                    return Err("source_changed");
+                    return Err(IpcError::code("source_changed"));
                 }
-                owner
-                    .validate_bound_computer_use(&mut lease.scope)
-                    .map_err(|_| "source_changed")?;
+                if let Err(err) = check_lease_scope(&owner, &mut lease.scope, false) {
+                    if err.is_paused_by_human() {
+                        state.take();
+                    }
+                    return Err(err);
+                }
                 lease.sequence = lease.sequence.checked_add(1).ok_or("sequence_exhausted")?;
                 lease.pending = Some(PendingFrame {
                     revision,
                     sequence: lease.sequence,
                     observation,
                 });
-                let body = serde_json::json!({"ok":true,"lease_id":lease_id,"source_revision":revision,
-                "frame_sequence":lease.sequence,"decoded_at_utc_us":decoded_at_utc_us,
-                "size":[pixels.layout().width(),pixels.layout().height()],
-                "bytes":pixels.layout().bytes(),"encoding":match pixels.color() {
-                    client::observation_pixels::ColorMetadata::Srgb=>"rgba8_srgb",
-                    client::observation_pixels::ColorMetadata::Unspecified=>"rgba8",
-                }});
+                let (cua_mode, cua_label) = owner.computer_use_status_json();
+                let body = serde_json::json!({
+                    "ok": true,
+                    "lease_id": lease_id,
+                    "source_revision": revision,
+                    "frame_sequence": lease.sequence,
+                    "decoded_at_utc_us": decoded_at_utc_us,
+                    "computer_use_mode": cua_mode,
+                    "computer_use_label": cua_label,
+                    "size": [pixels.layout().width(), pixels.layout().height()],
+                    "bytes": pixels.layout().bytes(),
+                    "encoding": match pixels.color() {
+                        client::observation_pixels::ColorMetadata::Srgb => "rgba8_srgb",
+                        client::observation_pixels::ColorMetadata::Unspecified => "rgba8",
+                    }
+                });
                 Ok(Output {
                     body,
                     pixels: Some(pixels.into_pixels()),
@@ -806,10 +1022,37 @@ mod tests {
                 super::super::computer_use::Action::CommitText {
                     text: "hello".into(),
                 },
+                super::super::computer_use::Action::RightClickRef {
+                    target_ref: "@s1_1:e1".into(),
+                },
+                super::super::computer_use::Action::TripleClickRef {
+                    target_ref: "@s1_1:e1".into(),
+                    button: 0,
+                },
+                super::super::computer_use::Action::ScrollRef {
+                    target_ref: "@s1_1:e1".into(),
+                    delta_x: 0,
+                    delta_y: -120,
+                },
+                super::super::computer_use::Action::DragRef {
+                    from_ref: "@s1_1:e1".into(),
+                    to_ref: "@s1_1:e2".into(),
+                },
             ],
             keep_lease: true,
         };
         assert!(batch_ok.valid());
+    }
+
+    #[test]
+    fn paused_by_human_ipc_error_includes_code_and_takeover_hint() {
+        let out = IpcError::paused_by_human().into_output();
+        assert_eq!(out.body["ok"], false);
+        assert_eq!(out.body["code"], "paused_by_human");
+        assert!(out.body["takeover_hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("weavelo_cua_observe(control: true)")));
+        assert!(out.pixels.is_none());
     }
 }
 

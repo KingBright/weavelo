@@ -47,6 +47,16 @@ pub(crate) struct SnapshotNode {
     pub depth: u8,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanded: Option<bool>,
 }
 
 /// Snapshot-scoped `@<snapshot_id>:e<id>` reference table.
@@ -115,6 +125,11 @@ impl SnapshotRefStore {
                 CaptureSource::Window(_) => "window", CaptureSource::Camera(_) => "camera_viewport", _ => "display_viewport",
             }.into(), name:ctx.source_title.clone(), bounds_norm:[0,0,1000,1000],
             center_norm:(500,500),interactive:ctx.can_input,depth:0,children:vec![],
+            value: None,
+            checked: None,
+            selected: None,
+            disabled: None,
+            expanded: None,
         };
         if (!interactive_only || node.interactive) && drill_bounds.is_none_or(|b|bounds_overlap(node.bounds_norm,b)) {
             ordered.push(node.clone());
@@ -308,9 +323,46 @@ pub(crate) fn build_browser_dom_snapshot(
             bounds[1].saturating_add(bounds[3]) / 2,
         );
         let ref_id = format!("@{snapshot_id}:e{}", idx + 1);
+        let checked = item.get("checked").and_then(Value::as_bool);
+        let selected = item.get("selected").and_then(Value::as_bool);
+        let disabled = item.get("disabled").and_then(Value::as_bool);
+        let expanded = item.get("expanded").and_then(Value::as_bool);
+        let is_password = item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.eq_ignore_ascii_case("password"))
+            || item.get("password").and_then(Value::as_bool) == Some(true);
+        let value = if is_password {
+            Some("<redacted>".to_string())
+        } else {
+            item.get("value")
+                .and_then(Value::as_str)
+                .map(|s| s.chars().take(120).collect::<String>())
+        };
+        let mut attrs = Vec::new();
+        if let Some(v) = checked {
+            attrs.push(format!("checked={v}"));
+        }
+        if let Some(v) = selected {
+            attrs.push(format!("selected={v}"));
+        }
+        if let Some(v) = disabled {
+            attrs.push(format!("disabled={v}"));
+        }
+        if let Some(v) = expanded {
+            attrs.push(format!("expanded={v}"));
+        }
+        if let Some(v) = &value {
+            attrs.push(format!("value={v:?}"));
+        }
+        let attr_suffix = if attrs.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", attrs.join(" "))
+        };
         let indent = "  ".repeat(usize::from(depth));
         lines.push(format!(
-            "{indent}- `{ref_id}` [{role}] {name:?} center=({}, {})",
+            "{indent}- `{ref_id}` [{role}] {name:?} center=({}, {}){attr_suffix}",
             center.0, center.1
         ));
         nodes.push(SnapshotNode {
@@ -322,6 +374,11 @@ pub(crate) fn build_browser_dom_snapshot(
             interactive,
             depth,
             children: vec![],
+            value,
+            checked,
+            selected,
+            disabled,
+            expanded,
         });
     }
 
@@ -450,15 +507,19 @@ impl McpSessionState {
             .unwrap_or("")
             .to_string();
 
-        if let Some(existing) = &self.active_lease {
-            if existing.generation == generation
-                &&existing.expires_at_ms>crate::unix_now_ms()+5000&&(!control||existing.control)
-                && requested_target
-                    .as_ref()
-                    .is_none_or(|t| t == &existing.target)
-            {
-                return Ok((existing.clone(), generation));
-            }
+        let paused_by_human = status["sessions"]["computer_use_mode"] == "paused_by_human"
+            || status["computer_use_mode"] == "paused_by_human";
+
+        if !paused_by_human
+            && let Some(existing) = &self.active_lease
+            && existing.generation == generation
+            && existing.expires_at_ms > crate::unix_now_ms() + 5000
+            && (!control || existing.control)
+            && requested_target
+                .as_ref()
+                .is_none_or(|t| t == &existing.target)
+        {
+            return Ok((existing.clone(), generation));
         }
 
         let target = match requested_target {
@@ -514,13 +575,16 @@ impl McpSessionState {
         let (resp, _) = super::directed_receive::exchange_with_pixels(gui_dir, &open_req)
             .map_err(|e| format!("Failed to open Computer Use lease: {e}"))?;
         if resp["ok"] != true {
-            return Err(format!(
-                "GUI rejected Computer Use Open: {}",
-                resp["code"]
-                    .as_str()
-                    .or_else(|| resp["error"].as_str())
-                    .unwrap_or("unknown")
-            ));
+            let code = resp["code"]
+                .as_str()
+                .or_else(|| resp["error"].as_str())
+                .unwrap_or("unknown");
+            if code == "paused_by_human" {
+                return Err(serde_json::to_string(&resp).unwrap_or_else(|_| {
+                    "paused_by_human: Human took over input; call weavelo_cua_observe(control: true) once human releases input.".into()
+                }));
+            }
+            return Err(format!("GUI rejected Computer Use Open: {code}"));
         }
 
         let lease = ActiveMcpLease {
@@ -803,7 +867,7 @@ pub(crate) fn mcp_tool_definitions() -> Value {
         },
         {
             "name": "weavelo_cua_batch_act",
-            "description": "Execute a sequence of Computer Use actions (Click, ClickRef, DoubleClick, DoubleClickRef, TripleClick, Move, MoveRef, Drag, KeyPress, KeyCombo, CommitText, Scroll, Wait, WaitForStability) on the observed frame receipt with stop-on-failure execution.",
+            "description": "Execute a sequence of Computer Use actions (Click, ClickRef, RightClickRef, DoubleClick, DoubleClickRef, TripleClick, TripleClickRef, Move, MoveRef, Drag, DragRef, KeyPress, KeyCombo, CommitText, Scroll, ScrollRef, Wait, WaitForStability) on the observed frame receipt with stop-on-failure execution.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -949,10 +1013,7 @@ fn dispatch_mcp_tool(
                         { "type": "text", "text": serde_json::to_string_pretty(&body).unwrap_or_default() }
                     ]
                 }),
-                Ok((body, _)) => json!({
-                    "isError": true,
-                    "content": [{ "type": "text", "text": format!("Snapshot rejected: {body}") }]
-                }),
+                Ok((body, _)) => handle_cua_rejection(session, "Snapshot rejected", &body),
                 Err(e) => json!({
                     "isError": true,
                     "content": [{ "type": "text", "text": format!("Snapshot IPC failed: {e}") }]
@@ -1029,10 +1090,7 @@ fn dispatch_mcp_tool(
                         }),
                     }
                 }
-                Ok((body, _)) => json!({
-                    "isError": true,
-                    "content": [{ "type": "text", "text": format!("Observe rejected: {body}") }]
-                }),
+                Ok((body, _)) => handle_cua_rejection(session, "Observe rejected", &body),
                 Err(e) => json!({
                     "isError": true,
                     "content": [{ "type": "text", "text": format!("Observe IPC failed: {e}") }]
@@ -1057,7 +1115,10 @@ fn dispatch_mcp_tool(
                 Err(e) => return json!({"isError": true, "content": [{"type": "text", "text": e}]}),
             };
             if lease.source_revision == 0 || lease.frame_sequence == 0 {
-                let _ = dispatch_mcp_tool(profile_dir, session, "weavelo_cua_observe", &json!({}));
+                let obs = dispatch_mcp_tool(profile_dir, session, "weavelo_cua_observe", &json!({}));
+                if obs["isError"] == true {
+                    return obs;
+                }
                 if let Some(updated) = &session.active_lease {
                     lease = updated.clone();
                 }
@@ -1099,10 +1160,7 @@ fn dispatch_mcp_tool(
                         }),
                     }
                 }
-                Ok((body, _)) => json!({
-                    "isError": true,
-                    "content": [{ "type": "text", "text": format!("Zoom rejected: {body}") }]
-                }),
+                Ok((body, _)) => handle_cua_rejection(session, "Zoom rejected", &body),
                 Err(e) => json!({
                     "isError": true,
                     "content": [{ "type": "text", "text": format!("Zoom IPC failed: {e}") }]
@@ -1123,7 +1181,10 @@ fn dispatch_mcp_tool(
                 Err(e) => return json!({"isError": true, "content": [{"type": "text", "text": e}]}),
             };
             if lease.source_revision == 0 || lease.frame_sequence == 0 {
-                let _ = dispatch_mcp_tool(profile_dir, session, "weavelo_cua_observe", &json!({}));
+                let obs = dispatch_mcp_tool(profile_dir, session, "weavelo_cua_observe", &json!({}));
+                if obs["isError"] == true {
+                    return obs;
+                }
                 if let Some(updated) = &session.active_lease {
                     lease = updated.clone();
                 }
@@ -1158,47 +1219,93 @@ fn dispatch_mcp_tool(
             match super::directed_receive::exchange_with_pixels(&gui_dir, &req) {
                 Ok((mut body, _)) => {
                     let is_err = body["ok"] != true;
-                    if !keep_lease {
+                    let invalidated = body["code"].as_str().is_some_and(|c| {
+                        matches!(
+                            c,
+                            "paused_by_human"
+                                | "control_lease_mismatch"
+                                | "lease_mismatch"
+                                | "source_changed"
+                        )
+                    }) || body["paused_by_human"] == true;
+                    if !keep_lease || invalidated {
                         session.active_lease = None;
                         session.last_observed_frame = None;
                     }
                     let mut post_obs = None;
                     if !is_err && keep_lease && auto_observe {
-                        if !ends_with_wait {
-                            std::thread::sleep(Duration::from_millis(140));
-                        }
-                        let mut obs = dispatch_mcp_tool(
-                            profile_dir,
-                            session,
-                            "weavelo_cua_observe",
-                            &json!({}),
-                        );
-                        if expects_visual_effect
-                            && let (Some(pre), Some(first_post)) =
-                                (&pre_frame, &session.last_observed_frame)
-                            && pre
-                                .frame_diff_ratio(first_post)
-                                .is_some_and(|diff| diff < 0.0005)
-                        {
-                            std::thread::sleep(Duration::from_millis(180));
-                            obs = dispatch_mcp_tool(
+                        const SAMPLE_INTERVAL: Duration = Duration::from_millis(60);
+                        const MAX_SETTLE: Duration = Duration::from_millis(320);
+                        let obs = if ends_with_wait {
+                            dispatch_mcp_tool(
                                 profile_dir,
                                 session,
                                 "weavelo_cua_observe",
                                 &json!({}),
-                            );
-                        }
-                        if let (Some(pre), Some(post)) = (&pre_frame, &session.last_observed_frame)
-                            && let Some(diff) = pre.frame_diff_ratio(post)
-                        {
-                            let changed = diff >= 0.0005;
-                            body["visual_changed"] = json!(changed);
-                            body["visual_change_ratio"] =
-                                json!((f64::from(diff) * 10000.0).round() / 10000.0);
-                            if expects_visual_effect && !changed {
-                                body["unchanged_warning"] = json!(
-                                    "Screen pixels remained unchanged after batch execution; verify focus or target coordinates before repeating."
+                            )
+                        } else {
+                            let began = std::time::Instant::now();
+                            let mut latest_obs = json!({});
+                            let mut prev_sample: Option<client::observation_pixels::CpuRgba> = None;
+                            let mut saw_change = !expects_visual_effect;
+                            loop {
+                                let remaining = MAX_SETTLE.saturating_sub(began.elapsed());
+                                if remaining.is_zero() {
+                                    break;
+                                }
+                                std::thread::sleep(remaining.min(SAMPLE_INTERVAL));
+                                latest_obs = dispatch_mcp_tool(
+                                    profile_dir,
+                                    session,
+                                    "weavelo_cua_observe",
+                                    &json!({}),
                                 );
+                                if latest_obs["isError"] == true {
+                                    break;
+                                }
+                                let Some(curr) = session.last_observed_frame.clone() else {
+                                    break;
+                                };
+                                if !expects_visual_effect {
+                                    break;
+                                }
+                                if !saw_change {
+                                    if let Some(pre) = &pre_frame {
+                                        let diff = pre.frame_diff_ratio(&curr);
+                                        if diff.is_none() || diff.is_some_and(|d| d >= 0.0005) {
+                                            saw_change = true;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                } else if let Some(prev) = &prev_sample
+                                    && prev.frame_diff_ratio(&curr).is_some_and(|d| d <= 0.002)
+                                {
+                                    break;
+                                }
+                                prev_sample = Some(curr);
+                                if began.elapsed() >= MAX_SETTLE {
+                                    break;
+                                }
+                            }
+                            latest_obs
+                        };
+                        if let (Some(pre), Some(post)) = (&pre_frame, &session.last_observed_frame) {
+                            if let Some(diff) = pre.frame_diff_ratio(post) {
+                                let changed = diff >= 0.0005;
+                                let regions = pre.changed_regions(post);
+                                body["visual_changed"] = json!(changed);
+                                body["visual_change_ratio"] =
+                                    json!((f64::from(diff) * 10000.0).round() / 10000.0);
+                                body["changed_regions"] = json!(regions);
+                                if expects_visual_effect && !changed {
+                                    body["unchanged_warning"] = json!(
+                                        "Screen pixels remained unchanged after batch execution; verify focus or target coordinates before repeating."
+                                    );
+                                }
+                            } else if pre.layout() != post.layout() {
+                                body["visual_changed"] = json!(true);
+                                body["changed_regions"] = json!([[0, 0, 1000, 1000]]);
                             }
                         }
                         post_obs = Some(obs);
@@ -1241,66 +1348,7 @@ fn dispatch_mcp_tool(
                         let ws_url = page["webSocketDebuggerUrl"].as_str().unwrap_or("");
                         let page_url = page["url"].as_str().unwrap_or("about:blank");
                         let page_title = page["title"].as_str().unwrap_or("Browser Tab");
-                        let extract_js = format!(
-                            r#"(() => {{
-                                const vw = Math.max(window.innerWidth || 1, 1);
-                                const vh = Math.max(window.innerHeight || 1, 1);
-                                const sel = 'a,button,input,select,textarea,summary,[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"]),h1,h2,h3,nav,main';
-                                const interactiveTags = new Set(['a','button','input','select','textarea','summary']);
-                                const interactiveRoles = new Set(['button','link','textbox','searchbox','checkbox','radio','switch','combobox','menuitem','tab','option','slider']);
-                                const collected = [];
-                                const seen = new Set();
-                                const isVisible = (el) => {{
-                                    if (!el || seen.has(el)) return false;
-                                    if (el.closest && el.closest('[aria-hidden="true"],[hidden],[inert]')) return false;
-                                    const win = el.ownerDocument?.defaultView || window;
-                                    const st = win.getComputedStyle ? win.getComputedStyle(el) : null;
-                                    if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0)) return false;
-                                    return true;
-                                }};
-                                const walk = (root, ox, oy, depth) => {{
-                                    if (!root || collected.length >= 200 || depth > 8) return;
-                                    for (const el of root.querySelectorAll(sel)) {{
-                                        if (collected.length >= 200) break;
-                                        if (!isVisible(el)) continue;
-                                        const r = el.getBoundingClientRect();
-                                        const left = r.left + ox, top = r.top + oy, right = r.right + ox, bottom = r.bottom + oy;
-                                        if (r.width <= 1 || r.height <= 1 || right <= 0 || bottom <= 0 || left >= vw || top >= vh) continue;
-                                        seen.add(el);
-                                        collected.push({{ el, left, top, right, bottom, depth }});
-                                    }}
-                                    for (const host of root.querySelectorAll('*')) {{
-                                        if (collected.length >= 200) break;
-                                        if (host.shadowRoot) walk(host.shadowRoot, ox, oy, depth + 1);
-                                        if (host.tagName === 'IFRAME') {{
-                                            try {{
-                                                const doc = host.contentDocument;
-                                                if (doc) {{
-                                                    const ir = host.getBoundingClientRect();
-                                                    walk(doc, ox + ir.left, oy + ir.top, depth + 1);
-                                                }}
-                                            }} catch (_) {{}}
-                                        }}
-                                    }}
-                                }};
-                                walk(document, 0, 0, 1);
-                                window.__weaveloRefs = {{ id: '{snap_id}', nodes: new Map() }};
-                                return collected.map((item, idx) => {{
-                                    const {{ el, left, top, right, bottom, depth }} = item;
-                                    const x0 = Math.max(0, Math.min(1000, Math.round((left / vw) * 1000)));
-                                    const y0 = Math.max(0, Math.min(1000, Math.round((top / vh) * 1000)));
-                                    const x1 = Math.max(0, Math.min(1000, Math.round((right / vw) * 1000)));
-                                    const y1 = Math.max(0, Math.min(1000, Math.round((bottom / vh) * 1000)));
-                                    const tag = el.tagName.toLowerCase();
-                                    const role = (el.getAttribute('role') || tag).toLowerCase();
-                                    const interactive = interactiveTags.has(tag) || interactiveRoles.has(role) || el.isContentEditable || el.hasAttribute('onclick');
-                                    const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 100);
-                                    const refId = '@{snap_id}:e' + (idx + 1);
-                                    window.__weaveloRefs.nodes.set(refId, el);
-                                    return {{ role, name, bounds_norm: [x0, y0, x1, y1], interactive, depth: Math.min(depth, 6) }};
-                                }}).filter(n => n.bounds_norm[2] > n.bounds_norm[0] && n.bounds_norm[3] > n.bounds_norm[1]);
-                            }})()"#
-                        );
+                        let extract_js = browser_snapshot_extract_js(&snap_id);
                         if let Ok(eval_resp) = cdp_evaluate_js(ws_url, &extract_js, false) {
                             if let Some(live_elements) = eval_resp["result"]["result"]["value"].as_array() {
                                 let snap = build_browser_dom_snapshot(
@@ -1338,19 +1386,7 @@ fn dispatch_mcp_tool(
             if user_code.len()>64*1024{return mcp_error("Browser expression exceeds 64 KiB");}
             let page=match selected_cdp_page(args){Ok(page)=>page,Err(e)=>return mcp_error(e)};
             let ws_url = page["webSocketDebuggerUrl"].as_str().unwrap_or("");
-            let wrapped_expression = format!(
-                r#"(async () => {{
-                    const weavelo = {{
-                        ref: (id) => {{ const key=id.startsWith('@')?id:'@'+id; const refs=window.__weaveloRefs; if (!refs || !key.startsWith('@'+refs.id+':')) throw new Error('Stale snapshot ref'); const el=refs.nodes.get(key); if (!el || !el.isConnected) throw new Error('Missing snapshot element'); return el; }},
-                        click: (id) => {{ const el = weavelo.ref(id); el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }}); el.click(); return true; }},
-                        fill: (id, val) => {{ const el = weavelo.ref(id); el.focus(); if (el.isContentEditable) {{ el.textContent = String(val); }} else {{ el.value = val; }} el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }},
-                        press: (id, key) => {{ const el = id ? weavelo.ref(id) : (document.activeElement || document.body); el.focus?.(); const init = {{ key, bubbles: true, cancelable: true }}; el.dispatchEvent(new KeyboardEvent('keydown', init)); el.dispatchEvent(new KeyboardEvent('keyup', init)); if (key === 'Enter' && el.form) el.form.requestSubmit?.(); return true; }},
-                        scroll: (id, dy = 480) => {{ if (id) {{ const el = weavelo.ref(id); el.scrollBy({{ top: dy, behavior: 'instant' }}); }} else {{ window.scrollBy({{ top: dy, behavior: 'instant' }}); }} return true; }},
-                        text: (id) => {{ const el = weavelo.ref(id); return (el.innerText || el.value || el.textContent || '').trim(); }}
-                    }};
-                    return await ({user_code});
-                }})()"#
-            );
+            let wrapped_expression = browser_code_mode_js(user_code);
             match cdp_evaluate_js(ws_url, &wrapped_expression, true) {
                 Ok(resp) => {
                     let nonce = generate_boundary_nonce();
@@ -1375,6 +1411,209 @@ fn dispatch_mcp_tool(
             }]
         }),
     }
+}
+
+fn handle_cua_rejection(session: &mut McpSessionState, context: &str, body: &Value) -> Value {
+    let code = body["code"]
+        .as_str()
+        .or_else(|| body["error"].as_str())
+        .unwrap_or("unknown");
+    if matches!(
+        code,
+        "paused_by_human" | "control_lease_mismatch" | "lease_mismatch" | "source_changed"
+    ) || body["paused_by_human"] == true
+    {
+        session.active_lease = None;
+        session.last_observed_frame = None;
+    }
+    if code == "paused_by_human" || body["paused_by_human"] == true {
+        let hint = body["takeover_hint"].as_str().unwrap_or(
+            "Human took over remote input. Wait until the human releases input, then call weavelo_cua_observe(control: true) to inspect the screen and re-acquire control.",
+        );
+        return json!({
+            "isError": true,
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "code": "paused_by_human",
+                    "takeover_hint": hint,
+                    "details": body,
+                })).unwrap_or_else(|_| format!("paused_by_human: {hint}"))
+            }]
+        });
+    }
+    json!({
+        "isError": true,
+        "content": [{ "type": "text", "text": format!("{context}: {body}") }]
+    })
+}
+
+fn browser_snapshot_extract_js(snap_id: &str) -> String {
+    format!(
+        r#"(() => {{
+            const vw = Math.max(window.innerWidth || 1, 1);
+            const vh = Math.max(window.innerHeight || 1, 1);
+            const sel = 'a,button,input,select,textarea,summary,option,[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"]),h1,h2,h3,nav,main';
+            const interactiveTags = new Set(['a','button','input','select','textarea','summary','option']);
+            const interactiveRoles = new Set(['button','link','textbox','searchbox','checkbox','radio','switch','combobox','menuitem','tab','option','slider']);
+            const collected = [];
+            const seen = new Set();
+            const effectiveZoom = (node) => {{
+                let z = 1;
+                let cur = node;
+                while (cur && cur.nodeType === 1) {{
+                    const w = cur.ownerDocument?.defaultView || window;
+                    const cs = w.getComputedStyle ? w.getComputedStyle(cur) : null;
+                    if (cs && cs.zoom) {{
+                        const raw = cs.zoom;
+                        let parsed = parseFloat(raw);
+                        if (typeof raw === 'string' && raw.trim().endsWith('%')) parsed /= 100;
+                        if (Number.isFinite(parsed) && parsed > 0) z *= parsed;
+                    }}
+                    cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
+                }}
+                return z;
+            }};
+            const isVisible = (el) => {{
+                if (!el || seen.has(el)) return false;
+                if (el.closest && el.closest('[aria-hidden="true"],[hidden],[inert]')) return false;
+                const win = el.ownerDocument?.defaultView || window;
+                const st = win.getComputedStyle ? win.getComputedStyle(el) : null;
+                if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0)) return false;
+                return true;
+            }};
+            const walk = (root, ox, oy, depth) => {{
+                if (!root || collected.length >= 200 || depth > 8) return;
+                for (const el of root.querySelectorAll(sel)) {{
+                    if (collected.length >= 200) break;
+                    if (!isVisible(el)) continue;
+                    const r = el.getBoundingClientRect();
+                    const z = effectiveZoom(el);
+                    const left = r.left * z + ox, top = r.top * z + oy, right = r.right * z + ox, bottom = r.bottom * z + oy;
+                    if ((right - left) <= 1 || (bottom - top) <= 1 || right <= 0 || bottom <= 0 || left >= vw || top >= vh) continue;
+                    seen.add(el);
+                    collected.push({{ el, left, top, right, bottom, depth }});
+                }}
+                for (const host of root.querySelectorAll('*')) {{
+                    if (collected.length >= 200) break;
+                    if (host.shadowRoot) walk(host.shadowRoot, ox, oy, depth + 1);
+                    if (host.tagName === 'IFRAME') {{
+                        try {{
+                            const doc = host.contentDocument;
+                            if (doc) {{
+                                const ir = host.getBoundingClientRect();
+                                const iz = effectiveZoom(host);
+                                walk(doc, ox + ir.left * iz, oy + ir.top * iz, depth + 1);
+                            }}
+                        }} catch (_) {{}}
+                    }}
+                }}
+            }};
+            walk(document, 0, 0, 1);
+            window.__weaveloRefs = {{ id: '{snap_id}', nodes: new Map() }};
+            return collected.map((item, idx) => {{
+                const {{ el, left, top, right, bottom, depth }} = item;
+                const x0 = Math.max(0, Math.min(1000, Math.round((left / vw) * 1000)));
+                const y0 = Math.max(0, Math.min(1000, Math.round((top / vh) * 1000)));
+                const x1 = Math.max(0, Math.min(1000, Math.round((right / vw) * 1000)));
+                const y1 = Math.max(0, Math.min(1000, Math.round((bottom / vh) * 1000)));
+                const tag = el.tagName.toLowerCase();
+                const inputType = (el.type || '').toLowerCase();
+                const isPassword = inputType === 'password';
+                const role = (el.getAttribute('role') || tag).toLowerCase();
+                const interactive = interactiveTags.has(tag) || interactiveRoles.has(role) || el.isContentEditable || el.hasAttribute('onclick');
+                const name = (el.getAttribute('aria-label') || el.innerText || (isPassword ? '' : el.value) || el.placeholder || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+                const checked = (tag === 'input' && (inputType === 'checkbox' || inputType === 'radio'))
+                    ? Boolean(el.checked)
+                    : (el.hasAttribute('aria-checked') ? (el.getAttribute('aria-checked') === 'true' ? true : (el.getAttribute('aria-checked') === 'false' ? false : null)) : null);
+                const selected = tag === 'option'
+                    ? Boolean(el.selected)
+                    : (el.hasAttribute('aria-selected') ? el.getAttribute('aria-selected') === 'true' : null);
+                const disabled = ('disabled' in el || el.hasAttribute('aria-disabled'))
+                    ? Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true')
+                    : null;
+                const expanded = el.hasAttribute('aria-expanded')
+                    ? el.getAttribute('aria-expanded') === 'true'
+                    : null;
+                const value = isPassword
+                    ? '<redacted>'
+                    : ((tag === 'input' || tag === 'textarea' || tag === 'select')
+                        ? String(el.value ?? '').slice(0, 120)
+                        : (el.isContentEditable ? String(el.innerText || el.textContent || '').trim().slice(0, 120) : null));
+                const refId = '@{snap_id}:e' + (idx + 1);
+                window.__weaveloRefs.nodes.set(refId, el);
+                return {{
+                    role,
+                    name,
+                    type: isPassword ? 'password' : (inputType || null),
+                    bounds_norm: [x0, y0, x1, y1],
+                    interactive,
+                    depth: Math.min(depth, 6),
+                    checked,
+                    selected,
+                    disabled,
+                    expanded,
+                    value
+                }};
+            }}).filter(n => n.bounds_norm[2] > n.bounds_norm[0] && n.bounds_norm[3] > n.bounds_norm[1]);
+        }})()"#
+    )
+}
+
+fn browser_code_mode_js(user_code: &str) -> String {
+    format!(
+        r#"(async () => {{
+            const weavelo = {{
+                ref: (id) => {{ const key=id.startsWith('@')?id:'@'+id; const refs=window.__weaveloRefs; if (!refs || !key.startsWith('@'+refs.id+':')) throw new Error('Stale snapshot ref'); const el=refs.nodes.get(key); if (!el || !el.isConnected) throw new Error('Missing snapshot element'); return el; }},
+                click: (id) => {{ const el = weavelo.ref(id); el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }}); el.click(); return true; }},
+                fill: (id, val) => {{ const el = weavelo.ref(id); el.focus(); if (el.isContentEditable) {{ el.textContent = String(val); }} else {{ el.value = val; }} el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }},
+                setChecked: (id, desired) => {{
+                    const el = weavelo.ref(id);
+                    const want = Boolean(desired);
+                    const tag = (el.tagName || '').toLowerCase();
+                    const type = (el.type || '').toLowerCase();
+                    const isNative = tag === 'input' && (type === 'checkbox' || type === 'radio');
+                    const cur = isNative ? Boolean(el.checked) : (el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : Boolean(el.checked));
+                    if (cur === want) return true;
+                    el.scrollIntoView?.({{ block: 'nearest', inline: 'nearest' }});
+                    el.focus?.();
+                    el.click();
+                    const after = isNative ? Boolean(el.checked) : (el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : Boolean(el.checked));
+                    if (after !== want) {{
+                        if (isNative) {{ el.checked = want; }}
+                        else if (el.hasAttribute('aria-checked')) {{ el.setAttribute('aria-checked', want ? 'true' : 'false'); }}
+                        else {{ el.checked = want; }}
+                    }}
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return true;
+                }},
+                select: (id, value) => {{
+                    const el = weavelo.ref(id);
+                    el.scrollIntoView?.({{ block: 'nearest', inline: 'nearest' }});
+                    el.focus?.();
+                    const target = String(value);
+                    if ((el.tagName || '').toLowerCase() === 'select') {{
+                        const opts = Array.from(el.options || []);
+                        const match = opts.find(o => o.value === target) || opts.find(o => (o.textContent || '').trim() === target);
+                        if (!match) throw new Error('Option not found: ' + target);
+                        el.value = match.value;
+                        match.selected = true;
+                    }} else {{
+                        el.value = target;
+                    }}
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return true;
+                }},
+                press: (id, key) => {{ const el = id ? weavelo.ref(id) : (document.activeElement || document.body); el.focus?.(); const init = {{ key, bubbles: true, cancelable: true }}; el.dispatchEvent(new KeyboardEvent('keydown', init)); el.dispatchEvent(new KeyboardEvent('keyup', init)); if (key === 'Enter' && el.form) el.form.requestSubmit?.(); return true; }},
+                scroll: (id, dy = 480) => {{ if (id) {{ const el = weavelo.ref(id); el.scrollBy({{ top: dy, behavior: 'instant' }}); }} else {{ window.scrollBy({{ top: dy, behavior: 'instant' }}); }} return true; }},
+                text: (id) => {{ const el = weavelo.ref(id); return (el.innerText || el.value || el.textContent || '').trim(); }}
+            }};
+            return await ({user_code});
+        }})()"#
+    )
 }
 
 #[cfg(test)]
@@ -1536,6 +1775,103 @@ mod tests {
                 "missing tool {expected}"
             );
         }
+    }
+
+    #[test]
+    fn browser_snapshot_redacts_passwords_preserves_state_flags_and_code_mode_helpers() {
+        let elements = vec![
+            json!({
+                "role": "textbox",
+                "type": "password",
+                "name": "Password",
+                "value": "super-secret-password",
+                "disabled": false,
+                "bounds_norm": [100, 100, 300, 140],
+                "interactive": true,
+                "depth": 1
+            }),
+            json!({
+                "role": "checkbox",
+                "name": "Remember me",
+                "checked": true,
+                "selected": false,
+                "disabled": false,
+                "expanded": true,
+                "bounds_norm": [100, 160, 140, 200],
+                "interactive": true,
+                "depth": 1
+            }),
+        ];
+        let snap = build_browser_dom_snapshot(
+            "b_test",
+            "https://example.test/login",
+            "Login",
+            &elements,
+            false,
+            true,
+        );
+        let nodes = snap["nodes"].as_array().unwrap();
+        assert_eq!(nodes[0]["value"], "<redacted>");
+        assert!(!snap["snapshot_markdown"]
+            .as_str()
+            .unwrap()
+            .contains("super-secret-password"));
+        assert_eq!(nodes[1]["checked"], true);
+        assert_eq!(nodes[1]["selected"], false);
+        assert_eq!(nodes[1]["disabled"], false);
+        assert_eq!(nodes[1]["expanded"], true);
+
+        let extract = browser_snapshot_extract_js("b_zoom");
+        assert!(extract.contains("effectiveZoom"));
+        assert!(extract.contains("cs.zoom"));
+        assert!(extract.contains("isPassword"));
+        assert!(extract.contains("'<redacted>'"));
+        assert!(extract.contains("aria-expanded"));
+
+        let code = browser_code_mode_js("weavelo.setChecked('@b_zoom:e1', true)");
+        assert!(code.contains("setChecked:"));
+        assert!(code.contains("select:"));
+        assert!(code.contains("if (cur === want) return true;"));
+    }
+
+    #[test]
+    fn mcp_rejection_clears_lease_and_surfaces_paused_by_human_takeover_hint() {
+        let mut session = McpSessionState {
+            active_lease: Some(ActiveMcpLease {
+                actor: Actor {
+                    owner: "weavelo-local-mcp".into(),
+                    task_id: "11111111-1111-4111-8111-111111111111".into(),
+                    executor_device_id: "22222222-2222-4222-8222-222222222222".into(),
+                },
+                target: Target {
+                    peer_device_id: "peer".into(),
+                    source: CaptureSource::MainDisplay,
+                    connection_id: 1,
+                },
+                lease_id: "33333333-3333-4333-8333-333333333333".into(),
+                generation: "1-1".into(),
+                source_revision: 1,
+                frame_sequence: 1,
+                expires_at_ms: u64::MAX,
+                control: true,
+            }),
+            last_observed_frame: None,
+            initialized: true,
+        };
+        let out = handle_cua_rejection(
+            &mut session,
+            "Observe rejected",
+            &json!({
+                "ok": false,
+                "code": "paused_by_human",
+                "takeover_hint": "Human took over remote input."
+            }),
+        );
+        assert_eq!(out["isError"], true);
+        assert!(session.active_lease.is_none());
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("paused_by_human"));
+        assert!(text.contains("Human took over remote input."));
     }
 }
 

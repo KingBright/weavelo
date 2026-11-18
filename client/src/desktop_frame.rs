@@ -126,5 +126,54 @@ pub fn observation_thumbnail(frame:&crate::MacDecodedVideoFrame,edge:u32)->Resul
         let height=(u64::from(frame.height())*u64::from(edge.min(longest))/u64::from(longest)).max(1) as u32;
         unsafe { crate::observation_pixels::macos::copy_thumbnail(frame.cv_pixel_buffer,width,height,256*256*4) }
     }
-    #[cfg(not(target_os="macos"))] {let _=(frame,edge);Err(crate::observation_pixels::PixelError::NativeReadbackUnsupported)}
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        use remote_core::{VideoFrame, VideoFrameHandleKind};
+        if !matches!(frame.handle_kind(), VideoFrameHandleKind::CpuMemory) {
+            return Err(crate::observation_pixels::PixelError::NativeReadbackUnsupported);
+        }
+        let edge = edge.clamp(2, 256);
+        let rgba = crate::observation_pixels::CpuRgba::from_decoded(
+            frame.width,
+            frame.height,
+            frame.rgba.clone(),
+            crate::observation_pixels::MAX_OBSERVATION_BYTES,
+        )?;
+        Ok(rgba.downscale_max_edge(edge))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = (frame, edge);
+        Err(crate::observation_pixels::PixelError::NativeReadbackUnsupported)
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn cpu_observation_thumbnail_downscales_to_edge_budget() {
+        let frame = crate::MacDecodedVideoFrame {
+            width: 512,
+            height: 256,
+            rgba: Arc::new(vec![96u8; 512 * 256 * 4]),
+            #[cfg(all(target_os = "windows", feature = "native-windows-video"))]
+            native: None,
+            #[cfg(all(target_os = "linux", feature = "native-linux-video"))]
+            native_linux: None,
+            timestamp: 0,
+            recv_time: 0,
+            decode_cost_ms: 0.0,
+            timing: Default::default(),
+            video_epoch: Default::default(),
+            decoded_at: Instant::now(),
+            display_rotation: 0,
+            frame_geometry: None,
+        };
+        let thumb = observation_thumbnail(&frame, 128).unwrap();
+        assert_eq!((thumb.layout().width(), thumb.layout().height()), (128, 64));
+        assert_eq!(&thumb.pixels()[0..4], &[96, 96, 96, 96]);
+    }
 }

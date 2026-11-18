@@ -163,6 +163,16 @@ pub(crate) enum ComputerUseMode {
     PausedByHuman,
 }
 
+impl ComputerUseMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Observing => "observing",
+            Self::Controlling => "controlling",
+            Self::PausedByHuman => "paused_by_human",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ComputerUseVisualStatus {
     pub mode: Option<ComputerUseMode>,
@@ -1469,17 +1479,58 @@ impl OriginalOwner {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    pub(crate) fn computer_use_mode(&self) -> Option<ComputerUseMode> {
+        self.computer_use_status.lock().ok().and_then(|s| s.mode)
+    }
+
+    pub(crate) fn computer_use_status_json(&self) -> (serde_json::Value, serde_json::Value) {
+        if let Ok(status) = self.computer_use_status.lock() {
+            (
+                status
+                    .mode
+                    .map_or(serde_json::Value::Null, |m| serde_json::json!(m.as_str())),
+                status
+                    .status_label
+                    .as_ref()
+                    .map_or(serde_json::Value::Null, |l| serde_json::json!(l)),
+            )
+        } else {
+            (serde_json::Value::Null, serde_json::Value::Null)
+        }
+    }
+
     pub(crate) fn set_computer_use_active(&self, mode: Option<ComputerUseMode>, label: Option<String>) {
         if let Ok(mut status) = self.computer_use_status.lock() {
             status.mode = mode;
             status.status_label = label;
-            if mode.is_none() {
+            if mode.is_none() || mode == Some(ComputerUseMode::PausedByHuman) {
                 status.cursor_norm = None;
                 status.cursor_geometry = None;
                 status.last_action_style = None;
             }
         }
         let _ = self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    fn trigger_human_takeover_if_controlling(&self) -> bool {
+        let taking_over = if let Ok(mut status) = self.computer_use_status.lock() {
+            if status.mode == Some(ComputerUseMode::Controlling) {
+                status.mode = Some(ComputerUseMode::PausedByHuman);
+                status.status_label = Some("AI Paused — Human took over input".into());
+                status.cursor_norm = None;
+                status.cursor_geometry = None;
+                status.last_action_style = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if taking_over {
+            let _ = self.updates.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+        taking_over
     }
 
     fn record_computer_use_visual_feedback(&self, action: &super::computer_use::Action,geometry:Option<protocol::viewport::FrameGeometry>) {
@@ -1784,7 +1835,7 @@ impl OriginalOwner {
     }
 
     /// Adaptive visual convergence check: samples lightweight 256x256 thumbnail
-    /// observations at 40ms intervals outside the pool lock and stops as soon as
+    /// observations at 60ms intervals outside the pool lock and stops promptly once
     /// consecutive frames differ by `<= threshold_ratio` (e.g. 0.002 = 0.2%).
     pub(crate) fn wait_for_visual_stability(
         &self,
@@ -1796,14 +1847,24 @@ impl OriginalOwner {
         cancelled: &impl Fn() -> bool,
     ) -> (u32, bool) {
         use super::computer_use::Access;
+        const SAMPLE_INTERVAL: Duration = Duration::from_millis(60);
         let began = Instant::now();
-        let budget = std::time::Duration::from_millis(u64::from(timeout_ms.clamp(40, 5_000)));
+        let budget = Duration::from_millis(u64::from(timeout_ms.clamp(1, 5_000)));
         let mut prev_pixels: Option<client::observation_pixels::CpuRgba> = None;
         while began.elapsed() < budget && !cancelled() {
-            let current=self.observe_bound_computer_use(binding,expected_device,expected_source,Access::Observe).ok()
+            let current = self
+                .observe_bound_computer_use(
+                    binding,
+                    expected_device,
+                    expected_source,
+                    Access::Observe,
+                )
+                .ok()
                 .and_then(|mut observation| {
-                    let pixels=client::desktop_frame::observation_thumbnail(observation.frame(),256).ok()?;
-                    self.validate_bound_computer_use(&mut observation).ok()?;Some(pixels)
+                    let pixels =
+                        client::desktop_frame::observation_thumbnail(observation.frame(), 256).ok()?;
+                    self.validate_bound_computer_use(&mut observation).ok()?;
+                    Some(pixels)
                 });
             if let Some(curr) = current {
                 if let Some(prev) = &prev_pixels {
@@ -1815,7 +1876,11 @@ impl OriginalOwner {
                 }
                 prev_pixels = Some(curr);
             }
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            let remaining = budget.saturating_sub(began.elapsed());
+            if remaining.is_zero() || cancelled() {
+                break;
+            }
+            std::thread::sleep(remaining.min(SAMPLE_INTERVAL));
         }
         (began.elapsed().as_millis() as u32, false)
     }
@@ -1829,7 +1894,12 @@ impl OriginalOwner {
     }
     pub(crate) fn commit_viewing_text(&self,view:&SourceViewBinding,binding:remote_core::workspace_session::TextInputOwner,text:&str) -> Result<(),String> {
         let mut pool=self.pool.lock().unwrap();
+        self.revoke_computer_use();
+        let taking_over = self.trigger_human_takeover_if_controlling();
         let session=&mut pool.active_mut().ok_or("remote connection closed")?.session;
+        if taking_over {
+            session.release_input();
+        }
         if !session.can_input() {
             let _ = session.retry_input();
         }
@@ -1870,12 +1940,7 @@ impl OriginalOwner {
             return Err("Release held keys or pointer before using remote navigation".into());
         }
         self.revoke_computer_use();
-        let taking_over=if let Ok(mut status)=self.computer_use_status.lock() {
-            if status.mode==Some(ComputerUseMode::Controlling) {
-                status.mode=Some(ComputerUseMode::PausedByHuman);
-                status.status_label=Some("AI Paused — Human took over input".into());true
-            } else {false}
-        } else {false};
+        let taking_over = self.trigger_human_takeover_if_controlling();
         let session=&mut pool.active_mut().unwrap().session;
         if taking_over {
             session.release_input();
@@ -1892,14 +1957,7 @@ impl OriginalOwner {
         let mut p = self.pool.lock().unwrap();
         if target.is_some_and(|target|p.active().is_none_or(|entry|!Self::viewport_matches(&entry.session,target))){return false;}
         self.revoke_computer_use();
-        let mut taking_over=false;
-        if let Ok(mut status) = self.computer_use_status.lock() {
-            if status.mode == Some(ComputerUseMode::Controlling) {
-                taking_over=true;
-                status.mode = Some(ComputerUseMode::PausedByHuman);
-                status.status_label = Some("AI Paused — Human took over input".into());
-            }
-        }
+        let taking_over = self.trigger_human_takeover_if_controlling();
         let Some(e) = p.active_mut() else {
             return false;
         };
@@ -2303,7 +2361,8 @@ impl OriginalOwner {
     }
     pub fn diagnostic_snapshot(&self) -> serde_json::Value {
         let p = self.pool.lock().unwrap();
-        serde_json::json!({"pending":p.tabs.pending_count(),"message":p.message,"directed_receive_failed":p.receive_failed(),"sessions":p.sessions.iter().map(|e|{
+        let (cua_mode, cua_label) = self.computer_use_status_json();
+        let sessions = p.sessions.iter().map(|e| {
             let s=&e.session;
             let recovery=s.stats.video_recovery.snapshot();
             let video_diagnostics=serde_json::json!({
@@ -2354,11 +2413,21 @@ impl OriginalOwner {
                 "files_listed":s.files.len(),"transfers":s.transfers.lock().unwrap().snapshots().len()});
             result["computer_use_eligible"]=self.computer_use_can_input(s).into();
             result["background_computer_use_allowed"]=self.computer_use_background_allowed().into();
+            result["computer_use_mode"]=cua_mode.clone();
+            result["computer_use_label"]=cua_label.clone();
             result["input_status"]=s.input_status().into();
             result["video_diagnostics"]=video_diagnostics;
             result["telemetry_diagnostics"]=telemetry_diagnostics;
             result
-        }).collect::<Vec<_>>()})
+        }).collect::<Vec<_>>();
+        serde_json::json!({
+            "pending": p.tabs.pending_count(),
+            "message": p.message,
+            "directed_receive_failed": p.receive_failed(),
+            "computer_use_mode": cua_mode,
+            "computer_use_label": cua_label,
+            "sessions": sessions,
+        })
     }
     #[cfg(all(test, any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     pub(crate) fn attach_recorder_session(&self, mut session: OriginalGuiSession) {
@@ -2818,5 +2887,66 @@ mod telemetry_diagnostic_tests {
         assert_eq!(report["clock"]["latest_probe_rtt_us"], 100);
         assert!(report["clock"]["selected_sample_age_us"].as_u64().is_some());
         assert!(report["clock"]["latest_probe_age_us"].as_u64().is_some());
+    }
+}
+
+#[cfg(test)]
+mod computer_use_status_diagnostics_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn diagnostic_snapshot_exposes_computer_use_mode_label_and_human_takeover() {
+        let (_, peers) = tokio::sync::watch::channel(
+            remote_core::discovery::DiscoveryPeerSnapshot::default(),
+        );
+        let backend = Arc::new(
+            crate::UnifiedServiceOwner::from_background_snapshot(peers)
+                .await
+                .unwrap(),
+        );
+        let owner = OriginalOwner::new(backend);
+
+        let initial = owner.diagnostic_snapshot();
+        assert!(initial["computer_use_mode"].is_null());
+        assert!(initial["computer_use_label"].is_null());
+
+        owner.set_computer_use_active(
+            Some(ComputerUseMode::Observing),
+            Some("AI Observing screen".into()),
+        );
+        let observing = owner.diagnostic_snapshot();
+        assert_eq!(observing["computer_use_mode"], "observing");
+        assert_eq!(observing["computer_use_label"], "AI Observing screen");
+
+        owner.record_computer_use_visual_feedback(
+            &crate::desktop::computer_use::Action::Click {
+                x: 1000,
+                y: 2000,
+                button: 0,
+            },
+            None,
+        );
+        let controlling = owner.diagnostic_snapshot();
+        assert_eq!(controlling["computer_use_mode"], "controlling");
+        assert!(controlling["computer_use_label"]
+            .as_str()
+            .unwrap()
+            .contains("AI Controlling"));
+        assert_eq!(owner.snapshot().computer_use_status.cursor_norm, Some((1000, 2000)));
+
+        // Human input while AI is controlling pauses AI, clears reticle, and revokes epoch.
+        let epoch_before = owner.computer_use_epoch.load(std::sync::atomic::Ordering::Acquire);
+        assert!(!owner.queue_viewing_input(InputEvent::MouseDown(0)));
+        assert_ne!(
+            owner.computer_use_epoch.load(std::sync::atomic::Ordering::Acquire),
+            epoch_before
+        );
+        let paused = owner.diagnostic_snapshot();
+        assert_eq!(paused["computer_use_mode"], "paused_by_human");
+        assert_eq!(
+            paused["computer_use_label"],
+            "AI Paused — Human took over input"
+        );
+        assert_eq!(owner.snapshot().computer_use_status.cursor_norm, None);
     }
 }

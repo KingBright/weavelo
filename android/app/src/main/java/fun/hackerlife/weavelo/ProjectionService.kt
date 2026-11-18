@@ -19,6 +19,10 @@ import `fun`.hackerlife.weavelo.managed.IManagedScreen
 import `fun`.hackerlife.weavelo.managed.ManagedScreenBridge
 import `fun`.hackerlife.weavelo.managed.ManagedApplications
 import `fun`.hackerlife.weavelo.managed.ManagedFallbackInput
+import `fun`.hackerlife.weavelo.octendra.OctendraAiClient
+import `fun`.hackerlife.weavelo.octendra.OctendraAiViews
+import `fun`.hackerlife.weavelo.octendra.ProductionAiBridge
+import `fun`.hackerlife.weavelo.octendra.WindowCatalogCoordinator
 
 /** Owns one OS authorization and one VirtualDisplay for its entire lifetime. */
 class ProjectionService : Service() {
@@ -124,6 +128,8 @@ class ProjectionService : Service() {
         var display: CaptureDisplay? = null
         var publisher: GpuScreenPublisher? = null
         var apps: ManagedApplications? = null
+        var aiViews: OctendraAiViews? = null
+        var catalogCoordinator: WindowCatalogCoordinator? = null
         var fallbackInput: ManagedFallbackInput? = null
         var appliedGeometry: ProjectionCaptureGeometry? = null
         var demand = JSONObject()
@@ -137,12 +143,18 @@ class ProjectionService : Service() {
             // rotation replace its Surface, never create another with this token.
             display = if (managed != null) CaptureDisplay.managed(managed, initial.width, initial.height, initial.density)
                 else CaptureDisplay.projection(checkNotNull(capture), initial.width, initial.height, initial.density)
+            catalogCoordinator = WindowCatalogCoordinator()
+            OctendraAiViews.controlEnabled = controlAllowed
             if (managed != null) {
-                apps = ManagedApplications(managed, applicationContext)
+                apps = ManagedApplications(managed, applicationContext, catalogCoordinator::updateManaged)
                 if (controlAllowed) {
                     fallbackInput = ManagedFallbackInput(applicationContext, managed) { running.get() }.also { it.start() }
                 }
             }
+            aiViews = OctendraAiViews(
+                client = OctendraAiClient.create(applicationContext),
+                bridge = ProductionAiBridge(catalogCoordinator),
+            )
             val addresses = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
                 .flatMap { java.util.Collections.list(it.inetAddresses) }.filterIsInstance<java.net.Inet4Address>().joinToString { "${it.hostAddress}:5001" }
             if (audioAllowed && audioTarget == null) PublisherClient.status("Sharing enabled · $addresses · Phone audio stays on; captured media audio may include other apps.", true,
@@ -162,6 +174,7 @@ class ProjectionService : Service() {
                 if (SystemClock.elapsedRealtime() >= nextDemand) {
                     demand = JSONObject(PublisherClient.action(2)); nextDemand = SystemClock.elapsedRealtime() + 50
                     apps?.update()
+                    aiViews?.update()
                 }
                 val requestedViews = demand.optJSONArray("views") ?: org.json.JSONArray()
                 if (requestedViews.length() > 0) {
@@ -231,10 +244,13 @@ class ProjectionService : Service() {
             if (running.get()) { PublisherClient.status(e.message ?: "Projection stopped", false, if (e.message == null) AppText("Projection stopped") else null); runCatching { PublisherClient.action(4, e.message ?: "Projection stopped") } }
         } finally {
             PublisherClient.controlSize = null
+            OctendraAiViews.controlEnabled = false
             running.set(false); stopAudio()
             PublisherClient.audioEnabled = false
+            runCatching { aiViews?.close() }
             runCatching { fallbackInput?.close() }
             runCatching { apps?.close() }
+            runCatching { catalogCoordinator?.close() }
             runCatching { display?.surface = null }; runCatching { display?.release() }
             publisher?.close()
             runCatching { PublisherClient.action(1) }

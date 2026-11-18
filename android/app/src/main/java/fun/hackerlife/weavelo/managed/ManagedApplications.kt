@@ -14,10 +14,23 @@ import java.util.zip.CRC32
 
 /** App identity, display ownership and capture live in Weavelo on this phone. */
 @android.annotation.TargetApi(34)
-internal class ManagedApplications(private val host: IManagedScreen, private val context: Context) : AutoCloseable {
+internal class ManagedApplications(
+    private val host: IManagedScreen,
+    private val context: Context,
+    private val onCatalogChanged: ((List<JSONObject>) -> Unit)? = null,
+) : AutoCloseable {
     internal data class Target(val host: IManagedScreen, val displayId: Int,
         val packageName: String, val width: Int, val height: Int, val rotation: Int = 0)
     companion object {
+        const val AI_VIEW_ID_BASE = 0x4F435400L
+        const val AI_VIEW_ID_RANGE_END = 0x4F4357FFL
+        const val AI_VIEW_COLLISION_OFFSET = 0x1000L
+
+        internal fun windowIdForPackage(packageName: String): Long {
+            val raw = CRC32().apply { update(packageName.toByteArray(Charsets.UTF_8)) }.value.coerceAtLeast(1L)
+            return if (raw in AI_VIEW_ID_BASE..AI_VIEW_ID_RANGE_END) raw + AI_VIEW_COLLISION_OFFSET else raw
+        }
+
         private val targets = ConcurrentHashMap<Long, Target>()
         fun target(source: Any?): Target? = (source as? JSONObject)?.optLong("Window")?.let(targets::get)
     }
@@ -70,15 +83,19 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
         val latest = (0 until list.length()).map { index ->
             val item = list.getJSONObject(index)
             val packageName = item.getString("package")
-            val id = CRC32().apply { update(packageName.toByteArray(Charsets.UTF_8)) }.value.coerceAtLeast(1)
+            val id = windowIdForPackage(packageName)
             App(id, packageName, item.getString("name"))
         }.associateBy { it.id }
         require(latest.size == list.length()) { "Independent app identity collision" }
-        val catalog = JSONArray()
-        latest.values.forEach { app -> catalog.put(JSONObject().put("source", JSONObject().put("Window", app.id))
-            .put("title", app.name).put("application", app.name).put("process_id", JSONObject.NULL)
-            .put("width", width).put("height", height).put("supports_input", false).put("camera", JSONObject.NULL)) }
-        if(latest!=apps) PublisherClient.action(43, catalog.toString())
+        val entries = latest.values.map { app ->
+            JSONObject().put("source", JSONObject().put("Window", app.id))
+                .put("title", app.name).put("application", app.name).put("process_id", JSONObject.NULL)
+                .put("width", width).put("height", height).put("supports_input", false).put("camera", JSONObject.NULL)
+        }
+        if (latest != apps) {
+            if (onCatalogChanged != null) onCatalogChanged.invoke(entries)
+            else PublisherClient.action(43, JSONArray().apply { entries.forEach(::put) }.toString())
+        }
         apps=latest
         iconJobs.clear();iconJobs.offer(latest)
     }
@@ -238,6 +255,8 @@ internal class ManagedApplications(private val host: IManagedScreen, private val
         iconsAlive.set(false);iconJobs.clear();iconThread.interrupt();iconResult.set(null)
         workers.values.forEach { it.stop() }
         workers.values.forEach { runCatching { it.close() } };workers.clear()
-        runCatching { PublisherClient.action(43,"[]") }
+        val publish = onCatalogChanged
+        if (publish != null) runCatching { publish(emptyList()) }
+        else runCatching { PublisherClient.action(43,"[]") }
     }
 }

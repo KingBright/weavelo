@@ -25,6 +25,8 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <package android:name="fun.hackerlife.octendra" />
+        <provider android:authorities="fun.hackerlife.octendra.aiview" />
     </queries>
 
     <application
