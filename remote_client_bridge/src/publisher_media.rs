@@ -222,7 +222,6 @@ impl MediaSources {
                 || ids.contains(&view.request.source)
         });
         for mut info in infos {
-            info.supports_input = false;
             if let Some(old) = self.sources.get(&info.source)
                 && old.enabled
                 && old.info.application == info.application
@@ -257,6 +256,15 @@ impl MediaSources {
         }
         Ok(())
     }
+    pub fn source_supports_input(&self, source: CaptureSource) -> bool {
+        self.sources.get(&source).is_some_and(|entry| {
+            entry.enabled && match source {
+                CaptureSource::MainDisplay => true,
+                CaptureSource::Window(_) => entry.info.supports_input,
+                _ => false,
+            }
+        })
+    }
     pub fn catalog(&self, input_ready: bool) -> Vec<CaptureSourceInfo> {
         let mut sources = self
             .sources
@@ -264,7 +272,7 @@ impl MediaSources {
             .filter(|source| source.enabled)
             .map(|source| {
                 let mut info = source.info.clone();
-                info.supports_input = screen_source(info.source) && input_ready;
+                info.supports_input = self.source_supports_input(info.source) && input_ready;
                 info
             })
             .collect::<Vec<_>>();
@@ -943,6 +951,29 @@ mod tests {
         media.set_view_tickets([(1, [1; 32]), (2, [1; 32])].into_iter().collect());
         assert!(media.begin_quality(quality(55)).is_err());
         assert_eq!(media.screen_demand().views[0].fps, 45);
+    }
+    #[test]
+    fn source_input_capability_tracks_source_and_late_readiness() {
+        let mut media = MediaSources::new(true, false);
+        let source = CaptureSource::Window(91);
+        let mut app = CaptureSourceInfo {
+            source, title: "AI".into(), application: "AI".into(), process_id: None,
+            width: 720, height: 1280, supports_input: false, camera: None,
+        };
+        media.set_applications(vec![app.clone()]).unwrap();
+        let grant = media.sources[&source].grant;
+        let enabled = |media: &MediaSources, id, ready| media.catalog(ready).into_iter()
+            .find(|info| info.source == id).unwrap().supports_input;
+        assert!(enabled(&media, CaptureSource::MainDisplay, true));
+        assert!(!enabled(&media, source, true));
+        app.supports_input = true;
+        media.set_applications(vec![app.clone()]).unwrap();
+        assert_eq!(grant, media.sources[&source].grant);
+        assert!(!enabled(&media, source, false));
+        assert!(enabled(&media, source, true));
+        app.supports_input = false;
+        media.set_applications(vec![app]).unwrap();
+        assert!(!media.source_supports_input(source));
     }
     #[test]
     fn app_rotation_invalidates_epoch_and_catalog_refresh_preserves_geometry() {

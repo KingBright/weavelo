@@ -330,8 +330,19 @@ async fn refresh_sources(
     capabilities
         .send_modify(|caps| caps.can_stream = !catalog.is_empty() && alive.load(Ordering::Acquire));
     let directory = media.lock().unwrap().catalog_reply(0, ready, &[]);
+    let source_input = {
+        let media = media.lock().unwrap();
+        media.sources.keys().map(|source| (*source, media.source_supports_input(*source))).collect::<HashMap<_, _>>()
+    };
     for peer in peers.values() {
         reply(sender, peer.addr, directory.clone()).await;
+        for sub in peer.subscriptions.values() {
+            let supports_input = ready && sub.input_allowed() && source_input.get(&sub.request.source) == Some(&true);
+            reply(sender, peer.addr, SessionCommand::Subscribed {
+                id: sub.request.id, audio_owner: sub.audio.then_some(sub.request.id), supports_input,
+                max_touch_points: if supports_input { protocol::touch::MAX_CONTACTS as u8 } else { 0 },
+            }).await;
+        }
     }
 }
 impl Drop for Peer {
@@ -812,8 +823,9 @@ impl MobilePublisher {
                             for p in peers.values() {
                                 for sub in p.subscriptions.values() {
                                     let audio=sub.audio;
+                                    let supports_input=ready&&sub.input_allowed()&&shared.lock().unwrap().source_supports_input(sub.request.source);
                                     reply(&sender,p.addr,SessionCommand::Subscribed{id:sub.request.id,
-                                        audio_owner:audio.then_some(sub.request.id),supports_input:ready&&sub.input_allowed(), max_touch_points: if ready&&sub.input_allowed() {protocol::touch::MAX_CONTACTS as u8} else {0} }).await;
+                                        audio_owner:audio.then_some(sub.request.id),supports_input, max_touch_points: if supports_input {protocol::touch::MAX_CONTACTS as u8} else {0} }).await;
                                 }
                             }
                         }
@@ -1083,7 +1095,7 @@ impl MobilePublisher {
                                                 reply(&sender,addr,SessionCommand::Error{request_id:request.id,reason:"Another camera is in use; stop that camera before switching".into()}).await;continue;
                                             }
                                             let id=request.id;let audio=request.audio&&source.audio;
-                                            let supports_input=screen_source(request.source)&&shared_input.lock().unwrap().ready();
+                                            let supports_input=shared.lock().unwrap().source_supports_input(request.source)&&shared_input.lock().unwrap().ready();
                                             peers.get_mut(&addr).unwrap().subscriptions.entry(id).or_insert_with(||MobileSubscription::new(request,source.grant,audio));
                                             let telemetry_active = peers[&addr].telemetry_active;
                                             recompute(&peers,&shared);
@@ -1167,7 +1179,7 @@ impl MobilePublisher {
                                             // not slip between the floor check and lease creation.
                                             let binding = {
                                                 let media=shared.lock().unwrap();
-                                                if !media.accepts_screen_geometry(sub.screen_stream,sub.grant,presented_geometry_revision) {continue;}
+                                                if !media.source_supports_input(source) || !media.accepts_screen_geometry(sub.screen_stream,sub.grant,presented_geometry_revision) {continue;}
                                                 shared_input.lock().unwrap().grant_source(addr,connection_id,id,source)
                                             };
                                             if let Some(binding) = binding {
@@ -2931,6 +2943,40 @@ mod tests {
                 }
             }).await.expect("file receipt deadline");
         }
+    }
+
+    #[tokio::test]
+    async fn app_subscription_input_capability_follows_live_source_and_authorization() {
+        let directory = ReceiverTestDir::new();
+        let key = b"android-source-input".to_vec();
+        let publisher = MobilePublisher::start_with_permissions(
+            "127.0.0.1:0".parse().unwrap(), directory.0.clone(), key.clone(), true, false,
+        ).await.unwrap();
+        publisher.set_input_service_available(true);
+        publisher.set_input_capture_allowed(true);
+        let source = CaptureSource::Window(91);
+        let mut app = CaptureSourceInfo {
+            source, title: "AI".into(), application: "AI".into(), process_id: None,
+            width: 720, height: 1280, supports_input: false, camera: None,
+        };
+        publisher.set_applications(vec![app.clone()]).unwrap();
+        let (sender, receiver) = receiver_client(&publisher, &key).await;
+        let mut request = receiver_subscription(256);
+        request.source = source;
+        command(&sender, publisher.address, SessionCommand::Subscribe(request)).await;
+        async fn wait_for(receiver: &remote_core::net::UdpReceiver, expected: bool) {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if matches!(reply(receiver).await, SessionCommand::Subscribed { id: 256, supports_input, .. } if supports_input == expected) { break; }
+                }
+            }).await.expect("subscription capability update");
+        }
+        wait_for(&receiver, false).await;
+        app.supports_input = true;
+        publisher.set_applications(vec![app]).unwrap();
+        wait_for(&receiver, true).await;
+        publisher.set_input_capture_allowed(false);
+        wait_for(&receiver, false).await;
     }
 
     #[tokio::test]

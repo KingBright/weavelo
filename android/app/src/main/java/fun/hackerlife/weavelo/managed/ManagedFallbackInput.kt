@@ -8,7 +8,10 @@ import android.util.DisplayMetrics
 import android.view.Display
 import `fun`.hackerlife.weavelo.PublisherClient
 import `fun`.hackerlife.weavelo.RemoteControlService
+import `fun`.hackerlife.weavelo.octendra.OctendraAiInput
+import `fun`.hackerlife.weavelo.octendra.OctendraAiViews
 import org.json.JSONObject
+import org.json.JSONArray
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -19,12 +22,31 @@ internal class ManagedFallbackInput(
     private val managed: IManagedScreen,
     private val isSessionRunning: () -> Boolean,
 ) : AutoCloseable {
+    companion object {
+        internal fun shouldPollInput(controlSize: Pair<Int, Int>?, aiControlEnabled: Boolean, aiHasActiveTargets: Boolean) =
+            controlSize != null || (aiControlEnabled && aiHasActiveTargets)
+
+        internal fun dispatchAiEvents(events: JSONArray, dispatcher: OctendraAiInput, valid: () -> Boolean): Boolean {
+            for (i in 0 until events.length()) {
+                if (!valid() || !dispatcher.execute(events.getJSONObject(i))) return false
+            }
+            return true
+        }
+    }
+
     private val active = AtomicBoolean(true)
     private val thread = HandlerThread("weavelo-managed-input").apply { start() }
     private val handler = Handler(thread.looper)
     private var advertised = false
     private var generation = -1L
     private var currentInput: ManagedApplicationInput? = null
+    private var aiInput: OctendraAiInput? = null
+    private var aiSource: Any? = null
+
+    private fun releaseInputs() {
+        currentInput?.release(); currentInput = null
+        aiInput?.release(); aiInput = null; aiSource = null
+    }
 
     fun start() {
         handler.post(loop)
@@ -34,8 +56,7 @@ internal class ManagedFallbackInput(
         override fun run() {
             if (!active.get() || !isSessionRunning()) return
             if (RemoteControlService.connected.value) {
-                currentInput?.release()
-                currentInput = null
+                releaseInputs()
                 generation = -1L
                 advertised = false
                 handler.postDelayed(this, 250L)
@@ -46,9 +67,11 @@ internal class ManagedFallbackInput(
                     advertised = true
                 }
             }
-            if (PublisherClient.controlSize == null) {
-                currentInput?.release()
-                currentInput = null
+            if (aiInput != null && OctendraAiViews.target(aiSource) != aiInput?.target) {
+                aiInput?.release(); aiInput = null; aiSource = null
+            }
+            if (!shouldPollInput(PublisherClient.controlSize, OctendraAiViews.controlEnabled, OctendraAiViews.hasActiveTargets())) {
+                releaseInputs()
                 generation = -1L
                 handler.postDelayed(this, 100L)
                 return
@@ -59,8 +82,7 @@ internal class ManagedFallbackInput(
                     val job = JSONObject(raw)
                     when (job.getString("kind")) {
                         "Reset" -> {
-                            currentInput?.release()
-                            currentInput = null
+                            releaseInputs()
                             generation = job.getLong("generation")
                         }
                         "Events" -> {
@@ -69,10 +91,32 @@ internal class ManagedFallbackInput(
                             if (gen != generation) {
                                 complete(gen, jobId, false)
                             } else {
-                                val target = resolveTarget(job.get("source"))
-                                if (target == null) {
-                                    complete(gen, jobId, false)
-                                } else {
+                                val source = job.get("source")
+                                val aiTarget = OctendraAiViews.target(source)
+                                val target = if (aiTarget == null) resolveTarget(source) else null
+                                if (aiTarget != null && OctendraAiViews.controlEnabled && aiTarget.supportsInput) {
+                                    currentInput?.release(); currentInput = null
+                                    val client = OctendraAiViews.clientOrNull()
+                                    if (client == null) {
+                                        releaseInputs(); complete(gen, jobId, false)
+                                    } else {
+                                        if (aiInput?.target != aiTarget) {
+                                            aiInput?.release()
+                                            aiInput = OctendraAiInput(aiTarget, client) { stale, force ->
+                                                OctendraAiViews.invalidateTarget(stale, force)
+                                            }
+                                        }
+                                        aiSource = source
+                                        val dispatcher = checkNotNull(aiInput)
+                                        val events = job.getJSONArray("events")
+                                        val ok = dispatchAiEvents(events, dispatcher) {
+                                            stillValid(gen, jobId) && OctendraAiViews.target(source) == aiTarget
+                                        }
+                                        if (!ok) releaseInputs()
+                                        complete(gen, jobId, ok)
+                                    }
+                                } else if (target != null && aiTarget == null) {
+                                    aiInput?.release(); aiInput = null; aiSource = null
                                     if (currentInput?.target != target) {
                                         currentInput?.release()
                                         currentInput = ManagedApplicationInput(target)
@@ -82,19 +126,20 @@ internal class ManagedFallbackInput(
                                     var ok = true
                                     for (i in 0 until events.length()) {
                                         if (!stillValid(gen, jobId) || !dispatcher.execute(events.getJSONObject(i))) {
-                                            ok = false
-                                            break
+                                            ok = false; break
                                         }
                                     }
+                                    if (!ok) releaseInputs()
                                     complete(gen, jobId, ok)
+                                } else {
+                                    releaseInputs(); complete(gen, jobId, false)
                                 }
                             }
                         }
                     }
                 }
             }.onFailure {
-                currentInput?.release()
-                currentInput = null
+                releaseInputs()
                 generation = -1L
             }
             if (active.get() && isSessionRunning()) {
@@ -131,8 +176,7 @@ internal class ManagedFallbackInput(
     override fun close() {
         active.set(false)
         val task = FutureTask {
-            currentInput?.release()
-            currentInput = null
+            releaseInputs()
             if (advertised && !RemoteControlService.connected.value) {
                 runCatching { PublisherClient.action(8, "false") }
             }

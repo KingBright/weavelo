@@ -90,7 +90,7 @@ internal class ManagedApplications(
         val entries = latest.values.map { app ->
             JSONObject().put("source", JSONObject().put("Window", app.id))
                 .put("title", app.name).put("application", app.name).put("process_id", JSONObject.NULL)
-                .put("width", width).put("height", height).put("supports_input", false).put("camera", JSONObject.NULL)
+                .put("width", width).put("height", height).put("supports_input", true).put("camera", JSONObject.NULL)
         }
         if (latest != apps) {
             if (onCatalogChanged != null) onCatalogChanged.invoke(entries)

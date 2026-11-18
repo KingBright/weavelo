@@ -293,6 +293,7 @@ internal class OctendraAiClient(
     }
 
     private class AndroidTransport(private val context: Context) : Transport {
+        private val owner = android.os.Binder()
         private val trustLock = Any()
         @Volatile private var cachedTrusted = false
         @Volatile private var cachedAtMs = 0L
@@ -310,6 +311,7 @@ internal class OctendraAiClient(
             val extras = Bundle().apply {
                 putString("generation", generation)
                 putParcelable("surface", androidSurface)
+                putBinder("owner", owner)
             }
             return callProvider(METHOD_ATTACH_VIDEO, viewId, extras)?.getString("result_json")
         }

@@ -253,6 +253,7 @@ internal class OctendraAiViews(
         val title: String,
         val width: Int,
         val height: Int,
+        val supportsInput: Boolean,
     )
 
     private val closed = AtomicBoolean(false)
@@ -378,7 +379,7 @@ internal class OctendraAiViews(
             if (nextViews.containsKey(windowId)) continue
             nextViews[windowId] = view
             val title = aiViewTitle(view)
-            signatures.add(CatalogSignature(windowId, title, view.width, view.height))
+            signatures.add(CatalogSignature(windowId, title, view.width, view.height, view.supportsInput))
             entries.add(
                 JSONObject()
                     .put("source", JSONObject().put("Window", windowId))
@@ -387,7 +388,7 @@ internal class OctendraAiViews(
                     .put("process_id", JSONObject.NULL)
                     .put("width", view.width)
                     .put("height", view.height)
-                    .put("supports_input", false)
+                    .put("supports_input", view.supportsInput)
                     .put("camera", JSONObject.NULL)
             )
         }

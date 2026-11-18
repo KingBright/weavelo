@@ -1,6 +1,7 @@
 package `fun`.hackerlife.weavelo
 
 import `fun`.hackerlife.weavelo.managed.ManagedApplications
+import `fun`.hackerlife.weavelo.managed.ManagedFallbackInput
 import `fun`.hackerlife.weavelo.octendra.AiBridge
 import `fun`.hackerlife.weavelo.octendra.AiVideoPublisher
 import `fun`.hackerlife.weavelo.octendra.AiVideoPublisherFactory
@@ -260,6 +261,14 @@ class OctendraAiBridgeTest {
     }
 
     @Test
+    fun managedFallbackPollsForAiOnlyAndRequiresControl() {
+        assertTrue(ManagedFallbackInput.shouldPollInput(null, true, true))
+        assertFalse(ManagedFallbackInput.shouldPollInput(null, false, true))
+        assertFalse(ManagedFallbackInput.shouldPollInput(null, true, false))
+        assertTrue(ManagedFallbackInput.shouldPollInput(1080 to 2400, false, false))
+    }
+
+    @Test
     fun certificateVerificationAllowsOwnerAndMatchingOwnCertAndDeniesOthers() {
         val owner = OctendraAiClient.OWNER_CERT_SHA256
         val own = sha256Hex("weavelo-dev-signing-cert".toByteArray())
@@ -347,6 +356,24 @@ class OctendraAiBridgeTest {
         val onlyManaged = JSONArray(published.last())
         assertEquals(1, onlyManaged.length())
         assertEquals(mappedId, onlyManaged.getJSONObject(0).getJSONObject("source").getLong("Window"))
+    }
+
+    @Test
+    fun aiCatalogPublishesCapabilityChangesWithoutResubscription() {
+        val transport = FakeTransport()
+        transport.viewsJson = JSONArray().put(viewJson(displayId = 5, generation = "g", supportsInput = false)).toString()
+        val bridge = FakeBridge()
+        val views = OctendraAiViews(OctendraAiClient(transport, logger = { _, _ -> }), bridge,
+            publisherFactory = AiVideoPublisherFactory { w, h, r -> FakePublisher(w, h, r) },
+            clockMs = { 1000L }, threaded = false, logger = { _, _ -> })
+        views.use {
+            it.update()
+            assertFalse(bridge.publishedCatalogs.last().single().getBoolean("supports_input"))
+            transport.viewsJson = JSONArray().put(viewJson(displayId = 5, generation = "g", supportsInput = true)).toString()
+            it.requestRefresh(); it.update()
+            assertTrue(bridge.publishedCatalogs.last().single().getBoolean("supports_input"))
+            assertEquals(2, bridge.publishedCatalogs.size)
+        }
     }
 
     @Test
@@ -520,6 +547,15 @@ class OctendraAiBridgeTest {
             rotation = attach.rotation,
             supportsInput = true,
         )
+
+        val fallbackInput = OctendraAiInput(target, client)
+        val fallbackEvents = JSONArray().put(JSONObject().put("Text", "fallback"))
+        assertTrue(ManagedFallbackInput.dispatchAiEvents(fallbackEvents, fallbackInput) { true })
+        assertEquals("fallback", JSONObject(transport.dispatchCalls.last().eventJson).getString("Text"))
+        assertFalse(ManagedFallbackInput.dispatchAiEvents(fallbackEvents, fallbackInput) { false })
+        fallbackInput.release()
+        transport.dispatchCalls.clear()
+        transport.releaseCalls.clear()
 
         val staleReports = mutableListOf<Pair<OctendraAiViews.Target, Boolean>>()
         val input = OctendraAiInput(target, client) { stale, forceRebind ->
