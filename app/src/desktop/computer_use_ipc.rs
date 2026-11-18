@@ -897,6 +897,11 @@ impl Dispatcher {
                     return Err(err);
                 }
                 lease.sequence = lease.sequence.checked_add(1).ok_or("sequence_exhausted")?;
+                // Unlike the one-use receipt, this value stays fixed when observing
+                // the same decoded frame again. Its origin is local to this lease.
+                let decoded_offset_ns = observation.frame().decoded_at
+                    .checked_duration_since(lease.scope.frame().decoded_at)
+                    .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok());
                 lease.pending = Some(PendingFrame {
                     revision,
                     sequence: lease.sequence,
@@ -908,6 +913,7 @@ impl Dispatcher {
                     "lease_id": lease_id,
                     "source_revision": revision,
                     "frame_sequence": lease.sequence,
+                    "decoded_offset_ns": decoded_offset_ns,
                     "decoded_at_utc_us": decoded_at_utc_us,
                     "computer_use_mode": cua_mode,
                     "computer_use_label": cua_label,

@@ -1023,6 +1023,14 @@ fn stability_sample(frame: &client::observation_pixels::CpuRgba) -> client::obse
         client::observation_pixels::MAX_OBSERVATION_BYTES).expect("bounded sample dimensions")
 }
 
+fn samples_settled(
+    previous: &client::observation_pixels::CpuRgba, previous_offset: Option<u64>,
+    current: &client::observation_pixels::CpuRgba, current_offset: Option<u64>,
+) -> bool {
+    previous_offset.zip(current_offset).is_some_and(|(before, after)| after > before)
+        && previous.frame_diff_ratio(current).is_some_and(|ratio| ratio <= 0.002)
+}
+
 fn finish_observation(session: &mut McpSessionState, mut meta: Value, frame: client::observation_pixels::CpuRgba) -> Value {
     let w = frame.layout().width();
     let h = frame.layout().height();
@@ -1273,33 +1281,39 @@ fn dispatch_mcp_tool(
                             let mut latest = None;
                             let mut failure = None;
                             let mut prev_sample = None;
+                            let mut prev_offset = None;
                             let mut saw_change = !expects_visual_effect;
                             loop {
                                 let remaining = MAX_SETTLE.saturating_sub(began.elapsed());
-                                if remaining.is_zero() && latest.is_some() { break; }
+                                if remaining.is_zero() && latest.is_some() {
+                                    body["visual_settle_timed_out"] = json!(true);
+                                    break;
+                                }
                                 if !remaining.is_zero() { std::thread::sleep(remaining.min(SAMPLE_INTERVAL)); }
                                 let (meta, frame) = match observe_frame(profile_dir, session, requested_target.clone(), false) {
                                     Ok(sample) => sample,
                                     Err(error) => { failure = Some(error); break; }
                                 };
                                 let curr = stability_sample(&frame);
+                                let offset = meta["decoded_offset_ns"].as_u64();
                                 let mut done = !expects_visual_effect;
                                 if expects_visual_effect && !saw_change {
                                     if let Some(pre) = &pre_sample {
                                         let diff = pre.frame_diff_ratio(&curr);
                                         if diff.is_none() || diff.is_some_and(|d| d >= 0.0005) { saw_change = true; }
                                     } else { done = true; }
-                                } else if saw_change && prev_sample.as_ref().is_some_and(|prev: &client::observation_pixels::CpuRgba|
-                                    prev.frame_diff_ratio(&curr).is_some_and(|d| d <= 0.002)) {
+                                } else if saw_change && prev_sample.as_ref().is_some_and(|prev|
+                                    samples_settled(prev, prev_offset, &curr, offset)) {
                                     done = true;
                                 }
                                 prev_sample = Some(curr);
+                                prev_offset = offset;
                                 latest = Some((meta, frame));
+                                if done { break; }
                                 if began.elapsed() >= MAX_SETTLE {
                                     body["visual_settle_timed_out"] = json!(true);
                                     break;
                                 }
-                                if done { break; }
                             }
                             if let Some(error) = failure { error }
                             else if let Some((meta, frame)) = latest { finish_observation(session, meta, frame) }
@@ -1866,6 +1880,18 @@ mod tests {
         assert!(code.contains("setChecked:"));
         assert!(code.contains("select:"));
         assert!(code.contains("if (cur === want) return true;"));
+    }
+
+    #[test]
+    fn settling_requires_two_distinct_decoded_frames() {
+        let frame = client::observation_pixels::CpuRgba::from_decoded(
+            1, 1, std::sync::Arc::new(vec![0, 0, 0, 255]),
+            client::observation_pixels::MAX_OBSERVATION_BYTES,
+        ).unwrap();
+        assert!(!samples_settled(&frame, Some(42), &frame, Some(42)));
+        assert!(!samples_settled(&frame, Some(42), &frame, None));
+        assert!(!samples_settled(&frame, Some(42), &frame, Some(41)));
+        assert!(samples_settled(&frame, Some(42), &frame, Some(43)));
     }
 
     #[test]
