@@ -408,23 +408,53 @@ fn cdp_list_targets(port: u16) -> Result<Vec<Value>, String> {
     stream
         .write_all(req.as_bytes())
         .map_err(|e| format!("CDP HTTP write failed: {e}"))?;
-    let deadline=std::time::Instant::now()+Duration::from_secs(2);let mut response=Vec::new();
+    const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut response = Vec::new();
+    let mut body_start = None;
+    let mut expected_end = None;
     loop {
-        let remaining=deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero(){return Err("CDP discovery timed out".into());}
-        stream.set_read_timeout(Some(remaining)).map_err(|e|e.to_string())?;
-        let mut chunk=[0;8192];let count=stream.read(&mut chunk).map_err(|e|e.to_string())?;
-        if count==0{break;}
-        if response.len()+count>4*1024*1024{return Err("CDP discovery response too large".into());}
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() { return Err("CDP discovery timed out".into()); }
+        stream.set_read_timeout(Some(remaining)).map_err(|e| e.to_string())?;
+        let mut chunk = [0; 8192];
+        let count = stream.read(&mut chunk).map_err(|e| e.to_string())?;
+        if count == 0 { break; }
+        if response.len() + count > RESPONSE_LIMIT { return Err("CDP discovery response too large".into()); }
+        let scan_from = response.len().saturating_sub(3);
         response.extend_from_slice(&chunk[..count]);
+        if body_start.is_none()
+            && let Some(offset) = response[scan_from..].windows(4).position(|w| w == b"\r\n\r\n")
+        {
+            let header_end = scan_from + offset;
+            let start = header_end + 4;
+            let headers = std::str::from_utf8(&response[..header_end]).map_err(|_| "Invalid CDP HTTP headers")?;
+            let mut lines = headers.split("\r\n");
+            if !lines.next().is_some_and(|line| line.starts_with("HTTP/1.1 200 ")) {
+                return Err("Invalid CDP target response status".into());
+            }
+            for line in lines {
+                let (name, value) = line.split_once(':').ok_or("Invalid CDP HTTP header")?;
+                if name.eq_ignore_ascii_case("transfer-encoding") {
+                    return Err("Unsupported CDP transfer encoding".into());
+                }
+                if name.eq_ignore_ascii_case("content-length") {
+                    let length = value.trim().parse::<usize>().map_err(|_| "Invalid CDP Content-Length")?;
+                    if expected_end.is_some() || length > RESPONSE_LIMIT - start {
+                        return Err("Invalid or oversized CDP Content-Length".into());
+                    }
+                    expected_end = Some(start + length);
+                }
+            }
+            body_start = Some(start);
+        }
+        if expected_end.is_some_and(|end| response.len() >= end) { break; }
     }
-    let resp=String::from_utf8(response).map_err(|_|"CDP response must be UTF-8")?;
-    if resp.len()>4*1024*1024||!resp.starts_with("HTTP/1.1 200 "){return Err("Invalid or oversized CDP target response".into());}
-    let (_, body) = resp
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "Invalid CDP HTTP response".to_string())?;
-    let trimmed = body.trim();
-    serde_json::from_str::<Vec<Value>>(trimmed)
+    let start = body_start.ok_or("Incomplete CDP HTTP headers")?;
+    if expected_end.is_some_and(|end| end != response.len()) {
+        return Err("CDP target response length mismatch".into());
+    }
+    serde_json::from_slice::<Vec<Value>>(&response[start..])
         .map_err(|e| format!("Failed to parse CDP /json/list: {e}"))
 }
 
@@ -1673,7 +1703,7 @@ mod tests {
             let mut request=[0;4096];let count=http.read(&mut request).unwrap();assert!(std::str::from_utf8(&request[..count]).unwrap().starts_with("GET /json/list "));
             let body=json!([{"id":"other","type":"page","webSocketDebuggerUrl":format!("ws://127.0.0.1:{port}/devtools/page/other")},
                 {"id":"chosen","type":"page","webSocketDebuggerUrl":format!("ws://127.0.0.1:{port}/devtools/page/chosen")}]).to_string();
-            write!(http,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();drop(http);
+            write!(http,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",body.len(),body).unwrap();
             let (stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut socket=tungstenite::accept_hdr(stream,|request:&tungstenite::handshake::server::Request,response| {
                 assert_eq!(request.uri().path(),"/devtools/page/chosen");Ok(response)
@@ -1682,6 +1712,7 @@ mod tests {
             assert_eq!(request["params"]["expression"],"1+1");
             socket.send(tungstenite::Message::Ping(vec![1,2,3].into())).unwrap();
             socket.send(tungstenite::Message::Text(json!({"id":1,"result":{"result":{"value":2}}}).to_string().into())).unwrap();
+            drop(http);
         });
         assert!(selected_cdp_page(&json!({"cdp_port":port})).is_err());
         let page=selected_cdp_page(&json!({"cdp_port":port,"target_id":"chosen"})).unwrap();
