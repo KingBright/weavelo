@@ -272,6 +272,11 @@ impl Authority {
         let local_mcp_self = root["local_mcp_self"] == true
             && worker["local_mcp_self"] == true
             && peer.hash == self.gui_hash;
+        if (root["local_mcp_self"] == true || worker["local_mcp_self"] == true)
+            && !local_mcp_self
+        {
+            return Err("local_mcp_caller_not_gui");
+        }
         let caller = if matches!(call, Call::Validate { .. }) {
             let saved = saved.ok_or("observer_closed")?;
             if peer != saved.agent {
@@ -349,6 +354,13 @@ fn authorize(
     // into a restarted GUI, even when the approved app bytes are unchanged.
     let mut current_route = root["weavelo"].clone();
     current_route["generation"] = Value::String(generation.into());
+    // A local MCP self-grant speaks Weavelo's existing macOS-keycode wire
+    // protocol directly and does not assert the target OS. Octendra grants
+    // instead carry their explicitly approved remote platform.
+    let platform = &root["weavelo"]["input_platform"];
+    let known_platform = matches!(platform.as_str(), Some("macos" | "windows" | "linux" | "android"));
+    let local_self = root["local_mcp_self"] == true && worker["local_mcp_self"] == true;
+    let platform_allowed = known_platform || (platform.is_null() && (root["input"] != true || local_self));
     let checks = [
         (version > 0, "octendra_authority_version_invalid"),
         (
@@ -360,7 +372,7 @@ fn authorize(
             "octendra_authority_input_mismatch",
         ),
         (
-            root["input"] != true || root["weavelo"]["input_platform"] == "macos",
+            platform_allowed,
             "octendra_authority_input_platform_mismatch",
         ),
         (

@@ -474,6 +474,7 @@ fn selected_cdp_page(args:&Value)->Result<Value,String> {
 pub(crate) struct McpSessionState {
     active_lease: Option<ActiveMcpLease>,
     last_observed_frame: Option<client::observation_pixels::CpuRgba>,
+    last_stability_sample: Option<client::observation_pixels::CpuRgba>,
     initialized: bool,
 }
 
@@ -531,6 +532,7 @@ impl McpSessionState {
         // Close the exact prior lease before replacing its private authority.
         if let Some(previous)=self.active_lease.take() {
             self.last_observed_frame = None;
+            self.last_stability_sample = None;
             let request=super::directed_receive::Request::ComputerUse{generation:previous.generation,
                 request_id:format!("mcp-close-{}",generate_boundary_nonce()),deadline_ms:crate::unix_now_ms()+4500,
                 call:Call::Close{actor:previous.actor,lease_id:previous.lease_id}};
@@ -636,8 +638,7 @@ fn ensure_local_mcp_authority_files(
         "profile": gui_dir,
         "generation": generation,
         "gui_executable_sha256": gui_hash,
-        "target": target,
-        "input_platform": "macos"
+        "target": target
     });
     let root = json!({
         "enabled": true,
@@ -915,7 +916,7 @@ pub(crate) fn mcp_tool_definitions() -> Value {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "JavaScript expression or async IIFE to evaluate in the browser page context."
+                        "description": "JavaScript expression or async IIFE to evaluate in the browser page context. Await weavelo.setChecked when sequencing further actions."
                     },
                     "cdp_port": {
                         "type": "integer",
@@ -940,7 +941,7 @@ pub(crate) fn mcp_tool_definitions() -> Value {
             tool["inputSchema"]["properties"]["cdp_port"]["minimum"]=1.into();
             tool["inputSchema"]["properties"]["cdp_port"]["maximum"]=65535.into();
         }
-        if name=="weavelo_cua_batch_act"{tool["description"]=json!("Run a bounded serial batch on the observed image; x/y coordinates use 0..65535, refs come from snapshot. Failure stops subsequent actions; effects are not acknowledged by the target.");
+        if name=="weavelo_cua_batch_act"{tool["description"]=json!("Run a bounded serial batch on the observed image; x/y coordinates use 0..65535, refs come from snapshot. KeyPress and KeyCombo key_code use the existing macOS physical-key wire codes for every target. Failure stops subsequent actions; effects are not acknowledged by the target.");
             tool["inputSchema"]["properties"]["actions"]["minItems"]=1.into();tool["inputSchema"]["properties"]["actions"]["maxItems"]=32.into();}
         if name=="weavelo_browser_code_mode"{tool["inputSchema"]["required"]=json!(["code","target_id"]);tool["inputSchema"]["properties"]["code"]["maxLength"]=65536.into();}
     }
@@ -949,6 +950,101 @@ pub(crate) fn mcp_tool_definitions() -> Value {
         "annotations":{"readOnlyHint":true,"openWorldHint":true}}));
     definitions
 
+}
+
+// Every sample follows the same authenticated IPC observation path. Encoding is
+// deferred until the final frame so settling does not repeatedly compress PNGs.
+fn observe_frame(
+    profile_dir: &Path,
+    session: &mut McpSessionState,
+    target: Option<Target>,
+    control: bool,
+) -> Result<(Value, client::observation_pixels::CpuRgba), Value> {
+    let result = (|| {
+    let gui_dir = crate::private_ipc::gui_directory(profile_dir)
+        .map_err(|_| mcp_error("GUI directory unavailable"))?;
+    let (lease, generation) = session.ensure_lease(&gui_dir, target, control).map_err(mcp_error)?;
+    let req = super::directed_receive::Request::ComputerUse {
+        generation,
+        request_id: format!("mcp-obs-{}", crate::unix_now_ms()),
+        deadline_ms: crate::unix_now_ms() + 4500,
+        call: Call::Observe { actor: lease.actor, lease_id: lease.lease_id },
+    };
+    match super::directed_receive::exchange_with_pixels(&gui_dir, &req) {
+        Ok((body, Some(rgba))) if body["ok"] == true => {
+            let w = body["size"][0].as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+            let h = body["size"][1].as_u64().and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+            let frame = client::observation_pixels::CpuRgba::from_decoded(
+                w, h, std::sync::Arc::new(rgba), client::observation_pixels::MAX_OBSERVATION_BYTES,
+            ).map_err(|_| mcp_error("Invalid observation pixels"))?;
+            if let Some(active) = session.active_lease.as_mut() {
+                active.source_revision = body["source_revision"].as_u64().unwrap_or(0);
+                active.frame_sequence = body["frame_sequence"].as_u64().unwrap_or(0);
+            }
+            Ok((body, frame))
+        }
+        Ok((body, _)) => Err(handle_cua_rejection(session, "Observe rejected", &body)),
+        Err(e) => Err(mcp_error(format!("Observe IPC failed: {e}"))),
+    }
+    })();
+    if result.is_err() { invalidate_observation(session); }
+    result
+}
+
+fn invalidate_observation(session: &mut McpSessionState) {
+    session.last_observed_frame = None;
+    session.last_stability_sample = None;
+    if let Some(active) = session.active_lease.as_mut() {
+        active.source_revision = 0;
+        active.frame_sequence = 0;
+    }
+}
+
+// Nearest-neighbour sampling touches at most 192² pixels per intermediate frame.
+// The baseline is generated from the same original frame, before PNG scaling.
+fn stability_sample(frame: &client::observation_pixels::CpuRgba) -> client::observation_pixels::CpuRgba {
+    let width = frame.layout().width();
+    let height = frame.layout().height();
+    let longest = width.max(height);
+    if longest <= 192 { return frame.clone(); }
+    let out_w = ((u64::from(width) * 192 / u64::from(longest)) as u32).max(1);
+    let out_h = ((u64::from(height) * 192 / u64::from(longest)) as u32).max(1);
+    let src = frame.pixels();
+    let mut pixels = Vec::with_capacity(out_w as usize * out_h as usize * 4);
+    for y in 0..out_h {
+        let sy = (u64::from(y) * u64::from(height) / u64::from(out_h)) as usize;
+        for x in 0..out_w {
+            let sx = (u64::from(x) * u64::from(width) / u64::from(out_w)) as usize;
+            let offset = (sy * width as usize + sx) * 4;
+            pixels.extend_from_slice(&src[offset..offset + 4]);
+        }
+    }
+    client::observation_pixels::CpuRgba::from_decoded(out_w, out_h, std::sync::Arc::new(pixels),
+        client::observation_pixels::MAX_OBSERVATION_BYTES).expect("bounded sample dimensions")
+}
+
+fn finish_observation(session: &mut McpSessionState, mut meta: Value, frame: client::observation_pixels::CpuRgba) -> Value {
+    let w = frame.layout().width();
+    let h = frame.layout().height();
+    let sample = stability_sample(&frame);
+    let scaled = frame.downscale_max_edge(1568);
+    let sw = scaled.layout().width();
+    let sh = scaled.layout().height();
+    let png = match encode_rgba_to_png(sw, sh, scaled.pixels()) {
+        Ok(png) => png,
+        Err(e) => {
+            invalidate_observation(session);
+            return mcp_error(format!("PNG encode failed: {e}"));
+        },
+    };
+    session.last_observed_frame = Some(scaled);
+    session.last_stability_sample = Some(sample);
+    meta["native_size"] = json!([w, h]);
+    meta["display_size"] = json!([sw, sh]);
+    json!({"isError": false, "content": [
+        {"type": "image", "data": encode_base64(&png), "mimeType": "image/png"},
+        {"type": "text", "text": serde_json::to_string_pretty(&meta).unwrap_or_default()}
+    ]})
 }
 
 fn dispatch_mcp_tool(
@@ -1021,80 +1117,9 @@ fn dispatch_mcp_tool(
             }
         }
         "weavelo_cua_observe" => {
-            let Ok(gui_dir) = crate::private_ipc::gui_directory(profile_dir) else {
-                return json!({"isError": true, "content": [{"type": "text", "text": "GUI directory unavailable"}]});
-            };
-            let control = args["control"].as_bool().unwrap_or(false);
-            let (lease, generation) = match session.ensure_lease(&gui_dir, requested_target.clone(), control) {
-                Ok(v) => v,
-                Err(e) => return json!({"isError": true, "content": [{"type": "text", "text": e}]}),
-            };
-            let req = super::directed_receive::Request::ComputerUse {
-                generation,
-                request_id: format!("mcp-obs-{}", crate::unix_now_ms()),
-                deadline_ms: crate::unix_now_ms() + 4500,
-                call: Call::Observe {
-                    actor: lease.actor,
-                    lease_id: lease.lease_id,
-                },
-            };
-            match super::directed_receive::exchange_with_pixels(&gui_dir, &req) {
-                Ok((body, Some(rgba))) if body["ok"] == true => {
-                    let rev = body["source_revision"].as_u64().unwrap_or(0);
-                    let seq = body["frame_sequence"].as_u64().unwrap_or(0);
-                    if let Some(active) = session.active_lease.as_mut() {
-                        active.source_revision = rev;
-                        active.frame_sequence = seq;
-                    }
-                    let w = body["size"][0].as_u64().unwrap_or(0) as u32;
-                    let h = body["size"][1].as_u64().unwrap_or(0) as u32;
-                    let rgba_arc = std::sync::Arc::new(rgba);
-                    let (out_w, out_h, png_result) = if let Ok(frame) =
-                        client::observation_pixels::CpuRgba::from_decoded(
-                            w,
-                            h,
-                            rgba_arc.clone(),
-                            client::observation_pixels::MAX_OBSERVATION_BYTES,
-                        ) {
-                        let scaled = frame.downscale_max_edge(1568);
-                        let sw = scaled.layout().width();
-                        let sh = scaled.layout().height();
-                        let encoded = encode_rgba_to_png(sw, sh, scaled.pixels());
-                        session.last_observed_frame = Some(scaled);
-                        (sw, sh, encoded)
-                    } else {
-                        session.last_observed_frame = None;
-                        (w, h, encode_rgba_to_png(w, h, &rgba_arc))
-                    };
-                    let mut meta = body.clone();
-                    meta["native_size"] = json!([w, h]);
-                    meta["display_size"] = json!([out_w, out_h]);
-                    match png_result {
-                        Ok(png) => json!({
-                            "isError": false,
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "data": encode_base64(&png),
-                                    "mimeType": "image/png"
-                                },
-                                {
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&meta).unwrap_or_default()
-                                }
-                            ]
-                        }),
-                        Err(e) => json!({
-                            "isError": true,
-                            "content": [{ "type": "text", "text": format!("PNG encode failed: {e}") }]
-                        }),
-                    }
-                }
-                Ok((body, _)) => handle_cua_rejection(session, "Observe rejected", &body),
-                Err(e) => json!({
-                    "isError": true,
-                    "content": [{ "type": "text", "text": format!("Observe IPC failed: {e}") }]
-                }),
+            match observe_frame(profile_dir, session, requested_target.clone(), args["control"].as_bool().unwrap_or(false)) {
+                Ok((body, frame)) => finish_observation(session, body, frame),
+                Err(error) => error,
             }
         }
         "weavelo_cua_zoom" => {
@@ -1190,6 +1215,7 @@ fn dispatch_mcp_tool(
                 }
             }
             let pre_frame = session.last_observed_frame.clone();
+            let pre_sample = session.last_stability_sample.clone();
             let ends_with_wait = matches!(
                 actions.last(),
                 Some(Action::Wait { .. } | Action::WaitForStability { .. })
@@ -1231,66 +1257,55 @@ fn dispatch_mcp_tool(
                     if !keep_lease || invalidated {
                         session.active_lease = None;
                         session.last_observed_frame = None;
+                        session.last_stability_sample = None;
                     }
                     let mut post_obs = None;
                     if !is_err && keep_lease && auto_observe {
                         const SAMPLE_INTERVAL: Duration = Duration::from_millis(60);
                         const MAX_SETTLE: Duration = Duration::from_millis(320);
                         let obs = if ends_with_wait {
-                            dispatch_mcp_tool(
-                                profile_dir,
-                                session,
-                                "weavelo_cua_observe",
-                                &json!({}),
-                            )
+                            match observe_frame(profile_dir, session, requested_target.clone(), false) {
+                                Ok((meta, frame)) => finish_observation(session, meta, frame),
+                                Err(error) => error,
+                            }
                         } else {
                             let began = std::time::Instant::now();
-                            let mut latest_obs = json!({});
-                            let mut prev_sample: Option<client::observation_pixels::CpuRgba> = None;
+                            let mut latest = None;
+                            let mut failure = None;
+                            let mut prev_sample = None;
                             let mut saw_change = !expects_visual_effect;
                             loop {
                                 let remaining = MAX_SETTLE.saturating_sub(began.elapsed());
-                                if remaining.is_zero() {
-                                    break;
-                                }
-                                std::thread::sleep(remaining.min(SAMPLE_INTERVAL));
-                                latest_obs = dispatch_mcp_tool(
-                                    profile_dir,
-                                    session,
-                                    "weavelo_cua_observe",
-                                    &json!({}),
-                                );
-                                if latest_obs["isError"] == true {
-                                    break;
-                                }
-                                let Some(curr) = session.last_observed_frame.clone() else {
-                                    break;
+                                if remaining.is_zero() && latest.is_some() { break; }
+                                if !remaining.is_zero() { std::thread::sleep(remaining.min(SAMPLE_INTERVAL)); }
+                                let (meta, frame) = match observe_frame(profile_dir, session, requested_target.clone(), false) {
+                                    Ok(sample) => sample,
+                                    Err(error) => { failure = Some(error); break; }
                                 };
-                                if !expects_visual_effect {
-                                    break;
-                                }
-                                if !saw_change {
-                                    if let Some(pre) = &pre_frame {
+                                let curr = stability_sample(&frame);
+                                let mut done = !expects_visual_effect;
+                                if expects_visual_effect && !saw_change {
+                                    if let Some(pre) = &pre_sample {
                                         let diff = pre.frame_diff_ratio(&curr);
-                                        if diff.is_none() || diff.is_some_and(|d| d >= 0.0005) {
-                                            saw_change = true;
-                                        }
-                                    } else {
-                                        break;
-                                    }
-                                } else if let Some(prev) = &prev_sample
-                                    && prev.frame_diff_ratio(&curr).is_some_and(|d| d <= 0.002)
-                                {
-                                    break;
+                                        if diff.is_none() || diff.is_some_and(|d| d >= 0.0005) { saw_change = true; }
+                                    } else { done = true; }
+                                } else if saw_change && prev_sample.as_ref().is_some_and(|prev: &client::observation_pixels::CpuRgba|
+                                    prev.frame_diff_ratio(&curr).is_some_and(|d| d <= 0.002)) {
+                                    done = true;
                                 }
                                 prev_sample = Some(curr);
+                                latest = Some((meta, frame));
                                 if began.elapsed() >= MAX_SETTLE {
+                                    body["visual_settle_timed_out"] = json!(true);
                                     break;
                                 }
+                                if done { break; }
                             }
-                            latest_obs
+                            if let Some(error) = failure { error }
+                            else if let Some((meta, frame)) = latest { finish_observation(session, meta, frame) }
+                            else { mcp_error("Observation timed out") }
                         };
-                        if let (Some(pre), Some(post)) = (&pre_frame, &session.last_observed_frame) {
+                        if obs["isError"] != true && let (Some(pre), Some(post)) = (&pre_frame, &session.last_observed_frame) {
                             if let Some(diff) = pre.frame_diff_ratio(post) {
                                 let changed = diff >= 0.0005;
                                 let regions = pre.changed_regions(post);
@@ -1308,6 +1323,7 @@ fn dispatch_mcp_tool(
                                 body["changed_regions"] = json!([[0, 0, 1000, 1000]]);
                             }
                         }
+                        if obs["isError"] == true { body["post_observe_error"] = json!(true); }
                         post_obs = Some(obs);
                     }
                     let mut content = vec![json!({
@@ -1320,7 +1336,7 @@ fn dispatch_mcp_tool(
                         content.extend(obs_items.iter().cloned());
                     }
                     json!({
-                        "isError": is_err,
+                        "isError": is_err || body["post_observe_error"] == true,
                         "content": content
                     })
                 }
@@ -1425,6 +1441,7 @@ fn handle_cua_rejection(session: &mut McpSessionState, context: &str, body: &Val
     {
         session.active_lease = None;
         session.last_observed_frame = None;
+        session.last_stability_sample = None;
     }
     if code == "paused_by_human" || body["paused_by_human"] == true {
         let hint = body["takeover_hint"].as_str().unwrap_or(
@@ -1459,22 +1476,6 @@ fn browser_snapshot_extract_js(snap_id: &str) -> String {
             const interactiveRoles = new Set(['button','link','textbox','searchbox','checkbox','radio','switch','combobox','menuitem','tab','option','slider']);
             const collected = [];
             const seen = new Set();
-            const effectiveZoom = (node) => {{
-                let z = 1;
-                let cur = node;
-                while (cur && cur.nodeType === 1) {{
-                    const w = cur.ownerDocument?.defaultView || window;
-                    const cs = w.getComputedStyle ? w.getComputedStyle(cur) : null;
-                    if (cs && cs.zoom) {{
-                        const raw = cs.zoom;
-                        let parsed = parseFloat(raw);
-                        if (typeof raw === 'string' && raw.trim().endsWith('%')) parsed /= 100;
-                        if (Number.isFinite(parsed) && parsed > 0) z *= parsed;
-                    }}
-                    cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host) || null;
-                }}
-                return z;
-            }};
             const isVisible = (el) => {{
                 if (!el || seen.has(el)) return false;
                 if (el.closest && el.closest('[aria-hidden="true"],[hidden],[inert]')) return false;
@@ -1483,34 +1484,41 @@ fn browser_snapshot_extract_js(snap_id: &str) -> String {
                 if (st && (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0)) return false;
                 return true;
             }};
-            const walk = (root, ox, oy, depth) => {{
+            const walk = (root, ox, oy, sx, sy, depth, clip) => {{
                 if (!root || collected.length >= 200 || depth > 8) return;
                 for (const el of root.querySelectorAll(sel)) {{
                     if (collected.length >= 200) break;
                     if (!isVisible(el)) continue;
                     const r = el.getBoundingClientRect();
-                    const z = effectiveZoom(el);
-                    const left = r.left * z + ox, top = r.top * z + oy, right = r.right * z + ox, bottom = r.bottom * z + oy;
+                    // Client rectangles already include CSS zoom and transforms.
+                    const left = Math.max(r.left * sx + ox, clip.left), top = Math.max(r.top * sy + oy, clip.top);
+                    const right = Math.min(r.right * sx + ox, clip.right), bottom = Math.min(r.bottom * sy + oy, clip.bottom);
                     if ((right - left) <= 1 || (bottom - top) <= 1 || right <= 0 || bottom <= 0 || left >= vw || top >= vh) continue;
                     seen.add(el);
                     collected.push({{ el, left, top, right, bottom, depth }});
                 }}
                 for (const host of root.querySelectorAll('*')) {{
                     if (collected.length >= 200) break;
-                    if (host.shadowRoot) walk(host.shadowRoot, ox, oy, depth + 1);
+                    if (host.shadowRoot) walk(host.shadowRoot, ox, oy, sx, sy, depth + 1, clip);
                     if (host.tagName === 'IFRAME') {{
                         try {{
                             const doc = host.contentDocument;
                             if (doc) {{
                                 const ir = host.getBoundingClientRect();
-                                const iz = effectiveZoom(host);
-                                walk(doc, ox + ir.left * iz, oy + ir.top * iz, depth + 1);
+                                const fx = host.offsetWidth ? ir.width / host.offsetWidth : 1;
+                                const fy = host.offsetHeight ? ir.height / host.offsetHeight : 1;
+                                const x = ox + (ir.left + host.clientLeft * fx) * sx;
+                                const y = oy + (ir.top + host.clientTop * fy) * sy;
+                                const childClip = {{ left: Math.max(clip.left, x), top: Math.max(clip.top, y),
+                                    right: Math.min(clip.right, x + host.clientWidth * sx * fx),
+                                    bottom: Math.min(clip.bottom, y + host.clientHeight * sy * fy) }};
+                                walk(doc, x, y, sx * fx, sy * fy, depth + 1, childClip);
                             }}
                         }} catch (_) {{}}
                     }}
                 }}
             }};
-            walk(document, 0, 0, 1);
+            walk(document, 0, 0, 1, 1, 1, {{ left: 0, top: 0, right: vw, bottom: vh }});
             window.__weaveloRefs = {{ id: '{snap_id}', nodes: new Map() }};
             return collected.map((item, idx) => {{
                 const {{ el, left, top, right, bottom, depth }} = item;
@@ -1568,25 +1576,32 @@ fn browser_code_mode_js(user_code: &str) -> String {
                 ref: (id) => {{ const key=id.startsWith('@')?id:'@'+id; const refs=window.__weaveloRefs; if (!refs || !key.startsWith('@'+refs.id+':')) throw new Error('Stale snapshot ref'); const el=refs.nodes.get(key); if (!el || !el.isConnected) throw new Error('Missing snapshot element'); return el; }},
                 click: (id) => {{ const el = weavelo.ref(id); el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }}); el.click(); return true; }},
                 fill: (id, val) => {{ const el = weavelo.ref(id); el.focus(); if (el.isContentEditable) {{ el.textContent = String(val); }} else {{ el.value = val; }} el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }},
-                setChecked: (id, desired) => {{
+                setChecked: async (id, desired) => {{
                     const el = weavelo.ref(id);
                     const want = Boolean(desired);
                     const tag = (el.tagName || '').toLowerCase();
                     const type = (el.type || '').toLowerCase();
                     const isNative = tag === 'input' && (type === 'checkbox' || type === 'radio');
-                    const cur = isNative ? Boolean(el.checked) : (el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : Boolean(el.checked));
+                    if (!isNative && !el.hasAttribute('aria-checked')) throw new Error('Element is not checkable');
+                    const checked = () => {{
+                        if (isNative) return Boolean(el.checked);
+                        const value = el.getAttribute('aria-checked');
+                        return value === 'true' ? true : value === 'false' ? false : null;
+                    }};
+                    const cur = checked();
                     if (cur === want) return true;
+                    let ancestor = el;
+                    while (ancestor) {{
+                        if (ancestor.matches?.(':disabled,[aria-disabled="true"]')) throw new Error('Element is disabled');
+                        ancestor = ancestor.parentElement || ancestor.getRootNode?.().host || null;
+                    }}
                     el.scrollIntoView?.({{ block: 'nearest', inline: 'nearest' }});
                     el.focus?.();
                     el.click();
-                    const after = isNative ? Boolean(el.checked) : (el.hasAttribute('aria-checked') ? el.getAttribute('aria-checked') === 'true' : Boolean(el.checked));
-                    if (after !== want) {{
-                        if (isNative) {{ el.checked = want; }}
-                        else if (el.hasAttribute('aria-checked')) {{ el.setAttribute('aria-checked', want ? 'true' : 'false'); }}
-                        else {{ el.checked = want; }}
-                    }}
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    // Let controlled components commit their response to the click.
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    const after = checked();
+                    if (after !== want) throw new Error('Checked state did not change');
                     return true;
                 }},
                 select: (id, value) => {{
@@ -1675,6 +1690,25 @@ mod tests {
         let private=root.path().join("original.json");std::fs::write(&private,bytes).unwrap();symlink(&private,&path).unwrap();
         assert!(ensure_local_mcp_authority_files(root.path(),"g","hash",&actor,&target,"lease",false).is_err());
         assert_eq!(std::fs::read(&private).unwrap(),bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_mcp_self_grant_does_not_infer_remote_platform() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let actor = Actor { owner: "fixture".into(), task_id: "11111111-1111-4111-8111-111111111111".into(), executor_device_id: "22222222-2222-4222-8222-222222222222".into() };
+        let target = Target { peer_device_id: "fixture".into(), source: CaptureSource::Window(1), connection_id: 1 };
+        let lease = "33333333-3333-4333-8333-333333333333";
+        ensure_local_mcp_authority_files(root.path(), "1-2", &"c".repeat(64), &actor, &target, lease, true).unwrap();
+        let dir = root.path().join("local-mcp-authority");
+        let grant: Value = serde_json::from_slice(&std::fs::read(dir.join("desktop-launch.json")).unwrap()).unwrap();
+        let worker: Value = serde_json::from_slice(&std::fs::read(dir.join(format!("desktop-worker-{lease}.json"))).unwrap()).unwrap();
+        assert!(grant["weavelo"].get("input_platform").is_none());
+        assert_eq!(grant["weavelo"], worker["weavelo"]);
+        assert_eq!(grant["input"], true);
+        assert_eq!(worker["allow_input"], true);
     }
 
     #[test]
@@ -1822,8 +1856,8 @@ mod tests {
         assert_eq!(nodes[1]["expanded"], true);
 
         let extract = browser_snapshot_extract_js("b_zoom");
-        assert!(extract.contains("effectiveZoom"));
-        assert!(extract.contains("cs.zoom"));
+        assert!(!extract.contains("effectiveZoom"));
+        assert!(extract.contains("host.clientLeft"));
         assert!(extract.contains("isPassword"));
         assert!(extract.contains("'<redacted>'"));
         assert!(extract.contains("aria-expanded"));
@@ -1832,6 +1866,45 @@ mod tests {
         assert!(code.contains("setChecked:"));
         assert!(code.contains("select:"));
         assert!(code.contains("if (cur === want) return true;"));
+    }
+
+    #[test]
+    fn stability_samples_are_bounded_and_use_the_same_native_pixel_baseline() {
+        let mut pixels = vec![0; 384 * 192 * 4];
+        pixels[(2 * 384 + 2) * 4] = 255;
+        let frame = client::observation_pixels::CpuRgba::from_decoded(
+            384, 192, std::sync::Arc::new(pixels), client::observation_pixels::MAX_OBSERVATION_BYTES,
+        ).unwrap();
+        let sample = stability_sample(&frame);
+        assert_eq!((sample.layout().width(), sample.layout().height()), (192, 96));
+        assert_eq!(sample.pixels()[(192 + 1) * 4], 255);
+        let mut session = McpSessionState::default();
+        let result = finish_observation(&mut session, json!({"source_revision": 1, "frame_sequence": 1}), frame);
+        assert_eq!(result["isError"], false);
+        assert_eq!(session.last_stability_sample.as_ref().unwrap().pixels(), sample.pixels());
+    }
+
+    #[test]
+    fn final_observation_returns_the_selected_pixels_and_matching_receipt() {
+        let pixels = vec![200, 10, 20, 255, 30, 40, 50, 255];
+        let frame = client::observation_pixels::CpuRgba::from_decoded(
+            2, 1, std::sync::Arc::new(pixels.clone()),
+            client::observation_pixels::MAX_OBSERVATION_BYTES,
+        ).unwrap();
+        let mut session = McpSessionState::default();
+        let output = finish_observation(&mut session, json!({
+            "ok": true, "source_revision": 5, "frame_sequence": 42, "size": [2, 1]
+        }), frame);
+        assert_eq!(output["isError"], false);
+        assert_eq!(output["content"][0]["mimeType"], "image/png");
+        assert!(output["content"][0]["data"].as_str().unwrap().starts_with("iVBOR"));
+        let meta: Value = serde_json::from_str(output["content"][1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(meta["source_revision"], 5);
+        assert_eq!(meta["frame_sequence"], 42);
+        assert_eq!(meta["display_size"], json!([2, 1]));
+        assert_eq!(session.last_observed_frame.as_ref().unwrap().pixels(), pixels);
+        invalidate_observation(&mut session);
+        assert!(session.last_observed_frame.is_none());
     }
 
     #[test]
@@ -1856,6 +1929,7 @@ mod tests {
                 control: true,
             }),
             last_observed_frame: None,
+            last_stability_sample: None,
             initialized: true,
         };
         let out = handle_cua_rejection(

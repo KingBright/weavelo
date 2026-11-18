@@ -197,7 +197,7 @@ fn absent_locator_is_unavailable_without_trusting_request_paths_or_process_names
 }
 
 #[test]
-fn control_requires_both_existing_grants_and_explicit_remote_mac_key_space() {
+fn control_requires_both_existing_grants_and_explicit_remote_platform() {
     let (mut root, mut worker, actor, mut call) = fixture();
     let Call::Open { control, .. } = &mut call else {
         unreachable!()
@@ -207,9 +207,30 @@ fn control_requires_both_existing_grants_and_explicit_remote_mac_key_space() {
     root["input"] = json!(true);
     worker["allow_input"] = json!(true);
     assert!(check(&root, &worker, &actor, &call).is_err());
-    root["weavelo"]["input_platform"] = json!("macos");
+    for platform in ["macos", "windows", "linux", "android"] {
+        root["weavelo"]["input_platform"] = json!(platform);
+        worker["weavelo"] = root["weavelo"].clone();
+        assert!(check(&root, &worker, &actor, &call).is_ok(), "{platform}");
+    }
+    for invalid in [json!("MacOS"), json!("other"), json!(null), json!(7)] {
+        root["weavelo"]["input_platform"] = invalid;
+        worker["weavelo"] = root["weavelo"].clone();
+        assert!(check(&root, &worker, &actor, &call).is_err());
+    }
+    root["weavelo"]["input_platform"] = json!("windows");
+    worker["weavelo"] = root["weavelo"].clone();
+    worker["weavelo"]["input_platform"] = json!("linux");
+    assert!(check(&root, &worker, &actor, &call).is_err());
+    worker["weavelo"] = root["weavelo"].clone();
+    // Local MCP uses the existing wire key codes, without guessing target OS.
+    root["weavelo"].as_object_mut().unwrap().remove("input_platform");
+    root["local_mcp_self"] = json!(true);
+    worker["local_mcp_self"] = json!(true);
     worker["weavelo"] = root["weavelo"].clone();
     assert!(check(&root, &worker, &actor, &call).is_ok());
+    worker["local_mcp_self"] = json!(false);
+    assert!(check(&root, &worker, &actor, &call).is_err());
+    worker["local_mcp_self"] = json!(true);
     let act = Call::Act {
         actor: actor.clone(),
         lease_id: call.identity().1.into(),
