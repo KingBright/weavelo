@@ -35,7 +35,7 @@ internal fun OutgoingVideoQualityDialog(deliveryId: Long, onDismiss: () -> Unit)
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val encoder by OutgoingVideoRuntime.state.collectAsState()
-    val invalidMessage = tr("Use 0 or 240–4320 pixels, 1–120 fps, and 100–100000 kbps.")
+    val invalidMessage = tr("Use 0 or 240–4320 pixels, 1–240 fps, and 100–500000 kbps.")
     val changedMessage = tr("Screen delivery changed; reopen settings")
     val updateFailedMessage = tr("Could not update screen quality")
 
@@ -88,7 +88,7 @@ internal fun OutgoingVideoQualityDialog(deliveryId: Long, onDismiss: () -> Unit)
         Column(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 420.dp)
+                .heightIn(max = 460.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -112,22 +112,55 @@ internal fun OutgoingVideoQualityDialog(deliveryId: Long, onDismiss: () -> Unit)
             }
             PrecisionTextField(
                 value = shortEdge,
-                onValueChange = { shortEdge = it },
+                onValueChange = { shortEdge = it; error = null },
                 label = tr("Resolution short edge (0 = original)"),
+                isError = shortEdge.toIntOrNull()?.let { !(it == 0 || it in 240..4320) } ?: true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 monospace = true,
+            )
+            PrecisionSegmentedRow(
+                options = listOf(
+                    30 to "30 FPS",
+                    60 to "60 FPS",
+                    120 to "120 FPS",
+                    144 to "144 FPS",
+                ),
+                selected = fps.toIntOrNull() ?: -1,
+                enabled = !saving,
+                modifier = Modifier.fillMaxWidth(),
+                onSelect = { selectedFps ->
+                    fps = selectedFps.toString()
+                    error = null
+                },
             )
             PrecisionTextField(
                 value = fps,
-                onValueChange = { fps = it },
+                onValueChange = { fps = it; error = null },
                 label = tr("Frames per second"),
+                isError = fps.toIntOrNull()?.let { it !in 1..240 } ?: true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 monospace = true,
             )
+            PrecisionSegmentedRow(
+                options = listOf(
+                    20_000 to "20M",
+                    50_000 to "50M",
+                    150_000 to "150M",
+                    500_000 to "500M",
+                ),
+                selected = bitrate.toIntOrNull() ?: -1,
+                enabled = !saving,
+                modifier = Modifier.fillMaxWidth(),
+                onSelect = { selectedKbps ->
+                    bitrate = selectedKbps.toString()
+                    error = null
+                },
+            )
             PrecisionTextField(
                 value = bitrate,
-                onValueChange = { bitrate = it },
+                onValueChange = { bitrate = it; error = null },
                 label = tr("Video bitrate (kbps)"),
+                isError = bitrate.toIntOrNull()?.let { it !in 100..500_000 } ?: true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 monospace = true,
             )

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub const MIN_COMPATIBLE_SESSION_VERSION: u32 = 11;
 pub const CONSOLE_SESSION_VERSION: u32 = 12;
 pub const SESSION_VERSION: u32 = 12;
-pub const MAX_SUBSCRIPTIONS: usize = 8;
+pub const MAX_SUBSCRIPTIONS: usize = 32;
 
 #[inline]
 pub const fn is_compatible_session_version(version: u32) -> bool {
@@ -101,7 +101,7 @@ pub struct CameraInfo {
 /// The ordered source selection is immutable for the lifetime of a delivery.
 pub fn validate_delivery_sources(sources: &[CaptureSource]) -> Result<(), &'static str> {
     if sources.is_empty() || sources.len() > MAX_SUBSCRIPTIONS {
-        return Err("Choose between one and eight sources");
+        return Err("Choose between 1 and 32 sources");
     }
     if sources
         .iter()
@@ -567,9 +567,12 @@ mod tests {
     }
     #[test]
     fn delivery_selection_is_bounded_unique_and_required_on_the_wire() {
+        assert_eq!(MAX_SUBSCRIPTIONS, 32);
         assert!(validate_delivery_sources(&[]).is_err());
         assert!(validate_delivery_sources(&vec![CaptureSource::MainDisplay; 2]).is_err());
-        let sources: Vec<_> = (1..=8).map(CaptureSource::Window).collect();
+        let sources: Vec<_> = (1..=MAX_SUBSCRIPTIONS as u32)
+            .map(CaptureSource::Window)
+            .collect();
         assert!(validate_delivery_sources(&sources).is_ok());
         let mut too_many = sources;
         too_many.push(CaptureSource::Display(3));
@@ -577,6 +580,40 @@ mod tests {
         let mut old = 27u32.to_le_bytes().to_vec();
         old.extend(bincode::serialize(&(1u64, "a", "b", [1u8; 32], 1u64)).unwrap());
         assert!(bincode::deserialize::<SessionCommand>(&old).is_err());
+    }
+
+    #[test]
+    fn opened_command_advertises_raised_subscription_limit_with_wire_compatibility() {
+        assert_eq!(MAX_SUBSCRIPTIONS, 32);
+        assert!(std::mem::size_of::<SessionCommand>() <= 120);
+        let opened = SessionCommand::Opened {
+            connection_id: 42,
+            version: SESSION_VERSION,
+            max_subscriptions: MAX_SUBSCRIPTIONS as u32,
+            files: true,
+            clipboard: true,
+            window_capture: true,
+        };
+        let bytes = bincode::serialize(&opened).unwrap();
+        assert_eq!(&bytes[..4], &8u32.to_le_bytes());
+        let decoded: SessionCommand = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(bincode::serialize(&decoded).unwrap(), bytes);
+        match decoded {
+            SessionCommand::Opened {
+                connection_id,
+                version,
+                max_subscriptions,
+                files,
+                clipboard,
+                window_capture,
+            } => {
+                assert_eq!(connection_id, 42);
+                assert_eq!(version, SESSION_VERSION);
+                assert_eq!(max_subscriptions, 32);
+                assert!(files && clipboard && window_capture);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
     #[test]
     fn fits_both_axes_for_portrait_landscape_and_odd_sizes() {

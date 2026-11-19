@@ -108,6 +108,47 @@ fn bridge_device_group_dir() -> PathBuf {
         .unwrap_or_else(default_app_private_mesh_dir)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutePreference {
+    #[default]
+    Auto,
+    LanOnly,
+    P2pOnly,
+    RelayUdp,
+    RelayWss,
+}
+
+impl RoutePreference {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::LanOnly => "lan_only",
+            Self::P2pOnly => "p2p_only",
+            Self::RelayUdp => "relay_udp",
+            Self::RelayWss => "relay_wss",
+        }
+    }
+
+    pub fn from_wire(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "lan_only" | "lan" => Self::LanOnly,
+            "p2p_only" | "p2p" => Self::P2pOnly,
+            "relay_udp" | "nas_udp" => Self::RelayUdp,
+            "relay_wss" | "relay_ws" | "nas_wss" => Self::RelayWss,
+            _ => Self::Auto,
+        }
+    }
+
+    fn allows_p2p(self) -> bool {
+        matches!(self, Self::Auto | Self::P2pOnly)
+    }
+
+    fn allows_relay(self) -> bool {
+        matches!(self, Self::Auto | Self::RelayUdp | Self::RelayWss)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BridgeSessionState {
     Disconnected,
@@ -335,6 +376,7 @@ pub struct RemoteBridgeClient {
     desired_media_paused: AtomicBool,
     network_reload_tx: mpsc::UnboundedSender<()>,
     network_enabled: Arc<AtomicBool>,
+    route_preference: Arc<RwLock<RoutePreference>>,
     pairing_reconcile_needed: AtomicBool,
     network_diagnostics: Arc<NetworkDiagnostics>,
 }
@@ -390,6 +432,7 @@ impl RemoteBridgeClient {
             desired_media_paused: AtomicBool::new(false),
             network_reload_tx,
             network_enabled: Arc::new(AtomicBool::new(true)),
+            route_preference: Arc::new(RwLock::new(RoutePreference::Auto)),
             pairing_reconcile_needed: AtomicBool::new(false),
             network_diagnostics: Arc::default(),
         };
@@ -835,6 +878,7 @@ impl RemoteBridgeClient {
             devices_tx,
             network_reload_rx,
             self.network_enabled.clone(),
+            self.route_preference.clone(),
             self.network_diagnostics.clone(),
         ));
     }
@@ -852,6 +896,25 @@ impl RemoteBridgeClient {
     /// Suspend discovery and route keepalives only after the live session has ended.
     pub fn set_network_enabled(&self, enabled: bool) {
         if self.network_enabled.swap(enabled, Relaxed) != enabled {
+            self.request_discovery_reload();
+        }
+    }
+
+    pub fn route_preference(&self) -> RoutePreference {
+        *self.route_preference.read().unwrap()
+    }
+
+    pub fn set_route_preference(&self, preference: RoutePreference) {
+        let changed = {
+            let mut current = self.route_preference.write().unwrap();
+            if *current == preference {
+                false
+            } else {
+                *current = preference;
+                true
+            }
+        };
+        if changed {
             self.request_discovery_reload();
         }
     }
@@ -1106,7 +1169,10 @@ impl RemoteBridgeClient {
     }
 
     pub fn update_devices_from_snapshot(&self, snapshot: &DiscoveryPeerSnapshot) {
-        let _ = self.devices_tx.send(devices_from_snapshot(snapshot));
+        let preference = self.route_preference();
+        let _ = self
+            .devices_tx
+            .send(devices_from_snapshot_with_preference(snapshot, preference));
     }
 }
 
@@ -1334,6 +1400,7 @@ async fn run_bridge_network_supervisor(
     devices_tx: watch::Sender<Vec<BridgeDiscoveredDevice>>,
     mut reload_rx: mpsc::UnboundedReceiver<()>,
     enabled: Arc<AtomicBool>,
+    route_preference: Arc<RwLock<RoutePreference>>,
     diagnostics: Arc<NetworkDiagnostics>,
 ) {
     loop {
@@ -1351,12 +1418,14 @@ async fn run_bridge_network_supervisor(
         let network_devices_tx = devices_tx.clone();
         let network_cancel_tx = cancel_tx.clone();
         let network_cancel_rx = cancel_tx.subscribe();
+        let network_route_preference = route_preference.clone();
         let network_diagnostics = diagnostics.clone();
         let mut network_task = tokio::spawn(async move {
             run_bridge_network(
                 network_devices_tx,
                 network_cancel_tx,
                 network_cancel_rx,
+                network_route_preference,
                 network_diagnostics,
                 requested,
             )
@@ -1400,6 +1469,7 @@ async fn run_bridge_network(
     devices_tx: watch::Sender<Vec<BridgeDiscoveredDevice>>,
     cancel_tx: broadcast::Sender<()>,
     mut cancel_rx: broadcast::Receiver<()>,
+    route_preference: Arc<RwLock<RoutePreference>>,
     diagnostics: Arc<NetworkDiagnostics>,
     requested: u64,
 ) -> Result<(), BridgeNetworkError> {
@@ -1427,72 +1497,77 @@ async fn run_bridge_network(
     discovery_config.accept_any_network = false;
     discovery_config.live_capabilities = Some(live_capabilities.clone());
     let mut tasks = NetworkTasks::default();
+    let startup_preference = *route_preference.read().unwrap();
 
     if !cfg!(test) {
-        // P2P DNS is independent of LAN and relay startup, bounded and cancellable.
-        let p2p_identity = identity.clone();
-        let p2p_announcement = announcement.clone();
-        let p2p_capabilities = live_capabilities.clone();
-        let p2p_cancel = cancel_tx.subscribe();
-        let p2p_diagnostics = diagnostics.clone();
-        tasks.push(tokio::spawn(async move {
-            run_bridge_p2p(
-                p2p_identity,
-                p2p_announcement,
-                p2p_capabilities,
-                discovery_target,
-                p2p_cancel,
-                p2p_diagnostics,
+        if startup_preference.allows_p2p() {
+            // P2P DNS is independent of LAN and relay startup, bounded and cancellable.
+            let p2p_identity = identity.clone();
+            let p2p_announcement = announcement.clone();
+            let p2p_capabilities = live_capabilities.clone();
+            let p2p_cancel = cancel_tx.subscribe();
+            let p2p_diagnostics = diagnostics.clone();
+            tasks.push(tokio::spawn(async move {
+                run_bridge_p2p(
+                    p2p_identity,
+                    p2p_announcement,
+                    p2p_capabilities,
+                    discovery_target,
+                    p2p_cancel,
+                    p2p_diagnostics,
+                )
+                .await;
+            }));
+        }
+        if startup_preference.allows_relay() {
+            let host_target = (announcement.control_port != 0)
+                .then(|| SocketAddr::from(([127, 0, 0, 1], announcement.control_port)));
+            match cancellable_startup(
+                bind_bridge_relay(&identity, host_target, discovery_target, startup_preference),
+                &mut cancel_rx,
+                NETWORK_STARTUP_TIMEOUT,
             )
-            .await;
-        }));
-        let host_target = (announcement.control_port != 0)
-            .then(|| SocketAddr::from(([127, 0, 0, 1], announcement.control_port)));
-        match cancellable_startup(
-            bind_bridge_relay(&identity, host_target, discovery_target),
-            &mut cancel_rx,
-            NETWORK_STARTUP_TIMEOUT,
-        )
-        .await
-        {
-            Startup::Cancelled => {
-                tasks.stop().await;
-                return Ok(());
-            }
-            Startup::Complete(Ok(bindings)) => {
-                let control_endpoint = bindings.control.local_addr()?;
-                let discovery_endpoint = bindings.discovery.local_addr()?;
-                discovery_config
-                    .relay_routes
-                    .push((discovery_endpoint, bindings.router.routes()));
-                discovery_config.announce_targets.push(discovery_endpoint);
-                discovery_config
-                    .route_overrides
-                    .push(DiscoveryRouteOverride {
-                        source: discovery_endpoint,
-                        endpoint: control_endpoint,
-                        scope: DiscoveryScope::Relay,
-                    });
-                diagnostics.attach_relays(
-                    bindings.control.diagnostics(),
-                    bindings.discovery.diagnostics(),
-                );
-                let router_cancel = cancel_tx.subscribe();
-                let control_cancel = cancel_tx.subscribe();
-                let discovery_cancel = cancel_tx.subscribe();
-                tasks.push(tokio::spawn(async move {
-                    let _ = bindings.router.run(control_endpoint, router_cancel).await;
-                }));
-                tasks.push(tokio::spawn(async move {
-                    let _ = bindings.control.run(control_cancel).await;
-                }));
-                tasks.push(tokio::spawn(async move {
-                    let _ = bindings.discovery.run(discovery_cancel).await;
-                }));
-            }
-            Startup::TimedOut | Startup::Complete(Err(_)) => {
-                // Preserve independent LAN/P2P discovery when local relay binding fails.
-                diagnostics.failed(NetworkFailure::RelayBindUnavailable);
+            .await
+            {
+                Startup::Cancelled => {
+                    tasks.stop().await;
+                    return Ok(());
+                }
+                Startup::Complete(Ok(bindings)) => {
+                    let control_endpoint = bindings.control.local_addr()?;
+                    let discovery_endpoint = bindings.discovery.local_addr()?;
+                    discovery_config
+                        .relay_routes
+                        .push((discovery_endpoint, bindings.router.routes()));
+                    discovery_config.announce_targets.push(discovery_endpoint);
+                    discovery_config
+                        .route_overrides
+                        .push(DiscoveryRouteOverride {
+                            source: discovery_endpoint,
+                            endpoint: control_endpoint,
+                            scope: DiscoveryScope::Relay,
+                        });
+                    diagnostics.attach_relays(
+                        bindings.control.diagnostics(),
+                        bindings.discovery.diagnostics(),
+                    );
+                    let router_cancel = cancel_tx.subscribe();
+                    let control_cancel = cancel_tx.subscribe();
+                    let discovery_cancel = cancel_tx.subscribe();
+                    tasks.push(tokio::spawn(async move {
+                        let _ = bindings.router.run(control_endpoint, router_cancel).await;
+                    }));
+                    tasks.push(tokio::spawn(async move {
+                        let _ = bindings.control.run(control_cancel).await;
+                    }));
+                    tasks.push(tokio::spawn(async move {
+                        let _ = bindings.discovery.run(discovery_cancel).await;
+                    }));
+                }
+                Startup::TimedOut | Startup::Complete(Err(_)) => {
+                    // Preserve independent LAN/P2P discovery when local relay binding fails.
+                    diagnostics.failed(NetworkFailure::RelayBindUnavailable);
+                }
             }
         }
     }
@@ -1530,7 +1605,8 @@ async fn run_bridge_network(
                     break Err(std::io::Error::other("discovery worker stopped").into());
                 }
                 let snapshot = snapshot_rx.borrow().clone();
-                let devices = devices_from_snapshot(&snapshot);
+                let active_preference = *route_preference.read().unwrap();
+                let devices = devices_from_snapshot_with_preference(&snapshot, active_preference);
                 let hashes = devices.iter().take(64).map(|device| remote_core::mesh::public_metadata_fingerprint(&device.device_id)).collect();
                 diagnostics.peers(snapshot.len(), hashes, devices.len());
                 devices_tx.send_replace(devices);
@@ -1620,6 +1696,27 @@ async fn run_bridge_p2p(
     }
 }
 
+fn filter_relay_candidates(raw: &str, preference: RoutePreference) -> String {
+    let candidates = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty());
+    let kept: Vec<&str> = match preference {
+        RoutePreference::Auto => candidates.collect(),
+        RoutePreference::LanOnly | RoutePreference::P2pOnly => Vec::new(),
+        RoutePreference::RelayUdp => candidates
+            .filter(|entry| entry.to_ascii_lowercase().starts_with("udp://"))
+            .collect(),
+        RoutePreference::RelayWss => candidates
+            .filter(|entry| {
+                let lower = entry.to_ascii_lowercase();
+                lower.starts_with("ws://") || lower.starts_with("wss://")
+            })
+            .collect(),
+    };
+    kept.join(",")
+}
+
 struct BridgeRelayBindings {
     router: remote_core::routed_relay::RoutedRelay,
     control: BoundHybridRelayTunnel,
@@ -1629,9 +1726,14 @@ async fn bind_bridge_relay(
     identity: &MeshConfig,
     host_target: Option<SocketAddr>,
     discovery_target: SocketAddr,
+    preference: RoutePreference,
 ) -> Result<BridgeRelayBindings, BridgeNetworkError> {
-    let relay_url = std::env::var("WEAVELO_RELAY_SERVER_ADDR")
+    let raw_relay_url = std::env::var("WEAVELO_RELAY_SERVER_ADDR")
         .unwrap_or_else(|_| DEFAULT_RELAY_URL.to_string());
+    let relay_url = filter_relay_candidates(&raw_relay_url, preference);
+    if relay_url.is_empty() {
+        return Err(std::io::Error::other("no relay candidates match route preference").into());
+    }
     let control_group = derive_relay_group_id(
         &identity.network_name,
         identity.network_secret.expose_secret(),
@@ -1679,16 +1781,24 @@ async fn bind_bridge_relay(
 }
 
 fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscoveredDevice> {
+    devices_from_snapshot_with_preference(snapshot, RoutePreference::Auto)
+}
+
+fn devices_from_snapshot_with_preference(
+    snapshot: &DiscoveryPeerSnapshot,
+    preference: RoutePreference,
+) -> Vec<BridgeDiscoveredDevice> {
     let mut grouped = BTreeMap::<String, Vec<(u8, BridgeDiscoveredDevice)>>::new();
     for peer in snapshot.peers() {
-        if peer.scope == DiscoveryScope::Mesh {
-            continue;
-        }
-        let rank = match peer.scope {
-            DiscoveryScope::Lan => 0,
-            DiscoveryScope::P2p => 1,
-            DiscoveryScope::Relay => 2,
-            DiscoveryScope::Mesh => continue,
+        let rank = match (preference, peer.scope) {
+            (_, DiscoveryScope::Mesh) => continue,
+            (RoutePreference::Auto, DiscoveryScope::Lan) => 0,
+            (RoutePreference::Auto, DiscoveryScope::P2p) => 1,
+            (RoutePreference::Auto, DiscoveryScope::Relay) => 2,
+            (RoutePreference::LanOnly, DiscoveryScope::Lan) => 0,
+            (RoutePreference::P2pOnly, DiscoveryScope::P2p) => 0,
+            (RoutePreference::RelayUdp | RoutePreference::RelayWss, DiscoveryScope::Relay) => 0,
+            _ => continue,
         };
         let device = BridgeDiscoveredDevice {
             device_id: peer.announcement.device_id.clone(),
@@ -3259,5 +3369,145 @@ mod tests {
         };
         assert!(matches!(held.payload,InputPayload::Held(h) if h.is_empty()));
         client.disconnect();
+    }
+
+    #[test]
+    fn route_preference_wire_roundtrip_and_aliases() {
+        for pref in [
+            RoutePreference::Auto,
+            RoutePreference::LanOnly,
+            RoutePreference::P2pOnly,
+            RoutePreference::RelayUdp,
+            RoutePreference::RelayWss,
+        ] {
+            assert_eq!(RoutePreference::from_wire(pref.as_str()), pref);
+        }
+        assert_eq!(RoutePreference::from_wire("LAN"), RoutePreference::LanOnly);
+        assert_eq!(RoutePreference::from_wire("p2p"), RoutePreference::P2pOnly);
+        assert_eq!(
+            RoutePreference::from_wire("nas_udp"),
+            RoutePreference::RelayUdp
+        );
+        assert_eq!(
+            RoutePreference::from_wire("relay_ws"),
+            RoutePreference::RelayWss
+        );
+        assert_eq!(
+            RoutePreference::from_wire("unknown-mode"),
+            RoutePreference::Auto
+        );
+    }
+
+    #[test]
+    fn filter_relay_candidates_selects_requested_transport() {
+        assert_eq!(
+            filter_relay_candidates(DEFAULT_RELAY_URL, RoutePreference::Auto),
+            DEFAULT_RELAY_URL
+        );
+        assert_eq!(
+            filter_relay_candidates(DEFAULT_RELAY_URL, RoutePreference::RelayUdp),
+            "udp://192.168.2.200:39494,udp://weavelo.hackerlife.fun:39494"
+        );
+        assert_eq!(
+            filter_relay_candidates(DEFAULT_RELAY_URL, RoutePreference::RelayWss),
+            "ws://192.168.2.200:39493/v1/relay,wss://weavelo.hackerlife.fun:8443/v1/relay"
+        );
+        assert_eq!(
+            filter_relay_candidates(DEFAULT_RELAY_URL, RoutePreference::LanOnly),
+            ""
+        );
+        assert_eq!(
+            filter_relay_candidates(DEFAULT_RELAY_URL, RoutePreference::P2pOnly),
+            ""
+        );
+    }
+
+    #[test]
+    fn devices_from_snapshot_respects_route_preference() {
+        let mut cache = remote_core::discovery::DiscoveryPeerCache::new("group", "android");
+        let announcement = |id: &str, scope, control_port| DiscoveryAnnouncement {
+            network_name: "group".to_string(),
+            device_id: id.to_string(),
+            display_name: id.to_string(),
+            control_port,
+            virtual_ip: None,
+            capabilities: DiscoveryCapabilities {
+                can_stream: true,
+                can_view: true,
+                ..DiscoveryCapabilities::default()
+            },
+            scope,
+            ttl: DEFAULT_PEER_TTL,
+        };
+        cache.apply_announcement(
+            announcement("host-multi", DiscoveryScope::Lan, 39271),
+            "192.168.2.10:38117".parse().unwrap(),
+            1,
+        );
+        cache.apply_announcement(
+            announcement("host-multi", DiscoveryScope::P2p, 45001),
+            "127.0.0.1:45000".parse().unwrap(),
+            2,
+        );
+        cache.apply_announcement(
+            announcement("host-multi", DiscoveryScope::Relay, 46001),
+            "127.0.0.1:46000".parse().unwrap(),
+            3,
+        );
+        cache.apply_announcement(
+            announcement("host-lan-only", DiscoveryScope::Lan, 39272),
+            "192.168.2.11:38117".parse().unwrap(),
+            4,
+        );
+
+        let snap = cache.snapshot();
+        let auto = devices_from_snapshot_with_preference(&snap, RoutePreference::Auto);
+        assert_eq!(auto.len(), 2);
+        let multi = auto.iter().find(|d| d.device_id == "host-multi").unwrap();
+        assert_eq!(multi.scope, "LAN");
+        assert_eq!(multi.endpoint, "192.168.2.10:39271");
+        assert_eq!(
+            multi.fallback_endpoints,
+            vec!["127.0.0.1:45001", "127.0.0.1:46001"]
+        );
+
+        let lan = devices_from_snapshot_with_preference(&snap, RoutePreference::LanOnly);
+        assert_eq!(lan.len(), 2);
+        let lan_multi = lan.iter().find(|d| d.device_id == "host-multi").unwrap();
+        assert_eq!(lan_multi.scope, "LAN");
+        assert!(lan_multi.fallback_endpoints.is_empty());
+
+        let p2p = devices_from_snapshot_with_preference(&snap, RoutePreference::P2pOnly);
+        assert_eq!(p2p.len(), 1);
+        assert_eq!(p2p[0].device_id, "host-multi");
+        assert_eq!(p2p[0].scope, "P2P Direct");
+        assert_eq!(p2p[0].endpoint, "127.0.0.1:45001");
+        assert!(p2p[0].fallback_endpoints.is_empty());
+
+        for relay_pref in [RoutePreference::RelayUdp, RoutePreference::RelayWss] {
+            let relay = devices_from_snapshot_with_preference(&snap, relay_pref);
+            assert_eq!(relay.len(), 1);
+            assert_eq!(relay[0].device_id, "host-multi");
+            assert_eq!(relay[0].scope, "Relay");
+            assert_eq!(relay[0].endpoint, "127.0.0.1:46001");
+            assert!(relay[0].fallback_endpoints.is_empty());
+        }
+    }
+
+    #[test]
+    fn set_route_preference_updates_state_and_triggers_reload() {
+        let client = RemoteBridgeClient::new();
+        assert_eq!(client.route_preference(), RoutePreference::Auto);
+        let before = client.network_diagnostics.requested();
+        client.set_route_preference(RoutePreference::Auto);
+        assert_eq!(client.network_diagnostics.requested(), before);
+        client.set_route_preference(RoutePreference::RelayUdp);
+        assert_eq!(client.route_preference(), RoutePreference::RelayUdp);
+        assert_eq!(client.network_diagnostics.requested(), before + 1);
+        client.set_route_preference(RoutePreference::RelayUdp);
+        assert_eq!(client.network_diagnostics.requested(), before + 1);
+        client.set_route_preference(RoutePreference::RelayWss);
+        assert_eq!(client.route_preference(), RoutePreference::RelayWss);
+        assert_eq!(client.network_diagnostics.requested(), before + 2);
     }
 }

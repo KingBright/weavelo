@@ -21,11 +21,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
+import `fun`.hackerlife.weavelo.RoutePreference
 import `fun`.hackerlife.weavelo.SessionState
 import `fun`.hackerlife.weavelo.TelemetrySnapshot
+import `fun`.hackerlife.weavelo.WeaveloClient
 import java.util.Locale
 import kotlinx.coroutines.delay
 
@@ -120,6 +123,7 @@ internal fun NetworkStatusChip(
     }
     val shape = RoundedCornerShape(11.dp)
     var pinned by remember { mutableStateOf(false) }
+    val routePreference by WeaveloClient.routePreference.collectAsState()
 
     Box(modifier) {
         Box(
@@ -142,7 +146,7 @@ internal fun NetworkStatusChip(
             expanded = pinned,
             onDismissRequest = { pinned = false },
             properties = PopupProperties(focusable = pinned),
-            modifier = Modifier.widthIn(min = 196.dp, max = 248.dp),
+            modifier = Modifier.widthIn(min = 212.dp, max = 264.dp),
         ) {
             Column(
                 Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -182,8 +186,101 @@ internal fun NetworkStatusChip(
                         "—"
                     },
                 )
+                HorizontalDivider(color = p.borderMuted)
+                LinkModeSelector(
+                    selected = routePreference,
+                    onSelect = { WeaveloClient.setRoutePreference(it) },
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun LinkModeSelector(
+    selected: RoutePreference,
+    onSelect: (RoutePreference) -> Unit,
+) {
+    val p = WeaveloTokens.colors
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Text(
+            tr("Link mode"),
+            color = p.textSecondary,
+            fontSize = 11.sp,
+            maxLines = 1,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            LinkModePill(
+                label = tr("Auto"),
+                selected = selected == RoutePreference.AUTO,
+                modifier = Modifier.weight(1f),
+            ) { onSelect(RoutePreference.AUTO) }
+            LinkModePill(
+                label = tr("LAN"),
+                selected = selected == RoutePreference.LAN_ONLY,
+                modifier = Modifier.weight(1f),
+            ) { onSelect(RoutePreference.LAN_ONLY) }
+            LinkModePill(
+                label = tr("P2P"),
+                selected = selected == RoutePreference.P2P_ONLY,
+                modifier = Modifier.weight(1f),
+            ) { onSelect(RoutePreference.P2P_ONLY) }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            LinkModePill(
+                label = tr("NAS UDP"),
+                selected = selected == RoutePreference.RELAY_UDP,
+                modifier = Modifier.weight(1f),
+            ) { onSelect(RoutePreference.RELAY_UDP) }
+            LinkModePill(
+                label = tr("NAS WSS"),
+                selected = selected == RoutePreference.RELAY_WSS,
+                modifier = Modifier.weight(1f),
+            ) { onSelect(RoutePreference.RELAY_WSS) }
+        }
+    }
+}
+
+@Composable
+private fun LinkModePill(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val p = WeaveloTokens.colors
+    val pillShape = RoundedCornerShape(7.dp)
+    Box(
+        modifier = modifier
+            .clip(pillShape)
+            .background(if (selected) p.brandSoft else p.surfaceSunken)
+            .border(
+                width = if (selected) 1.dp else 0.75.dp,
+                color = if (selected) p.brandBorder else p.borderMuted,
+                shape = pillShape,
+            )
+            .clickable(role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = if (selected) p.brand else p.textSecondary,
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

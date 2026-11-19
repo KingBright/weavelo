@@ -7,8 +7,14 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
 pub const DEFAULT_CONTROL_PORT: u16 = 39271;
-const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
-const RELAY_TUNNEL_UDP_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+/// Target UDP send/recv socket buffer size for high-bitrate LAN & 4K/144Hz/500Mbps bursts.
+/// Applied with graceful halving fallback when OS limits (e.g. macOS `kern.ipc.maxsockbuf`)
+/// reject the full target size.
+pub const UDP_BUFFER_TARGET_BYTES: usize = 8 * 1024 * 1024;
+/// Minimum fallback buffer floor when stepping down from `UDP_BUFFER_TARGET_BYTES`.
+pub const UDP_BUFFER_MIN_FALLBACK_BYTES: usize = 256 * 1024;
+const RELAY_TUNNEL_UDP_RECV_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const RELAY_TUNNEL_UDP_SEND_BUFFER_BYTES: usize = UDP_BUFFER_TARGET_BYTES;
 const RELAY_TCP_SEND_BUFFER_BYTES: usize = 256 * 1024;
 const RELAY_TCP_RECV_BUFFER_BYTES: usize = 512 * 1024;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -18,22 +24,77 @@ const TCP_NOTSENT_LOWAT_OPT: libc::c_int = 25; // <linux/tcp.h> TCP_NOTSENT_LOWA
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux"))]
 const RELAY_TCP_NOTSENT_LOWAT_BYTES: libc::c_int = 64 * 1024;
 
+/// Effective requested UDP socket buffer sizes that succeeded after OS fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UdpBufferSizingResult {
+    pub requested_recv_bytes: Option<usize>,
+    pub requested_send_bytes: Option<usize>,
+}
+
+/// Attempts to configure a socket buffer to `target_bytes`, stepping down by
+/// halves to `min_bytes` when the OS rejects larger sizes (for example, macOS
+/// returning `ENOBUFS` when exceeding `kern.ipc.maxsockbuf`).
+fn set_socket_buffer_with_fallback<F>(
+    target_bytes: usize,
+    min_bytes: usize,
+    mut apply: F,
+) -> Option<usize>
+where
+    F: FnMut(usize) -> std::io::Result<()>,
+{
+    let floor = min_bytes.max(1);
+    let mut candidate = target_bytes.max(floor);
+    loop {
+        if apply(candidate).is_ok() {
+            return Some(candidate);
+        }
+        if candidate <= floor {
+            return None;
+        }
+        candidate = (candidate / 2).max(floor);
+    }
+}
+
+fn apply_udp_buffer_sizes(
+    socket: &socket2::SockRef<'_>,
+    target_recv_bytes: usize,
+    target_send_bytes: usize,
+) -> UdpBufferSizingResult {
+    let requested_recv_bytes = set_socket_buffer_with_fallback(
+        target_recv_bytes,
+        UDP_BUFFER_MIN_FALLBACK_BYTES,
+        |bytes| socket.set_recv_buffer_size(bytes),
+    );
+    let requested_send_bytes = set_socket_buffer_with_fallback(
+        target_send_bytes,
+        UDP_BUFFER_MIN_FALLBACK_BYTES,
+        |bytes| socket.set_send_buffer_size(bytes),
+    );
+    UdpBufferSizingResult {
+        requested_recv_bytes,
+        requested_send_bytes,
+    }
+}
+
 /// Relay adapters carry the same fragmented frames as the application socket.
 /// Small OS defaults can discard encoded references on these local UDP hops
 /// before the reliable relay transport sees them. Keep the existing bounded
-/// application buffer policy on every adapter socket as well.
-pub(crate) fn configure_udp_buffers(socket: &UdpSocket) {
+/// application buffer policy on every adapter socket as well, with graceful OS
+/// fallback so high-bitrate requests never leave sockets at tiny OS defaults.
+pub(crate) fn configure_udp_buffers(socket: &UdpSocket) -> UdpBufferSizingResult {
     let socket = socket2::SockRef::from(socket);
-    let _ = socket.set_recv_buffer_size(UDP_BUFFER_BYTES);
-    let _ = socket.set_send_buffer_size(UDP_BUFFER_BYTES);
+    apply_udp_buffer_sizes(&socket, UDP_BUFFER_TARGET_BYTES, UDP_BUFFER_TARGET_BYTES)
 }
 
-/// Relay TCP/WebSocket local UDP adapters must accommodate one burst of
-/// fragments without silently hoarding multi-second megabytes of stale video.
-pub(crate) fn configure_relay_tunnel_udp_buffers(socket: &UdpSocket) {
+/// Relay TCP/WebSocket local UDP adapters must accommodate high-bitrate bursts
+/// of fragments without silently hoarding multi-second megabytes of stale video.
+pub(crate) fn configure_relay_tunnel_udp_buffers(socket: &UdpSocket) -> UdpBufferSizingResult {
     let socket = socket2::SockRef::from(socket);
-    let _ = socket.set_recv_buffer_size(RELAY_TUNNEL_UDP_BUFFER_BYTES);
-    let _ = socket.set_send_buffer_size(UDP_BUFFER_BYTES);
+    apply_udp_buffer_sizes(
+        &socket,
+        RELAY_TUNNEL_UDP_RECV_BUFFER_BYTES,
+        RELAY_TUNNEL_UDP_SEND_BUFFER_BYTES,
+    )
 }
 
 /// Tune real-time relay TCP sockets to prevent multi-second kernel bufferbloat
@@ -78,8 +139,8 @@ impl UdpMultiplexer {
             None,
         )?;
 
-        let _ = socket2_sock.set_recv_buffer_size(UDP_BUFFER_BYTES);
-        let _ = socket2_sock.set_send_buffer_size(UDP_BUFFER_BYTES);
+        let sock_ref = socket2::SockRef::from(&socket2_sock);
+        let _ = apply_udp_buffer_sizes(&sock_ref, UDP_BUFFER_TARGET_BYTES, UDP_BUFFER_TARGET_BYTES);
         // Keep default Best-Effort DSCP (0x00) instead of EF (0xB8 / Wi-Fi AC_VO):
         // high-bitrate video bursts overflow tiny Wi-Fi voice queues and lose fragments.
         socket2_sock.set_nonblocking(true)?;
@@ -288,7 +349,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use tokio::sync::Mutex;
 
 const MAX_FRAGMENT_AGE: Duration = Duration::from_millis(500);
-const MAX_FRAGMENT_CACHE_ENTRIES: usize = 32;
+const MAX_FRAGMENT_CACHE_ENTRIES: usize = 64;
 const MAX_FRAGMENT_PAYLOAD: usize = 1400;
 const SENDER_FRAGMENT_PAYLOAD: usize = 1120;
 const MAX_FRAGMENT_CHUNKS: usize = 4096;
@@ -1389,5 +1450,119 @@ mod tests {
             }
             other => panic!("unexpected packet: {other:?}"),
         }
+    }
+
+    #[test]
+    fn udp_buffer_fallback_steps_down_gracefully_until_os_accepts() {
+        // Immediate accept at full 8 MiB target.
+        let mut attempts = Vec::new();
+        let applied = set_socket_buffer_with_fallback(
+            UDP_BUFFER_TARGET_BYTES,
+            UDP_BUFFER_MIN_FALLBACK_BYTES,
+            |bytes| {
+                attempts.push(bytes);
+                Ok(())
+            },
+        );
+        assert_eq!(applied, Some(UDP_BUFFER_TARGET_BYTES));
+        assert_eq!(attempts, vec![8 * 1024 * 1024]);
+
+        // OS rejects > 4 MiB (e.g. macOS kern.ipc.maxsockbuf ceiling).
+        let mut attempts = Vec::new();
+        let applied = set_socket_buffer_with_fallback(
+            UDP_BUFFER_TARGET_BYTES,
+            UDP_BUFFER_MIN_FALLBACK_BYTES,
+            |bytes| {
+                attempts.push(bytes);
+                if bytes <= 4 * 1024 * 1024 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(libc::ENOBUFS))
+                }
+            },
+        );
+        assert_eq!(applied, Some(4 * 1024 * 1024));
+        assert_eq!(attempts, vec![8 * 1024 * 1024, 4 * 1024 * 1024]);
+
+        // OS rejects > 1 MiB.
+        let mut attempts = Vec::new();
+        let applied = set_socket_buffer_with_fallback(
+            UDP_BUFFER_TARGET_BYTES,
+            UDP_BUFFER_MIN_FALLBACK_BYTES,
+            |bytes| {
+                attempts.push(bytes);
+                if bytes <= 1024 * 1024 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(libc::ENOBUFS))
+                }
+            },
+        );
+        assert_eq!(applied, Some(1024 * 1024));
+        assert_eq!(
+            attempts,
+            vec![
+                8 * 1024 * 1024,
+                4 * 1024 * 1024,
+                2 * 1024 * 1024,
+                1024 * 1024
+            ]
+        );
+
+        // OS rejects every candidate down to floor.
+        let mut attempts = Vec::new();
+        let applied = set_socket_buffer_with_fallback(
+            UDP_BUFFER_TARGET_BYTES,
+            UDP_BUFFER_MIN_FALLBACK_BYTES,
+            |bytes| {
+                attempts.push(bytes);
+                Err(std::io::Error::from_raw_os_error(libc::ENOBUFS))
+            },
+        );
+        assert_eq!(applied, None);
+        assert_eq!(
+            attempts,
+            vec![
+                8 * 1024 * 1024,
+                4 * 1024 * 1024,
+                2 * 1024 * 1024,
+                1024 * 1024,
+                512 * 1024,
+                256 * 1024,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn udp_multiplexer_and_relay_adapters_configure_high_bitrate_buffers_with_fallback() {
+        let mux = UdpMultiplexer::bind("127.0.0.1:0").await.unwrap();
+        let mux_ref = socket2::SockRef::from(mux.socket.as_ref());
+        let recv_size = mux_ref.recv_buffer_size().unwrap();
+        let send_size = mux_ref.send_buffer_size().unwrap();
+        assert!(
+            recv_size >= UDP_BUFFER_MIN_FALLBACK_BYTES,
+            "expected recv buffer >= {} bytes, got {}",
+            UDP_BUFFER_MIN_FALLBACK_BYTES,
+            recv_size
+        );
+        assert!(
+            send_size >= UDP_BUFFER_MIN_FALLBACK_BYTES,
+            "expected send buffer >= {} bytes, got {}",
+            UDP_BUFFER_MIN_FALLBACK_BYTES,
+            send_size
+        );
+
+        let direct_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let direct_res = configure_udp_buffers(&direct_sock);
+        assert!(direct_res.requested_recv_bytes.is_some());
+        assert!(direct_res.requested_send_bytes.is_some());
+
+        let relay_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let relay_res = configure_relay_tunnel_udp_buffers(&relay_sock);
+        assert!(relay_res.requested_recv_bytes.is_some());
+        assert!(relay_res.requested_send_bytes.is_some());
+        assert!(
+            relay_res.requested_recv_bytes.unwrap() <= RELAY_TUNNEL_UDP_RECV_BUFFER_BYTES
+        );
     }
 }

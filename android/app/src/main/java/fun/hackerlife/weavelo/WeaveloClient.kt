@@ -30,6 +30,24 @@ enum class TouchMode(val code: Int) {
     VIEW(4)
 }
 
+enum class RoutePreference(val wire: String) {
+    AUTO("auto"),
+    LAN_ONLY("lan_only"),
+    P2P_ONLY("p2p_only"),
+    RELAY_UDP("relay_udp"),
+    RELAY_WSS("relay_wss");
+
+    companion object {
+        fun fromWire(value: String?): RoutePreference = when (value?.trim()?.lowercase(java.util.Locale.ROOT)) {
+            "lan_only", "lan" -> LAN_ONLY
+            "p2p_only", "p2p" -> P2P_ONLY
+            "relay_udp", "nas_udp" -> RELAY_UDP
+            "relay_wss", "relay_ws", "nas_wss" -> RELAY_WSS
+            else -> AUTO
+        }
+    }
+}
+
 class DeviceInvitation(val code: String, val qrPayload: String, val networkName: String) {
     override fun toString(): String = "DeviceInvitation(<redacted>)"
 }
@@ -129,6 +147,8 @@ object WeaveloClient {
     val mediaPaused: StateFlow<Boolean> = _mediaPaused.asStateFlow()
     private val _mediaPausePending = MutableStateFlow(false)
     val mediaPausePending: StateFlow<Boolean> = _mediaPausePending.asStateFlow()
+    private val _routePreference = MutableStateFlow(RoutePreference.AUTO)
+    val routePreference: StateFlow<RoutePreference> = _routePreference.asStateFlow()
 
     init {
         try {
@@ -176,6 +196,9 @@ object WeaveloClient {
             naturalScroll = prefs.getBoolean("natural_scroll", true)
             _naturalScroll.value = naturalScroll
             nativeSetNaturalScroll(naturalScroll)
+            val savedRoute = RoutePreference.fromWire(prefs.getString("route_preference", RoutePreference.AUTO.wire))
+            _routePreference.value = savedRoute
+            nativeSetRoutePreference(savedRoute.wire)
             nativeUpdateStreamRates(streamFps, streamBitrateKbps)
             refreshNetworkIdentity()
             nativeInitialized = true
@@ -375,6 +398,26 @@ object WeaveloClient {
         }
     }
 
+    fun setRoutePreference(pref: RoutePreference) {
+        _routePreference.value = pref
+        appContext?.getSharedPreferences("stream", Context.MODE_PRIVATE)?.edit()
+            ?.putString("route_preference", pref.wire)?.apply()
+        if (isNativeLoaded) {
+            nativeSetRoutePreference(pref.wire)
+        }
+    }
+
+    fun currentRoutePreference(): RoutePreference {
+        if (isNativeLoaded) {
+            runCatching { nativeGetRoutePreference() }.getOrNull()?.let { wire ->
+                val resolved = RoutePreference.fromWire(wire)
+                _routePreference.value = resolved
+                return resolved
+            }
+        }
+        return _routePreference.value
+    }
+
     fun cursorPosition(): Pair<Float, Float> {
         if (!isNativeLoaded) return 0.5f to 0.5f
         val packed = nativeGetCursorPacked()
@@ -520,6 +563,8 @@ object WeaveloClient {
     private external fun nativeConnect(deviceId: String, endpoint: String)
     private external fun nativeDisconnect()
     private external fun nativeSetNetworkEnabled(enabled: Boolean)
+    private external fun nativeSetRoutePreference(mode: String)
+    private external fun nativeGetRoutePreference(): String?
     private external fun nativeSetMediaPaused(paused: Boolean)
     private external fun nativeMediaPausePending(): Boolean
     private external fun nativeUpdateStreamRates(fps: Int, bitrateKbps: Int): String?

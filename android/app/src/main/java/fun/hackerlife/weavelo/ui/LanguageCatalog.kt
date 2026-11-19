@@ -16,7 +16,7 @@ internal object LanguageCatalog {
         "Encoder settings appear when a screen is sending." to "屏幕开始推送后显示编码器配置。",
         "Changes apply to this screen delivery. Receiver, network and device limits may reduce quality." to "更改应用于此次屏幕推送。接收端、网络和设备限制可能降低实际画质。",
         "Resolution short edge (0 = original)" to "分辨率短边（0 = 原始分辨率）",
-        "Use 0 or 240–4320 pixels, 1–120 fps, and 100–100000 kbps." to "请输入 0 或 240–4320 像素、1–120 帧/秒以及 100–100000 kbps。",
+        "Use 0 or 240–4320 pixels, 1–240 fps, and 100–500000 kbps." to "请输入 0 或 240–4320 像素、1–240 帧/秒以及 100–500000 kbps。",
         "Screen delivery changed; reopen settings" to "屏幕推送已变更，请重新打开设置",
         "Could not update screen quality" to "无法更新屏幕画质",
         "Playback audio sharing requires Android 10 or later." to "共享播放音频需要 Android 10 或更高版本。",
@@ -605,6 +605,10 @@ internal object LanguageCatalog {
         "Paste" to "粘贴",
         "Portrait view" to "竖屏查看",
         "This device has not shared a screen or camera yet. Turn on Sharing → Screen or Camera on the target device, and it will connect automatically." to "对方设备尚未开启画面共享。请在对方设备的「共享」页开启「屏幕或应用」或「摄像头」，开启后将自动拉流。",
+        "Link mode" to "链路模式",
+        "Auto" to "自动",
+        "NAS UDP" to "NAS UDP",
+        "NAS WSS" to "NAS WSS",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

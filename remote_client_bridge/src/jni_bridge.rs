@@ -778,6 +778,31 @@ pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSetNetwor
 }
 
 #[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeSetRoutePreference(
+    mut env: JNIEnv,
+    _class: JClass,
+    mode: JString,
+) {
+    let raw: String = match env.get_string(&mode) {
+        Ok(value) => value.into(),
+        Err(_) => return,
+    };
+    client().set_route_preference(crate::RoutePreference::from_wire(&raw));
+}
+
+#[cfg(feature = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_fun_hackerlife_weavelo_WeaveloClient_nativeGetRoutePreference(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    env.new_string(client().route_preference().as_str())
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[cfg(feature = "android")]
 fn client() -> Arc<RemoteBridgeClient> {
     GLOBAL_CLIENT
         .get_or_init(|| Arc::new(RemoteBridgeClient::new()))

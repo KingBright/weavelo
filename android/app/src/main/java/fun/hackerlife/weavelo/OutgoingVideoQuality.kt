@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /** Limits for the phone's outgoing screen, separate from its receiving preferences. */
 internal data class OutgoingVideoQuality(val shortEdge: Int = 1080, val fps: Int = 60, val bitrateKbps: Int = 20_000) {
-    fun valid() = (shortEdge == 0 || shortEdge in 240..4320) && fps in 1..120 && bitrateKbps in 100..100_000
+    fun valid() = (shortEdge == 0 || shortEdge in 240..4320) && fps in 1..240 && bitrateKbps in 100..500_000
     fun json(id: Long) = JSONObject().put("id", id).put("short_edge", shortEdge)
         .put("fps", fps).put("bitrate_kbps", bitrateKbps).toString()
     fun initialJson() = JSONObject().put("short_edge", shortEdge).put("fps", fps).put("bitrate_kbps", bitrateKbps)

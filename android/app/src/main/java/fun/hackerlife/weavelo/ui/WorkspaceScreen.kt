@@ -745,7 +745,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         enabled = settingsCurrent,
                         onClick = {
                             val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
-                            if (f != null && k != null && f > 0 && k > 0) {
+                            if (f != null && k != null && f in 1..240 && k in 100..500_000) {
                                 val (w, h) = WorkspaceClient.scaledEncodeSize(srcW, srcH, pane.windowScalePercent)
                                 WorkspaceClient.settings(
                                     pane.id, sessionKey, settingsGeneration,
@@ -891,18 +891,19 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         options = listOf(
                             30 to "30 FPS",
                             60 to "60 FPS",
-                            120 to "120 FPS"
+                            120 to "120 FPS",
+                            144 to "144 FPS"
                         ),
                         selected = fps.toIntOrNull() ?: pane.fps,
                         enabled = settingsCurrent,
                         modifier = Modifier.fillMaxWidth(),
                         onSelect = { selectedFps ->
                             fps = selectedFps.toString()
-                            val currentKbps = kbps.toIntOrNull() ?: pane.kbps
+                            val currentKbps = (kbps.toIntOrNull() ?: pane.kbps).coerceIn(100, 500_000)
                             WorkspaceClient.settings(
                                 pane.id, sessionKey, settingsGeneration,
                                 fps = selectedFps,
-                                kbps = currentKbps.coerceAtLeast(500)
+                                kbps = currentKbps
                             )
                         }
                     )
@@ -911,6 +912,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             value = fps,
                             onValueChange = { fps = it },
                             label = tr("Frames per second"),
+                            isError = fps.toIntOrNull()?.let { it !in 1..240 } ?: true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
                         )
@@ -918,6 +920,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             value = kbps,
                             onValueChange = { kbps = it },
                             label = tr("Bitrate (kbps)"),
+                            isError = kbps.toIntOrNull()?.let { it !in 100..500_000 } ?: true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
                         )
