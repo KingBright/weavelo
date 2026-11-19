@@ -17,6 +17,7 @@ mod macos_shared_capture;
 mod capture_readiness;
 pub mod capture_sources;
 pub mod cameras;
+pub mod color_encode;
 pub mod ps5_bridge;
 mod source_catalog;
 mod source_artwork;

@@ -35,6 +35,7 @@ pub mod p2p;
 #[cfg(feature = "pairing-image")]
 pub mod pairing_image;
 pub mod pairing_qr;
+pub mod port_forward;
 pub mod relay;
 pub mod relay_status;
 pub mod role;

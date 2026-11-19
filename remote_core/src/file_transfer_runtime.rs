@@ -6,14 +6,593 @@ use crate::file_transfer::{
 };
 use crate::scheduled_sender::{ScheduledDataSendError, ScheduledDataSender};
 use protocol::{ContentKind, DataEnvelope, FileTransferControl, FileTransferGroup};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{broadcast, mpsc};
+
+/// Default token-bucket burst allowance for independent bulk file transfers (512 KiB).
+pub const DEFAULT_FILE_TRANSFER_BURST_BYTES: usize = 512 * 1024;
+/// Default fraction of `max_bytes_per_sec` retained when `yield_for_video` is active (20%).
+pub const DEFAULT_VIDEO_YIELD_RATIO: f64 = 0.20;
+/// Default fallback pacing cap when `max_bytes_per_sec == 0` (unlimited idle) and
+/// `yield_for_video` is active during realtime video streaming (2 MiB/s).
+pub const DEFAULT_VIDEO_YIELD_FALLBACK_BYTES_PER_SEC: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct FileTransferBandwidthStats {
+    pub total_paced_bytes: u64,
+    pub total_wait_us: u64,
+    pub video_yield_events: u64,
+}
+
+#[derive(Debug)]
+struct TokenBucketState {
+    tokens_bytes: f64,
+    last_refill: Instant,
+    stats: FileTransferBandwidthStats,
+}
+
+#[derive(Debug)]
+struct FileTransferBandwidthBudgetInner {
+    max_bytes_per_sec: u64,
+    burst_bytes: usize,
+    yield_for_video: bool,
+    video_yield_bytes_per_sec: Option<u64>,
+    video_active: Arc<AtomicBool>,
+    state: Mutex<TokenBucketState>,
+}
+
+/// Independent token-bucket rate and burst pacer for bulk file transfers.
+///
+/// Cloning shares the same underlying token bucket and `video_active` signal
+/// so concurrent file transfers share one bandwidth lane and yield cleanly to
+/// realtime video frames whenever `yield_for_video` is enabled and video is active.
+#[derive(Debug, Clone)]
+pub struct FileTransferBandwidthBudget {
+    inner: Arc<FileTransferBandwidthBudgetInner>,
+}
+
+impl FileTransferBandwidthBudget {
+    /// Create a token-bucket budget.
+    ///
+    /// - `max_bytes_per_sec`: steady-state cap when video is idle (`0` = unlimited).
+    /// - `burst_bytes`: token-bucket burst capacity (clamped to at least 1 byte).
+    /// - `yield_for_video`: when `true`, throttles down while `is_video_active()` is `true`.
+    pub fn new(max_bytes_per_sec: u64, burst_bytes: usize, yield_for_video: bool) -> Self {
+        Self::new_internal(
+            max_bytes_per_sec,
+            burst_bytes,
+            yield_for_video,
+            None,
+            Instant::now(),
+        )
+    }
+
+    /// Create a token-bucket budget with an explicit yield rate while realtime video is active.
+    pub fn with_video_yield_rate(
+        max_bytes_per_sec: u64,
+        burst_bytes: usize,
+        yield_for_video: bool,
+        video_yield_bytes_per_sec: u64,
+    ) -> Self {
+        Self::new_internal(
+            max_bytes_per_sec,
+            burst_bytes,
+            yield_for_video,
+            Some(video_yield_bytes_per_sec.max(1)),
+            Instant::now(),
+        )
+    }
+
+    /// Preset for full-speed transfers when idle while yielding to a fixed rate during active video.
+    pub fn unlimited_with_video_yield(video_yield_bytes_per_sec: u64) -> Self {
+        Self::with_video_yield_rate(
+            0,
+            DEFAULT_FILE_TRANSFER_BURST_BYTES,
+            true,
+            video_yield_bytes_per_sec,
+        )
+    }
+
+    fn new_internal(
+        max_bytes_per_sec: u64,
+        burst_bytes: usize,
+        yield_for_video: bool,
+        video_yield_bytes_per_sec: Option<u64>,
+        now: Instant,
+    ) -> Self {
+        let burst_bytes = burst_bytes.max(1);
+        Self {
+            inner: Arc::new(FileTransferBandwidthBudgetInner {
+                max_bytes_per_sec,
+                burst_bytes,
+                yield_for_video,
+                video_yield_bytes_per_sec,
+                video_active: Arc::new(AtomicBool::new(false)),
+                state: Mutex::new(TokenBucketState {
+                    tokens_bytes: burst_bytes as f64,
+                    last_refill: now,
+                    stats: FileTransferBandwidthStats::default(),
+                }),
+            }),
+        }
+    }
+
+    pub fn max_bytes_per_sec(&self) -> u64 {
+        self.inner.max_bytes_per_sec
+    }
+
+    pub fn burst_bytes(&self) -> usize {
+        self.inner.burst_bytes
+    }
+
+    pub fn yield_for_video(&self) -> bool {
+        self.inner.yield_for_video
+    }
+
+    pub fn is_video_active(&self) -> bool {
+        self.inner.video_active.load(Relaxed)
+    }
+
+    pub fn set_video_active(&self, active: bool) {
+        self.inner.video_active.store(active, Relaxed);
+    }
+
+    /// Returns the shared `AtomicBool` indicating whether realtime video is currently streaming.
+    pub fn video_active_flag(&self) -> Arc<AtomicBool> {
+        self.inner.video_active.clone()
+    }
+
+    /// Returns the current effective rate cap in bytes/sec (`0` means unlimited).
+    pub fn effective_bytes_per_sec(&self) -> u64 {
+        if self.inner.yield_for_video && self.is_video_active() {
+            if let Some(explicit) = self.inner.video_yield_bytes_per_sec {
+                return explicit.max(1);
+            }
+            if self.inner.max_bytes_per_sec > 0 {
+                return ((self.inner.max_bytes_per_sec as f64) * DEFAULT_VIDEO_YIELD_RATIO)
+                    .round()
+                    .max(1.0) as u64;
+            }
+            return DEFAULT_VIDEO_YIELD_FALLBACK_BYTES_PER_SEC;
+        }
+        self.inner.max_bytes_per_sec
+    }
+
+    /// Reserve `bytes` from the token bucket at the current wall-clock instant and return
+    /// the delay the caller should sleep before transmitting.
+    pub fn reserve_delay(&self, bytes: usize) -> Duration {
+        self.reserve_delay_at(bytes, Instant::now())
+    }
+
+    /// Deterministic token-bucket reservation at caller-supplied `now`.
+    pub fn reserve_delay_at(&self, bytes: usize, now: Instant) -> Duration {
+        if bytes == 0 {
+            return Duration::ZERO;
+        }
+
+        let yielding = self.inner.yield_for_video && self.is_video_active();
+        let effective_rate = self.effective_bytes_per_sec();
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("file transfer bandwidth budget lock should not be poisoned");
+        state.stats.total_paced_bytes = state.stats.total_paced_bytes.saturating_add(bytes as u64);
+
+        if effective_rate == 0 {
+            state.last_refill = now;
+            state.tokens_bytes = self.inner.burst_bytes as f64;
+            return Duration::ZERO;
+        }
+
+        let rate_f64 = effective_rate as f64;
+        // When yielding to realtime video, trim burst headroom to at most 100ms of the
+        // yield rate (bounded by configured burst_bytes) so bulk file chunks yield immediately.
+        let effective_burst = if yielding {
+            (self.inner.burst_bytes as f64)
+                .min((rate_f64 * 0.1).max(1.0))
+                .max(1.0)
+        } else {
+            self.inner.burst_bytes.max(1) as f64
+        };
+
+        let elapsed = now.saturating_duration_since(state.last_refill);
+        state.tokens_bytes = (state.tokens_bytes + elapsed.as_secs_f64() * rate_f64)
+            .min(effective_burst);
+        state.last_refill = now;
+
+        state.tokens_bytes -= bytes as f64;
+        if state.tokens_bytes >= 0.0 {
+            return Duration::ZERO;
+        }
+
+        let deficit = -state.tokens_bytes;
+        let delay_secs = deficit / rate_f64;
+        let delay = if delay_secs.is_finite() && delay_secs > 0.0 {
+            Duration::from_secs_f64(delay_secs)
+        } else {
+            Duration::ZERO
+        };
+
+        if !delay.is_zero() {
+            state.stats.total_wait_us = state
+                .stats
+                .total_wait_us
+                .saturating_add(u64::try_from(delay.as_micros()).unwrap_or(u64::MAX));
+            if yielding {
+                state.stats.video_yield_events = state.stats.video_yield_events.saturating_add(1);
+            }
+        }
+        delay
+    }
+
+    /// Asynchronously wait for token-bucket budget to cover `bytes`.
+    pub async fn acquire(&self, bytes: usize) {
+        let delay = self.reserve_delay(bytes);
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    pub fn stats(&self) -> FileTransferBandwidthStats {
+        self.inner
+            .state
+            .lock()
+            .expect("file transfer bandwidth budget lock should not be poisoned")
+            .stats
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferCheckpointError {
+    ZeroChunkSize,
+    OffsetExceedsTotal {
+        confirmed_offset: u64,
+        total_bytes: u64,
+    },
+    UnalignedOffset {
+        confirmed_offset: u64,
+        chunk_size: u32,
+    },
+    TooManyChunks {
+        chunk_count: u64,
+    },
+    TransferIdMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    FingerprintMismatch,
+    TotalBytesMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    ChunkSizeMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    OffsetRegression {
+        current: u64,
+        proposed: u64,
+    },
+    NonContiguousChunk {
+        expected_chunk: u32,
+        actual_chunk: u32,
+    },
+    InvalidChunkLength {
+        chunk_index: u32,
+        expected: usize,
+        actual: usize,
+    },
+}
+
+impl fmt::Display for TransferCheckpointError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroChunkSize => write!(f, "checkpoint chunk_size must be greater than zero"),
+            Self::OffsetExceedsTotal {
+                confirmed_offset,
+                total_bytes,
+            } => write!(
+                f,
+                "checkpoint confirmed_offset ({confirmed_offset}) exceeds total_bytes ({total_bytes})"
+            ),
+            Self::UnalignedOffset {
+                confirmed_offset,
+                chunk_size,
+            } => write!(
+                f,
+                "checkpoint confirmed_offset ({confirmed_offset}) is not aligned to chunk_size ({chunk_size})"
+            ),
+            Self::TooManyChunks { chunk_count } => {
+                write!(f, "checkpoint chunk count exceeds u32::MAX ({chunk_count})")
+            }
+            Self::TransferIdMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "checkpoint transfer_id mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::FingerprintMismatch => write!(f, "checkpoint SHA-256 fingerprint mismatch"),
+            Self::TotalBytesMismatch { expected, actual } => write!(
+                f,
+                "checkpoint total_bytes mismatch: expected {expected}, got {actual}"
+            ),
+            Self::ChunkSizeMismatch { expected, actual } => write!(
+                f,
+                "checkpoint chunk_size mismatch: expected {expected}, got {actual}"
+            ),
+            Self::OffsetRegression { current, proposed } => write!(
+                f,
+                "checkpoint confirmed_offset cannot regress from {current} to {proposed}"
+            ),
+            Self::NonContiguousChunk {
+                expected_chunk,
+                actual_chunk,
+            } => write!(
+                f,
+                "checkpoint cannot advance out-of-order chunk {actual_chunk}; expected {expected_chunk}"
+            ),
+            Self::InvalidChunkLength {
+                chunk_index,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "checkpoint chunk {chunk_index} length mismatch: expected {expected} bytes, got {actual}"
+            ),
+        }
+    }
+}
+
+impl Error for TransferCheckpointError {}
+
+/// Persistent checkpoint describing the contiguous confirmed prefix of a file transfer
+/// so interrupted large transfers can validate integrity and resume without re-sending
+/// already-confirmed chunks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransferCheckpoint {
+    pub transfer_id: u64,
+    /// SHA-256 fingerprint of the source file content.
+    pub sha256: [u8; 32],
+    pub total_bytes: u64,
+    pub confirmed_offset: u64,
+    pub chunk_size: u32,
+}
+
+impl TransferCheckpoint {
+    pub fn new(
+        transfer_id: u64,
+        sha256: [u8; 32],
+        total_bytes: u64,
+        chunk_size: u32,
+    ) -> Result<Self, TransferCheckpointError> {
+        let checkpoint = Self {
+            transfer_id,
+            sha256,
+            total_bytes,
+            confirmed_offset: 0,
+            chunk_size,
+        };
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+
+    /// Compute the SHA-256 fingerprint of an in-memory buffer.
+    pub fn fingerprint_from_bytes(bytes: &[u8]) -> [u8; 32] {
+        let digest = Sha256::digest(bytes);
+        let mut out = [0_u8; 32];
+        out.copy_from_slice(&digest);
+        out
+    }
+
+    /// Stream a file from disk and compute its SHA-256 fingerprint.
+    pub async fn fingerprint_file(path: &Path) -> Result<[u8; 32], std::io::Error> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let digest = hasher.finalize();
+        let mut out = [0_u8; 32];
+        out.copy_from_slice(&digest);
+        Ok(out)
+    }
+
+    /// Lowercase 64-character hex representation of `sha256`.
+    pub fn fingerprint_hex(&self) -> String {
+        let mut out = String::with_capacity(64);
+        for byte in self.sha256 {
+            use std::fmt::Write as _;
+            let _ = write!(&mut out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// Validate structural invariants of this checkpoint.
+    pub fn validate(&self) -> Result<(), TransferCheckpointError> {
+        if self.chunk_size == 0 {
+            return Err(TransferCheckpointError::ZeroChunkSize);
+        }
+        if self.confirmed_offset > self.total_bytes {
+            return Err(TransferCheckpointError::OffsetExceedsTotal {
+                confirmed_offset: self.confirmed_offset,
+                total_bytes: self.total_bytes,
+            });
+        }
+        let chunk_size = u64::from(self.chunk_size);
+        if self.confirmed_offset < self.total_bytes && self.confirmed_offset % chunk_size != 0 {
+            return Err(TransferCheckpointError::UnalignedOffset {
+                confirmed_offset: self.confirmed_offset,
+                chunk_size: self.chunk_size,
+            });
+        }
+        let total_chunks = self.total_bytes.div_ceil(chunk_size);
+        if u32::try_from(total_chunks).is_err() {
+            return Err(TransferCheckpointError::TooManyChunks {
+                chunk_count: total_chunks,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate this checkpoint against the expected source transfer metadata before resuming.
+    pub fn validate_against(
+        &self,
+        expected_transfer_id: Option<u64>,
+        expected_sha256: &[u8; 32],
+        expected_total_bytes: u64,
+        expected_chunk_size: u32,
+    ) -> Result<(), TransferCheckpointError> {
+        self.validate()?;
+        if let Some(expected) = expected_transfer_id
+            && self.transfer_id != expected
+        {
+            return Err(TransferCheckpointError::TransferIdMismatch {
+                expected,
+                actual: self.transfer_id,
+            });
+        }
+        if self.sha256 != *expected_sha256 {
+            return Err(TransferCheckpointError::FingerprintMismatch);
+        }
+        if self.total_bytes != expected_total_bytes {
+            return Err(TransferCheckpointError::TotalBytesMismatch {
+                expected: expected_total_bytes,
+                actual: self.total_bytes,
+            });
+        }
+        if self.chunk_size != expected_chunk_size {
+            return Err(TransferCheckpointError::ChunkSizeMismatch {
+                expected: expected_chunk_size,
+                actual: self.chunk_size,
+            });
+        }
+        Ok(())
+    }
+
+    /// Byte offset from which an interrupted transfer should resume sending.
+    pub fn resume_offset(&self) -> Result<u64, TransferCheckpointError> {
+        self.validate()?;
+        Ok(self.confirmed_offset)
+    }
+
+    /// Total number of chunks required for `total_bytes` at `chunk_size`.
+    pub fn total_chunks(&self) -> Result<u32, TransferCheckpointError> {
+        self.validate()?;
+        let chunks = self.total_bytes.div_ceil(u64::from(self.chunk_size));
+        u32::try_from(chunks).map_err(|_| TransferCheckpointError::TooManyChunks {
+            chunk_count: chunks,
+        })
+    }
+
+    /// Zero-based index of the next unconfirmed chunk to send.
+    /// Equals `total_chunks()` when the transfer is complete.
+    pub fn resume_chunk_index(&self) -> Result<u32, TransferCheckpointError> {
+        self.validate()?;
+        if self.confirmed_offset == self.total_bytes {
+            return self.total_chunks();
+        }
+        let chunk_index = self.confirmed_offset / u64::from(self.chunk_size);
+        u32::try_from(chunk_index).map_err(|_| TransferCheckpointError::TooManyChunks {
+            chunk_count: chunk_index,
+        })
+    }
+
+    pub fn remaining_bytes(&self) -> Result<u64, TransferCheckpointError> {
+        self.validate()?;
+        Ok(self.total_bytes - self.confirmed_offset)
+    }
+
+    pub fn remaining_chunks(&self) -> Result<u32, TransferCheckpointError> {
+        let total = self.total_chunks()?;
+        let next = self.resume_chunk_index()?;
+        Ok(total.saturating_sub(next))
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.confirmed_offset >= self.total_bytes
+    }
+
+    pub fn is_chunk_confirmed(&self, chunk_index: u32) -> Result<bool, TransferCheckpointError> {
+        Ok(chunk_index < self.resume_chunk_index()?)
+    }
+
+    /// Advance `confirmed_offset` to an explicit validated offset (monotonically non-decreasing).
+    pub fn advance_to(&mut self, new_confirmed_offset: u64) -> Result<u64, TransferCheckpointError> {
+        self.validate()?;
+        if new_confirmed_offset < self.confirmed_offset {
+            return Err(TransferCheckpointError::OffsetRegression {
+                current: self.confirmed_offset,
+                proposed: new_confirmed_offset,
+            });
+        }
+        let candidate = Self {
+            confirmed_offset: new_confirmed_offset,
+            ..self.clone()
+        };
+        candidate.validate()?;
+        self.confirmed_offset = new_confirmed_offset;
+        Ok(self.confirmed_offset)
+    }
+
+    /// Record confirmation of a chunk by index and payload length.
+    ///
+    /// Already-confirmed chunks are treated idempotently; the next contiguous chunk
+    /// advances `confirmed_offset`; out-of-order or wrong-length chunks are rejected.
+    pub fn advance_chunk(
+        &mut self,
+        chunk_index: u32,
+        chunk_len: usize,
+    ) -> Result<u64, TransferCheckpointError> {
+        self.validate()?;
+        let expected_chunk = self.resume_chunk_index()?;
+        let total_chunks = self.total_chunks()?;
+        if chunk_index >= total_chunks {
+            return Err(TransferCheckpointError::NonContiguousChunk {
+                expected_chunk,
+                actual_chunk: chunk_index,
+            });
+        }
+
+        let chunk_size = u64::from(self.chunk_size);
+        let offset = u64::from(chunk_index) * chunk_size;
+        let expected_len = (self.total_bytes - offset).min(chunk_size) as usize;
+        if chunk_len != expected_len {
+            return Err(TransferCheckpointError::InvalidChunkLength {
+                chunk_index,
+                expected: expected_len,
+                actual: chunk_len,
+            });
+        }
+
+        if chunk_index < expected_chunk {
+            // Idempotent duplicate confirmation of an already-checkpointed chunk.
+            return Ok(self.confirmed_offset);
+        }
+        if chunk_index > expected_chunk {
+            return Err(TransferCheckpointError::NonContiguousChunk {
+                expected_chunk,
+                actual_chunk: chunk_index,
+            });
+        }
+
+        self.confirmed_offset = offset + chunk_len as u64;
+        Ok(self.confirmed_offset)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FileTransferRuntimeConfig {
@@ -30,6 +609,8 @@ pub struct FileTransferRuntimeConfig {
     /// True while queued sends or incomplete incoming objects need the connection.
     pub active: Arc<AtomicBool>,
     pub clipboard_owner: Option<crate::clipboard_file_runtime::ClipboardOwnerSlot>,
+    /// Optional independent token-bucket bandwidth pacer for bulk file transfers.
+    pub bandwidth_budget: Option<FileTransferBandwidthBudget>,
 }
 
 impl Default for FileTransferRuntimeConfig {
@@ -47,6 +628,7 @@ impl Default for FileTransferRuntimeConfig {
             receive_dir: std::env::temp_dir().join("weavelo-received-files"),
             active: Arc::new(AtomicBool::new(false)),
             clipboard_owner: None,
+            bandwidth_budget: None,
         }
     }
 }
@@ -407,6 +989,7 @@ pub async fn run_file_transfer_runtime(
                             allocator: allocator.clone(),
                             cancel_state: cancel_state.clone(),
                             stream_id: config.stream_id,
+                            bandwidth_budget: config.bandwidth_budget.clone(),
                         }
                         .spawn(&mut send_tasks);
                     }
@@ -487,6 +1070,7 @@ struct SendFileTask {
     allocator: FileTransferIdAllocator,
     cancel_state: FileTransferCancelState,
     stream_id: u32,
+    bandwidth_budget: Option<FileTransferBandwidthBudget>,
 }
 
 struct SendFileGroupTask {
@@ -623,7 +1207,7 @@ impl SendFileGroupTask {
                 group_total_size_bytes,
                 group_checksum_crc32,
             });
-            match send_reader(
+            match send_reader_with_budget(
                 &mut file_reader,
                 &self.data_sender,
                 &self.event_tx,
@@ -631,6 +1215,7 @@ impl SendFileGroupTask {
                 &self.allocator,
                 &self.cancel_state,
                 self.config.stream_id,
+                self.config.bandwidth_budget.as_ref(),
             )
             .await?
             {
@@ -777,7 +1362,7 @@ impl SendFileTask {
         let mut reader =
             FileTransferReader::from_path(&self.path, self.spec, self.mime_type, self.send_policy)
                 .await?;
-        send_reader(
+        send_reader_with_budget(
             &mut reader,
             &self.data_sender,
             &self.event_tx,
@@ -785,6 +1370,7 @@ impl SendFileTask {
             &self.allocator,
             &self.cancel_state,
             self.stream_id,
+            self.bandwidth_budget.as_ref(),
         )
         .await?;
         Ok(())
@@ -799,6 +1385,29 @@ async fn send_reader(
     allocator: &FileTransferIdAllocator,
     cancel_state: &FileTransferCancelState,
     stream_id: u32,
+) -> Result<SendReaderOutcome, FileTransferRuntimeError> {
+    send_reader_with_budget(
+        reader,
+        data_sender,
+        event_tx,
+        cancel_rx,
+        allocator,
+        cancel_state,
+        stream_id,
+        None,
+    )
+    .await
+}
+
+async fn send_reader_with_budget(
+    reader: &mut FileTransferReader,
+    data_sender: &ScheduledDataSender,
+    event_tx: &mpsc::UnboundedSender<FileTransferEvent>,
+    cancel_rx: &mut broadcast::Receiver<()>,
+    allocator: &FileTransferIdAllocator,
+    cancel_state: &FileTransferCancelState,
+    stream_id: u32,
+    bandwidth_budget: Option<&FileTransferBandwidthBudget>,
 ) -> Result<SendReaderOutcome, FileTransferRuntimeError> {
     let manifest = reader.manifest().clone();
     let total_chunks = reader.total_chunks();
@@ -884,6 +1493,15 @@ async fn send_reader(
 
         assign_sequence_number(&mut envelope, allocator.next_sequence_number());
         if envelope.header.kind == ContentKind::FileChunk {
+            if let Some(budget) = bandwidth_budget {
+                let delay = budget.reserve_delay(envelope.payload.len());
+                if !delay.is_zero() {
+                    tokio::select! {
+                        _ = cancel_rx.recv() => return Ok(SendReaderOutcome::TransferCancelled),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                }
+            }
             sent_file_chunks = sent_file_chunks.saturating_add(1);
             sent_file_bytes = sent_file_bytes.saturating_add(envelope.payload.len() as u64);
         }
@@ -2970,6 +3588,472 @@ mod tests {
             .await
             .expect("runtime should join")
             .expect("runtime should stop cleanly");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+    }
+
+    #[test]
+    fn runtime_config_bandwidth_budget_defaults_to_none() {
+        let config = FileTransferRuntimeConfig::default();
+        assert!(config.bandwidth_budget.is_none());
+    }
+
+    #[test]
+    fn bandwidth_budget_independent_token_bucket_pacing_and_refill() {
+        let t0 = Instant::now();
+        // 100 KB/s steady rate, 20 KB burst allowance.
+        let budget = FileTransferBandwidthBudget::new_internal(100_000, 20_000, false, None, t0);
+        assert_eq!(budget.max_bytes_per_sec(), 100_000);
+        assert_eq!(budget.burst_bytes(), 20_000);
+        assert!(!budget.yield_for_video());
+        assert_eq!(budget.effective_bytes_per_sec(), 100_000);
+
+        // Zero-byte reservation is always a no-op.
+        assert_eq!(budget.reserve_delay_at(0, t0), Duration::ZERO);
+
+        // First 20 KB fits entirely in the burst bucket with zero delay.
+        assert_eq!(budget.reserve_delay_at(20_000, t0), Duration::ZERO);
+
+        // Next 10 KB at the same instant incurs 10_000 / 100_000 = 100ms delay.
+        let delay = budget.reserve_delay_at(10_000, t0);
+        assert!(
+            delay >= Duration::from_millis(99) && delay <= Duration::from_millis(101),
+            "expected ~100ms pacing delay, got {delay:?}"
+        );
+
+        // Another 10 KB at the same instant queues behind the first (200ms total deficit).
+        let second_delay = budget.reserve_delay_at(10_000, t0);
+        assert!(
+            second_delay >= Duration::from_millis(199)
+                && second_delay <= Duration::from_millis(201),
+            "expected ~200ms cumulative pacing delay, got {second_delay:?}"
+        );
+
+        // After 500ms, the bucket refills (+50 KB, capped at 20 KB burst), so 20 KB is free again.
+        let t1 = t0 + Duration::from_millis(500);
+        assert_eq!(budget.reserve_delay_at(20_000, t1), Duration::ZERO);
+
+        let stats = budget.stats();
+        assert_eq!(stats.total_paced_bytes, 60_000);
+        assert!(stats.total_wait_us >= 298_000);
+        assert_eq!(stats.video_yield_events, 0);
+    }
+
+    #[test]
+    fn bandwidth_budget_unlimited_when_idle_and_yields_when_video_active() {
+        let t0 = Instant::now();
+        let budget = FileTransferBandwidthBudget::new_internal(
+            0,
+            DEFAULT_FILE_TRANSFER_BURST_BYTES,
+            true,
+            None,
+            t0,
+        );
+
+        // Idle: unlimited full speed, even for large bursts.
+        assert_eq!(budget.effective_bytes_per_sec(), 0);
+        assert_eq!(budget.reserve_delay_at(4 * 1024 * 1024, t0), Duration::ZERO);
+
+        // Turn video active: drops to fallback yield rate and trims burst headroom.
+        budget.set_video_active(true);
+        assert!(budget.is_video_active());
+        assert_eq!(
+            budget.effective_bytes_per_sec(),
+            DEFAULT_VIDEO_YIELD_FALLBACK_BYTES_PER_SEC
+        );
+        // Request 1 MiB at 2 MiB/s with <= 200 KiB yield burst -> must sleep significantly.
+        let yield_delay = budget.reserve_delay_at(1024 * 1024, t0);
+        assert!(
+            yield_delay >= Duration::from_millis(350),
+            "expected video-yield throttling delay, got {yield_delay:?}"
+        );
+        assert_eq!(budget.stats().video_yield_events, 1);
+
+        // Turn video idle again: immediately returns to full-speed unlimited mode.
+        budget.set_video_active(false);
+        assert_eq!(budget.effective_bytes_per_sec(), 0);
+        assert_eq!(budget.reserve_delay_at(4 * 1024 * 1024, t0), Duration::ZERO);
+    }
+
+    #[test]
+    fn bandwidth_budget_yield_for_video_ratio_custom_rate_and_shared_clone() {
+        let t0 = Instant::now();
+        // Ratio-based yield: 1_000_000 B/s idle -> 200_000 B/s when video is active.
+        let ratio_budget =
+            FileTransferBandwidthBudget::new_internal(1_000_000, 100_000, true, None, t0);
+        let shared_flag = ratio_budget.video_active_flag();
+        let cloned_budget = ratio_budget.clone();
+
+        assert_eq!(ratio_budget.effective_bytes_per_sec(), 1_000_000);
+        shared_flag.store(true, Relaxed);
+        assert!(cloned_budget.is_video_active());
+        assert_eq!(cloned_budget.effective_bytes_per_sec(), 200_000);
+
+        // Explicit video yield rate: 1_000_000 B/s idle -> 50_000 B/s when video is active.
+        let explicit = FileTransferBandwidthBudget::new_internal(
+            1_000_000,
+            64_000,
+            true,
+            Some(50_000),
+            t0,
+        );
+        explicit.set_video_active(true);
+        assert_eq!(explicit.effective_bytes_per_sec(), 50_000);
+        // Yield burst is min(64_000, 50_000 * 0.1 = 5_000) = 5_000 bytes.
+        // Requesting 25_000 bytes leaves 20_000 deficit -> 400ms delay.
+        let delay = explicit.reserve_delay_at(25_000, t0);
+        assert!(
+            delay >= Duration::from_millis(395) && delay <= Duration::from_millis(405),
+            "expected ~400ms explicit yield delay, got {delay:?}"
+        );
+
+        // When yield_for_video is false, video_active does not throttle the file lane.
+        let no_yield =
+            FileTransferBandwidthBudget::new_internal(1_000_000, 100_000, false, Some(50_000), t0);
+        no_yield.set_video_active(true);
+        assert_eq!(no_yield.effective_bytes_per_sec(), 1_000_000);
+        assert_eq!(no_yield.reserve_delay_at(50_000, t0), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn runtime_transfers_file_with_bandwidth_budget_pacing() {
+        let base = unique_temp_dir("weavelo-file-runtime-paced");
+        let receive_dir = base.join("received");
+        tokio::fs::create_dir_all(&base)
+            .await
+            .expect("temp dir should be created");
+        let source_path = base.join("paced.bin");
+        let payload: Vec<u8> = (0..12_288).map(|i| (i % 251) as u8).collect();
+        tokio::fs::write(&source_path, &payload)
+            .await
+            .expect("source file should write");
+
+        let source_mux = UdpMultiplexer::bind("127.0.0.1:0")
+            .await
+            .expect("source bind should succeed");
+        let target_mux = UdpMultiplexer::bind("127.0.0.1:0")
+            .await
+            .expect("target bind should succeed");
+        let source_addr = source_mux.local_addr().expect("source addr should exist");
+        let target_addr = target_mux.local_addr().expect("target addr should exist");
+        let (source_udp_sender, source_udp_receiver) = source_mux.split();
+        let (target_udp_sender, target_udp_receiver) = target_mux.split();
+
+        let (source_scheduled_sender, _source_worker) = ScheduledDataSender::spawn(
+            source_udp_sender,
+            target_addr,
+            ScheduledDataSenderConfig::default(),
+        );
+        let (target_scheduled_sender, _target_worker) = ScheduledDataSender::spawn(
+            target_udp_sender,
+            source_addr,
+            ScheduledDataSenderConfig::default(),
+        );
+
+        let (source_command_tx, source_command_rx) = mpsc::channel(4);
+        let (source_inbound_tx, source_inbound_rx) = mpsc::channel(64);
+        let (source_event_tx, mut source_event_rx) = mpsc::unbounded_channel();
+        let (_target_command_tx, target_command_rx) = mpsc::channel(4);
+        let (target_inbound_tx, target_inbound_rx) = mpsc::channel(64);
+        let (target_event_tx, mut target_event_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _) = broadcast::channel(4);
+
+        // Configure a tight budget with video yield active so pacing actually engages
+        // while still finishing quickly (~100ms).
+        let budget = FileTransferBandwidthBudget::with_video_yield_rate(
+            512 * 1024,
+            4096,
+            true,
+            128 * 1024,
+        );
+        budget.set_video_active(true);
+
+        let source_runtime = tokio::spawn(run_file_transfer_runtime(
+            source_scheduled_sender,
+            source_command_rx,
+            source_inbound_rx,
+            source_event_tx,
+            cancel_tx.subscribe(),
+            FileTransferRuntimeConfig {
+                chunk_payload_len: 4096,
+                bandwidth_budget: Some(budget.clone()),
+                ..FileTransferRuntimeConfig::default()
+            },
+        ));
+        let target_runtime = tokio::spawn(run_file_transfer_runtime(
+            target_scheduled_sender,
+            target_command_rx,
+            target_inbound_rx,
+            target_event_tx,
+            cancel_tx.subscribe(),
+            FileTransferRuntimeConfig {
+                chunk_payload_len: 4096,
+                receive_dir: receive_dir.clone(),
+                receive_policy: FileReceivePolicy {
+                    allow_overwrite: true,
+                    ..FileReceivePolicy::default()
+                },
+                ..FileTransferRuntimeConfig::default()
+            },
+        ));
+
+        let reply_router = tokio::spawn(async move {
+            while let Ok(packet) = source_udp_receiver.recv().await {
+                if let MultiplexedPacket::Data(envelope, _) = packet
+                    && source_inbound_tx.send(envelope).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let udp_router = tokio::spawn(async move {
+            while let Ok(packet) = target_udp_receiver.recv().await {
+                if let MultiplexedPacket::Data(envelope, _) = packet
+                    && target_inbound_tx.send(envelope).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        source_command_tx
+            .send(FileTransferCommand::SendFile {
+                path: source_path.clone(),
+                mime_type: Some("application/octet-stream".to_string()),
+            })
+            .await
+            .expect("send command should queue");
+
+        let received_path = loop {
+            let event = timeout(Duration::from_secs(5), target_event_rx.recv())
+                .await
+                .expect("target event should arrive")
+                .expect("target event channel should remain open");
+            if let FileTransferEvent::IncomingCompleted { path, .. } = event {
+                break path;
+            }
+        };
+        loop {
+            let event = timeout(Duration::from_secs(5), source_event_rx.recv())
+                .await
+                .expect("source event should arrive")
+                .expect("source event channel should remain open");
+            if matches!(event, FileTransferEvent::OutgoingCompleted { .. }) {
+                break;
+            }
+        }
+
+        assert_eq!(
+            tokio::fs::read(&received_path)
+                .await
+                .expect("received file should read"),
+            payload
+        );
+        let stats = budget.stats();
+        assert_eq!(stats.total_paced_bytes, payload.len() as u64);
+        assert!(
+            stats.video_yield_events >= 1,
+            "expected at least one video-yield pacing event, got {stats:?}"
+        );
+        assert!(
+            stats.total_wait_us > 0,
+            "expected non-zero pacing wait time, got {stats:?}"
+        );
+
+        let _ = cancel_tx.send(());
+        udp_router.abort();
+        reply_router.abort();
+        source_runtime
+            .await
+            .expect("source runtime should join")
+            .expect("source runtime should stop cleanly");
+        target_runtime
+            .await
+            .expect("target runtime should join")
+            .expect("target runtime should stop cleanly");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+    }
+
+    #[test]
+    fn transfer_checkpoint_validation_and_resume_offset_math() {
+        let fingerprint = TransferCheckpoint::fingerprint_from_bytes(b"large-file-content");
+        let mut checkpoint =
+            TransferCheckpoint::new(42, fingerprint, 1000, 256).expect("valid checkpoint");
+
+        assert_eq!(checkpoint.fingerprint_hex().len(), 64);
+        assert_eq!(checkpoint.total_chunks().unwrap(), 4);
+        assert_eq!(checkpoint.resume_offset().unwrap(), 0);
+        assert_eq!(checkpoint.resume_chunk_index().unwrap(), 0);
+        assert_eq!(checkpoint.remaining_bytes().unwrap(), 1000);
+        assert_eq!(checkpoint.remaining_chunks().unwrap(), 4);
+        assert!(!checkpoint.is_complete());
+        assert!(!checkpoint.is_chunk_confirmed(0).unwrap());
+
+        // Advance to chunk 2 boundary (512 bytes confirmed).
+        assert_eq!(checkpoint.advance_to(512).unwrap(), 512);
+        assert_eq!(checkpoint.resume_offset().unwrap(), 512);
+        assert_eq!(checkpoint.resume_chunk_index().unwrap(), 2);
+        assert_eq!(checkpoint.remaining_bytes().unwrap(), 488);
+        assert_eq!(checkpoint.remaining_chunks().unwrap(), 2);
+        assert!(checkpoint.is_chunk_confirmed(0).unwrap());
+        assert!(checkpoint.is_chunk_confirmed(1).unwrap());
+        assert!(!checkpoint.is_chunk_confirmed(2).unwrap());
+
+        // Unaligned offset before total_bytes is rejected.
+        let unaligned = TransferCheckpoint {
+            confirmed_offset: 300,
+            ..checkpoint.clone()
+        };
+        assert_eq!(
+            unaligned.validate(),
+            Err(TransferCheckpointError::UnalignedOffset {
+                confirmed_offset: 300,
+                chunk_size: 256,
+            })
+        );
+
+        // Offset beyond total_bytes is rejected.
+        let overflow = TransferCheckpoint {
+            confirmed_offset: 1024,
+            ..checkpoint.clone()
+        };
+        assert_eq!(
+            overflow.validate(),
+            Err(TransferCheckpointError::OffsetExceedsTotal {
+                confirmed_offset: 1024,
+                total_bytes: 1000,
+            })
+        );
+
+        // Zero chunk_size is rejected.
+        assert_eq!(
+            TransferCheckpoint::new(42, fingerprint, 1000, 0),
+            Err(TransferCheckpointError::ZeroChunkSize)
+        );
+    }
+
+    #[test]
+    fn transfer_checkpoint_validate_against_rejects_mismatches() {
+        let sha_a = TransferCheckpoint::fingerprint_from_bytes(b"version-a");
+        let sha_b = TransferCheckpoint::fingerprint_from_bytes(b"version-b");
+        let checkpoint = TransferCheckpoint {
+            transfer_id: 7,
+            sha256: sha_a,
+            total_bytes: 2048,
+            confirmed_offset: 1024,
+            chunk_size: 512,
+        };
+
+        assert!(checkpoint.validate_against(Some(7), &sha_a, 2048, 512).is_ok());
+        assert!(checkpoint.validate_against(None, &sha_a, 2048, 512).is_ok());
+        assert_eq!(
+            checkpoint.validate_against(Some(8), &sha_a, 2048, 512),
+            Err(TransferCheckpointError::TransferIdMismatch {
+                expected: 8,
+                actual: 7,
+            })
+        );
+        assert_eq!(
+            checkpoint.validate_against(Some(7), &sha_b, 2048, 512),
+            Err(TransferCheckpointError::FingerprintMismatch)
+        );
+        assert_eq!(
+            checkpoint.validate_against(Some(7), &sha_a, 4096, 512),
+            Err(TransferCheckpointError::TotalBytesMismatch {
+                expected: 4096,
+                actual: 2048,
+            })
+        );
+        assert_eq!(
+            checkpoint.validate_against(Some(7), &sha_a, 2048, 1024),
+            Err(TransferCheckpointError::ChunkSizeMismatch {
+                expected: 1024,
+                actual: 512,
+            })
+        );
+    }
+
+    #[test]
+    fn transfer_checkpoint_advancement_idempotency_and_errors() {
+        let sha = TransferCheckpoint::fingerprint_from_bytes(b"resumable-payload");
+        let mut checkpoint = TransferCheckpoint::new(11, sha, 700, 256).unwrap();
+
+        // Out-of-order chunk 1 before chunk 0 is rejected.
+        assert_eq!(
+            checkpoint.advance_chunk(1, 256),
+            Err(TransferCheckpointError::NonContiguousChunk {
+                expected_chunk: 0,
+                actual_chunk: 1,
+            })
+        );
+
+        // Wrong length for chunk 0 is rejected.
+        assert_eq!(
+            checkpoint.advance_chunk(0, 128),
+            Err(TransferCheckpointError::InvalidChunkLength {
+                chunk_index: 0,
+                expected: 256,
+                actual: 128,
+            })
+        );
+
+        // Contiguous advancement through chunks 0, 1, and final partial chunk 2 (188 bytes).
+        assert_eq!(checkpoint.advance_chunk(0, 256).unwrap(), 256);
+        // Duplicate confirmation of chunk 0 is idempotent.
+        assert_eq!(checkpoint.advance_chunk(0, 256).unwrap(), 256);
+        assert_eq!(checkpoint.advance_chunk(1, 256).unwrap(), 512);
+        // Regression via advance_to is rejected.
+        assert_eq!(
+            checkpoint.advance_to(256),
+            Err(TransferCheckpointError::OffsetRegression {
+                current: 512,
+                proposed: 256,
+            })
+        );
+        assert_eq!(checkpoint.advance_chunk(2, 188).unwrap(), 700);
+        assert!(checkpoint.is_complete());
+        assert_eq!(checkpoint.resume_offset().unwrap(), 700);
+        assert_eq!(checkpoint.resume_chunk_index().unwrap(), 3);
+        assert_eq!(checkpoint.remaining_bytes().unwrap(), 0);
+        assert_eq!(checkpoint.remaining_chunks().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn transfer_checkpoint_zero_byte_file_fingerprint_and_serde_roundtrip() {
+        let base = unique_temp_dir("weavelo-checkpoint-fingerprint");
+        tokio::fs::create_dir_all(&base)
+            .await
+            .expect("temp dir should be created");
+        let file_path = base.join("sample.bin");
+        let data = b"hello resumable checkpoint world";
+        tokio::fs::write(&file_path, data)
+            .await
+            .expect("sample file should write");
+
+        let from_file = TransferCheckpoint::fingerprint_file(&file_path)
+            .await
+            .expect("file fingerprint should succeed");
+        let from_bytes = TransferCheckpoint::fingerprint_from_bytes(data);
+        assert_eq!(from_file, from_bytes);
+
+        let zero_cp = TransferCheckpoint::new(99, TransferCheckpoint::fingerprint_from_bytes(&[]), 0, 4096)
+            .expect("zero-byte checkpoint should be valid");
+        assert!(zero_cp.is_complete());
+        assert_eq!(zero_cp.total_chunks().unwrap(), 0);
+        assert_eq!(zero_cp.resume_chunk_index().unwrap(), 0);
+        assert_eq!(zero_cp.remaining_bytes().unwrap(), 0);
+
+        let checkpoint = TransferCheckpoint {
+            transfer_id: 100,
+            sha256: from_file,
+            total_bytes: data.len() as u64,
+            confirmed_offset: 16,
+            chunk_size: 16,
+        };
+        let encoded = serde_json::to_string(&checkpoint).expect("checkpoint should serialize");
+        let decoded: TransferCheckpoint =
+            serde_json::from_str(&encoded).expect("checkpoint should deserialize");
+        assert_eq!(decoded, checkpoint);
+
         let _ = tokio::fs::remove_dir_all(&base).await;
     }
 }

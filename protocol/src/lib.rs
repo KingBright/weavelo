@@ -1,5 +1,6 @@
 pub mod appearance;
 pub mod audio_output;
+pub mod color;
 pub mod gamepad;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
