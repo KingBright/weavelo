@@ -1468,6 +1468,40 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 let frame = frame_res?;
                 stats_video.video_frames_captured.fetch_add(1, Relaxed);
                 resources.captured_frames.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if is_routed_peer {
+                    let scale = remote_core::relay::relay_outbound_congestion_scale_permille();
+                    if scale != applied_relay_scale_permille {
+                        applied_relay_scale_permille = scale;
+                        let mut effective = current_settings.clone();
+                        effective.bitrate_kbps = ((u64::from(current_settings.bitrate_kbps)
+                            * u64::from(scale))
+                            / 1_000)
+                            .max(800)
+                            .min(u64::from(current_settings.bitrate_kbps))
+                            as u32;
+                        #[cfg(target_os = "macos")]
+                        {
+                            if !matches!(source, protocol::session::CaptureSource::Camera(_)) {
+                                let _ = video_encoder.viewport_settings(&effective, source);
+                            } else {
+                                let _ = video_encoder.update_rate_settings(effective.fps, effective.bitrate_kbps);
+                            }
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            let _ = video_encoder.update_settings(
+                                effective.width,
+                                effective.height,
+                                effective.fps,
+                                effective.bitrate_kbps,
+                            );
+                        }
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = video_encoder.update_settings(effective);
+                        }
+                    }
+                }
                 let evicted = scheduled_media_sender
                     .as_ref()
                     .is_some_and(|s| s.take_video_evictions() > 0);

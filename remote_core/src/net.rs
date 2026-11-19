@@ -9,6 +9,14 @@ use tokio::net::UdpSocket;
 pub const DEFAULT_CONTROL_PORT: u16 = 39271;
 const UDP_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const RELAY_TUNNEL_UDP_BUFFER_BYTES: usize = 2 * 1024 * 1024;
+const RELAY_TCP_SEND_BUFFER_BYTES: usize = 256 * 1024;
+const RELAY_TCP_RECV_BUFFER_BYTES: usize = 512 * 1024;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const TCP_NOTSENT_LOWAT_OPT: libc::c_int = 0x201; // <netinet/tcp.h> TCP_NOTSENT_LOWAT
+#[cfg(target_os = "linux")]
+const TCP_NOTSENT_LOWAT_OPT: libc::c_int = 25; // <linux/tcp.h> TCP_NOTSENT_LOWAT
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux"))]
+const RELAY_TCP_NOTSENT_LOWAT_BYTES: libc::c_int = 64 * 1024;
 
 /// Relay adapters carry the same fragmented frames as the application socket.
 /// Small OS defaults can discard encoded references on these local UDP hops
@@ -26,6 +34,31 @@ pub(crate) fn configure_relay_tunnel_udp_buffers(socket: &UdpSocket) {
     let socket = socket2::SockRef::from(socket);
     let _ = socket.set_recv_buffer_size(RELAY_TUNNEL_UDP_BUFFER_BYTES);
     let _ = socket.set_send_buffer_size(UDP_BUFFER_BYTES);
+}
+
+/// Tune real-time relay TCP sockets to prevent multi-second kernel bufferbloat
+/// while keeping enough window (256 KB send / 512 KB recv) to saturate >50 Mbps.
+/// Setting `TCP_NOTSENT_LOWAT` on macOS/Linux ensures backpressure reaches the
+/// WebSocket writer within tens of milliseconds instead of megabytes later.
+pub(crate) fn configure_relay_tcp_stream(stream: &tokio::net::TcpStream) {
+    let _ = stream.set_nodelay(true);
+    let sock = socket2::SockRef::from(stream);
+    let _ = sock.set_send_buffer_size(RELAY_TCP_SEND_BUFFER_BYTES);
+    let _ = sock.set_recv_buffer_size(RELAY_TCP_RECV_BUFFER_BYTES);
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux"))]
+    {
+        use std::os::fd::AsRawFd;
+        let lowat = RELAY_TCP_NOTSENT_LOWAT_BYTES;
+        unsafe {
+            let _ = libc::setsockopt(
+                stream.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                TCP_NOTSENT_LOWAT_OPT,
+                (&lowat as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+    }
 }
 
 pub struct UdpMultiplexer {
@@ -137,12 +170,20 @@ impl UdpSender {
         bytes: &[u8],
         target: SocketAddr,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let max_payload = MAX_FRAGMENT_PAYLOAD;
         if bytes.len() > MAX_FRAGMENT_PAYLOAD * MAX_FRAGMENT_CHUNKS {
             return Err("UDP message exceeds fragment size limit".into());
         }
+        // Keep individual datagrams strictly below standard PPPoE/WAN/5G MTU
+        // even after RoutedRelay (RPMX) and Relay (RPR1) encapsulation headers.
+        // Only fall back to MAX_FRAGMENT_PAYLOAD for rare >4.5 MB messages so
+        // the 4096-chunk ceiling remains unchanged.
+        let max_payload = if bytes.len() <= SENDER_FRAGMENT_PAYLOAD * MAX_FRAGMENT_CHUNKS {
+            SENDER_FRAGMENT_PAYLOAD
+        } else {
+            MAX_FRAGMENT_PAYLOAD
+        };
         if bytes.len() <= max_payload {
-            let mut buf = [0u8; 1401];
+            let mut buf = [0u8; MAX_FRAGMENT_PAYLOAD + 1];
             buf[0] = header;
             buf[1..1 + bytes.len()].copy_from_slice(bytes);
             self.socket.send_to(&buf[..1 + bytes.len()], target).await?;
@@ -249,6 +290,7 @@ use tokio::sync::Mutex;
 const MAX_FRAGMENT_AGE: Duration = Duration::from_millis(500);
 const MAX_FRAGMENT_CACHE_ENTRIES: usize = 32;
 const MAX_FRAGMENT_PAYLOAD: usize = 1400;
+const SENDER_FRAGMENT_PAYLOAD: usize = 1120;
 const MAX_FRAGMENT_CHUNKS: usize = 4096;
 
 type FragmentChunks = Vec<Option<Vec<u8>>>;
@@ -827,6 +869,39 @@ mod tests {
             send_raw_fragment(target, 1, 0, count, &payload).await;
             assert_eq!(recv_error(&receiver).await, error);
             assert!(receiver.fragments.lock().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn configure_relay_tcp_stream_enables_nodelay_and_bounded_buffers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, server) = tokio::join!(
+            tokio::net::TcpStream::connect(addr),
+            listener.accept(),
+        );
+        let client = client.unwrap();
+        let (server, _) = server.unwrap();
+        configure_relay_tcp_stream(&client);
+        configure_relay_tcp_stream(&server);
+        assert!(client.nodelay().unwrap());
+        assert!(server.nodelay().unwrap());
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            use std::os::fd::AsRawFd;
+            let mut actual: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            let rc = unsafe {
+                libc::getsockopt(
+                    client.as_raw_fd(),
+                    libc::IPPROTO_TCP,
+                    TCP_NOTSENT_LOWAT_OPT,
+                    (&mut actual as *mut libc::c_int).cast(),
+                    &mut len,
+                )
+            };
+            assert_eq!(rc, 0, "getsockopt(TCP_NOTSENT_LOWAT) should succeed");
+            assert_eq!(actual, RELAY_TCP_NOTSENT_LOWAT_BYTES);
         }
     }
 

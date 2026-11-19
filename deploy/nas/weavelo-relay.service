@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 User=nobody
 Group=nobody
-Environment=WEAVELO_RELAY_BIND_ADDR=127.0.0.1:39493
+Environment=WEAVELO_RELAY_BIND_ADDR=0.0.0.0:39493
+Environment=WEAVELO_RELAY_UDP_BIND_ADDR=0.0.0.0:39494
 Environment=WEAVELO_RELAY_WEBSOCKET=1
 Environment=WEAVELO_RELAY_LOG=0
 Environment=WEAVELO_RELAY_MAX_CONNECTIONS=128

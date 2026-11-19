@@ -124,6 +124,16 @@ impl RelayTunnelDiagnostics {
             s.value.stage = RelayStage::Registration;
         });
     }
+    pub(crate) fn connected_udp(&self) {
+        self.update(|s| {
+            s.value.state = RelayConnectionState::Connected;
+            s.value.last_error = None;
+            s.value.last_failure_stage = None;
+            s.value.last_os_error = None;
+            s.value.http_status = None;
+            s.value.stage = RelayStage::Registration;
+        });
+    }
     pub(crate) fn stage(&self, stage: RelayStage) {
         self.update(|s| s.value.stage = stage);
     }

@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 const MIN_FLOOR_KBPS: u32 = 800;
 const MAX_FLOOR_KBPS: u32 = 1_500;
+const FPS_STEP_DOWN_KBPS: u32 = 3_000;
+const FPS_STEP_UP_KBPS: u32 = 4_500;
 const SEVERE_QUEUE_DELAY_MS: f32 = 120.0;
 const MODERATE_QUEUE_DELAY_MS: f32 = 55.0;
 const HEALTHY_QUEUE_DELAY_MS: f32 = 25.0;
@@ -41,7 +43,8 @@ pub struct AbrObservation {
 pub struct AdaptiveBitrateController {
     width: u32,
     height: u32,
-    fps: u32,
+    user_fps: u32,
+    applied_fps: u32,
     user_max_kbps: u32,
     min_kbps: u32,
     target_kbps: u32,
@@ -66,7 +69,8 @@ impl AdaptiveBitrateController {
         Self {
             width,
             height,
-            fps,
+            user_fps: fps,
+            applied_fps: fps,
             user_max_kbps,
             min_kbps,
             target_kbps: user_max_kbps,
@@ -91,7 +95,8 @@ impl AdaptiveBitrateController {
         let bitrate_kbps = bitrate_kbps.max(500);
         self.width = width;
         self.height = height;
-        self.fps = fps;
+        self.user_fps = fps;
+        self.applied_fps = fps;
         self.user_max_kbps = bitrate_kbps;
         self.min_kbps = compute_floor_kbps(bitrate_kbps);
         self.target_kbps = bitrate_kbps;
@@ -102,7 +107,7 @@ impl AdaptiveBitrateController {
     }
 
     pub fn profile(&self) -> (u32, u32, u32, u32) {
-        (self.width, self.height, self.fps, self.applied_kbps)
+        (self.width, self.height, self.applied_fps, self.applied_kbps)
     }
 
     pub fn target_bitrate_kbps(&self) -> u32 {
@@ -152,7 +157,7 @@ impl AdaptiveBitrateController {
         self.last_decode_queue_drops = obs.decode_queue_drops_total;
         self.last_keyframe_requests = obs.keyframe_requests_total;
 
-        let queue_delay_ms = self.update_rtt(obs.now, obs.rtt_ms);
+        let (queue_delay_ms, raw_queue_delay_ms) = self.update_rtt(obs.now, obs.rtt_ms);
         let loss = if obs.loss_rate_pct.is_finite() && obs.loss_rate_pct >= 0.0 {
             obs.loss_rate_pct
         } else {
@@ -164,7 +169,9 @@ impl AdaptiveBitrateController {
             || drop_delta > 0
             || kf_delta >= 2;
 
-        if queue_delay_ms >= MODERATE_QUEUE_DELAY_MS {
+        if queue_delay_ms >= MODERATE_QUEUE_DELAY_MS
+            && raw_queue_delay_ms >= MODERATE_QUEUE_DELAY_MS
+        {
             self.elevated_delay_streak = self.elevated_delay_streak.saturating_add(1);
         } else {
             self.elevated_delay_streak = 0;
@@ -242,12 +249,15 @@ impl AdaptiveBitrateController {
         self.maybe_commit()
     }
 
-    fn update_rtt(&mut self, now: Instant, rtt_ms: Option<f32>) -> f32 {
+    fn update_rtt(&mut self, now: Instant, rtt_ms: Option<f32>) -> (f32, f32) {
         let Some(rtt) = rtt_ms.filter(|v| v.is_finite() && *v >= 0.0) else {
-            return 0.0;
+            return (0.0, 0.0);
         };
 
+        // Asymmetric EWMA: smooth rising spikes to avoid jitter false alarms,
+        // decay quickly when RTT falls so draining queues never double-penalize.
         let smoothed = match self.smoothed_rtt_ms {
+            Some(prev) if rtt < prev => prev * 0.30 + rtt * 0.70,
             Some(prev) => prev * 0.55 + rtt * 0.45,
             None => rtt,
         };
@@ -257,39 +267,56 @@ impl AdaptiveBitrateController {
             None => {
                 self.baseline_rtt_ms = Some(rtt);
                 self.baseline_updated_at = Some(now);
-                0.0
+                (0.0, 0.0)
             }
             Some(base) => {
                 if rtt <= base {
                     self.baseline_rtt_ms = Some(rtt);
                     self.baseline_updated_at = Some(now);
-                    0.0
+                    (0.0, 0.0)
                 } else {
                     // Gently relax an old baseline after 30s in case the network route genuinely shifted.
-                    if self.baseline_updated_at.is_some_and(|t| {
+                    let active_base = if self.baseline_updated_at.is_some_and(|t| {
                         now.saturating_duration_since(t) >= BASELINE_DRIFT_INTERVAL
                     }) {
                         let relaxed = base + (smoothed - base) * 0.15;
                         self.baseline_rtt_ms = Some(relaxed);
                         self.baseline_updated_at = Some(now);
-                        (smoothed - relaxed).max(0.0)
+                        relaxed
                     } else {
-                        (smoothed - base).max(0.0)
-                    }
+                        base
+                    };
+                    ((smoothed - active_base).max(0.0), (rtt - active_base).max(0.0))
                 }
             }
         }
     }
 
+    fn desired_fps(&self) -> u32 {
+        if self.user_fps <= 30 {
+            return self.user_fps;
+        }
+        if self.target_kbps <= FPS_STEP_DOWN_KBPS {
+            30
+        } else if self.target_kbps >= FPS_STEP_UP_KBPS {
+            self.user_fps
+        } else {
+            self.applied_fps
+        }
+    }
+
     fn maybe_commit(&mut self) -> Option<u32> {
-        if self.target_kbps == self.applied_kbps {
+        let next_fps = self.desired_fps();
+        let fps_changed = next_fps != self.applied_fps;
+        if self.target_kbps == self.applied_kbps && !fps_changed {
             return None;
         }
         let diff = self.target_kbps.abs_diff(self.applied_kbps);
         let min_step = (self.applied_kbps / 10).max(400);
         let hits_bound = self.target_kbps == self.user_max_kbps || self.target_kbps == self.min_kbps;
-        if diff >= min_step || hits_bound {
+        if diff >= min_step || hits_bound || fps_changed {
             self.applied_kbps = self.target_kbps;
+            self.applied_fps = next_fps;
             Some(self.applied_kbps)
         } else {
             None
@@ -419,5 +446,27 @@ mod tests {
         abr.set_user_profile(1280, 720, 30, 6_000);
         assert_eq!(abr.profile(), (1280, 720, 30, 6_000));
         assert_eq!(abr.user_max_kbps(), 6_000);
+    }
+
+    #[test]
+    fn severe_congestion_steps_60fps_down_to_30fps_and_restores_on_recovery() {
+        let mut abr = AdaptiveBitrateController::new(1920, 1080, 60, 10_000);
+        let mut now = Instant::now();
+        abr.observe(obs(now, Some(20.0), 0.0, 9_000, 0, 0));
+        let mut drops = 0;
+        for _ in 0..5 {
+            now += Duration::from_secs(1);
+            drops += 1;
+            abr.observe(obs(now, Some(300.0), 6.0, abr.applied_bitrate_kbps(), drops, 2));
+        }
+        assert!(abr.applied_bitrate_kbps() <= FPS_STEP_DOWN_KBPS);
+        assert_eq!(abr.profile().2, 30, "expected 60fps -> 30fps under severe weak relay");
+
+        for _ in 0..25 {
+            now += Duration::from_secs(2);
+            abr.observe(obs(now, Some(22.0), 0.0, abr.applied_bitrate_kbps(), drops, 2));
+        }
+        assert_eq!(abr.applied_bitrate_kbps(), 10_000);
+        assert_eq!(abr.profile().2, 60, "expected fps to restore to 60 after recovery");
     }
 }

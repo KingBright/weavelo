@@ -142,8 +142,10 @@ def main():
         staged[0].chmod(0o755)
         require(sha(binary) == sha(staged[0]), "Compiler binary changed during staging")
         unit = ROOT / "deploy/nas/weavelo-relay.service"
-        require("WEAVELO_RELAY_BIND_ADDR=127.0.0.1:39493" in unit.read_text() and
-                "WEAVELO_RELAY_WEBSOCKET=1" in unit.read_text(), "Wrong isolated NAS relay unit")
+        unit_text = unit.read_text()
+        require(("WEAVELO_RELAY_BIND_ADDR=127.0.0.1:39493" in unit_text or
+                 "WEAVELO_RELAY_BIND_ADDR=0.0.0.0:39493" in unit_text) and
+                "WEAVELO_RELAY_WEBSOCKET=1" in unit_text, "Wrong isolated NAS relay unit")
         receipt = {"schema": "weavelo.nas_relay.build.v1", "component": COMPONENT,
                    "source_commit": commit, "source_inputs_sha256": source_digest,
                    "source_files": before, "target": TRIPLE, "profile": "release",

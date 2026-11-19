@@ -36,8 +36,9 @@ use remote_core::p2p::{
     resolve_p2p_rendezvous_addrs,
 };
 use remote_core::relay::{
-    BoundTcpRelayTunnel, BoundWebSocketRelayTunnel, RelayConfigError, TcpRelayTunnelConfig,
-    WebSocketRelayTunnelConfig, derive_relay_group_id,
+    BoundHybridRelayTunnel, BoundTcpRelayTunnel, BoundWebSocketRelayTunnel,
+    HybridRelayTunnelConfig, RelayConfigError, TcpRelayTunnelConfig, WebSocketRelayTunnelConfig,
+    derive_relay_group_id,
 };
 use remote_core::role::{
     RoleChange, RolePeer, RoleSession, RoleState, RoleStateError, RoleStateMachine,
@@ -770,6 +771,7 @@ pub struct UnifiedRelayRuntimeConfig {
 pub enum UnifiedRelayEndpoint {
     Tcp(SocketAddr),
     WebSocket(String),
+    Hybrid(String),
 }
 
 impl UnifiedRelayRuntimeConfig {
@@ -1340,16 +1342,45 @@ fn local_udp_target_for_bind(bind_addr: SocketAddr) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, bind_addr.port()))
 }
 
-fn env_optional_relay_endpoint(
+fn parse_relay_endpoint(
     name: &'static str,
+    raw: &str,
 ) -> Result<Option<UnifiedRelayEndpoint>, Box<dyn Error + Send + Sync>> {
-    let Some(value) = std::env::var_os(name) else {
-        return Ok(None);
-    };
-    let value = value.to_string_lossy();
-    let trimmed = value.trim();
+    let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(None);
+    }
+    let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
+    if parts.len() > 1 || trimmed.starts_with("udp://") {
+        let mut has_udp = false;
+        let mut all_urls = true;
+        for part in &parts {
+            if part.starts_with("udp://") {
+                has_udp = true;
+            } else if !part.starts_with("ws://") && !part.starts_with("wss://") {
+                all_urls = false;
+                break;
+            }
+        }
+        if all_urls {
+            if has_udp {
+                // Validate eagerly so malformed udp:// URLs fail cleanly at startup.
+                HybridRelayTunnelConfig::new(
+                    SocketAddr::from(([127, 0, 0, 1], 0)),
+                    trimmed,
+                    "validate",
+                    "validate",
+                )?;
+                return Ok(Some(UnifiedRelayEndpoint::Hybrid(trimmed.to_string())));
+            }
+            WebSocketRelayTunnelConfig::new(
+                SocketAddr::from(([127, 0, 0, 1], 0)),
+                trimmed,
+                "validate",
+                "validate",
+            )?;
+            return Ok(Some(UnifiedRelayEndpoint::WebSocket(trimmed.to_string())));
+        }
     }
     if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
         return Ok(Some(UnifiedRelayEndpoint::WebSocket(trimmed.to_string())));
@@ -1361,10 +1392,22 @@ fn env_optional_relay_endpoint(
         .map_err(|err| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("{name}={trimmed:?} is not a valid socket address or WebSocket URL: {err}"),
+                format!(
+                    "{name}={trimmed:?} is not a valid socket address or relay URL (udp://, ws://, wss://): {err}"
+                ),
             )
             .into()
         })
+}
+
+fn env_optional_relay_endpoint(
+    name: &'static str,
+) -> Result<Option<UnifiedRelayEndpoint>, Box<dyn Error + Send + Sync>> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value.to_string_lossy();
+    parse_relay_endpoint(name, &value)
 }
 
 fn env_socket_addr(
@@ -2383,12 +2426,14 @@ async fn start_unified_relay_runtime(
 enum UnifiedRelayTunnel {
     Tcp(BoundTcpRelayTunnel),
     WebSocket(BoundWebSocketRelayTunnel),
+    Hybrid(BoundHybridRelayTunnel),
 }
 
 impl UnifiedRelayTunnel {
     fn diagnostics(&self) -> Option<Arc<remote_core::relay_status::RelayTunnelDiagnostics>> {
         match self {
             Self::WebSocket(tunnel) => Some(tunnel.diagnostics()),
+            Self::Hybrid(tunnel) => Some(tunnel.diagnostics()),
             // TCP has no equivalent observer; zero would falsely report an idle tunnel.
             Self::Tcp(_) => None,
         }
@@ -2398,6 +2443,7 @@ impl UnifiedRelayTunnel {
         match self {
             Self::Tcp(tunnel) => tunnel.local_addr(),
             Self::WebSocket(tunnel) => tunnel.local_addr(),
+            Self::Hybrid(tunnel) => tunnel.local_addr(),
         }
     }
 
@@ -2405,6 +2451,7 @@ impl UnifiedRelayTunnel {
         match self {
             Self::Tcp(tunnel) => tunnel.run(cancel_rx).await,
             Self::WebSocket(tunnel) => tunnel.run(cancel_rx).await,
+            Self::Hybrid(tunnel) => tunnel.run(cancel_rx).await,
         }
     }
 }
@@ -2435,6 +2482,16 @@ async fn build_unified_relay_tunnel(
             }
             Ok(UnifiedRelayTunnel::WebSocket(
                 BoundWebSocketRelayTunnel::bind(config.with_event_logging(log_events)).await?,
+            ))
+        }
+        UnifiedRelayEndpoint::Hybrid(relay_urls) => {
+            let mut config =
+                HybridRelayTunnelConfig::new(bind_addr, relay_urls.clone(), group_id, peer_id)?;
+            if let Some(local_target_addr) = local_target_addr {
+                config = config.with_local_target_addr(local_target_addr);
+            }
+            Ok(UnifiedRelayTunnel::Hybrid(
+                BoundHybridRelayTunnel::bind(config.with_event_logging(log_events)).await?,
             ))
         }
     }
@@ -4745,6 +4802,42 @@ mod tests {
             }
             cache.snapshot()
         }
+    }
+
+    #[test]
+    fn parse_relay_endpoint_supports_ws_failover_and_hybrid_udp_lists() {
+        assert_eq!(
+            parse_relay_endpoint(
+                WEAVELO_RELAY_SERVER_ADDR_ENV,
+                "ws://192.168.2.200:39493/v1/relay,wss://weavelo.hackerlife.fun:8443/v1/relay"
+            )
+            .unwrap(),
+            Some(UnifiedRelayEndpoint::WebSocket(
+                "ws://192.168.2.200:39493/v1/relay,wss://weavelo.hackerlife.fun:8443/v1/relay"
+                    .to_string()
+            ))
+        );
+        assert_eq!(
+            parse_relay_endpoint(
+                WEAVELO_RELAY_SERVER_ADDR_ENV,
+                "udp://192.168.2.200:39494,ws://192.168.2.200:39493/v1/relay,wss://weavelo.hackerlife.fun:8443/v1/relay"
+            )
+            .unwrap(),
+            Some(UnifiedRelayEndpoint::Hybrid(
+                "udp://192.168.2.200:39494,ws://192.168.2.200:39493/v1/relay,wss://weavelo.hackerlife.fun:8443/v1/relay"
+                    .to_string()
+            ))
+        );
+        assert_eq!(
+            parse_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV, "udp://192.168.2.200:39494")
+                .unwrap(),
+            Some(UnifiedRelayEndpoint::Hybrid(
+                "udp://192.168.2.200:39494".to_string()
+            ))
+        );
+        assert!(
+            parse_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV, "udp://192.168.2.200").is_err()
+        );
     }
 }
 

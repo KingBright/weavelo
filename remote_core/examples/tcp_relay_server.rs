@@ -1,4 +1,6 @@
-use remote_core::relay::{BoundTcpRelayServer, TcpRelayServerConfig};
+use remote_core::relay::{
+    BoundTcpRelayServer, BoundUdpRelayServer, TcpRelayServerConfig, UdpRelayServerConfig,
+};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -10,8 +12,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         "WEAVELO_RELAY_BIND_ADDR",
         SocketAddr::from(([127, 0, 0, 1], 39493)),
     )?;
+    let log_events = env_flag_or("WEAVELO_RELAY_LOG", false);
     let config = TcpRelayServerConfig::new(bind_addr)
-        .with_event_logging(env_flag_or("WEAVELO_RELAY_LOG", false))
+        .with_event_logging(log_events)
         .with_limits(
             env_usize_or("WEAVELO_RELAY_MAX_CONNECTIONS", 128)?,
             env_usize_or("WEAVELO_RELAY_MAX_PEERS_PER_GROUP", 8)?,
@@ -24,6 +27,20 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let server = BoundTcpRelayServer::bind(config).await?;
     let local_addr = server.local_addr()?;
     let websocket = env_flag_or("WEAVELO_RELAY_WEBSOCKET", false);
+    let udp_server = match env_optional_socket_addr("WEAVELO_RELAY_UDP_BIND_ADDR")? {
+        Some(udp_bind_addr) => {
+            let udp_server = BoundUdpRelayServer::bind(
+                UdpRelayServerConfig::new(udp_bind_addr).with_event_logging(log_events),
+            )
+            .await?;
+            println!(
+                "Weavelo UDP relay listening on {}",
+                udp_server.local_addr()?
+            );
+            Some(udp_server)
+        }
+        None => None,
+    };
     println!(
         "Weavelo {} relay listening on {local_addr}",
         if websocket { "WebSocket" } else { "TCP" }
@@ -32,8 +49,20 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (cancel_tx, cancel_rx) = broadcast::channel(1);
     let server_task = tokio::spawn(async move {
         if websocket {
-            server.run_websocket(cancel_rx).await
+            if let Some(udp_server) = udp_server {
+                server.run_websocket_with_udp(udp_server, cancel_rx).await
+            } else {
+                server.run_websocket(cancel_rx).await
+            }
         } else {
+            if let Some(udp_server) = udp_server {
+                let udp_cancel = cancel_rx.resubscribe();
+                tokio::spawn(async move {
+                    if let Err(err) = udp_server.run(udp_cancel).await {
+                        eprintln!("UDP relay stopped: {err}");
+                    }
+                });
+            }
             server.run(cancel_rx).await
         }
     });
@@ -98,6 +127,26 @@ fn env_socket_addr(
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("{name}={value:?} is not a valid socket address: {err}"),
+        )
+        .into()
+    })
+}
+
+fn env_optional_socket_addr(
+    name: &'static str,
+) -> Result<Option<SocketAddr>, Box<dyn Error + Send + Sync>> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value.to_string_lossy();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    trimmed.parse().map(Some).map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{name}={trimmed:?} is not a valid socket address: {err}"),
         )
         .into()
     })
