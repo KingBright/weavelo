@@ -29,6 +29,12 @@ import `fun`.hackerlife.weavelo.TelemetrySnapshot
 import java.util.Locale
 import kotlinx.coroutines.delay
 
+internal fun formatBitrateKbps(kbps: Int): String = when {
+    kbps < 0 -> "—"
+    kbps < 1000 -> "$kbps kbps"
+    else -> String.format(Locale.ROOT, "%.1f Mbps", kbps / 1000.0)
+}
+
 internal enum class NetworkTone { NEUTRAL, ONLINE, WARNING, ERROR }
 internal data class NetworkIndicator(val label: String, val tone: NetworkTone)
 
@@ -171,7 +177,7 @@ internal fun NetworkStatusChip(
                 NetworkDetail(
                     "Video bitrate",
                     if (fresh && telemetry.videoBitrateKbps >= 0) {
-                        String.format(Locale.ROOT, "%.1f Mbps", telemetry.videoBitrateKbps / 1000.0)
+                        formatBitrateKbps(telemetry.videoBitrateKbps)
                     } else {
                         "—"
                     },

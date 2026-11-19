@@ -127,6 +127,8 @@ struct Peer {
     tasks: Vec<tokio::task::AbortHandle>,
     delivery_owner: Option<(DeliveryPeer, [u8; 32])>,
 }
+const TELEMETRY_WINDOW: Duration = Duration::from_millis(1500);
+
 struct MobileSubscription {
     request: SubscriptionRequest,
     grant: u64,
@@ -137,8 +139,8 @@ struct MobileSubscription {
     video_sequence: u16,
     audio_sequence: u16,
     screen_stream: u64,
-    frames_since_telemetry: u32,
-    bytes_since_telemetry: u64,
+    telemetry_window: std::collections::VecDeque<(Instant, usize)>,
+    telemetry_window_start: Instant,
     last_encode_latency_ms: f32,
     last_jitter_ms: f32,
     last_telemetry_at: Instant,
@@ -220,6 +222,7 @@ impl MobileSubscription {
                 (id < i64::MAX as u64).then_some(id + 1)
             })
             .expect("Screen subscription identity exhausted");
+        let now = Instant::now();
         Self {
             request,
             grant,
@@ -230,12 +233,42 @@ impl MobileSubscription {
             video_sequence: 0,
             audio_sequence: 0,
             screen_stream,
-            frames_since_telemetry: 0,
-            bytes_since_telemetry: 0,
+            telemetry_window: std::collections::VecDeque::with_capacity(128),
+            telemetry_window_start: now,
             last_encode_latency_ms: 0.0,
             last_jitter_ms: 0.0,
-            last_telemetry_at: Instant::now(),
+            last_telemetry_at: now,
         }
+    }
+    fn record_video_frame(&mut self, now: Instant, bytes: usize) {
+        self.telemetry_window.push_back((now, bytes));
+        self.prune_telemetry_window(now);
+    }
+    fn prune_telemetry_window(&mut self, now: Instant) {
+        while let Some(&(ts, _)) = self.telemetry_window.front() {
+            if now.saturating_duration_since(ts) > TELEMETRY_WINDOW {
+                self.telemetry_window.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+    fn sample_telemetry(&mut self, now: Instant) -> (f32, u32, bool) {
+        self.prune_telemetry_window(now);
+        let window_secs = now
+            .saturating_duration_since(self.telemetry_window_start)
+            .as_secs_f32()
+            .clamp(0.2, TELEMETRY_WINDOW.as_secs_f32());
+        let frames = self.telemetry_window.len();
+        let total_bytes: u64 = self.telemetry_window.iter().map(|(_, b)| *b as u64).sum();
+        let fps = frames as f32 / window_secs;
+        let bitrate_kbps = (total_bytes as f64 * 8.0 / 1000.0 / f64::from(window_secs)) as u32;
+        (fps, bitrate_kbps, frames > 0)
+    }
+    fn reset_telemetry_window(&mut self, now: Instant) {
+        self.telemetry_window.clear();
+        self.telemetry_window_start = now;
+        self.last_telemetry_at = now;
     }
     fn input_allowed(&self) -> bool {
         screen_source(self.request.source) && self.video
@@ -889,16 +922,14 @@ impl MobilePublisher {
                                 if elapsed < 0.2 {
                                     continue;
                                 }
-                                let active = sub.frames_since_telemetry > 0;
+                                let (fps, bitrate_kbps, active) = sub.sample_telemetry(now);
                                 let _ = sender.send_control(&ControlMessage::HostTelemetry {
                                     session_id: sub.request.id,
-                                    fps: sub.frames_since_telemetry as f32 / elapsed,
+                                    fps,
                                     encode_latency_ms: sub.last_encode_latency_ms,
                                     jitter_ms: if active { sub.last_jitter_ms } else { 0.0 },
-                                    bitrate_kbps: (sub.bytes_since_telemetry as f64 * 8.0 / 1000.0 / f64::from(elapsed)) as u32,
+                                    bitrate_kbps,
                                 }, *addr).await;
-                                sub.frames_since_telemetry = 0;
-                                sub.bytes_since_telemetry = 0;
                                 sub.last_telemetry_at = now;
                             }
                         }
@@ -916,8 +947,7 @@ impl MobilePublisher {
                                 if sub.grant!=grant || frame.screen_stream.is_some_and(|stream|stream!=sub.screen_stream)
                                     || (frame.audio&&!sub.audio)||(!frame.audio&&!sub.video){continue;}
                                 if !frame.audio {
-                                    sub.frames_since_telemetry = sub.frames_since_telemetry.saturating_add(1);
-                                    sub.bytes_since_telemetry = sub.bytes_since_telemetry.saturating_add(frame.bytes.len() as u64);
+                                    sub.record_video_frame(Instant::now(), frame.bytes.len());
                                     if let Some(timing) = frame.timing {
                                         let enc_ms = timing.encode_done_ts_us.saturating_sub(timing.encode_queue_ts_us) as f32 / 1000.0;
                                         sub.last_jitter_ms = sub.last_jitter_ms * 0.85 + (enc_ms - sub.last_encode_latency_ms).abs() * 0.15;
@@ -1115,6 +1145,7 @@ impl MobilePublisher {
                                             let sub=peers.get_mut(&addr).unwrap().subscriptions.get_mut(&id).unwrap();
                                             if revision>sub.activity_revision {
                                                 if !video&&sub.input_allowed(){shared_input.lock().unwrap().revoke_peer(addr);}
+                                                if !video || !sub.video { sub.reset_telemetry_window(Instant::now()); }
                                                 sub.activity_revision=revision;sub.video=video;sub.audio=audio&&sub.request.audio&&allowed_audio;
                                             }
                                             let is_video_active = sub.video;
