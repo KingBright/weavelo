@@ -345,8 +345,9 @@ impl MacVideoEncoder {
                 bitrate_value.as_concrete_TypeRef() as _,
             );
 
-            // 1.5x peak VBR burst ceiling over 1s so IDR keyframes and zoomed text bursts retain crispness
-            let bytes_per_sec = (final_bitrate.saturating_mul(3) / 2) / 8;
+            // 1.25x peak VBR burst ceiling over 1s: preserves crisp text while avoiding
+            // oversized IDR/motion spikes that trigger bufferbloat over TCP relays.
+            let bytes_per_sec = (final_bitrate.saturating_mul(5) / 4) / 8;
             let one_sec = 1_i32;
             let num_bytes = CFNumber::from(bytes_per_sec);
             let num_sec = CFNumber::from(one_sec);
@@ -370,10 +371,11 @@ impl MacVideoEncoder {
                 fps_value.as_concrete_TypeRef() as _,
             );
 
-            // 4s closed GOP interval for rapid text clarity recovery without network spikes
+            // 10s closed GOP interval: avoids periodic giant IDR spikes on healthy relays
+            // while on-demand RequestKeyframe handles immediate loss recovery.
             let keyframe_interval_key =
                 CFString::wrap_under_get_rule(kVTCompressionPropertyKey_MaxKeyFrameInterval as _);
-            let keyframe_interval_value = CFNumber::from((fps.saturating_mul(4).max(1)) as i32);
+            let keyframe_interval_value = CFNumber::from((fps.saturating_mul(10).max(1)) as i32);
             let _ = VTSessionSetProperty(
                 session,
                 keyframe_interval_key.as_concrete_TypeRef() as _,
@@ -383,7 +385,7 @@ impl MacVideoEncoder {
             let keyframe_duration_key = CFString::wrap_under_get_rule(
                 kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration as _,
             );
-            let keyframe_duration_value = CFNumber::from(4_i32);
+            let keyframe_duration_value = CFNumber::from(10_i32);
             let _ = VTSessionSetProperty(
                 session,
                 keyframe_duration_key.as_concrete_TypeRef() as _,
@@ -526,7 +528,7 @@ impl MacVideoEncoder {
                         bitrate_value.as_concrete_TypeRef() as _,
                     );
 
-                    let bytes_per_sec = (final_bitrate.saturating_mul(3) / 2) / 8;
+                    let bytes_per_sec = (final_bitrate.saturating_mul(5) / 4) / 8;
                     let one_sec = 1_i32;
                     let num_bytes = CFNumber::from(bytes_per_sec);
                     let num_sec = CFNumber::from(one_sec);

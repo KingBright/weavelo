@@ -103,10 +103,10 @@ impl ScheduledDataSender {
             target,
             ScheduledDataSenderConfig {
                 scheduler: LaneSchedulerConfig {
-                    max_realtime_queued: 8,
+                    max_realtime_queued: 16,
                     max_reliable_queued: 64,
                 },
-                realtime_queue_capacity: 8,
+                realtime_queue_capacity: 16,
                 reliable_queue_capacity: 64,
             },
             true,
@@ -346,10 +346,11 @@ fn push_observed(
     let result = scheduler.push(envelope, now_ms());
     let evicted = scheduler.evicted_video_frames() - before_evicted;
     if evicted > 0 {
+        // Older queued frames were cleanly superseded by a newer IDR keyframe;
+        // do not trigger a redundant recovery keyframe request on the encoder.
         counters
             .scheduler_dropped_realtime_capacity
             .fetch_add(evicted, Relaxed);
-        counters.pending_video_evictions.fetch_add(evicted, Relaxed);
     }
     if matches!(
         result,

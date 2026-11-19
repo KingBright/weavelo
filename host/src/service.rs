@@ -2815,6 +2815,7 @@ async fn run_host_service_inner(
                                         SessionCommand::Error { request_id:id, reason:"unsupported capture settings".into() }
                                     } else if let Some(s) = peers.get_mut(&addr).and_then(|p| p.subscriptions.get_mut(&id)) {
                                         if revision > s.settings_revision {
+                                            let dimensions_changed = s.request.width != width || s.request.height != height;
                                             s.settings_revision = revision;
                                             s.request.width = width; s.request.height = height; s.request.fps = fps; s.request.bitrate_kbps = bitrate_kbps;
                                             #[cfg(target_os = "windows")]
@@ -2828,7 +2829,9 @@ async fn run_host_service_inner(
                                                 *src_h = bounds.height;
                                             }
                                             s.settings.send_modify(|v| { v.width=width; v.height=height; v.fps=fps; v.bitrate_kbps=bitrate_kbps; });
-                                            s.request_keyframe();
+                                            if dimensions_changed {
+                                                s.request_keyframe();
+                                            }
                                         }
                                         SessionCommand::Configured { id, revision:s.settings_revision }
                                     } else { SessionCommand::Error { request_id:id, reason:"subscription is unavailable".into() } };

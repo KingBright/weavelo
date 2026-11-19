@@ -47,10 +47,8 @@ impl UdpMultiplexer {
 
         let _ = socket2_sock.set_recv_buffer_size(UDP_BUFFER_BYTES);
         let _ = socket2_sock.set_send_buffer_size(UDP_BUFFER_BYTES);
-        #[cfg(target_os = "macos")]
-        {
-            let _ = socket2_sock.set_tos_v4(0xB8);
-        }
+        // Keep default Best-Effort DSCP (0x00) instead of EF (0xB8 / Wi-Fi AC_VO):
+        // high-bitrate video bursts overflow tiny Wi-Fi voice queues and lose fragments.
         socket2_sock.set_nonblocking(true)?;
         socket2_sock.bind(&std_addr.into())?;
 
@@ -153,7 +151,14 @@ impl UdpSender {
             // Format: 0x03, original_header(1), fragment_id(4), chunk_idx(2), total_chunks(2), data...
             let fragment_id = rand::random::<u32>();
             let chunks = bytes.chunks(max_payload);
-            let total_chunks = chunks.len() as u16;
+            let total_chunks_usize = chunks.len();
+            let total_chunks = total_chunks_usize as u16;
+            let is_loopback = target.ip().is_loopback();
+            let pace_burst = if is_loopback {
+                32
+            } else {
+                (total_chunks_usize / 4).max(16)
+            };
 
             let mut buf = [0u8; 1410];
             buf[0] = 0x03; // Fragment multiplex header
@@ -167,6 +172,14 @@ impl UdpSender {
                 self.socket
                     .send_to(&buf[..10 + chunk.len()], target)
                     .await?;
+                let sent = i + 1;
+                if sent < total_chunks_usize && sent % pace_burst == 0 {
+                    if is_loopback {
+                        tokio::task::yield_now().await;
+                    } else if total_chunks_usize > 16 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                }
             }
         }
         Ok(())
@@ -233,8 +246,8 @@ impl UdpSender {
 use std::collections::{HashMap, hash_map::Entry};
 use tokio::sync::Mutex;
 
-const MAX_FRAGMENT_AGE: Duration = Duration::from_secs(2);
-const MAX_FRAGMENT_CACHE_ENTRIES: usize = 10;
+const MAX_FRAGMENT_AGE: Duration = Duration::from_millis(500);
+const MAX_FRAGMENT_CACHE_ENTRIES: usize = 32;
 const MAX_FRAGMENT_PAYLOAD: usize = 1400;
 const MAX_FRAGMENT_CHUNKS: usize = 4096;
 

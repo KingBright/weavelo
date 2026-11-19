@@ -1,3 +1,4 @@
+pub mod abr;
 pub mod application_icons;
 pub mod audio;
 pub mod audio_output;

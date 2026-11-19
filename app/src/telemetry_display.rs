@@ -97,7 +97,7 @@ impl UiHostStats {
         let Some(stats) = stats else { return quality.label().into(); };
         match quality {
             NetworkQuality::Good | NetworkQuality::Fair | NetworkQuality::Poor => {
-                let rtt = stats.rtt.map(|rtt| format!("{:.0} ms", rtt.latest_ms))
+                let rtt = stats.rtt.map(|rtt| format!("{:.0} ms", rtt.median_ms))
                     .unwrap_or_else(|| crate::i18n::tr("unavailable").into());
                 crate::i18n::tr_format!("{} · RTT {} · loss {:.1}%", quality.label(), rtt, stats.packet_loss_rate)
             }

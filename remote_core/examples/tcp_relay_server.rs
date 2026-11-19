@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .with_limits(
             env_usize_or("WEAVELO_RELAY_MAX_CONNECTIONS", 128)?,
             env_usize_or("WEAVELO_RELAY_MAX_PEERS_PER_GROUP", 8)?,
-            env_usize_or("WEAVELO_RELAY_WRITER_QUEUE_CAPACITY", 16)?,
+            env_usize_or("WEAVELO_RELAY_WRITER_QUEUE_CAPACITY", 512)?,
         )
         .with_idle_timeout(Duration::from_secs(env_u64_or(
             "WEAVELO_RELAY_IDLE_TIMEOUT_SECONDS",

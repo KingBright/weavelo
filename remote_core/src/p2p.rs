@@ -21,7 +21,7 @@ const PACKET_PROBE_ACK: u8 = 7;
 const MAX_ID_LEN: usize = 128;
 const MAX_ANNOUNCEMENT_LEN: usize = 1200;
 const MAX_PACKET_LEN: usize = 1536;
-const ROUTE_QUEUE_CAPACITY: usize = 256;
+const ROUTE_QUEUE_CAPACITY: usize = 1024;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -583,6 +583,7 @@ pub struct BoundP2pTunnel {
 impl BoundP2pTunnel {
     pub async fn bind(config: P2pTunnelConfig) -> io::Result<Self> {
         let socket = UdpSocket::bind(config.bind_addr).await?;
+        crate::net::configure_udp_buffers(&socket);
         Ok(Self { socket, config })
     }
 
@@ -898,8 +899,8 @@ impl BoundP2pTunnel {
                         } else { false };
                         if became_ready {
                             publish_peer_discovery(&peers, &peer_id, self.config.discovery_target_addr, application_routes.as_ref()).await?;
+                            publish_snapshot(&snapshot_tx, &peers, &observations);
                         }
-                        publish_snapshot(&snapshot_tx, &peers, &observations);
                     }
                 }
             }
@@ -970,6 +971,7 @@ async fn ensure_peer_route(
     }
 
     let route_socket = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
+    crate::net::configure_udp_buffers(&route_socket);
     let local_endpoint = route_socket.local_addr()?;
     let (candidate_tx, candidate_rx) = watch::channel(candidate);
     let (inbound_tx, inbound_rx) = mpsc::channel(ROUTE_QUEUE_CAPACITY);

@@ -929,6 +929,7 @@ pub(crate) struct MediaPacketHandler {
     video_source: Option<SocketAddr>,
     needs_keyframe: bool,
     last_keyframe_request: Option<Instant>,
+    consecutive_keyframe_requests: u32,
     observed_decode_errors: usize,
 }
 
@@ -966,8 +967,17 @@ impl MediaPacketHandler {
             video_source: None,
             needs_keyframe: false,
             last_keyframe_request: None,
+            consecutive_keyframe_requests: 0,
             observed_decode_errors: 0,
         }
+    }
+
+    pub(crate) fn loss_rate_pct(&self) -> f32 {
+        self.loss_rate_pct
+    }
+
+    pub(crate) fn stats_net(&self) -> &Arc<Statistics> {
+        &self.stats_net
     }
 
     pub(crate) fn remember_video_source(&mut self, packet: &RtpPacket, addr: SocketAddr) {
@@ -1010,9 +1020,19 @@ impl MediaPacketHandler {
         self.last_video_packet_timing = None;
         self.needs_keyframe = true;
         self.last_keyframe_request = None;
+        self.consecutive_keyframe_requests = 0;
         self.stats_net
             .video_recovery
             .reset_source(|| self.host_stats.clear_video_timing());
+    }
+
+    fn keyframe_retry_backoff(&self) -> Duration {
+        match self.consecutive_keyframe_requests {
+            0 => Duration::ZERO,
+            1 => Duration::from_millis(300),
+            2 => Duration::from_millis(600),
+            _ => Duration::from_millis(1_200),
+        }
     }
 
     fn recovery_wait(&self) -> Option<Duration> {
@@ -1021,9 +1041,10 @@ impl MediaPacketHandler {
                 && self.stats_net.video_recovery.is_waiting()))
             && self.video_source.is_some())
         .then(|| {
-            Duration::from_millis(250).saturating_sub(
+            let interval = self.keyframe_retry_backoff();
+            interval.saturating_sub(
                 self.last_keyframe_request
-                    .map_or(Duration::from_millis(250), |t| t.elapsed()),
+                    .map_or(interval, |t| t.elapsed()),
             )
         })
     }
@@ -1041,25 +1062,39 @@ impl MediaPacketHandler {
             self.needs_keyframe = false;
             self.video_source = None;
             self.last_keyframe_request = None;
+            self.consecutive_keyframe_requests = 0;
             return None;
         }
-        if self.recovery_wait()? != Duration::ZERO {
+        let Some(wait) = self.recovery_wait() else {
+            self.consecutive_keyframe_requests = 0;
+            return None;
+        };
+        if wait != Duration::ZERO {
             return None;
         }
         self.last_keyframe_request = Some(Instant::now());
+        self.consecutive_keyframe_requests = self.consecutive_keyframe_requests.saturating_add(1);
         self.stats_net.video_keyframe_requests.fetch_add(1, Relaxed);
         Some((self.video_source?, self.last_video_ssrc))
     }
 
     pub fn update_clock_estimate(&mut self, estimate: Option<ClockEstimate>) {
         self.clock_estimate = estimate;
-        self.rtt_ms = estimate.map_or(0.0, |value| {
-            value.latest_sample.network_rtt_us as f32 / 1_000.0
-        });
-        self.host_stats.set_rtt(self.rtt_ms);
         self.host_stats.set_clock_estimate(estimate);
+        self.rtt_ms = self
+            .host_stats
+            .rtt_summary()
+            .map(|summary| summary.median_ms)
+            .unwrap_or_else(|| {
+                estimate.map_or(0.0, |value| {
+                    value.latest_sample.network_rtt_us as f32 / 1_000.0
+                })
+            });
+        self.host_stats.set_rtt(self.rtt_ms);
         let now_us = crate::timing::quanta_now_us();
-        if self.video_expected_seq_init && self.last_loss_calc.elapsed() >= Duration::from_millis(500) {
+        if self.video_expected_seq_init
+            && self.last_loss_calc.elapsed() >= Duration::from_millis(1_000)
+        {
             let rate = if self.packets_expected == 0 {
                 0.0
             } else {
@@ -1324,12 +1359,16 @@ impl MediaPacketHandler {
             }
             if crate::media_plane::is_hevc_keyframe(&ordered_pkt.payload) {
                 self.needs_keyframe = false;
+                self.consecutive_keyframe_requests = 0;
                 if !self.stats_net.video_recovery.tracks_output() {
                     self.last_keyframe_request = None;
                 }
             }
             self.last_seq = Some(seq);
-            if self.last_loss_calc.elapsed() >= Duration::from_millis(500) {
+            let loss_elapsed = self.last_loss_calc.elapsed();
+            if (loss_elapsed >= Duration::from_millis(500) && self.packets_expected >= 15)
+                || loss_elapsed >= Duration::from_millis(1_000)
+            {
                 let rate = self.packets_lost as f32 / self.packets_expected.max(1) as f32 * 100.0;
                 self.loss_rate_pct = self.loss_rate_pct * 0.7 + rate * 0.3;
                 self.packets_expected = 0;
@@ -1786,7 +1825,7 @@ mod tests {
         handler.handle(packet.clone(), 16).await;
         assert_eq!(handler.take_keyframe_request(), Some((host, 7)));
         assert_eq!(handler.take_keyframe_request(), None);
-        handler.last_keyframe_request = Some(Instant::now() - Duration::from_millis(251));
+        handler.last_keyframe_request = Some(Instant::now() - Duration::from_millis(301));
         assert_eq!(handler.take_keyframe_request(), Some((host, 7)));
         packet.header.sequence_number = 6;
         packet.payload = vec![0, 0, 1, 0x26, 1];
@@ -1883,8 +1922,8 @@ mod tests {
         handler.activate_video_source(host);
         assert_eq!(stats.udp_packets_recv.load(Relaxed), 0);
         assert_eq!(handler.take_keyframe_request(), Some((host, 7)));
-        assert_eq!(handler.take_keyframe_request(), None, "250ms throttle");
-        handler.last_keyframe_request = Some(Instant::now() - Duration::from_millis(251));
+        assert_eq!(handler.take_keyframe_request(), None, "300ms throttle");
+        handler.last_keyframe_request = Some(Instant::now() - Duration::from_millis(301));
         assert_eq!(handler.take_keyframe_request(), Some((host, 7)));
 
         let mut idr = video_packet(7);
@@ -2137,5 +2176,31 @@ mod tests {
         })
         .await
         .expect("owned clock task must terminate with its receiver");
+    }
+
+    #[test]
+    fn keyframe_requests_apply_exponential_backoff_and_reset_on_recovery() {
+        let (event_tx, _) = mpsc::unbounded_channel();
+        let session = Arc::new(AtomicU32::new(7));
+        let mut handler = test_media_handler(session, event_tx);
+        let source: SocketAddr = "127.0.0.1:49370".parse().unwrap();
+        handler.activate_video_source(source);
+
+        // First request fires immediately.
+        assert_eq!(handler.keyframe_retry_backoff(), Duration::ZERO);
+        assert_eq!(handler.take_keyframe_request(), Some((source, 7)));
+        // Subsequent retries back off: 300ms -> 600ms -> 1200ms.
+        assert_eq!(handler.keyframe_retry_backoff(), Duration::from_millis(300));
+        assert_eq!(handler.take_keyframe_request(), None);
+        handler.last_keyframe_request = Some(Instant::now() - Duration::from_millis(310));
+        assert_eq!(handler.take_keyframe_request(), Some((source, 7)));
+        assert_eq!(handler.keyframe_retry_backoff(), Duration::from_millis(600));
+        handler.last_keyframe_request = Some(Instant::now() - Duration::from_millis(610));
+        assert_eq!(handler.take_keyframe_request(), Some((source, 7)));
+        assert_eq!(handler.keyframe_retry_backoff(), Duration::from_millis(1_200));
+
+        // Resetting source resets backoff back to immediate.
+        handler.reset_video_source();
+        assert_eq!(handler.keyframe_retry_backoff(), Duration::ZERO);
     }
 }

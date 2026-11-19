@@ -9,6 +9,7 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,12 +30,67 @@ const MAX_PACKET_LEN: usize = 65_535;
 const MAX_TCP_FRAME_LEN: usize = RELAY_MAGIC.len() + 3 + (2 * MAX_ID_LEN) + MAX_PACKET_LEN;
 const DEFAULT_MAX_TCP_CONNECTIONS: usize = 128;
 const DEFAULT_MAX_PEERS_PER_GROUP: usize = 8;
-const DEFAULT_TCP_WRITER_QUEUE_CAPACITY: usize = 16;
-const TCP_WRITER_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_TCP_WRITER_QUEUE_CAPACITY: usize = 512;
+const TCP_WRITER_STALL_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_WEBSOCKET_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(25);
+const WEBSOCKET_SEND_BATCH_LIMIT: usize = 32;
+const WEBSOCKET_RECV_YIELD_INTERVAL: usize = 16;
+
+const RELAY_SCALE_FULL_PERMILLE: u32 = 1_000;
+const RELAY_SCALE_MIN_PERMILLE: u32 = 250;
+const RELAY_PRESSURE_IDLE_RESET_US: u64 = 3_000_000;
+
+static RELAY_OUTBOUND_SCALE_PERMILLE: AtomicU32 = AtomicU32::new(RELAY_SCALE_FULL_PERMILLE);
+static RELAY_OUTBOUND_LAST_UPDATE_US: AtomicU64 = AtomicU64::new(0);
+
+/// Instant upstream backpressure signal observed by the local WebSocket relay tunnel.
+/// Returns `1000` (100%) when healthy/idle and smoothly scales down to `250` (25%)
+/// when TCP `flush()` stalls indicate outbound relay congestion, preventing the
+/// 2 MB local UDP tunnel buffer from overflowing and dropping video fragments.
+pub fn relay_outbound_congestion_scale_permille() -> u32 {
+    let last_us = RELAY_OUTBOUND_LAST_UPDATE_US.load(Ordering::Relaxed);
+    if last_us == 0 {
+        return RELAY_SCALE_FULL_PERMILLE;
+    }
+    let now_us = crate::timing::quanta_now_us();
+    if now_us.saturating_sub(last_us) >= RELAY_PRESSURE_IDLE_RESET_US {
+        RELAY_OUTBOUND_SCALE_PERMILLE.store(RELAY_SCALE_FULL_PERMILLE, Ordering::Relaxed);
+        return RELAY_SCALE_FULL_PERMILLE;
+    }
+    RELAY_OUTBOUND_SCALE_PERMILLE
+        .load(Ordering::Relaxed)
+        .clamp(RELAY_SCALE_MIN_PERMILLE, RELAY_SCALE_FULL_PERMILLE)
+}
+
+fn record_relay_outbound_flush(elapsed: Duration, _batched: usize) {
+    let now_us = crate::timing::quanta_now_us();
+    let current = RELAY_OUTBOUND_SCALE_PERMILLE.load(Ordering::Relaxed);
+    if elapsed >= Duration::from_millis(80) {
+        let next = ((u64::from(current) * 72) / 100).max(u64::from(RELAY_SCALE_MIN_PERMILLE)) as u32;
+        RELAY_OUTBOUND_SCALE_PERMILLE.store(next, Ordering::Relaxed);
+        RELAY_OUTBOUND_LAST_UPDATE_US.store(now_us, Ordering::Relaxed);
+    } else if elapsed >= Duration::from_millis(35) {
+        let next = ((u64::from(current) * 85) / 100).max(u64::from(RELAY_SCALE_MIN_PERMILLE)) as u32;
+        RELAY_OUTBOUND_SCALE_PERMILLE.store(next, Ordering::Relaxed);
+        RELAY_OUTBOUND_LAST_UPDATE_US.store(now_us, Ordering::Relaxed);
+    } else if elapsed <= Duration::from_millis(12) && current < RELAY_SCALE_FULL_PERMILLE {
+        let last_us = RELAY_OUTBOUND_LAST_UPDATE_US.load(Ordering::Relaxed);
+        if now_us.saturating_sub(last_us) >= 600_000 {
+            let next = current.saturating_add(60).min(RELAY_SCALE_FULL_PERMILLE);
+            RELAY_OUTBOUND_SCALE_PERMILLE.store(next, Ordering::Relaxed);
+            RELAY_OUTBOUND_LAST_UPDATE_US.store(now_us, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_relay_outbound_congestion_for_tests() {
+    RELAY_OUTBOUND_SCALE_PERMILLE.store(RELAY_SCALE_FULL_PERMILLE, Ordering::Relaxed);
+    RELAY_OUTBOUND_LAST_UPDATE_US.store(0, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpRelayServerConfig {
@@ -418,6 +474,7 @@ impl BoundTcpRelayServer {
                     let config = self.config.clone();
                     tokio::spawn(async move {
                         let _connection_slot = connection_slot;
+                        let _ = stream.set_nodelay(true);
                         let handshake = tokio::time::timeout(
                             WEBSOCKET_HANDSHAKE_TIMEOUT,
                             accept_async_with_config(stream, Some(relay_websocket_config())),
@@ -730,8 +787,10 @@ impl BoundWebSocketRelayTunnel {
 
     pub async fn run(self, mut cancel_rx: broadcast::Receiver<()>) -> io::Result<()> {
         let _stopped = StopObservation(self.diagnostics.clone());
+        let mut retry_delay = Duration::from_millis(200);
         loop {
             self.diagnostics.attempt();
+            let attempt_started = Instant::now();
             tokio::select! {
                 biased;
                 _ = cancel_rx.recv() => return Ok(()),
@@ -743,7 +802,12 @@ impl BoundWebSocketRelayTunnel {
                             if self.config.log_events { eprintln!("WebSocket relay connected"); }
                             match self.run_connected(stream, &mut cancel_rx).await {
                                 Ok(()) => return Ok(()),
-                                Err(err) => self.diagnostics.retry(io_failure(&err)),
+                                Err(err) => {
+                                    if attempt_started.elapsed() >= Duration::from_secs(5) {
+                                        retry_delay = Duration::from_millis(200);
+                                    }
+                                    self.diagnostics.retry(io_failure(&err));
+                                }
                             }
                         }
                         Ok(Err(failure)) => self.diagnostics.retry(failure),
@@ -759,8 +823,9 @@ impl BoundWebSocketRelayTunnel {
             }
             tokio::select! {
                 _ = cancel_rx.recv() => return Ok(()),
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                _ = tokio::time::sleep(retry_delay) => {}
             }
+            retry_delay = (retry_delay * 2).min(Duration::from_secs(1));
         }
     }
 
@@ -781,6 +846,7 @@ impl BoundWebSocketRelayTunnel {
         // blocked write must not stop reads and deadlock a full-duplex peer.
         // No unbounded queue, extra worker or packet reordering is introduced.
         let receive = async {
+            let mut forwarded_since_yield = 0usize;
             loop {
                 let message = reader.next().await;
                 let Some(message) = message else {
@@ -803,9 +869,13 @@ impl BoundWebSocketRelayTunnel {
                             if let Some(target) = target {
                                 let _ = self.socket.send_to(&payload, target).await;
                             }
-                            // Ready fragment buffers must still give the other
-                            // half and capture/input tasks a scheduling turn.
-                            tokio::task::yield_now().await;
+                            forwarded_since_yield += 1;
+                            if forwarded_since_yield >= WEBSOCKET_RECV_YIELD_INTERVAL {
+                                forwarded_since_yield = 0;
+                                // Ready fragment buffers must still give the other
+                                // half and capture/input tasks a scheduling turn.
+                                tokio::task::yield_now().await;
+                            }
                         }
                     }
                     Message::Close(_) => {
@@ -867,21 +937,21 @@ impl BoundWebSocketRelayTunnel {
                     received = self.socket.recv_from(&mut buf) => {
                         let (mut len, mut addr) = received?;
                         let mut batched = 0usize;
+                        let flush_started = Instant::now();
                         loop {
                             *local_target_addr.lock().unwrap_or_else(|e|e.into_inner())=Some(addr);
-                            let encoded = RelayPacket::Data {
-                                group_id: self.config.group_id.clone(),
-                                peer_id: self.config.peer_id.clone(),
-                                payload: buf[..len].to_vec(),
-                            }
-                            .encode();
+                            let encoded = RelayPacket::encode_data_frame(
+                                &self.config.group_id,
+                                &self.config.peer_id,
+                                &buf[..len],
+                            );
                             writer
                                 .feed(Message::Binary(Bytes::from(encoded)))
                                 .await
                                 .map_err(websocket_io_error)?;
                             self.diagnostics.data_sent();
                             batched += 1;
-                            if batched >= 32 {
+                            if batched >= WEBSOCKET_SEND_BATCH_LIMIT {
                                 break;
                             }
                             match self.socket.try_recv_from(&mut buf) {
@@ -893,6 +963,7 @@ impl BoundWebSocketRelayTunnel {
                             }
                         }
                         writer.flush().await.map_err(websocket_io_error)?;
+                        record_relay_outbound_flush(flush_started.elapsed(), batched);
                         tokio::task::yield_now().await;
                     }
                 }
@@ -1153,12 +1224,31 @@ async fn forward_relay_frame(
     frame: Arc<[u8]>,
     payload: &[u8],
 ) -> RelayForwardResult {
+    forward_relay_frame_with_timeout(
+        state,
+        group_id,
+        source_connection_id,
+        frame,
+        payload,
+        TCP_WRITER_STALL_TIMEOUT,
+    )
+    .await
+}
+
+async fn forward_relay_frame_with_timeout(
+    state: &Arc<Mutex<TcpRelayServerState>>,
+    group_id: &str,
+    source_connection_id: u64,
+    frame: Arc<[u8]>,
+    payload: &[u8],
+    stall_timeout: Duration,
+) -> RelayForwardResult {
     let (mut result, deferred) =
         state
             .lock()
             .await
             .forward_frame(group_id, source_connection_id, frame.clone(), payload);
-    let deadline = tokio::time::Instant::now() + TCP_WRITER_STALL_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + stall_timeout;
     for peer in deferred {
         // Keep one current frame and stop reading this producer while the
         // bounded destination drains. A short socket stall is not a failed peer.
@@ -1305,6 +1395,7 @@ where
     // A blocked peer write must not stop registration, input or heartbeat
     // reads. Poll both halves in this task, retaining the existing bound.
     let receive = async {
+        let mut forwarded_since_yield = 0usize;
         loop {
             let inbound = tokio::time::timeout(config.idle_timeout, reader.next())
                 .await
@@ -1329,6 +1420,11 @@ where
                         config,
                     )
                     .await?;
+                    forwarded_since_yield += 1;
+                    if forwarded_since_yield >= WEBSOCKET_RECV_YIELD_INTERVAL {
+                        forwarded_since_yield = 0;
+                        tokio::task::yield_now().await;
+                    }
                 }
                 Message::Close(_) => return Ok(()),
                 Message::Text(_) => {
@@ -1349,9 +1445,25 @@ where
             tokio::select! {
                 _ = flush.notified() => writer.flush().await.map_err(websocket_io_error)?,
                 outbound = writer_rx.recv() => {
-                    let Some(frame) = outbound else { return Ok(()); };
-                    writer.send(Message::Binary(Bytes::from_owner(frame))).await
+                    let Some(first) = outbound else { return Ok(()); };
+                    writer
+                        .feed(Message::Binary(Bytes::from_owner(first)))
+                        .await
                         .map_err(websocket_io_error)?;
+                    let mut batched = 1usize;
+                    while batched < WEBSOCKET_SEND_BATCH_LIMIT {
+                        match writer_rx.try_recv() {
+                            Ok(next) => {
+                                writer
+                                    .feed(Message::Binary(Bytes::from_owner(next)))
+                                    .await
+                                    .map_err(websocket_io_error)?;
+                                batched += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    writer.flush().await.map_err(websocket_io_error)?;
                 }
             }
         }
@@ -1429,9 +1541,6 @@ async fn handle_tcp_relay_packet(
             drop(relay_state);
             let forward =
                 forward_relay_frame(state, &group_id, connection_id, encoded, &payload).await;
-            // A ready WebSocket burst must not monopolize the executor and
-            // make another healthy connection's bounded writer look slow.
-            tokio::task::yield_now().await;
             if config.log_events {
                 println!(
                     "WebSocket relay data forwarded targets={} slow_peers={}",
@@ -1455,9 +1564,9 @@ where
 
 fn relay_websocket_config() -> WebSocketConfig {
     WebSocketConfig::default()
-        .read_buffer_size(64 * 1024)
-        .write_buffer_size(0)
-        .max_write_buffer_size(2 * MAX_TCP_FRAME_LEN)
+        .read_buffer_size(128 * 1024)
+        .write_buffer_size(64 * 1024)
+        .max_write_buffer_size((512 * 1024).max(2 * MAX_TCP_FRAME_LEN))
         .max_message_size(Some(MAX_TCP_FRAME_LEN))
         .max_frame_size(Some(MAX_TCP_FRAME_LEN))
 }
@@ -1515,6 +1624,21 @@ enum RelayPacket {
 }
 
 impl RelayPacket {
+    fn encode_data_frame(group_id: &str, peer_id: &str, payload: &[u8]) -> Vec<u8> {
+        let group = group_id.as_bytes();
+        let peer = peer_id.as_bytes();
+        let mut out =
+            Vec::with_capacity(RELAY_MAGIC.len() + 5 + group.len() + peer.len() + payload.len());
+        out.extend_from_slice(RELAY_MAGIC);
+        out.push(DATA_PACKET);
+        out.push(group.len() as u8);
+        out.push(peer.len() as u8);
+        out.extend_from_slice(group);
+        out.extend_from_slice(peer);
+        out.extend_from_slice(payload);
+        out
+    }
+
     fn encode(&self) -> Vec<u8> {
         let (packet_type, group_id, peer_id, payload) = match self {
             Self::Register { group_id, peer_id } => (
@@ -2373,7 +2497,15 @@ mod tests {
         );
         assert_eq!(writer_rx.len(), 1);
         assert_eq!(
-            forward_relay_frame(&state, "group", source_connection, frame, &[]).await,
+            forward_relay_frame_with_timeout(
+                &state,
+                "group",
+                source_connection,
+                frame,
+                &[],
+                Duration::from_millis(250),
+            )
+            .await,
             RelayForwardResult {
                 forwarded: 0,
                 disconnected_slow_peers: 1,
@@ -3065,5 +3197,31 @@ mod tests {
             .await
             .expect("client tunnel task should join")
             .unwrap();
+    }
+
+    #[test]
+    fn outbound_flush_backpressure_scales_down_and_recovers() {
+        reset_relay_outbound_congestion_for_tests();
+        assert_eq!(relay_outbound_congestion_scale_permille(), 1_000);
+        record_relay_outbound_flush(Duration::from_millis(90), 32);
+        let after_severe = relay_outbound_congestion_scale_permille();
+        assert!(after_severe < 800 && after_severe >= 250, "got {after_severe}");
+        record_relay_outbound_flush(Duration::from_millis(45), 16);
+        let after_moderate = relay_outbound_congestion_scale_permille();
+        assert!(after_moderate < after_severe && after_moderate >= 250);
+        reset_relay_outbound_congestion_for_tests();
+        assert_eq!(relay_outbound_congestion_scale_permille(), 1_000);
+    }
+
+    #[test]
+    fn encode_data_frame_matches_packet_encode() {
+        let direct = RelayPacket::encode_data_frame("grp-1", "peer-a", b"hevc-chunk");
+        let via_enum = RelayPacket::Data {
+            group_id: "grp-1".into(),
+            peer_id: "peer-a".into(),
+            payload: b"hevc-chunk".to_vec(),
+        }
+        .encode();
+        assert_eq!(direct, via_enum);
     }
 }

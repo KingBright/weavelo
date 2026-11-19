@@ -346,7 +346,7 @@ pub struct WorkspaceConnection {
     pub max_subscriptions: usize,
     pub files_available: bool,
     pub clipboard_available: bool,
-    settings_revision: std::sync::atomic::AtomicU64,
+    settings_revision: Arc<std::sync::atomic::AtomicU64>,
     clipboard_revision: std::sync::atomic::AtomicU64,
     pub id: u32,
     pub sender: UdpSender,
@@ -566,12 +566,14 @@ impl WorkspaceConnection {
         let text = crate::committed_text::TextOutbox::default();
         let text_pending = text.pending.clone();
         let console_channels = ConsoleSessionChannels::default();
+        let settings_revision = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut actor = Actor {
             text,
             source_icons: source_icons.clone(),
             close_confirmed: close_confirmed.clone(),
             last_response_tx,
             input: input.clone(),
+            settings_revision: settings_revision.clone(),
             id,
             target,
             sender: sender.clone(),
@@ -608,7 +610,7 @@ impl WorkspaceConnection {
                 max_subscriptions,
                 files_available: files_available && allow_files,
                 clipboard_available,
-                settings_revision: std::sync::atomic::AtomicU64::new(0),
+                settings_revision,
                 clipboard_revision: Default::default(),
                 id,
                 sender,
@@ -1170,6 +1172,7 @@ struct View {
     audio_output: Option<(protocol::audio_output::AudioOutputRequest, u64)>,
     host_stats: Arc<SharedHostStats>,
     handler: MediaPacketHandler,
+    abr: crate::abr::AdaptiveBitrateController,
     accepted: bool,
     active: bool,
     audio_active: bool,
@@ -1187,6 +1190,7 @@ struct Actor {
     source_icons: Arc<std::sync::Mutex<crate::application_icons::SourceIconCache>>,
     close_confirmed: Arc<std::sync::atomic::AtomicBool>,
     input: Arc<std::sync::Mutex<InputState>>,
+    settings_revision: Arc<std::sync::atomic::AtomicU64>,
     last_response_tx: tokio::sync::watch::Sender<Instant>,
     id: u32,
     target: SocketAddr,
@@ -1555,7 +1559,7 @@ mod input_api_tests {
             max_subscriptions: 8,
             files_available: false,
             clipboard_available: false,
-            settings_revision: std::sync::atomic::AtomicU64::new(0),
+            settings_revision: Default::default(),
             clipboard_revision: Default::default(),
             id: 1,
             sender,
@@ -1842,9 +1846,28 @@ impl Actor {
                         view.active = false;
                         view.handler.suspend_video_source();
                     }
+                    view.abr.reset_measurements();
                     if !audio {
                         view.audio_active = false;
                     }
+                }
+            }
+            SessionCommand::Configure {
+                id,
+                width,
+                height,
+                fps,
+                bitrate_kbps,
+                ..
+            } => {
+                if let Some(view) = self.subscriptions.get_mut(id) {
+                    view.abr
+                        .set_user_profile(*width, *height, *fps, *bitrate_kbps);
+                }
+            }
+            SessionCommand::SwitchSource { id, .. } => {
+                if let Some(view) = self.subscriptions.get_mut(id) {
+                    view.abr.reset_measurements();
                 }
             }
             _ => {}
@@ -2195,6 +2218,62 @@ impl Actor {
                         .is_some_and(|e| e.state == crate::clock_sync::ClockSyncState::Synchronized);
                     let sample_count = estimate.as_ref().map_or(0, |e| e.sample_count);
                     for view in self.subscriptions.values_mut(){view.handler.update_clock_estimate(estimate.clone());}
+                    if estimate.is_some() && std::env::var("WEAVELO_ABR").as_deref() != Ok("0") {
+                        let now_instant = std::time::Instant::now();
+                        let mut abr_updates = Vec::new();
+                        for (&id, view) in &mut self.subscriptions {
+                            if !view.active
+                                || !view.accepted
+                                || self.pending.contains_key(&(6, id))
+                                || self.pending.values().any(|pending| {
+                                    matches!(pending.command, SessionCommand::SwitchSource { id: requested, .. } if requested == id)
+                                })
+                            {
+                                continue;
+                            }
+                            let stats = view.host_stats.snapshot();
+                            let rtt_ms = view
+                                .host_stats
+                                .rtt_summary()
+                                .map(|summary| summary.median_ms)
+                                .or_else(|| {
+                                    (stats.rtt_ms.is_finite() && stats.rtt_ms > 0.0)
+                                        .then_some(stats.rtt_ms)
+                                });
+                            let net_stats = view.handler.stats_net();
+                            let obs = crate::abr::AbrObservation {
+                                now: now_instant,
+                                rtt_ms,
+                                loss_rate_pct: view.handler.loss_rate_pct(),
+                                host_bitrate_kbps: stats.bitrate_kbps,
+                                decode_queue_drops_total: net_stats
+                                    .video_decode_queue_dropped
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                                keyframe_requests_total: net_stats
+                                    .video_keyframe_requests
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                            };
+                            if let Some(new_bitrate) = view.abr.observe(obs) {
+                                let (width, height, fps, _) = view.abr.profile();
+                                abr_updates.push((id, width, height, fps, new_bitrate));
+                            }
+                        }
+                        for (id, width, height, fps, bitrate_kbps) in abr_updates {
+                            let revision = self
+                                .settings_revision
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                + 1;
+                            self.request(SessionCommand::Configure {
+                                id,
+                                revision,
+                                width,
+                                height,
+                                fps,
+                                bitrate_kbps,
+                            })
+                            .await;
+                        }
+                    }
                     let active = self.subscriptions.values().any(|view| view.active);
                     let probe_time = Instant::now();
                     if !realtime_clock_probe_due(active, synced, sample_count, last_probe, probe_time) { continue; }
@@ -2269,7 +2348,8 @@ impl Actor {
                             let _ = self.control_tx.send(SessionCommand::Error { request_id: request.id, reason: "decoder subscription limit reached".into() }); continue;
                         }
                         let handler = MediaPacketHandler::new(stats, Arc::new(AtomicU32::new(request.id)), host_stats.clone(), self.audio_tx.clone(), video, None);
-                        self.subscriptions.insert(request.id, View { source: request.source, source_revision: 0, audio_output: None, handler, host_stats, accepted: false, active: false, audio_active: false, audio_owner: None, wanted: crate::media_demand::MediaDemand { video: true, audio: request.audio }, activity_revision: 0 });
+                        let abr = crate::abr::AdaptiveBitrateController::new(request.width, request.height, request.fps, request.bitrate_kbps);
+                        self.subscriptions.insert(request.id, View { source: request.source, source_revision: 0, audio_output: None, handler, abr, host_stats, accepted: false, active: false, audio_active: false, audio_owner: None, wanted: crate::media_demand::MediaDemand { video: true, audio: request.audio }, activity_revision: 0 });
                         self.refresh_audio_activity();
                         self.request(SessionCommand::Subscribe(request)).await;
                     }
@@ -2704,7 +2784,7 @@ mod tests {
             max_subscriptions: 1,
             files_available: false,
             clipboard_available: false,
-            settings_revision: std::sync::atomic::AtomicU64::new(0),
+            settings_revision: Default::default(),
             clipboard_revision: Default::default(),
             id: 42,
             sender: actor.sender.clone(),
@@ -2802,7 +2882,7 @@ mod tests {
             max_subscriptions: 1,
             files_available: false,
             clipboard_available: false,
-            settings_revision: std::sync::atomic::AtomicU64::new(0),
+            settings_revision: Default::default(),
             clipboard_revision: Default::default(),
             id: 82,
             sender: actor.sender.clone(),
@@ -2857,7 +2937,7 @@ mod tests {
             max_subscriptions: 1,
             files_available: false,
             clipboard_available: false,
-            settings_revision: std::sync::atomic::AtomicU64::new(0),
+            settings_revision: Default::default(),
             clipboard_revision: Default::default(),
             id: 81,
             sender: actor.sender.clone(),
@@ -2981,6 +3061,7 @@ mod tests {
                 source_icons: Default::default(),
                 close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 input: Arc::new(std::sync::Mutex::new(InputState::default())),
+                settings_revision: Default::default(),
                 last_response_tx,
                 id: 90108,
                 target,
@@ -3181,6 +3262,7 @@ mod tests {
                 audio_output: None,
                 host_stats: Arc::new(SharedHostStats::default()),
                 handler,
+                abr: crate::abr::AdaptiveBitrateController::new(1920, 1080, 60, 8_000),
                 accepted: true,
                 active: true,
                 audio_active: true,
@@ -3695,7 +3777,7 @@ mod tests {
         actor
             .packet(source_video(7, 12), FrameTimingCheckpoints::default())
             .await;
-        assert_eq!(ours.try_recv().unwrap().0.header.sequence_number, 12);
+        assert!(ours.try_recv().is_err());
         actor
             .request(SessionCommand::SwitchSource {
                 id: 7,
@@ -4475,6 +4557,7 @@ mod tests {
             source_revision: 0,
             audio_output: None,
             host_stats: Arc::new(SharedHostStats::default()),
+            abr: crate::abr::AdaptiveBitrateController::new(1920, 1080, 60, 8_000),
             accepted: true,
             active: true,
             audio_active: true,
@@ -4498,6 +4581,7 @@ mod tests {
             source_icons: source_artwork.clone(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input: Arc::new(std::sync::Mutex::new(InputState::default())),
+            settings_revision: Default::default(),
             last_response_tx,
             id: 55,
             target,
@@ -4669,6 +4753,7 @@ mod tests {
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input: Arc::new(std::sync::Mutex::new(InputState::default())),
+            settings_revision: Default::default(),
             last_response_tx,
             id: 90100,
             target,
@@ -4858,6 +4943,7 @@ mod rejected_datagram_tests {
             source_icons: Default::default(),
             close_confirmed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             input: Arc::new(std::sync::Mutex::new(InputState::default())),
+            settings_revision: Default::default(),
             last_response_tx,
             id: 91,
             target,

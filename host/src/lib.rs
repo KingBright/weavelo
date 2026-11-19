@@ -1268,6 +1268,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
     let mut resume_capture_after_us = 0_u64;
     let mut awaiting_resume_keyframe = false;
     let mut reported_settings=(width,height,fps,bitrate_kbps);
+    let mut current_settings = initial;
+    let is_routed_peer = remote_core::routed_relay::incoming_device(client_addr).is_some();
+    let mut applied_relay_scale_permille: u32 = 1_000;
     let mut telemetry_tick = tokio::time::interval(Duration::from_millis(500));
     telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     #[cfg(any(target_os="macos",target_os="linux"))]
@@ -1299,7 +1302,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     if startup_sync { startup_sync_deadline = None; }
                     if keyframe_requested.swap(false,Relaxed) || evicted || startup_sync {
                         video_encoder.request_keyframe();
-                        startup_static_burst = startup_static_burst.max(2);
+                        if startup_sync {
+                            startup_static_burst = startup_static_burst.max(2);
+                        }
                     } else if startup_static_burst > 0 {
                         video_encoder.request_redraw();
                     }
@@ -1319,7 +1324,9 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                     if startup_sync { startup_sync_deadline = None; }
                     if keyframe_requested.swap(false,Relaxed) || evicted || startup_sync {
                         video_encoder.request_keyframe();
-                        startup_static_burst = startup_static_burst.max(2);
+                        if startup_sync {
+                            startup_static_burst = startup_static_burst.max(2);
+                        }
                     } else if startup_static_burst > 0 {
                         video_encoder.request_redraw();
                     }
@@ -1341,6 +1348,40 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 break;
             }
             _ = telemetry_tick.tick() => {
+                if is_routed_peer && !paused {
+                    let scale = remote_core::relay::relay_outbound_congestion_scale_permille();
+                    if scale != applied_relay_scale_permille {
+                        applied_relay_scale_permille = scale;
+                        let mut effective = current_settings.clone();
+                        effective.bitrate_kbps = ((u64::from(current_settings.bitrate_kbps)
+                            * u64::from(scale))
+                            / 1_000)
+                            .max(800)
+                            .min(u64::from(current_settings.bitrate_kbps))
+                            as u32;
+                        #[cfg(target_os = "macos")]
+                        {
+                            if !matches!(source, protocol::session::CaptureSource::Camera(_)) {
+                                let _ = video_encoder.viewport_settings(&effective, source);
+                            } else {
+                                let _ = video_encoder.update_rate_settings(effective.fps, effective.bitrate_kbps);
+                            }
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            let _ = video_encoder.update_settings(
+                                effective.width,
+                                effective.height,
+                                effective.fps,
+                                effective.bitrate_kbps,
+                            );
+                        }
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = video_encoder.update_settings(effective);
+                        }
+                    }
+                }
                 let now=std::time::Instant::now();
                 let elapsed=now.duration_since(last_fps_update).as_secs_f32();
                 if elapsed>=0.2 {
@@ -1363,6 +1404,8 @@ async fn run_streaming(config: StreamingRunConfig) -> Result<(), Box<dyn Error +
                 }
             } => {
                 if let Ok(new_settings) = settings_changed {
+                    current_settings = new_settings.clone();
+                    applied_relay_scale_permille = 1_000;
                     #[cfg(any(target_os = "linux", target_os = "windows"))]
                     {
                         if new_settings.paused { video_encoder.set_paused(true)?; }

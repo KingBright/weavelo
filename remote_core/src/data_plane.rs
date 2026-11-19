@@ -201,7 +201,13 @@ impl LaneScheduler {
                 return SchedulerPushResult::DroppedStaleRealtime;
             }
 
-            if self.evict_older_video && envelope.header.kind == ContentKind::VideoH265 {
+            if self.evict_older_video
+                && envelope.header.kind == ContentKind::VideoH265
+                && crate::media_plane::is_hevc_keyframe(&envelope.payload)
+            {
+                // Only a fresh IDR keyframe may replace queued older frames of
+                // the same stream; evicting an earlier P-frame would transmit
+                // orphaned dependents and trigger receiver-side keyframe storms.
                 let stream_id = envelope.header.stream_id;
                 let has_older = self.realtime.iter().any(|entry| {
                     entry.0.header.kind == ContentKind::VideoH265
@@ -775,6 +781,39 @@ mod tests {
         assert_eq!(scheduler.stats().queued_reliable, 1);
         assert_eq!(scheduler.stats().rejected_reliable_capacity, 1);
         assert_eq!(scheduler.pop_next(1_000), Some(first));
+    }
+
+    #[test]
+    fn latest_video_only_preserves_p_frame_chains_and_only_evicts_on_keyframe() {
+        let mut scheduler = LaneScheduler::with_config(LaneSchedulerConfig {
+            max_realtime_queued: 8,
+            max_reliable_queued: 8,
+        })
+        .with_latest_video_only(true);
+        let p1 = make_realtime_envelope(
+            RealtimePacketSpec::video(1, 1, 1_000, 2_000),
+            vec![0, 0, 1, 0x02, 1],
+        );
+        let p2 = make_realtime_envelope(
+            RealtimePacketSpec::video(1, 2, 1_016, 2_016),
+            vec![0, 0, 1, 0x02, 1],
+        );
+        let idr = make_realtime_envelope(
+            RealtimePacketSpec::video(1, 3, 1_032, 2_032),
+            vec![0, 0, 1, 0x26, 1],
+        );
+
+        assert_eq!(scheduler.push(p1.clone(), 1_000), SchedulerPushResult::Queued);
+        assert_eq!(scheduler.push(p2.clone(), 1_016), SchedulerPushResult::Queued);
+        assert_eq!(scheduler.evicted_video_frames(), 0);
+        assert_eq!(scheduler.stats().queued_realtime, 2);
+
+        // Fresh IDR cleanly supersedes older queued frames of the same stream.
+        assert_eq!(scheduler.push(idr.clone(), 1_032), SchedulerPushResult::Queued);
+        assert_eq!(scheduler.evicted_video_frames(), 2);
+        assert_eq!(scheduler.stats().queued_realtime, 1);
+        assert_eq!(scheduler.pop_next(1_032), Some(idr));
+        assert!(scheduler.is_empty());
     }
 
     #[test]

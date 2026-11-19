@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::time::Duration;
 
-const MAX_BUFFER_DEPTH: usize = 4;
-const MAX_REORDER_WAIT_US: u64 = 0;
+const MAX_BUFFER_DEPTH: usize = 16;
+const MAX_REORDER_WAIT_US: u64 = 15_000;
 
 #[derive(Eq, PartialEq)]
 struct JitterPacket {
@@ -246,10 +246,21 @@ mod tests {
         assert_eq!(pop_seq(&mut buffer), Some(11));
         assert_eq!(pop_seq(&mut buffer), Some(12));
 
-        // Zero proactive hold: a missing packet never stalls a newer frame.
+        // Wait briefly for out-of-order frame 13 before declaring it lost.
         buffer.push(packet(14));
-        assert_eq!(pop_seq(&mut buffer), Some(14));
+        let entered = buffer.heap.peek().unwrap().enter_ts_us;
+        assert_eq!(buffer.pop_at(entered), None);
         buffer.push(packet(13));
+        assert_eq!(pop_seq(&mut buffer), Some(13));
+        assert_eq!(pop_seq(&mut buffer), Some(14));
+
+        // If a frame truly never arrives, it releases once MAX_REORDER_WAIT_US elapses.
+        buffer.push(packet(16));
+        let entered = buffer.heap.peek().unwrap().enter_ts_us;
+        assert_eq!(buffer.pop_at(entered), None);
+        let (released, _) = buffer.pop_at(entered + MAX_REORDER_WAIT_US).unwrap();
+        assert_eq!(released.header.sequence_number, 16);
+        buffer.push(packet(15));
         assert_eq!(pop_seq(&mut buffer), None);
     }
 
@@ -274,12 +285,12 @@ mod tests {
         buffer.push(packet(1));
         assert_eq!(pop_seq(&mut buffer), Some(1));
 
-        for sequence_number in 3..=18 {
+        for sequence_number in 3..=22 {
             buffer.push(packet(sequence_number));
         }
 
-        assert_eq!(pop_seq(&mut buffer), Some(15));
-        assert_eq!(pop_seq(&mut buffer), Some(16));
+        assert_eq!(pop_seq(&mut buffer), Some(7));
+        assert_eq!(pop_seq(&mut buffer), Some(8));
     }
 
     #[test]
@@ -332,11 +343,11 @@ mod tests {
         assert_eq!(buffer.late_frames_dropped(), 1);
 
         // Push overflowing packets: oldest frames drop so newest MAX_BUFFER_DEPTH survive
-        for seq in 102..=120 {
+        for seq in 102..=125 {
             buffer.push(packet(seq));
         }
         let overflow_pkt = buffer.pop().expect("should pop overflow packet");
-        assert_eq!(overflow_pkt.header.sequence_number, 117);
+        assert_eq!(overflow_pkt.header.sequence_number, 110);
         assert!(buffer.queue_full_dropped() >= 1);
     }
 
@@ -349,9 +360,14 @@ mod tests {
         timing.recv_ts_us = 1_000;
         buffer.push_with_timing(packet(12), timing);
         let entered = buffer.heap.peek().unwrap().enter_ts_us;
-        let (packet, timing) = buffer.pop_at(entered).unwrap();
+        assert!(buffer.pop_at(entered).is_none());
+        assert!(buffer.next_ready_in().is_some());
+        let (packet, timing) = buffer.pop_at(entered + MAX_REORDER_WAIT_US).unwrap();
         assert_eq!(packet.header.sequence_number, 12);
-        assert_eq!(timing.jitter_exit_ts_us - timing.jitter_enter_ts_us, 0);
+        assert_eq!(
+            u64::from(timing.jitter_exit_ts_us - timing.jitter_enter_ts_us),
+            MAX_REORDER_WAIT_US
+        );
         assert!(buffer.next_ready_in().is_none());
     }
 
@@ -364,7 +380,7 @@ mod tests {
                 assert!(buffer.len() <= MAX_BUFFER_DEPTH);
             }
         }
-        assert_eq!(pop_seq(&mut buffer), Some(496));
+        assert_eq!(pop_seq(&mut buffer), Some(484));
     }
 
     #[test]
