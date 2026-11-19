@@ -37,7 +37,7 @@ use remote_core::p2p::{
 };
 use remote_core::pairing_qr::parse_pairing_qr;
 use remote_core::relay::{
-    BoundWebSocketRelayTunnel, WebSocketRelayTunnelConfig, derive_relay_group_id,
+    BoundHybridRelayTunnel, HybridRelayTunnelConfig, derive_relay_group_id,
 };
 use remote_core::workspace_session::WorkspaceConnection;
 
@@ -54,7 +54,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use touch_mapper::{TouchMode, TouchStateTracker};
 
 const DEFAULT_P2P_RENDEZVOUS: &str = "p.hackerlife.fun:3478";
-const DEFAULT_RELAY_URL: &str = "wss://weavelo.hackerlife.fun:8443/v1/relay";
+const DEFAULT_RELAY_URL: &str = "udp://192.168.2.200:39494,ws://192.168.2.200:39493/v1/relay,udp://weavelo.hackerlife.fun:39494,wss://weavelo.hackerlife.fun:8443/v1/relay";
 static BRIDGE_DEVICE_GROUP_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static PUBLISHING_PORT: std::sync::atomic::AtomicU16 =
     std::sync::atomic::AtomicU16::new(0);
@@ -1620,8 +1620,8 @@ async fn run_bridge_p2p(
 
 struct BridgeRelayBindings {
     router: remote_core::routed_relay::RoutedRelay,
-    control: BoundWebSocketRelayTunnel,
-    discovery: BoundWebSocketRelayTunnel,
+    control: BoundHybridRelayTunnel,
+    discovery: BoundHybridRelayTunnel,
 }
 async fn bind_bridge_relay(
     identity: &MeshConfig,
@@ -1649,8 +1649,8 @@ async fn bind_bridge_relay(
     )
     .await?;
     let router_target = router.local_addr()?;
-    let control = BoundWebSocketRelayTunnel::bind(
-        WebSocketRelayTunnelConfig::new(
+    let control = BoundHybridRelayTunnel::bind(
+        HybridRelayTunnelConfig::new(
             SocketAddr::from(([127, 0, 0, 1], 0)),
             relay_url.clone(),
             control_group,
@@ -1659,8 +1659,8 @@ async fn bind_bridge_relay(
         .with_local_target_addr(router_target),
     )
     .await?;
-    let discovery = BoundWebSocketRelayTunnel::bind(
-        WebSocketRelayTunnelConfig::new(
+    let discovery = BoundHybridRelayTunnel::bind(
+        HybridRelayTunnelConfig::new(
             SocketAddr::from(([127, 0, 0, 1], 0)),
             relay_url,
             discovery_group,

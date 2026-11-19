@@ -132,9 +132,13 @@ def commit_registry(path, expected_sha, previous, candidate, runtime):
 
 
 def runtime_env(profile):
+    relay_addr = os.environ.get(
+        'WEAVELO_RELAY_SERVER_ADDR',
+        'udp://192.168.2.200:39494,ws://192.168.2.200:39493/v1/relay,wss://weavelo.hackerlife.fun:8443/v1/relay',
+    )
     return dict(os.environ, WEAVELO_DEVICE_GROUP_DIR=str(profile),
                 WEAVELO_HOST_BIND_ADDR='0.0.0.0:39273', WEAVELO_DISCOVERY_PORT='38119',
-                WEAVELO_RELAY='1', WEAVELO_RELAY_SERVER_ADDR='wss://weavelo.hackerlife.fun:8443/v1/relay',
+                WEAVELO_RELAY='1', WEAVELO_RELAY_SERVER_ADDR=relay_addr,
                 WEAVELO_P2P='0')
 
 
