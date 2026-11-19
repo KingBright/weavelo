@@ -17,11 +17,12 @@ struct Manifest { schema: u32, releases: Vec<Entry> }
 #[derive(Deserialize)]
 struct Entry { file: String, version: String, source_commit: String }
 
-fn select(data: &[u8], prefix: &str, current: Option<&str>) -> Result<Release, String> {
+fn select(data: &[u8], prefixes: &[&str], current: Option<&str>) -> Result<Release, String> {
     let manifest: Manifest = serde_json::from_slice(data).map_err(|_| "Invalid release information")?;
     if manifest.schema != 1 { return Err("Unsupported release information".into()); }
     let mut matches = manifest.releases.into_iter().filter(|entry| {
-        entry.file.starts_with(prefix) && entry.file.ends_with(".zip")
+        prefixes.iter().any(|prefix| entry.file.starts_with(prefix))
+            && entry.file.ends_with(".zip")
             && !entry.file.contains(['/', '\\'])
     });
     let entry = matches.next().ok_or("No package for this device")?;
@@ -34,9 +35,9 @@ fn select(data: &[u8], prefix: &str, current: Option<&str>) -> Result<Release, S
 }
 
 pub fn check() -> Result<Release, String> {
-    let prefix = if cfg!(all(target_os="macos", target_arch="aarch64")) { "Weavelo-desktop-macos-arm64-" }
-        else if cfg!(all(target_os="linux", target_arch="x86_64")) { "Weavelo-desktop-linux-x64-" }
-        else if cfg!(all(target_os="windows", target_arch="x86_64")) { "Weavelo-Windows-x64-" }
+    let prefixes: &[&str] = if cfg!(all(target_os="macos", target_arch="aarch64")) { &["Weavelo-desktop-macos-arm64-"] }
+        else if cfg!(all(target_os="linux", target_arch="x86_64")) { &["Weavelo-desktop-linux-x64-"] }
+        else if cfg!(all(target_os="windows", target_arch="x86_64")) { &["Weavelo-desktop-windows-x64-", "Weavelo-Windows-x64-"] }
         else { return Err("No package for this device".into()); };
     #[cfg(target_os="macos")]
     let signer_manifest = verified_local_app().ok().map(|(_, _, signer)| {
@@ -54,7 +55,7 @@ pub fn check() -> Result<Release, String> {
     let identity = crate::build_identity::compiled();
     let current = identity.as_ref().filter(|v| v["source"]["state"] == "clean")
         .and_then(|v| v["source"]["commit"].as_str());
-    select(&data, prefix, current)
+    select(&data, prefixes, current)
 }
 
 fn fetch_metadata(url: &str) -> Result<Option<Vec<u8>>, String> {
@@ -89,18 +90,19 @@ mod tests {
     const HASH: &str = "0123456789abcdef0123456789abcdef01234567";
     #[test]
     fn selection_is_platform_specific_and_source_comparison_is_optional() {
-        let doc = format!(r#"{{"schema":1,"releases":[{{"file":"Weavelo-Windows-x64-a.zip","version":"2","source_commit":"{HASH}"}},{{"file":"Weavelo-desktop-linux-x64-a.zip","version":"2","source_commit":"{HASH}"}}]}}"#);
-        assert_eq!(select(doc.as_bytes(), "Weavelo-desktop-linux-x64-", Some(HASH)).unwrap().same_source, Some(true));
-        assert_eq!(select(doc.as_bytes(), "Weavelo-desktop-linux-x64-", None).unwrap().same_source, None);
-        assert_eq!(select(doc.as_bytes(), "Weavelo-desktop-linux-x64-", Some("other")).unwrap().same_source, Some(false));
+        let doc = format!(r#"{{"schema":1,"releases":[{{"file":"Weavelo-desktop-windows-x64-a.zip","version":"2","source_commit":"{HASH}"}},{{"file":"Weavelo-desktop-linux-x64-a.zip","version":"2","source_commit":"{HASH}"}}]}}"#);
+        assert_eq!(select(doc.as_bytes(), &["Weavelo-desktop-linux-x64-"], Some(HASH)).unwrap().same_source, Some(true));
+        assert_eq!(select(doc.as_bytes(), &["Weavelo-desktop-linux-x64-"], None).unwrap().same_source, None);
+        assert_eq!(select(doc.as_bytes(), &["Weavelo-desktop-linux-x64-"], Some("other")).unwrap().same_source, Some(false));
+        assert_eq!(select(doc.as_bytes(), &["Weavelo-desktop-windows-x64-", "Weavelo-Windows-x64-"], Some(HASH)).unwrap().same_source, Some(true));
     }
     #[test]
     fn rejects_ambiguous_or_unsafe_entries() {
         let entry = format!(r#"{{"file":"Weavelo-Windows-x64-a.zip","version":"2","source_commit":"{HASH}"}}"#);
         let duplicate = format!(r#"{{"schema":1,"releases":[{entry},{entry}]}}"#);
-        assert!(select(duplicate.as_bytes(), "Weavelo-Windows-x64-", None).is_err());
+        assert!(select(duplicate.as_bytes(), &["Weavelo-Windows-x64-"], None).is_err());
         let bad = format!(r#"{{"schema":1,"releases":[{{"file":"Weavelo-Windows-x64-../bad.zip","version":"2","source_commit":"{HASH}"}}]}}"#);
-        assert!(select(bad.as_bytes(), "Weavelo-Windows-x64-", None).is_err());
+        assert!(select(bad.as_bytes(), &["Weavelo-Windows-x64-"], None).is_err());
     }
 }
 

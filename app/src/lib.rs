@@ -553,7 +553,8 @@ pub const WEAVELO_RELAY_SERVER_ADDR_ENV: &str = "WEAVELO_RELAY_SERVER_ADDR";
 pub const WEAVELO_RELAY_CONTROL_BIND_ADDR_ENV: &str = "WEAVELO_RELAY_CONTROL_BIND_ADDR";
 pub const WEAVELO_RELAY_DISCOVERY_BIND_ADDR_ENV: &str = "WEAVELO_RELAY_DISCOVERY_BIND_ADDR";
 pub const WEAVELO_RELAY_LOG_ENV: &str = "WEAVELO_RELAY_LOG";
-pub const DEFAULT_RELAY_SERVER_URL: &str = "wss://weavelo.hackerlife.fun:8443/v1/relay";
+pub const DEFAULT_RELAY_SERVER_URL: &str = "udp://192.168.2.200:39494,ws://192.168.2.200:39493/v1/relay,udp://weavelo.hackerlife.fun:39494,wss://weavelo.hackerlife.fun:8443/v1/relay";
+pub const RELAY_ENDPOINTS_FILENAME: &str = "relay-endpoints.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnifiedSessionTimeoutMonitorConfig {
@@ -904,8 +905,14 @@ impl UnifiedRuntimeConfig {
             env_socket_addr(WEAVELO_P2P_BIND_ADDR_ENV, config.p2p_bind_addr)?;
         config.p2p_log_events = env_flag_or(WEAVELO_P2P_LOG_ENV, false);
         config.relay_endpoint = if env_flag_or(WEAVELO_RELAY_ENV, true) {
-            env_optional_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV)?
-                .or(config.relay_endpoint)
+            let explicit_addr = env_optional_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV)?;
+            if explicit_addr.is_some() {
+                explicit_addr
+            } else if env_explicitly_truthy(WEAVELO_RELAY_ENV) {
+                resolve_default_relay_endpoint(&config.mesh_dir)?
+            } else {
+                config.relay_endpoint
+            }
         } else {
             None
         };
@@ -1407,7 +1414,52 @@ fn env_optional_relay_endpoint(
         return Ok(None);
     };
     let value = value.to_string_lossy();
-    parse_relay_endpoint(name, &value)
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("default") {
+        return Ok(None);
+    }
+    parse_relay_endpoint(name, trimmed)
+}
+
+fn env_explicitly_truthy(name: &'static str) -> bool {
+    let Some(value) = std::env::var_os(name) else {
+        return false;
+    };
+    matches!(
+        value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Resolves the relay endpoint when `WEAVELO_RELAY=1` is enabled without an explicit
+/// `WEAVELO_RELAY_SERVER_ADDR` override: prefers an optional `<mesh_dir>/relay-endpoints.json`
+/// dynamic override (`{"relay_server_addr": "..."}` or `{"endpoints": ["..."]}`), falling back
+/// to the built-in 4-tier hybrid LAN-first UDP/WS `DEFAULT_RELAY_SERVER_URL`.
+pub fn resolve_default_relay_endpoint(
+    mesh_dir: &std::path::Path,
+) -> Result<Option<UnifiedRelayEndpoint>, Box<dyn Error + Send + Sync>> {
+    let config_path = mesh_dir.join(RELAY_ENDPOINTS_FILENAME);
+    if let Ok(raw) = std::fs::read_to_string(&config_path)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw)
+    {
+        if let Some(addr) = json.get("relay_server_addr").and_then(|v| v.as_str()) {
+            let trimmed = addr.trim();
+            if !trimmed.is_empty() {
+                return parse_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV, trimmed);
+            }
+        }
+        if let Some(list) = json.get("endpoints").and_then(|v| v.as_array()) {
+            let joined: Vec<&str> = list
+                .iter()
+                .filter_map(|v| v.as_str().map(str::trim))
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !joined.is_empty() {
+                return parse_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV, &joined.join(","));
+            }
+        }
+    }
+    parse_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV, DEFAULT_RELAY_SERVER_URL)
 }
 
 fn env_socket_addr(
@@ -4837,6 +4889,30 @@ mod tests {
         );
         assert!(
             parse_relay_endpoint(WEAVELO_RELAY_SERVER_ADDR_ENV, "udp://192.168.2.200").is_err()
+        );
+    }
+
+    #[test]
+    fn resolve_default_relay_endpoint_uses_builtin_hybrid_or_profile_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let builtin = resolve_default_relay_endpoint(dir.path()).unwrap();
+        assert_eq!(
+            builtin,
+            Some(UnifiedRelayEndpoint::Hybrid(
+                DEFAULT_RELAY_SERVER_URL.to_string()
+            ))
+        );
+        std::fs::write(
+            dir.path().join(RELAY_ENDPOINTS_FILENAME),
+            r#"{"endpoints":["udp://10.0.0.2:39494","wss://weavelo.hackerlife.fun:8443/v1/relay"]}"#,
+        )
+        .unwrap();
+        let dynamic = resolve_default_relay_endpoint(dir.path()).unwrap();
+        assert_eq!(
+            dynamic,
+            Some(UnifiedRelayEndpoint::Hybrid(
+                "udp://10.0.0.2:39494,wss://weavelo.hackerlife.fun:8443/v1/relay".to_string()
+            ))
         );
     }
 }
