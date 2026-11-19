@@ -167,6 +167,8 @@ pub struct BridgeDiscoveredDevice {
     pub device_id: String,
     pub display_name: String,
     pub endpoint: String,
+    #[serde(default)]
+    pub fallback_endpoints: Vec<String>,
     pub scope: String,
     pub can_stream: bool,
     #[serde(default)]
@@ -1677,7 +1679,7 @@ async fn bind_bridge_relay(
 }
 
 fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscoveredDevice> {
-    let mut selected = BTreeMap::<String, (u8, BridgeDiscoveredDevice)>::new();
+    let mut grouped = BTreeMap::<String, Vec<(u8, BridgeDiscoveredDevice)>>::new();
     for peer in snapshot.peers() {
         if peer.scope == DiscoveryScope::Mesh {
             continue;
@@ -1692,6 +1694,7 @@ fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscover
             device_id: peer.announcement.device_id.clone(),
             display_name: peer.announcement.display_name.clone(),
             endpoint: peer.endpoint.to_string(),
+            fallback_endpoints: Vec::new(),
             scope: match peer.scope {
                 DiscoveryScope::Lan => "LAN",
                 DiscoveryScope::P2p => "P2P Direct",
@@ -1707,14 +1710,27 @@ fn devices_from_snapshot(snapshot: &DiscoveryPeerSnapshot) -> Vec<BridgeDiscover
             has_service: peer.announcement.control_port != 0 && peer.endpoint.port() != 0,
             online: true,
         };
-        match selected.get(&device.device_id) {
-            Some((existing_rank, _)) if *existing_rank <= rank => {}
-            _ => {
-                selected.insert(device.device_id.clone(), (rank, device));
-            }
-        }
+        grouped
+            .entry(device.device_id.clone())
+            .or_default()
+            .push((rank, device));
     }
-    selected.into_values().map(|(_, device)| device).collect()
+    grouped
+        .into_values()
+        .filter_map(|mut routes| {
+            routes.sort_by_key(|(rank, _)| *rank);
+            let (_, mut primary) = routes.first().cloned()?;
+            for (_, candidate) in routes.into_iter().skip(1) {
+                if candidate.has_service
+                    && candidate.endpoint != primary.endpoint
+                    && !primary.fallback_endpoints.contains(&candidate.endpoint)
+                {
+                    primary.fallback_endpoints.push(candidate.endpoint);
+                }
+            }
+            Some(primary)
+        })
+        .collect()
 }
 
 #[cfg(test)]

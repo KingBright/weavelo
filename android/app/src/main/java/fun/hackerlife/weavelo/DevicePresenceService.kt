@@ -88,12 +88,17 @@ class DevicePresenceService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
     }
 
+    private fun ensureForeground(): Boolean = try {
+        startForeground(NOTIFICATION_ID, notification())
+        true
+    } catch (error: RuntimeException) {
+        Log.w("WeaveloPresence", "Foreground start declined", error)
+        false
+    }
+
     override fun onCreate() {
         super.onCreate()
-        try {
-            startForeground(NOTIFICATION_ID, notification())
-        } catch (error: RuntimeException) {
-            Log.w("WeaveloPresence", "Foreground start declined in onCreate", error)
+        if (!ensureForeground()) {
             stopSelf()
             return
         }
@@ -107,6 +112,10 @@ class DevicePresenceService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!ensureForeground()) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         if (intent?.action == STOP || !enabled(this)) {
             if (intent?.action == STOP) {
                 getSharedPreferences("stream", MODE_PRIVATE).edit().putBoolean(PREFERENCE, false).apply()

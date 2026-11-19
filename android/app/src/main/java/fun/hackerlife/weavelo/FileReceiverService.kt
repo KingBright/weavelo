@@ -32,18 +32,23 @@ class FileReceiverService : Service() {
             .setContentIntent(open).setOngoing(true)
             .addAction(Notification.Action.Builder(null, notificationText("Stop standalone receiver"), stop).build()).build()
     }
+    private fun ensureForeground(): Boolean = try {
+        startForeground(8128, notification())
+        true
+    } catch (error: RuntimeException) {
+        android.util.Log.w("WeaveloFileReceiver", "Foreground start declined", error)
+        false
+    }
     override fun onCreate() {
         super.onCreate()
-        try {
-            startForeground(8128, notification())
-        } catch (error: RuntimeException) {
-            android.util.Log.w("WeaveloFileReceiver", "Foreground start declined in onCreate", error)
+        if (!ensureForeground()) {
             stopSelf()
             return
         }
         languageObserver = LanguageNotificationObserver(this) { getSystemService(NotificationManager::class.java).notify(8128, notification()) }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!ensureForeground()) { stopSelfResult(startId); return START_NOT_STICKY }
         if (intent?.action == "stop") { stopSelf(); return START_NOT_STICKY }
         if (worker == null) worker = scope.launch {
             var failure: String? = null

@@ -442,6 +442,15 @@ object WeaveloClient {
             val hosts = buildList {
                 for (i in 0 until array.length()) {
                     val obj = array.getJSONObject(i)
+                    val fallbacks = buildList {
+                        val arr = obj.optJSONArray("fallback_endpoints")
+                        if (arr != null) {
+                            for (j in 0 until arr.length()) {
+                                val ep = arr.optString(j)
+                                if (ep.isNotBlank()) add(ep)
+                            }
+                        }
+                    }
                     add(
                         HostDevice(
                             id = obj.optString("device_id"),
@@ -454,7 +463,8 @@ object WeaveloClient {
                             fileTransfer = obj.optBoolean("file_transfer", false),
                             clipboardSync = obj.optBoolean("clipboard_sync", false),
                             hasService = obj.optBoolean("has_service", false),
-                            deviceBadge = DeviceBadgePreset.fromWire(obj.optString("device_badge", "computer"))
+                            deviceBadge = DeviceBadgePreset.fromWire(obj.optString("device_badge", "computer")),
+                            fallbackEndpoints = fallbacks
                         )
                     )
                 }

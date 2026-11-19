@@ -336,16 +336,30 @@ object WorkspaceClient {
     private fun connectNative() {
         val directory = File(checkNotNull(context).filesDir, "received").apply { mkdirs() }
         WeaveloClient.refreshDevices()
-        val target = resolveNetworkEndpoint(deviceId, endpoint, WeaveloClient.devices.value)
-        val payload = JSONObject().put("endpoint", target).put("directory", directory.absolutePath)
-        ownership.request()?.incomingId?.let { payload.put("claim", DirectedDelivery.claim(it)) }
-        val capabilities = JSONObject(action(0, payload.toString()))
+        val targets = resolveNetworkEndpoints(deviceId, endpoint, WeaveloClient.devices.value)
+        var lastError: Exception? = null
+        var capabilities: JSONObject? = null
+        for ((idx, target) in targets.withIndex()) {
+            val payload = JSONObject().put("endpoint", target).put("directory", directory.absolutePath)
+            ownership.request()?.incomingId?.let { payload.put("claim", DirectedDelivery.claim(it)) }
+            try {
+                capabilities = JSONObject(action(0, payload.toString()))
+                if (idx > 0) {
+                    android.util.Log.i("WeaveloWorkspace", "Connected via fallback route #$idx ($target)")
+                }
+                break
+            } catch (error: Exception) {
+                lastError = error
+                android.util.Log.w("WeaveloWorkspace", "Connect attempt #$idx failed ($target): ${error.message}")
+            }
+        }
+        val caps = capabilities ?: throw checkNotNull(lastError)
         incomingInitialized = false; incomingEnded = false
         retainingConnection = true
         pendingShareList = 0L
-        mutable.value = mutable.value.copy(connected = true, sourcesLoaded = false, androidHost = false, incomingEnded = false, maxSubscriptions = capabilities.getInt("max_subscriptions"),
-            files = capabilities.getBoolean("files"), clipboardAvailable = capabilities.getBoolean("clipboard"),
-            connectionGeneration = ++connectionGeneration, connectionId = capabilities.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, audioOutput = WorkspaceAudioOutput(), telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"),
+        mutable.value = mutable.value.copy(connected = true, sourcesLoaded = false, androidHost = false, incomingEnded = false, maxSubscriptions = caps.getInt("max_subscriptions"),
+            files = caps.getBoolean("files"), clipboardAvailable = caps.getBoolean("clipboard"),
+            connectionGeneration = ++connectionGeneration, connectionId = caps.getLong("connection_id"), panes = mutable.value.panes.map { it.copy(input = false, accepted = false, inputError = null, videoError = null, inputErrorText = null, videoErrorText = null, audioOutput = WorkspaceAudioOutput(), telemetry = TelemetrySnapshot()) }, remoteFiles = emptyList(), sharedNext = null, sharedBusy = false, status = "Connected", statusText = AppText("Connected"),
             clipboardHistory = mutable.value.clipboardHistory.ifEmpty { loadPinnedClipboardEntries(context) })
         android.util.Log.i("WeaveloWorkspace", "Connected: connection=${mutable.value.connectionId}, generation=${mutable.value.connectionGeneration}")
     }

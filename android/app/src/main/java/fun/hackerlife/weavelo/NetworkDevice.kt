@@ -12,7 +12,8 @@ data class HostDevice(
     val fileTransfer: Boolean = false,
     val clipboardSync: Boolean = false,
     val hasService: Boolean = false,
-    val deviceBadge: DeviceBadgePreset = DeviceBadgePreset.COMPUTER
+    val deviceBadge: DeviceBadgePreset = DeviceBadgePreset.COMPUTER,
+    val fallbackEndpoints: List<String> = emptyList(),
 ) {
     val canOpenWorkspace: Boolean get() = online && hasService && (canStream || fileTransfer)
     val canViewScreen: Boolean get() = online && hasService && canStream
@@ -27,11 +28,21 @@ data class HostDevice(
 }
 
 /** A named device must resolve through discovery; never reuse a stale relay/P2P port. */
-fun resolveNetworkEndpoint(deviceId: String, manualEndpoint: String, devices: List<HostDevice>): String {
-    if (deviceId.isBlank()) return manualEndpoint
+fun resolveNetworkEndpoint(deviceId: String, manualEndpoint: String, devices: List<HostDevice>): String =
+    resolveNetworkEndpoints(deviceId, manualEndpoint, devices).first()
+
+/** Returns ordered candidate endpoints (LAN -> P2P -> Relay) so isolated LAN routes fail over cleanly. */
+fun resolveNetworkEndpoints(deviceId: String, manualEndpoint: String, devices: List<HostDevice>): List<String> {
+    if (deviceId.isBlank()) return listOf(manualEndpoint)
     val device = devices.firstOrNull { it.id == deviceId }
     appCheck(device != null && device.canOpenWorkspace, "This device is not currently reachable. Wait for discovery and reconnect.")
-    return checkNotNull(device).endpoint
+    val resolved = checkNotNull(device)
+    return buildList {
+        add(resolved.endpoint)
+        for (fallback in resolved.fallbackEndpoints) {
+            if (fallback.isNotBlank() && fallback !in this) add(fallback)
+        }
+    }
 }
 
 fun resolveScreenDeliveryEndpoint(deviceId: String, devices: List<HostDevice>): String =
