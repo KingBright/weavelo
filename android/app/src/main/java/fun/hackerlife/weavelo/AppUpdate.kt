@@ -20,7 +20,7 @@ import javax.net.ssl.HttpsURLConnection
 
 internal object AppUpdate {
     private const val base = "https://weavelo.hackerlife.fun:8443/download/"
-    private const val maxMetadata = 64 * 1024
+    private const val maxMetadata = 256 * 1024
     private const val maxPackage = 256L * 1024 * 1024
     private const val releaseCertificate =
         "215aedabf17f40a454ad381d9027772eef9446346cae3db031cac2a5ae51c3a5"

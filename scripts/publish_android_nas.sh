@@ -64,7 +64,7 @@ export VERSION VERSION_CODE MIN_SDK COMMIT PUBLISHED_AT APK_NAME SHA256 SIZE_BYT
 export RELEASE_SOURCE_ID="${WEAVELO_RELEASE_SOURCE_ID:-unknown}"
 export RELEASE_VERIFICATION_JSON="${APK%.apk}.verification.json"
 python3 - "$STAGE" <<'PY'
-import json, os, sys
+import hashlib, json, os, sys
 from pathlib import Path
 stage = Path(sys.argv[1])
 entry = {
@@ -79,6 +79,16 @@ entry = {
     "size_bytes": int(os.environ["SIZE_BYTES"]),
     "sha256": os.environ["SHA256"],
 }
+full_validation = json.loads(Path(os.environ["RELEASE_VERIFICATION_JSON"]).read_text())
+compact_validation = dict(full_validation)
+src_inputs = compact_validation.get("source_inputs")
+if isinstance(src_inputs, dict):
+    compact_inputs = {k: v for k, v in src_inputs.items() if k not in ("files", "product_files", "producer_files")}
+    for list_key, count_key in (("files", "file_count"), ("product_files", "product_file_count"), ("producer_files", "producer_file_count")):
+        items = src_inputs.get(list_key)
+        if isinstance(items, (dict, list)):
+            compact_inputs[count_key] = len(items)
+    compact_validation["source_inputs"] = compact_inputs
 release = {
     "product": "Weavelo",
     "platform": "android",
@@ -87,13 +97,16 @@ release = {
     "url": f'/download/{entry["file"]}',
     "latest_url": "/download/Weavelo-Android-latest.apk",
     "notes": os.environ["RELEASE_NOTES"].split("\n"),
-    "validation": json.loads(Path(os.environ["RELEASE_VERIFICATION_JSON"]).read_text()),
+    "validation": compact_validation,
 }
-(stage / "release.json").write_text(json.dumps(release, ensure_ascii=False, indent=2) + "\n")
+release_text = json.dumps(release, ensure_ascii=False, indent=2) + "\n"
+assert len(release_text.encode("utf-8")) <= 32768, f"release.json too large for Android AppUpdate (64KiB cap): {len(release_text.encode('utf-8'))} bytes"
+(stage / "release.json").write_text(release_text)
+(stage / "release-verification.json").write_text(json.dumps(full_validation, ensure_ascii=False, indent=2) + "\n")
 (stage / "entry.json").write_text(json.dumps(entry, ensure_ascii=False, indent=2) + "\n")
 PY
 
-tar -C "$STAGE" -czf "$STAGE/bundle.tgz" "$APK_NAME" index.html release.json entry.json
+tar -C "$STAGE" -czf "$STAGE/bundle.tgz" "$APK_NAME" index.html release.json release-verification.json entry.json
 
 printf 'Publishing Weavelo Android %s (%s)\n' "$VERSION" "$COMMIT"
 "${SCP[@]}" "$STAGE/bundle.tgz" "$NAS_HOST:$REMOTE_ARCHIVE"
@@ -145,7 +158,7 @@ os.chmod(tmp, 0o644)
 os.replace(tmp, versions)
 PY
 
-for file in index.html release.json; do
+for file in index.html release.json release-verification.json; do
     install -m 0644 "$tmp/$file" "$root/$file.new"
     mv -f "$root/$file.new" "$root/$file"
 done
