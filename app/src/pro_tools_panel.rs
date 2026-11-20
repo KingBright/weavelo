@@ -97,6 +97,11 @@ impl DesktopRouteMode {
             Self::NasWssRelay => "NAS WSS Relay",
         }
     }
+
+    /// Localized label respecting the active desktop UI language.
+    pub fn localized_label(self) -> &'static str {
+        crate::i18n::tr(self.display_label())
+    }
 }
 
 impl fmt::Display for DesktopRouteMode {

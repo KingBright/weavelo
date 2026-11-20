@@ -795,5 +795,10 @@
   "Paste the PlayStation App sign-in redirect URL, code, or AccountID": "请先粘贴 PlayStation App 登录回调链接、code 或 AccountID",
   "Enter the 8-digit PS5 Link Device PIN": "请输入 8 位 PS5 关联设备 PIN 码",
   "PS5 linked successfully": "PS5 配对成功",
-  "Removed PS5 pairing": "已移除 PS5 配对"
+  "Removed PS5 pairing": "已移除 PS5 配对",
+  "Auto (LAN / P2P / Relay)": "自动（局域网 / P2P / 中继）",
+  "LAN Only": "仅局域网",
+  "P2P Direct Only": "仅 P2P 直连",
+  "NAS UDP Relay": "NAS UDP 中继",
+  "NAS WSS Relay": "NAS WSS 中继"
 }

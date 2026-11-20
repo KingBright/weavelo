@@ -186,7 +186,7 @@ fun KeymapOverlayHud(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         PrecisionPillBadge(
-                            text = "HUD Edit",
+                            text = tr("HUD Edit"),
                             tone = PillTone.BRAND,
                             showDot = true,
                         )
@@ -219,7 +219,7 @@ fun KeymapOverlayHud(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = "Opacity ${(draftProfile.opacity * 100f).roundToInt()}%",
+                            text = trFormat("Opacity %d%%", (draftProfile.opacity * 100f).roundToInt()),
                             color = p.textSecondary,
                             fontSize = 11.5.sp,
                             fontFamily = FontFamily.Monospace,
@@ -241,14 +241,14 @@ fun KeymapOverlayHud(
                         )
                         if (onRequestPicker != null) {
                             PrecisionButton(
-                                text = "Presets",
+                                text = tr("Presets"),
                                 style = PrecisionButtonStyle.SUBTLE,
                                 compact = true,
                                 onClick = onRequestPicker,
                             )
                         }
                         PrecisionButton(
-                            text = "Reset",
+                            text = tr("Reset"),
                             style = PrecisionButtonStyle.SUBTLE,
                             compact = true,
                             onClick = {
@@ -761,15 +761,15 @@ fun KeymapPickerDialog(
     }
 
     PrecisionDialog(
-        title = "Virtual Keymap Presets",
-        subtitle = "Browse ${KeymapCatalog.all().size}+ built-in game & app layouts or use your custom profiles.",
+        title = tr("Virtual Keymap Presets"),
+        subtitle = trFormat("Browse %d+ built-in game & app layouts or use your custom profiles.", KeymapCatalog.all().size),
         icon = MobileSymbol.Keyboard,
         maxWidth = 560.dp,
         onDismissRequest = onDismiss,
         dismissButton = if (onDisableHud != null && activeProfileId != null) {
             {
                 PrecisionButton(
-                    text = "Hide HUD",
+                    text = tr("Hide HUD"),
                     style = PrecisionButtonStyle.DANGER_TONAL,
                     compact = true,
                     onClick = {
@@ -794,7 +794,7 @@ fun KeymapPickerDialog(
             PrecisionTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                label = "Search game, app, or process (.exe)",
+                label = tr("Search game, app, or process (.exe)"),
             )
 
             LazyRow(
@@ -803,14 +803,14 @@ fun KeymapPickerDialog(
             ) {
                 item(key = "cat-all") {
                     CategoryChip(
-                        label = "All",
+                        label = tr("All"),
                         selected = selectedCategory == null,
                         onClick = { selectedCategory = null },
                     )
                 }
                 items(KeymapCategory.entries, key = { it.wireValue }) { category ->
                     CategoryChip(
-                        label = category.displayLabel,
+                        label = tr(category.displayLabel),
                         selected = selectedCategory == category,
                         onClick = { selectedCategory = category },
                     )
@@ -823,13 +823,13 @@ fun KeymapPickerDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 PrecisionPillBadge(
-                    text = "${filteredProfiles.size} presets",
+                    text = trFormat("%d presets", filteredProfiles.size),
                     tone = PillTone.CYAN,
                     monospace = true,
                 )
                 if (customProfiles.isNotEmpty()) {
                     PrecisionPillBadge(
-                        text = "${customProfiles.size} custom",
+                        text = trFormat("%d custom", customProfiles.size),
                         tone = PillTone.BRAND,
                         monospace = true,
                     )
@@ -848,7 +848,7 @@ fun KeymapPickerDialog(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "No keymap presets match \"$searchQuery\".",
+                        text = trFormat("No keymap presets match \"%s\".", searchQuery),
                         color = p.textSecondary,
                         fontSize = 12.5.sp,
                     )
@@ -948,13 +948,13 @@ private fun KeymapPresetRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 PrecisionPillBadge(
-                    text = profile.category.displayLabel,
+                    text = tr(profile.category.displayLabel),
                     tone = if (isActive) PillTone.EMERALD else PillTone.BRAND,
                     showDot = isActive,
                 )
                 if (!profile.builtIn) {
                     PrecisionPillBadge(
-                        text = "Custom",
+                        text = tr("Custom"),
                         tone = PillTone.CYAN,
                     )
                 }
@@ -967,9 +967,10 @@ private fun KeymapPresetRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            val controlsLabel = trFormat("%d controls", profile.controls.size)
             Text(
                 text = buildString {
-                    append("${profile.controls.size} controls")
+                    append(controlsLabel)
                     profile.processNames.firstOrNull()?.let { proc ->
                         append(" · ")
                         append(proc)
@@ -984,14 +985,14 @@ private fun KeymapPresetRow(
         }
         if (onEdit != null) {
             PrecisionButton(
-                text = "Edit",
+                text = tr("Edit"),
                 style = PrecisionButtonStyle.SUBTLE,
                 compact = true,
                 onClick = onEdit,
             )
         }
         PrecisionButton(
-            text = if (isActive) "Active" else "Use",
+            text = if (isActive) tr("Active") else tr("Use"),
             style = if (isActive) PrecisionButtonStyle.TONAL else PrecisionButtonStyle.PRIMARY,
             compact = true,
             enabled = !isActive,

@@ -296,7 +296,7 @@ fun MobileConsoleScreen(
                                     subtitle = if (activeVirtualDisplayId != null) {
                                         "${tr("Wireless display")} · ${tr("Active")}"
                                     } else {
-                                        "${virtualDisplayProfiles.size} saved"
+                                        trFormat("%d saved", virtualDisplayProfiles.size)
                                     },
                                     symbol = MobileSymbol.VirtualDisplay,
                                     checked = activeVirtualDisplayId != null,
@@ -308,9 +308,9 @@ fun MobileConsoleScreen(
                                 PrecisionMenuItem(
                                     text = tr("Port forwarding"),
                                     subtitle = if (activePortForwardCount > 0) {
-                                        "$activePortForwardCount / ${portForwardRules.size} active"
+                                        trFormat("%d / %d active", activePortForwardCount, portForwardRules.size)
                                     } else {
-                                        "${portForwardRules.size} rules"
+                                        trFormat("%d rules", portForwardRules.size)
                                     },
                                     symbol = MobileSymbol.PortForward,
                                     checked = activePortForwardCount > 0,
@@ -321,7 +321,7 @@ fun MobileConsoleScreen(
                                 )
                                 PrecisionMenuItem(
                                     text = "${tr("Keymap presets")} (550+)",
-                                    subtitle = activeKeymapProfile?.name ?: "550+ built-in",
+                                    subtitle = activeKeymapProfile?.name ?: tr("550+ built-in"),
                                     symbol = MobileSymbol.Keymap,
                                     checked = activeKeymapProfile != null,
                                     onClick = {
@@ -335,7 +335,7 @@ fun MobileConsoleScreen(
                                 )
                                 PrecisionMenuItem(
                                     text = tr("Diagnostics"),
-                                    subtitle = "Redacted JSON · Copy & Share",
+                                    subtitle = tr("Redacted JSON · Copy & Share"),
                                     symbol = MobileSymbol.Diagnostics,
                                     onClick = {
                                         proOverflowOpen = false
@@ -1119,7 +1119,7 @@ private fun ProToolboxStrip(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "PRO TOOLBOX",
+                text = tr("PRO TOOLBOX"),
                 color = p.textTertiary,
                 fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
@@ -1142,7 +1142,7 @@ private fun ProToolboxStrip(
                     title = tr("Virtual displays"),
                     subtitle = tr("Wireless display"),
                     symbol = MobileSymbol.VirtualDisplay,
-                    badgeText = if (virtualDisplayActive) tr("Active") else "$virtualDisplayCount saved",
+                    badgeText = if (virtualDisplayActive) tr("Active") else trFormat("%d saved", virtualDisplayCount),
                     badgeTone = when {
                         virtualDisplayActive -> PillTone.EMERALD
                         virtualDisplayCount > 0 -> PillTone.CYAN
@@ -1155,9 +1155,9 @@ private fun ProToolboxStrip(
             item(key = "tool-port-forward") {
                 ProToolboxPillCard(
                     title = tr("Port forwarding"),
-                    subtitle = if (totalPortForwardCount > 0) "$totalPortForwardCount rules" else "TCP / UDP",
+                    subtitle = if (totalPortForwardCount > 0) trFormat("%d rules", totalPortForwardCount) else "TCP / UDP",
                     symbol = MobileSymbol.PortForward,
-                    badgeText = "$activePortForwardCount active",
+                    badgeText = trFormat("%d active", activePortForwardCount),
                     badgeTone = if (activePortForwardCount > 0) PillTone.EMERALD else PillTone.NEUTRAL,
                     highlighted = activePortForwardCount > 0,
                     onClick = onOpenPortForward
@@ -1166,7 +1166,7 @@ private fun ProToolboxStrip(
             item(key = "tool-keymaps") {
                 ProToolboxPillCard(
                     title = tr("Keymap presets"),
-                    subtitle = activeKeymapName ?: "550+ HUD",
+                    subtitle = activeKeymapName ?: tr("550+ HUD"),
                     symbol = MobileSymbol.Keymap,
                     badgeText = if (activeKeymapName != null) tr("Active") else "550+",
                     badgeTone = if (activeKeymapName != null) PillTone.BRAND else PillTone.CYAN,
@@ -1177,7 +1177,7 @@ private fun ProToolboxStrip(
             item(key = "tool-diagnostics") {
                 ProToolboxPillCard(
                     title = tr("Diagnostics"),
-                    subtitle = "Redacted JSON · Share",
+                    subtitle = tr("Redacted JSON · Share"),
                     symbol = MobileSymbol.Diagnostics,
                     badgeText = if (diagnosticsReady) "JSON" else tr("Off"),
                     badgeTone = if (diagnosticsReady) PillTone.BRAND else PillTone.NEUTRAL,

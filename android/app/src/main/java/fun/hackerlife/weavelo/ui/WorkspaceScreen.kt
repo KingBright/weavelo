@@ -340,21 +340,21 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     )
                     HorizontalDivider(color = p.borderMuted)
                     PrecisionMenuItem(
-                        text = "Virtual Keymap HUD",
-                        subtitle = if (keymapHudEnabled) (activeKeymapProfile?.name ?: "Active") else "550+ game & app overlays",
+                        text = tr("Virtual Keymap HUD"),
+                        subtitle = if (keymapHudEnabled) (activeKeymapProfile?.name ?: tr("Active")) else tr("550+ game & app overlays"),
                         symbol = MobileSymbol.Gamepad,
                         checked = keymapHudEnabled,
                         onClick = { onDismiss(); toggleKeymapHud() }
                     )
                     PrecisionMenuItem(
-                        text = "Choose Keymap Preset",
-                        subtitle = activeKeymapProfile?.name ?: "Browse 550+ presets",
+                        text = tr("Choose Keymap Preset"),
+                        subtitle = activeKeymapProfile?.name ?: tr("Browse 550+ presets"),
                         symbol = MobileSymbol.Keyboard,
                         onClick = { onDismiss(); keymapPickerOpen = true }
                     )
                     PrecisionMenuItem(
-                        text = if (keymapEditMode) "Done Editing HUD" else "Edit HUD Layout",
-                        subtitle = if (keymapEditMode) "Drag controls to reposition" else "Customize overlay & opacity",
+                        text = if (keymapEditMode) tr("Done Editing HUD") else tr("Edit HUD Layout"),
+                        subtitle = if (keymapEditMode) tr("Drag controls to reposition") else tr("Customize overlay & opacity"),
                         symbol = MobileSymbol.Control,
                         checked = keymapEditMode,
                         enabled = state.panes.isNotEmpty(),
@@ -372,29 +372,29 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     )
                     HorizontalDivider(color = p.borderMuted)
                     PrecisionMenuItem(
-                        text = "Virtual Displays",
-                        subtitle = activeVirtualDisplay?.resolutionLabel() ?: "Wireless secondary & profiles",
+                        text = tr("Virtual displays"),
+                        subtitle = activeVirtualDisplay?.resolutionLabel() ?: tr("Wireless secondary & profiles"),
                         symbol = MobileSymbol.Devices,
                         checked = activeVirtualDisplay != null,
                         onClick = { onDismiss(); virtualDisplayDialogOpen = true }
                     )
                     PrecisionMenuItem(
-                        text = "Port Forwarding",
-                        subtitle = if (activePortForwardCount > 0) "$activePortForwardCount active tunnel(s)" else "TCP/UDP tunnel rules",
+                        text = tr("Port forwarding"),
+                        subtitle = if (activePortForwardCount > 0) trFormat("%d active tunnel(s)", activePortForwardCount) else tr("TCP/UDP tunnel rules"),
                         symbol = MobileSymbol.Network,
                         checked = activePortForwardCount > 0,
                         onClick = { onDismiss(); portForwardDialogOpen = true }
                     )
                     PrecisionMenuItem(
-                        text = "Privacy Mode",
-                        subtitle = if (privacyModeEnabled) "Host screen privacy active" else "Mask host display locally",
+                        text = tr("Privacy mode"),
+                        subtitle = if (privacyModeEnabled) tr("Host screen privacy active") else tr("Mask host display locally"),
                         symbol = MobileSymbol.Permissions,
                         checked = privacyModeEnabled,
                         onClick = { onDismiss(); privacyModeEnabled = !privacyModeEnabled }
                     )
                     PrecisionMenuItem(
-                        text = "Redacted Diagnostics",
-                        subtitle = "Inspect & export scrubbed report",
+                        text = tr("Redacted Diagnostics"),
+                        subtitle = tr("Inspect & export scrubbed report"),
                         symbol = MobileSymbol.Settings,
                         onClick = { onDismiss(); diagnosticsDialogOpen = true }
                     )

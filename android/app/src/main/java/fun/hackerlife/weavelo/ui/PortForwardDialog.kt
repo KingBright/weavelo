@@ -70,10 +70,12 @@ fun PortForwardDialog(
     }
 
     val activeCount = rules.count { it.enabled }
+    val invalidPortsMsg = tr("Enter valid bind and target ports (1-65535)")
+    val invalidRuleMsg = tr("Invalid port forwarding rule")
 
     PrecisionDialog(
-        title = "Port Forwarding",
-        subtitle = "Manage TCP/UDP tunnel rules between local and remote hosts.",
+        title = tr("Port forwarding"),
+        subtitle = tr("Manage TCP/UDP tunnel rules between local and remote hosts."),
         icon = MobileSymbol.Network,
         maxWidth = 520.dp,
         onDismissRequest = onDismiss,
@@ -93,14 +95,14 @@ fun PortForwardDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 PrecisionPillBadge(
-                    text = "$activeCount / ${rules.size} active",
+                    text = trFormat("%d / %d active", activeCount, rules.size),
                     tone = if (activeCount > 0) PillTone.EMERALD else PillTone.NEUTRAL,
                     showDot = activeCount > 0,
                     monospace = true,
                 )
                 Spacer(Modifier.weight(1f))
                 PrecisionButton(
-                    text = if (showAddForm) tr("Cancel") else "Add Rule",
+                    text = if (showAddForm) tr("Cancel") else tr("Add Rule"),
                     style = if (showAddForm) PrecisionButtonStyle.SUBTLE else PrecisionButtonStyle.PRIMARY,
                     compact = true,
                     onClick = {
@@ -125,7 +127,7 @@ fun PortForwardDialog(
                     PrecisionTextField(
                         value = nameInput,
                         onValueChange = { nameInput = it; formError = null },
-                        label = "Rule name (optional)",
+                        label = tr("Rule name (optional)"),
                     )
                     PrecisionSegmentedRow(
                         options = listOf(
@@ -138,8 +140,8 @@ fun PortForwardDialog(
                     )
                     PrecisionSegmentedRow(
                         options = listOf(
-                            TunnelDirection.LOCAL_TO_REMOTE to TunnelDirection.LOCAL_TO_REMOTE.displayLabel,
-                            TunnelDirection.REMOTE_TO_LOCAL to TunnelDirection.REMOTE_TO_LOCAL.displayLabel,
+                            TunnelDirection.LOCAL_TO_REMOTE to tr(TunnelDirection.LOCAL_TO_REMOTE.displayLabel),
+                            TunnelDirection.REMOTE_TO_LOCAL to tr(TunnelDirection.REMOTE_TO_LOCAL.displayLabel),
                         ),
                         selected = directionInput,
                         modifier = Modifier.fillMaxWidth(),
@@ -154,7 +156,7 @@ fun PortForwardDialog(
                         PrecisionTextField(
                             value = bindPortInput,
                             onValueChange = { bindPortInput = it.filter(Char::isDigit); formError = null },
-                            label = "Bind port",
+                            label = tr("Bind port"),
                             modifier = Modifier.weight(1f),
                             isError = bindPortInput.isNotEmpty() &&
                                 (bindPortValue == null || bindPortValue !in PortForwardRule.MIN_PORT..PortForwardRule.MAX_PORT),
@@ -164,7 +166,7 @@ fun PortForwardDialog(
                         PrecisionTextField(
                             value = targetPortInput,
                             onValueChange = { targetPortInput = it.filter(Char::isDigit); formError = null },
-                            label = "Target port",
+                            label = tr("Target port"),
                             modifier = Modifier.weight(1f),
                             isError = targetPortInput.isNotEmpty() &&
                                 (targetPortValue == null || targetPortValue !in PortForwardRule.MIN_PORT..PortForwardRule.MAX_PORT),
@@ -175,7 +177,7 @@ fun PortForwardDialog(
                     PrecisionTextField(
                         value = targetHostInput,
                         onValueChange = { targetHostInput = it; formError = null },
-                        label = "Target host",
+                        label = tr("Target host"),
                         isError = targetHostInput.isBlank(),
                         monospace = true,
                     )
@@ -200,7 +202,7 @@ fun PortForwardDialog(
                                 val bindPort = bindPortInput.toIntOrNull()
                                 val targetPort = targetPortInput.toIntOrNull()
                                 if (bindPort == null || targetPort == null) {
-                                    formError = "Enter valid bind and target ports (1-65535)"
+                                    formError = invalidPortsMsg
                                     return@PrecisionButton
                                 }
                                 val displayName = nameInput.trim().ifEmpty {
@@ -223,7 +225,7 @@ fun PortForwardDialog(
                                         showAddForm = false
                                     }
                                     .onFailure { failure ->
-                                        formError = failure.message ?: "Invalid port forwarding rule"
+                                        formError = failure.message ?: invalidRuleMsg
                                     }
                             },
                         )
@@ -242,7 +244,7 @@ fun PortForwardDialog(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "No port forwarding rules configured yet.",
+                        text = tr("No port forwarding rules configured yet."),
                         color = p.textSecondary,
                         fontSize = 12.5.sp,
                     )

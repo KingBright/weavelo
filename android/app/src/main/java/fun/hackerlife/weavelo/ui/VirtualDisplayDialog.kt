@@ -90,9 +90,12 @@ fun VirtualDisplayDialog(
         formError = null
     }
 
+    val invalidProfileMsg = tr("Invalid virtual display profile")
+    val defaultPlacementShort = tr(selectedPlacement.shortLabel)
+
     PrecisionDialog(
-        title = "Virtual Display",
-        subtitle = "Turn this device into a wireless secondary display or manage host virtual display profiles.",
+        title = tr("Virtual displays"),
+        subtitle = tr("Turn this device into a wireless secondary display or manage host virtual display profiles."),
         icon = MobileSymbol.Devices,
         maxWidth = 540.dp,
         onDismissRequest = onDismiss,
@@ -120,7 +123,7 @@ fun VirtualDisplayDialog(
                 ) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "Wireless Secondary Display",
+                            text = tr("Wireless Secondary Display"),
                             color = p.textPrimary,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -128,7 +131,7 @@ fun VirtualDisplayDialog(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            text = "${deviceProfile.resolutionLabel()} · ${formatDpiScale(deviceProfile.dpiScale)} · ${selectedPlacement.displayLabel}",
+                            text = "${deviceProfile.resolutionLabel()} · ${formatDpiScale(deviceProfile.dpiScale)} · ${tr(selectedPlacement.displayLabel)}",
                             color = p.textSecondary,
                             fontSize = 11.5.sp,
                             fontFamily = FontFamily.Monospace,
@@ -137,7 +140,7 @@ fun VirtualDisplayDialog(
                         )
                     }
                     PrecisionPillBadge(
-                        text = if (activeProfileId != null) "Active" else "Match Device",
+                        text = if (activeProfileId != null) tr("Active") else tr("Match Device"),
                         tone = if (activeProfileId != null) PillTone.EMERALD else PillTone.BRAND,
                         showDot = activeProfileId != null,
                     )
@@ -149,21 +152,21 @@ fun VirtualDisplayDialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     PrecisionSegmentedRow(
-                        options = listOf(true to "Landscape", false to "Portrait"),
+                        options = listOf(true to tr("Landscape"), false to tr("Portrait")),
                         selected = wirelessLandscape,
                         onSelect = { wirelessLandscape = it },
                         modifier = Modifier.weight(1f),
                     )
                     if (activeProfileId != null && onDeactivateDisplay != null) {
                         PrecisionButton(
-                            text = "Stop",
+                            text = tr("Stop"),
                             style = PrecisionButtonStyle.DANGER_TONAL,
                             compact = true,
                             onClick = onDeactivateDisplay,
                         )
                     }
                     PrecisionButton(
-                        text = "Activate",
+                        text = tr("Activate"),
                         leadingSymbol = MobileSymbol.View,
                         style = PrecisionButtonStyle.PRIMARY,
                         compact = true,
@@ -175,16 +178,16 @@ fun VirtualDisplayDialog(
             // Placement selector (shared by quick wireless activation & new profile)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Display Placement",
+                    text = tr("Display Placement"),
                     color = p.textSecondary,
                     fontSize = 11.5.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
                 PrecisionSegmentedRow(
                     options = listOf(
-                        DisplayPlacement.RIGHT_OF to DisplayPlacement.RIGHT_OF.shortLabel,
-                        DisplayPlacement.LEFT_OF to DisplayPlacement.LEFT_OF.shortLabel,
-                        DisplayPlacement.ABOVE to DisplayPlacement.ABOVE.shortLabel,
+                        DisplayPlacement.RIGHT_OF to tr(DisplayPlacement.RIGHT_OF.shortLabel),
+                        DisplayPlacement.LEFT_OF to tr(DisplayPlacement.LEFT_OF.shortLabel),
+                        DisplayPlacement.ABOVE to tr(DisplayPlacement.ABOVE.shortLabel),
                     ),
                     selected = selectedPlacement,
                     onSelect = { selectedPlacement = it },
@@ -192,9 +195,9 @@ fun VirtualDisplayDialog(
                 )
                 PrecisionSegmentedRow(
                     options = listOf(
-                        DisplayPlacement.BELOW to DisplayPlacement.BELOW.shortLabel,
-                        DisplayPlacement.MIRROR to DisplayPlacement.MIRROR.shortLabel,
-                        DisplayPlacement.STANDALONE to DisplayPlacement.STANDALONE.shortLabel,
+                        DisplayPlacement.BELOW to tr(DisplayPlacement.BELOW.shortLabel),
+                        DisplayPlacement.MIRROR to tr(DisplayPlacement.MIRROR.shortLabel),
+                        DisplayPlacement.STANDALONE to tr(DisplayPlacement.STANDALONE.shortLabel),
                     ),
                     selected = selectedPlacement,
                     onSelect = { selectedPlacement = it },
@@ -209,13 +212,13 @@ fun VirtualDisplayDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 PrecisionPillBadge(
-                    text = "${profiles.size} saved",
+                    text = trFormat("%d saved", profiles.size),
                     tone = if (profiles.isNotEmpty()) PillTone.CYAN else PillTone.NEUTRAL,
                     monospace = true,
                 )
                 Spacer(Modifier.weight(1f))
                 PrecisionButton(
-                    text = if (showCreateForm) tr("Cancel") else "New Profile",
+                    text = if (showCreateForm) tr("Cancel") else tr("New Profile"),
                     style = if (showCreateForm) PrecisionButtonStyle.SUBTLE else PrecisionButtonStyle.TONAL,
                     compact = true,
                     onClick = {
@@ -238,7 +241,7 @@ fun VirtualDisplayDialog(
                     verticalSpacing = 8.dp,
                 ) {
                     Text(
-                        text = "Resolution Preset",
+                        text = tr("Resolution Preset"),
                         color = p.textSecondary,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -270,11 +273,11 @@ fun VirtualDisplayDialog(
                     PrecisionTextField(
                         value = profileNameInput,
                         onValueChange = { profileNameInput = it; formError = null },
-                        label = "Profile name (optional)",
+                        label = tr("Profile name (optional)"),
                     )
                     PrecisionSwitchRow(
-                        title = "Persist after disconnect",
-                        subtitle = "Keep this virtual display attached on the host when disconnected.",
+                        title = tr("Persist after disconnect"),
+                        subtitle = tr("Keep this virtual display attached on the host when disconnected."),
                         checked = persistAfterDisconnect,
                         onCheckedChange = { persistAfterDisconnect = it },
                     )
@@ -297,7 +300,7 @@ fun VirtualDisplayDialog(
                             compact = true,
                             onClick = {
                                 val displayName = profileNameInput.trim().ifEmpty {
-                                    "${selectedPreset.displayLabel} ${selectedPlacement.shortLabel}"
+                                    "${selectedPreset.displayLabel} $defaultPlacementShort"
                                 }
                                 val profile = VirtualDisplayProfile.fromPreset(
                                     preset = selectedPreset,
@@ -314,7 +317,7 @@ fun VirtualDisplayDialog(
                                         showCreateForm = false
                                     }
                                     .onFailure { failure ->
-                                        formError = failure.message ?: "Invalid virtual display profile"
+                                        formError = failure.message ?: invalidProfileMsg
                                     }
                             },
                         )
@@ -333,7 +336,7 @@ fun VirtualDisplayDialog(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "No saved virtual display profiles yet.",
+                        text = tr("No saved virtual display profiles yet."),
                         color = p.textSecondary,
                         fontSize = 12.5.sp,
                     )
@@ -397,7 +400,7 @@ private fun VirtualDisplayProfileRow(
                     monospace = true,
                 )
                 PrecisionPillBadge(
-                    text = profile.placement.shortLabel,
+                    text = tr(profile.placement.shortLabel),
                     tone = PillTone.CYAN,
                 )
                 Text(
@@ -409,13 +412,15 @@ private fun VirtualDisplayProfileRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            val persistentSuffix = tr("Persistent")
             Text(
                 text = buildString {
                     append(profile.resolutionLabel())
                     append(" · ")
                     append(formatDpiScale(profile.dpiScale))
                     if (profile.persistAfterDisconnect) {
-                        append(" · Persistent")
+                        append(" · ")
+                        append(persistentSuffix)
                     }
                 },
                 color = p.textTertiary,
@@ -426,7 +431,7 @@ private fun VirtualDisplayProfileRow(
             )
         }
         PrecisionButton(
-            text = if (isActive) "Active" else "Use",
+            text = if (isActive) tr("Active") else tr("Use"),
             style = if (isActive) PrecisionButtonStyle.TONAL else PrecisionButtonStyle.SUBTLE,
             compact = true,
             enabled = !isActive,

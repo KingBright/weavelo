@@ -83,10 +83,16 @@ fun DiagnosticsDialog(
 
     val verticalScroll = rememberScrollState()
     val horizontalScroll = rememberScrollState()
+    val copiedMsg = tr("Redacted diagnostics JSON copied to clipboard.")
+    val exportedMsg = tr("Diagnostics report exported.")
+    val shareOpenedMsg = tr("Opened share sheet for diagnostics report.")
+    val noShareTargetMsg = tr("No share target available on this device.")
+    val shareSubject = tr("Weavelo Redacted Diagnostics Report")
+    val shareChooserTitle = tr("Export Diagnostics")
 
     PrecisionDialog(
-        title = "Diagnostics Export",
-        subtitle = "Redacted runtime, network, and telemetry snapshot. Secrets, tokens, PEM keys, and non-loopback IPs are scrubbed.",
+        title = tr("Diagnostics Export"),
+        subtitle = tr("Redacted runtime, network, and telemetry snapshot. Secrets, tokens, PEM keys, and non-loopback IPs are scrubbed."),
         icon = MobileSymbol.Network,
         maxWidth = 560.dp,
         onDismissRequest = onDismiss,
@@ -118,7 +124,7 @@ fun DiagnosticsDialog(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 PrecisionPillBadge(
-                    text = "Redacted",
+                    text = tr("Redacted"),
                     tone = PillTone.EMERALD,
                     showDot = true,
                 )
@@ -128,7 +134,7 @@ fun DiagnosticsDialog(
                     monospace = true,
                 )
                 PrecisionPillBadge(
-                    text = "$lineCount lines · ${reportJson.length} B",
+                    text = trFormat("%d lines · %d B", lineCount, reportJson.length),
                     tone = PillTone.NEUTRAL,
                     monospace = true,
                 )
@@ -140,7 +146,7 @@ fun DiagnosticsDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 PrecisionButton(
-                    text = if (copiedFeedback) "Copied" else tr("Copy"),
+                    text = if (copiedFeedback) tr("Copied") else tr("Copy"),
                     leadingSymbol = if (copiedFeedback) MobileSymbol.Check else MobileSymbol.Copy,
                     style = PrecisionButtonStyle.PRIMARY,
                     compact = true,
@@ -148,7 +154,7 @@ fun DiagnosticsDialog(
                     onClick = {
                         clipboard.setText(AnnotatedString(reportJson))
                         copiedFeedback = true
-                        actionMessage = "Redacted diagnostics JSON copied to clipboard."
+                        actionMessage = copiedMsg
                     },
                 )
                 PrecisionButton(
@@ -160,14 +166,10 @@ fun DiagnosticsDialog(
                     onClick = {
                         if (onExportReport != null) {
                             onExportReport(reportJson)
-                            actionMessage = "Diagnostics report exported."
+                            actionMessage = exportedMsg
                         } else {
-                            val shared = shareDiagnosticsJson(context, reportJson)
-                            actionMessage = if (shared) {
-                                "Opened share sheet for diagnostics report."
-                            } else {
-                                "No share target available on this device."
-                            }
+                            val shared = shareDiagnosticsJson(context, reportJson, shareSubject, shareChooserTitle)
+                            actionMessage = if (shared) shareOpenedMsg else noShareTargetMsg
                         }
                     },
                 )
@@ -214,13 +216,18 @@ fun DiagnosticsDialog(
     }
 }
 
-private fun shareDiagnosticsJson(context: Context, payload: String): Boolean = runCatching {
+private fun shareDiagnosticsJson(
+    context: Context,
+    payload: String,
+    subject: String,
+    chooserTitle: String,
+): Boolean = runCatching {
     val sendIntent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
-        putExtra(Intent.EXTRA_SUBJECT, "Weavelo Redacted Diagnostics Report")
+        putExtra(Intent.EXTRA_SUBJECT, subject)
         putExtra(Intent.EXTRA_TEXT, payload)
     }
-    val chooser = Intent.createChooser(sendIntent, "Export Diagnostics").apply {
+    val chooser = Intent.createChooser(sendIntent, chooserTitle).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     context.startActivity(chooser)
