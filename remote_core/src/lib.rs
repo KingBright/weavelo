@@ -17,6 +17,7 @@ pub mod desktop_identity;
 pub mod desktop_storage;
 pub mod device_artwork;
 pub mod device_name;
+pub mod diagnostics_bundle;
 pub mod directed_delivery;
 pub mod discovery;
 pub mod discovery_status;

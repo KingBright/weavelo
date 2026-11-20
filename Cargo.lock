@@ -5390,6 +5390,7 @@ version = "2.0.0-alpha.6"
 dependencies = [
  "bincode",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

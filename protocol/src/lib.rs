@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fmt;
 
 pub mod interaction;
+pub mod keymap;
 pub mod realtime_input;
 pub mod scroll;
 pub mod session;
