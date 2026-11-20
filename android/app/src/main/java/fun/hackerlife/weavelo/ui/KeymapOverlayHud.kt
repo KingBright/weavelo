@@ -790,101 +790,108 @@ fun KeymapPickerDialog(
             )
         },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            PrecisionTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                label = tr("Search game, app, or process (.exe)"),
-            )
-
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(vertical = 2.dp),
-            ) {
-                item(key = "cat-all") {
-                    CategoryChip(
-                        label = tr("All"),
-                        selected = selectedCategory == null,
-                        onClick = { selectedCategory = null },
-                    )
-                }
-                items(KeymapCategory.entries, key = { it.wireValue }) { category ->
-                    CategoryChip(
-                        label = tr(category.displayLabel),
-                        selected = selectedCategory == category,
-                        onClick = { selectedCategory = category },
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PrecisionPillBadge(
-                    text = trFormat("%d presets", filteredProfiles.size),
-                    tone = PillTone.CYAN,
-                    monospace = true,
+        val metrics = rememberAdaptiveWindowMetrics()
+        AdaptiveSplitPane(
+            leftWeight = 0.40f,
+            leftScrollable = true,
+            rightScrollable = false,
+            left = {
+                PrecisionTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = tr("Search game, app, or process (.exe)"),
                 )
-                if (customProfiles.isNotEmpty()) {
-                    PrecisionPillBadge(
-                        text = trFormat("%d custom", customProfiles.size),
-                        tone = PillTone.BRAND,
-                        monospace = true,
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-            }
 
-            if (filteredProfiles.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(p.surfaceSunken)
-                        .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center,
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp),
                 ) {
-                    Text(
-                        text = trFormat("No keymap presets match %s.", searchQuery),
-                        color = p.textSecondary,
-                        fontSize = 12.5.sp,
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 320.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(filteredProfiles, key = { it.id }) { profile ->
-                        val isActive = profile.id == activeProfileId
-                        KeymapPresetRow(
-                            profile = profile,
-                            isActive = isActive,
-                            onSelect = {
-                                onSelectProfile(profile)
-                                onDismiss()
-                            },
-                            onEdit = onEditProfile?.let { editor ->
-                                {
-                                    editor(profile)
-                                    onDismiss()
-                                }
-                            },
-                            onDelete = if (!profile.builtIn) {
-                                {
-                                    customProfiles = KeymapStore.removeCustom(context, profile.id)
-                                }
-                            } else {
-                                null
-                            },
+                    item(key = "cat-all") {
+                        CategoryChip(
+                            label = tr("All"),
+                            selected = selectedCategory == null,
+                            onClick = { selectedCategory = null },
+                        )
+                    }
+                    items(KeymapCategory.entries, key = { it.wireValue }) { category ->
+                        CategoryChip(
+                            label = tr(category.displayLabel),
+                            selected = selectedCategory == category,
+                            onClick = { selectedCategory = category },
                         )
                     }
                 }
-            }
-        }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PrecisionPillBadge(
+                        text = trFormat("%d presets", filteredProfiles.size),
+                        tone = PillTone.CYAN,
+                        monospace = true,
+                    )
+                    if (customProfiles.isNotEmpty()) {
+                        PrecisionPillBadge(
+                            text = trFormat("%d custom", customProfiles.size),
+                            tone = PillTone.BRAND,
+                            monospace = true,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                }
+            },
+            right = {
+                if (filteredProfiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(p.surfaceSunken)
+                            .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = trFormat("No keymap presets match %s.", searchQuery),
+                            color = p.textSecondary,
+                            fontSize = 12.5.sp,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = if (metrics.isShortLandscape) 240.dp else 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(filteredProfiles, key = { it.id }) { profile ->
+                            val isActive = profile.id == activeProfileId
+                            KeymapPresetRow(
+                                profile = profile,
+                                isActive = isActive,
+                                onSelect = {
+                                    onSelectProfile(profile)
+                                    onDismiss()
+                                },
+                                onEdit = onEditProfile?.let { editor ->
+                                    {
+                                        editor(profile)
+                                        onDismiss()
+                                    }
+                                },
+                                onDelete = if (!profile.builtIn) {
+                                    {
+                                        customProfiles = KeymapStore.removeCustom(context, profile.id)
+                                    }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+        )
     }
 }
 

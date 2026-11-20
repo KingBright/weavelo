@@ -20,9 +20,11 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -48,6 +50,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
@@ -737,6 +740,92 @@ fun PrecisionTextField(
     )
 }
 
+internal enum class AdaptiveLayoutClass {
+    COMPACT_PORTRAIT,
+    COMPACT_LANDSCAPE,
+    EXPANDED,
+}
+
+@Immutable
+internal data class AdaptiveWindowMetrics(
+    val layoutClass: AdaptiveLayoutClass,
+    val widthDp: Int,
+    val heightDp: Int,
+) {
+    val isWide: Boolean get() = layoutClass != AdaptiveLayoutClass.COMPACT_PORTRAIT
+    val isShortLandscape: Boolean get() = layoutClass == AdaptiveLayoutClass.COMPACT_LANDSCAPE
+}
+
+/** Classify current window geometry so dialogs and toolbars reflow into two columns when wide. */
+internal fun classifyAdaptiveLayout(widthDp: Int, heightDp: Int): AdaptiveLayoutClass = when {
+    widthDp >= 600 && heightDp >= 520 -> AdaptiveLayoutClass.EXPANDED
+    widthDp > heightDp && widthDp >= 540 -> AdaptiveLayoutClass.COMPACT_LANDSCAPE
+    else -> AdaptiveLayoutClass.COMPACT_PORTRAIT
+}
+
+@Composable
+internal fun rememberAdaptiveWindowMetrics(): AdaptiveWindowMetrics {
+    val config = LocalConfiguration.current
+    val w = config.screenWidthDp.coerceAtLeast(320)
+    val h = config.screenHeightDp.coerceAtLeast(320)
+    return remember(w, h) {
+        AdaptiveWindowMetrics(
+            layoutClass = classifyAdaptiveLayout(w, h),
+            widthDp = w,
+            heightDp = h,
+        )
+    }
+}
+
+/**
+ * Adaptive two-column split container:
+ * - Portrait: stacks [left] above [right] in a single column.
+ * - Landscape / Expanded foldable: places [left] and [right] side by side.
+ */
+@Composable
+internal fun AdaptiveSplitPane(
+    modifier: Modifier = Modifier,
+    leftWeight: Float = 0.44f,
+    horizontalSpacing: Dp = 14.dp,
+    verticalSpacing: Dp = 10.dp,
+    leftScrollable: Boolean = true,
+    rightScrollable: Boolean = false,
+    left: @Composable ColumnScope.() -> Unit,
+    right: @Composable ColumnScope.() -> Unit,
+) {
+    val metrics = rememberAdaptiveWindowMetrics()
+    if (metrics.isWide) {
+        Row(
+            modifier = modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(horizontalSpacing),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(leftWeight)
+                    .then(if (leftScrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+                verticalArrangement = Arrangement.spacedBy(verticalSpacing),
+                content = left,
+            )
+            Column(
+                modifier = Modifier
+                    .weight((1f - leftWeight).coerceAtLeast(0.2f))
+                    .then(if (rightScrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+                verticalArrangement = Arrangement.spacedBy(verticalSpacing),
+                content = right,
+            )
+        }
+    } else {
+        Column(
+            modifier = modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(verticalSpacing),
+        ) {
+            left()
+            right()
+        }
+    }
+}
+
 /**
  * Precision Craft Modal Sheet/Dialog: replaces stock Material AlertDialog across the product
  * with a sculpted card, icon-well header, circular close button, and tactile footer actions.
@@ -748,11 +837,26 @@ fun PrecisionDialog(
     icon: MobileSymbol? = null,
     subtitle: String? = null,
     maxWidth: Dp = 440.dp,
+    landscapeMaxWidth: Dp = 800.dp,
+    scrollableContent: Boolean = false,
     dismissButton: (@Composable () -> Unit)? = null,
     confirmButton: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val p = WeaveloTokens.colors
+    val metrics = rememberAdaptiveWindowMetrics()
+    val compactLandscape = metrics.isShortLandscape
+    val effectiveMaxWidth = when (metrics.layoutClass) {
+        AdaptiveLayoutClass.COMPACT_LANDSCAPE -> minOf(landscapeMaxWidth, (metrics.widthDp * 0.94f).dp)
+        AdaptiveLayoutClass.EXPANDED -> minOf(landscapeMaxWidth, (metrics.widthDp * 0.86f).dp)
+        AdaptiveLayoutClass.COMPACT_PORTRAIT -> maxWidth
+    }
+    val effectiveMaxHeight = (metrics.heightDp * if (compactLandscape) 0.92f else 0.88f).dp
+    val horizontalPad = if (compactLandscape) 14.dp else 18.dp
+    val verticalPad = if (compactLandscape) 10.dp else 16.dp
+    val outerSpacing = if (compactLandscape) 8.dp else 12.dp
+    val inlineHeaderActions = compactLandscape && (dismissButton != null || confirmButton != null)
+
     Dialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -761,67 +865,77 @@ fun PrecisionDialog(
             modifier = Modifier
                 .imePadding()
                 .navigationBarsPadding()
-                .widthIn(max = maxWidth)
-                .fillMaxWidth(0.92f)
+                .widthIn(max = effectiveMaxWidth)
+                .heightIn(max = effectiveMaxHeight)
+                .fillMaxWidth(if (compactLandscape) 0.94f else 0.92f)
                 .border(1.dp, p.borderStrong.copy(alpha = if (p.isDark) 0.85f else 0.55f), RoundedCornerShape(22.dp)),
             shape = RoundedCornerShape(22.dp),
             color = p.surfaceRaised,
             shadowElevation = 14.dp
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier.padding(horizontal = horizontalPad, vertical = verticalPad),
+                verticalArrangement = Arrangement.spacedBy(outerSpacing)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(if (compactLandscape) 8.dp else 10.dp)
                 ) {
                     if (icon != null) {
                         Box(
                             modifier = Modifier
-                                .size(34.dp)
+                                .size(if (compactLandscape) 30.dp else 34.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(p.brandSoft)
                                 .border(1.dp, p.brandBorder.copy(alpha = 0.55f), RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(icon.image, contentDescription = null, tint = p.brand, modifier = Modifier.size(18.dp))
+                            Icon(icon.image, contentDescription = null, tint = p.brand, modifier = Modifier.size(if (compactLandscape) 16.dp else 18.dp))
                         }
                     }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                         Text(
                             text = title,
                             color = p.textPrimary,
-                            fontSize = 16.sp,
+                            fontSize = if (compactLandscape) 14.5.sp else 16.sp,
                             fontWeight = FontWeight.SemiBold,
-                            maxLines = 2,
+                            maxLines = if (compactLandscape) 1 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
                         if (!subtitle.isNullOrBlank()) {
                             Text(
                                 text = subtitle,
                                 color = p.textSecondary,
-                                fontSize = 11.5.sp,
-                                lineHeight = 16.sp
+                                fontSize = if (compactLandscape) 11.sp else 11.5.sp,
+                                lineHeight = if (compactLandscape) 14.sp else 16.sp,
+                                maxLines = if (compactLandscape) 1 else 3,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
+                    if (inlineHeaderActions) {
+                        dismissButton?.invoke()
+                        confirmButton?.invoke()
                     }
                     MobileAction(
                         symbol = MobileSymbol.Close,
                         label = tr("Close"),
                         tonalWell = true,
-                        modifier = Modifier.size(38.dp),
+                        modifier = Modifier.size(if (compactLandscape) 32.dp else 38.dp),
                         onClick = onDismissRequest
                     )
                 }
                 HorizontalDivider(color = p.borderMuted, thickness = 1.dp)
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .then(if (scrollableContent) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+                    verticalArrangement = Arrangement.spacedBy(if (compactLandscape) 8.dp else 10.dp),
                     content = content
                 )
-                if (dismissButton != null || confirmButton != null) {
+                if (!inlineHeaderActions && (dismissButton != null || confirmButton != null)) {
                     HorizontalDivider(color = p.borderMuted, thickness = 1.dp)
                     Row(
                         modifier = Modifier.fillMaxWidth(),

@@ -88,190 +88,197 @@ fun PortForwardDialog(
             )
         },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PrecisionPillBadge(
-                    text = trFormat("%d / %d active", activeCount, rules.size),
-                    tone = if (activeCount > 0) PillTone.EMERALD else PillTone.NEUTRAL,
-                    showDot = activeCount > 0,
-                    monospace = true,
-                )
-                Spacer(Modifier.weight(1f))
-                PrecisionButton(
-                    text = if (showAddForm) tr("Cancel") else tr("Add Rule"),
-                    style = if (showAddForm) PrecisionButtonStyle.SUBTLE else PrecisionButtonStyle.PRIMARY,
-                    compact = true,
-                    onClick = {
-                        if (showAddForm) {
-                            resetForm()
-                            showAddForm = false
-                        } else {
-                            formError = null
-                            showAddForm = true
-                        }
-                    },
-                )
-            }
-
-            if (showAddForm) {
-                PrecisionCard(
-                    sunken = true,
-                    cornerRadius = 14.dp,
-                    contentPadding = PaddingValues(12.dp),
-                    verticalSpacing = 8.dp,
+        val metrics = rememberAdaptiveWindowMetrics()
+        AdaptiveSplitPane(
+            leftWeight = if (showAddForm) 0.48f else 0.34f,
+            leftScrollable = true,
+            rightScrollable = false,
+            left = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    PrecisionTextField(
-                        value = nameInput,
-                        onValueChange = { nameInput = it; formError = null },
-                        label = tr("Rule name (optional)"),
-                    )
-                    PrecisionSegmentedRow(
-                        options = listOf(
-                            TunnelProtocol.TCP to TunnelProtocol.TCP.displayLabel,
-                            TunnelProtocol.UDP to TunnelProtocol.UDP.displayLabel,
-                        ),
-                        selected = protocolInput,
-                        modifier = Modifier.fillMaxWidth(),
-                        onSelect = { protocolInput = it; formError = null },
-                    )
-                    PrecisionSegmentedRow(
-                        options = listOf(
-                            TunnelDirection.LOCAL_TO_REMOTE to tr(TunnelDirection.LOCAL_TO_REMOTE.displayLabel),
-                            TunnelDirection.REMOTE_TO_LOCAL to tr(TunnelDirection.REMOTE_TO_LOCAL.displayLabel),
-                        ),
-                        selected = directionInput,
-                        modifier = Modifier.fillMaxWidth(),
-                        onSelect = { directionInput = it; formError = null },
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        val bindPortValue = bindPortInput.toIntOrNull()
-                        val targetPortValue = targetPortInput.toIntOrNull()
-                        PrecisionTextField(
-                            value = bindPortInput,
-                            onValueChange = { bindPortInput = it.filter(Char::isDigit); formError = null },
-                            label = tr("Bind port"),
-                            modifier = Modifier.weight(1f),
-                            isError = bindPortInput.isNotEmpty() &&
-                                (bindPortValue == null || bindPortValue !in PortForwardRule.MIN_PORT..PortForwardRule.MAX_PORT),
-                            monospace = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        )
-                        PrecisionTextField(
-                            value = targetPortInput,
-                            onValueChange = { targetPortInput = it.filter(Char::isDigit); formError = null },
-                            label = tr("Target port"),
-                            modifier = Modifier.weight(1f),
-                            isError = targetPortInput.isNotEmpty() &&
-                                (targetPortValue == null || targetPortValue !in PortForwardRule.MIN_PORT..PortForwardRule.MAX_PORT),
-                            monospace = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        )
-                    }
-                    PrecisionTextField(
-                        value = targetHostInput,
-                        onValueChange = { targetHostInput = it; formError = null },
-                        label = tr("Target host"),
-                        isError = targetHostInput.isBlank(),
+                    PrecisionPillBadge(
+                        text = trFormat("%d / %d active", activeCount, rules.size),
+                        tone = if (activeCount > 0) PillTone.EMERALD else PillTone.NEUTRAL,
+                        showDot = activeCount > 0,
                         monospace = true,
                     )
-                    formError?.let { message ->
-                        Text(
-                            text = message,
-                            color = p.dangerText,
-                            fontSize = 12.sp,
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        PrecisionButton(
-                            text = tr("Save"),
-                            leadingSymbol = MobileSymbol.Check,
-                            style = PrecisionButtonStyle.PRIMARY,
-                            compact = true,
-                            onClick = {
-                                val bindPort = bindPortInput.toIntOrNull()
-                                val targetPort = targetPortInput.toIntOrNull()
-                                if (bindPort == null || targetPort == null) {
-                                    formError = invalidPortsMsg
-                                    return@PrecisionButton
-                                }
-                                val displayName = nameInput.trim().ifEmpty {
-                                    "${protocolInput.displayLabel} :$bindPort"
-                                }
-                                val rule = PortForwardRule(
-                                    name = displayName,
-                                    protocol = protocolInput,
-                                    direction = directionInput,
-                                    bindPort = bindPort,
-                                    targetHost = targetHostInput,
-                                    targetPort = targetPort,
-                                    enabled = true,
-                                )
-                                PortForwardStore.add(context, rule)
-                                    .onSuccess { updated ->
-                                        rules = updated
-                                        onRulesChanged?.invoke(updated)
-                                        resetForm()
-                                        showAddForm = false
-                                    }
-                                    .onFailure { failure ->
-                                        formError = failure.message ?: invalidRuleMsg
-                                    }
-                            },
-                        )
-                    }
-                }
-            }
-
-            if (rules.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(p.surfaceSunken)
-                        .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = tr("No port forwarding rules configured yet."),
-                        color = p.textSecondary,
-                        fontSize = 12.5.sp,
+                    Spacer(Modifier.weight(1f))
+                    PrecisionButton(
+                        text = if (showAddForm) tr("Cancel") else tr("Add Rule"),
+                        style = if (showAddForm) PrecisionButtonStyle.SUBTLE else PrecisionButtonStyle.PRIMARY,
+                        compact = true,
+                        onClick = {
+                            if (showAddForm) {
+                                resetForm()
+                                showAddForm = false
+                            } else {
+                                formError = null
+                                showAddForm = true
+                            }
+                        },
                     )
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 320.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(rules, key = { it.id }) { rule ->
-                        PortForwardRuleRow(
-                            rule = rule,
-                            onToggle = {
-                                val updated = PortForwardStore.toggle(context, rule.id)
-                                rules = updated
-                                onRulesChanged?.invoke(updated)
-                            },
-                            onDelete = {
-                                val updated = PortForwardStore.remove(context, rule.id)
-                                rules = updated
-                                onRulesChanged?.invoke(updated)
-                            },
+
+                if (showAddForm) {
+                    PrecisionCard(
+                        sunken = true,
+                        cornerRadius = 14.dp,
+                        contentPadding = PaddingValues(12.dp),
+                        verticalSpacing = 8.dp,
+                    ) {
+                        PrecisionTextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it; formError = null },
+                            label = tr("Rule name (optional)"),
                         )
+                        PrecisionSegmentedRow(
+                            options = listOf(
+                                TunnelProtocol.TCP to TunnelProtocol.TCP.displayLabel,
+                                TunnelProtocol.UDP to TunnelProtocol.UDP.displayLabel,
+                            ),
+                            selected = protocolInput,
+                            modifier = Modifier.fillMaxWidth(),
+                            onSelect = { protocolInput = it; formError = null },
+                        )
+                        PrecisionSegmentedRow(
+                            options = listOf(
+                                TunnelDirection.LOCAL_TO_REMOTE to tr(TunnelDirection.LOCAL_TO_REMOTE.displayLabel),
+                                TunnelDirection.REMOTE_TO_LOCAL to tr(TunnelDirection.REMOTE_TO_LOCAL.displayLabel),
+                            ),
+                            selected = directionInput,
+                            modifier = Modifier.fillMaxWidth(),
+                            onSelect = { directionInput = it; formError = null },
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            val bindPortValue = bindPortInput.toIntOrNull()
+                            val targetPortValue = targetPortInput.toIntOrNull()
+                            PrecisionTextField(
+                                value = bindPortInput,
+                                onValueChange = { bindPortInput = it.filter(Char::isDigit); formError = null },
+                                label = tr("Bind port"),
+                                modifier = Modifier.weight(1f),
+                                isError = bindPortInput.isNotEmpty() &&
+                                    (bindPortValue == null || bindPortValue !in PortForwardRule.MIN_PORT..PortForwardRule.MAX_PORT),
+                                monospace = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            )
+                            PrecisionTextField(
+                                value = targetPortInput,
+                                onValueChange = { targetPortInput = it.filter(Char::isDigit); formError = null },
+                                label = tr("Target port"),
+                                modifier = Modifier.weight(1f),
+                                isError = targetPortInput.isNotEmpty() &&
+                                    (targetPortValue == null || targetPortValue !in PortForwardRule.MIN_PORT..PortForwardRule.MAX_PORT),
+                                monospace = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            )
+                        }
+                        PrecisionTextField(
+                            value = targetHostInput,
+                            onValueChange = { targetHostInput = it; formError = null },
+                            label = tr("Target host"),
+                            isError = targetHostInput.isBlank(),
+                            monospace = true,
+                        )
+                        formError?.let { message ->
+                            Text(
+                                text = message,
+                                color = p.dangerText,
+                                fontSize = 12.sp,
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            PrecisionButton(
+                                text = tr("Save"),
+                                leadingSymbol = MobileSymbol.Check,
+                                style = PrecisionButtonStyle.PRIMARY,
+                                compact = true,
+                                onClick = {
+                                    val bindPort = bindPortInput.toIntOrNull()
+                                    val targetPort = targetPortInput.toIntOrNull()
+                                    if (bindPort == null || targetPort == null) {
+                                        formError = invalidPortsMsg
+                                        return@PrecisionButton
+                                    }
+                                    val displayName = nameInput.trim().ifEmpty {
+                                        "${protocolInput.displayLabel} :$bindPort"
+                                    }
+                                    val rule = PortForwardRule(
+                                        name = displayName,
+                                        protocol = protocolInput,
+                                        direction = directionInput,
+                                        bindPort = bindPort,
+                                        targetHost = targetHostInput,
+                                        targetPort = targetPort,
+                                        enabled = true,
+                                    )
+                                    PortForwardStore.add(context, rule)
+                                        .onSuccess { updated ->
+                                            rules = updated
+                                            onRulesChanged?.invoke(updated)
+                                            resetForm()
+                                            showAddForm = false
+                                        }
+                                        .onFailure { failure ->
+                                            formError = failure.message ?: invalidRuleMsg
+                                        }
+                                },
+                            )
+                        }
                     }
                 }
-            }
-        }
+            },
+            right = {
+                if (rules.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(p.surfaceSunken)
+                            .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = tr("No port forwarding rules configured yet."),
+                            color = p.textSecondary,
+                            fontSize = 12.5.sp,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = if (metrics.isShortLandscape) 240.dp else 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(rules, key = { it.id }) { rule ->
+                            PortForwardRuleRow(
+                                rule = rule,
+                                onToggle = {
+                                    val updated = PortForwardStore.toggle(context, rule.id)
+                                    rules = updated
+                                    onRulesChanged?.invoke(updated)
+                                },
+                                onDelete = {
+                                    val updated = PortForwardStore.remove(context, rule.id)
+                                    rules = updated
+                                    onRulesChanged?.invoke(updated)
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+        )
     }
 }
 

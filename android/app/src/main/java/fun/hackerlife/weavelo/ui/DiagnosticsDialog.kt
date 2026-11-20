@@ -117,102 +117,103 @@ fun DiagnosticsDialog(
             )
         },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                PrecisionPillBadge(
-                    text = tr("Redacted"),
-                    tone = PillTone.EMERALD,
-                    showDot = true,
-                )
-                PrecisionPillBadge(
-                    text = effectiveInput.routePreference.wire,
-                    tone = PillTone.BRAND,
-                    monospace = true,
-                )
+        val metrics = rememberAdaptiveWindowMetrics()
+        AdaptiveSplitPane(
+            leftWeight = 0.38f,
+            left = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    PrecisionPillBadge(
+                        text = tr("Redacted"),
+                        tone = PillTone.EMERALD,
+                        showDot = true,
+                    )
+                    PrecisionPillBadge(
+                        text = effectiveInput.routePreference.wire,
+                        tone = PillTone.BRAND,
+                        monospace = true,
+                    )
+                }
                 PrecisionPillBadge(
                     text = trFormat("%d lines · %d B", lineCount, reportJson.length),
                     tone = PillTone.NEUTRAL,
                     monospace = true,
                 )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PrecisionButton(
-                    text = if (copiedFeedback) tr("Copied") else tr("Copy"),
-                    leadingSymbol = if (copiedFeedback) MobileSymbol.Check else MobileSymbol.Copy,
-                    style = PrecisionButtonStyle.PRIMARY,
-                    compact = true,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        clipboard.setText(AnnotatedString(reportJson))
-                        copiedFeedback = true
-                        actionMessage = copiedMsg
-                    },
-                )
-                PrecisionButton(
-                    text = tr("Share"),
-                    leadingSymbol = MobileSymbol.Share,
-                    style = PrecisionButtonStyle.TONAL,
-                    compact = true,
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        if (onExportReport != null) {
-                            onExportReport(reportJson)
-                            actionMessage = exportedMsg
-                        } else {
-                            val shared = shareDiagnosticsJson(context, reportJson, shareSubject, shareChooserTitle)
-                            actionMessage = if (shared) shareOpenedMsg else noShareTargetMsg
-                        }
-                    },
-                )
-            }
-
-            actionMessage?.let { status ->
-                Text(
-                    text = status,
-                    color = p.emeraldText,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 180.dp, max = 340.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(p.surfaceSunken)
-                    .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
-                    .padding(12.dp),
-            ) {
-                SelectionContainer {
-                    Text(
-                        text = reportJson,
-                        color = p.textPrimary,
-                        fontSize = 11.sp,
-                        lineHeight = 15.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                        softWrap = false,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(verticalScroll)
-                            .horizontalScroll(horizontalScroll),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PrecisionButton(
+                        text = if (copiedFeedback) tr("Copied") else tr("Copy"),
+                        leadingSymbol = if (copiedFeedback) MobileSymbol.Check else MobileSymbol.Copy,
+                        style = PrecisionButtonStyle.PRIMARY,
+                        compact = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            clipboard.setText(AnnotatedString(reportJson))
+                            copiedFeedback = true
+                            actionMessage = copiedMsg
+                        },
+                    )
+                    PrecisionButton(
+                        text = tr("Share"),
+                        leadingSymbol = MobileSymbol.Share,
+                        style = PrecisionButtonStyle.TONAL,
+                        compact = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            if (onExportReport != null) {
+                                onExportReport(reportJson)
+                                actionMessage = exportedMsg
+                            } else {
+                                val shared = shareDiagnosticsJson(context, reportJson, shareSubject, shareChooserTitle)
+                                actionMessage = if (shared) shareOpenedMsg else noShareTargetMsg
+                            }
+                        },
                     )
                 }
-            }
-
-            Spacer(Modifier)
-        }
+                actionMessage?.let { status ->
+                    Text(
+                        text = status,
+                        color = p.emeraldText,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+            right = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = if (metrics.isShortLandscape) 160.dp else 180.dp, max = if (metrics.isShortLandscape) 240.dp else 340.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(p.surfaceSunken)
+                        .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = reportJson,
+                            color = p.textPrimary,
+                            fontSize = 11.sp,
+                            lineHeight = 15.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            softWrap = false,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(verticalScroll)
+                                .horizontalScroll(horizontalScroll),
+                        )
+                    }
+                }
+            },
+        )
     }
 }
 

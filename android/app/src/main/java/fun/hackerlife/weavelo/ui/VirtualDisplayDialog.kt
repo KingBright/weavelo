@@ -108,259 +108,266 @@ fun VirtualDisplayDialog(
             )
         },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // One-tap Wireless Secondary Display card matching current Android device
-            PrecisionCard(
-                highlighted = activeProfileId != null,
-                cornerRadius = 14.dp,
-                contentPadding = PaddingValues(12.dp),
-                verticalSpacing = 8.dp,
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = tr("Wireless Secondary Display"),
-                            color = p.textPrimary,
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = "${deviceProfile.resolutionLabel()} · ${formatDpiScale(deviceProfile.dpiScale)} · ${tr(selectedPlacement.displayLabel)}",
-                            color = p.textSecondary,
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    PrecisionPillBadge(
-                        text = if (activeProfileId != null) tr("Active") else tr("Match Device"),
-                        tone = if (activeProfileId != null) PillTone.EMERALD else PillTone.BRAND,
-                        showDot = activeProfileId != null,
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    PrecisionSegmentedRow(
-                        options = listOf(true to tr("Landscape"), false to tr("Portrait")),
-                        selected = wirelessLandscape,
-                        onSelect = { wirelessLandscape = it },
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (activeProfileId != null && onDeactivateDisplay != null) {
-                        PrecisionButton(
-                            text = tr("Stop"),
-                            style = PrecisionButtonStyle.DANGER_TONAL,
-                            compact = true,
-                            onClick = onDeactivateDisplay,
-                        )
-                    }
-                    PrecisionButton(
-                        text = tr("Activate"),
-                        leadingSymbol = MobileSymbol.View,
-                        style = PrecisionButtonStyle.PRIMARY,
-                        compact = true,
-                        onClick = { onActivateProfile?.invoke(deviceProfile) },
-                    )
-                }
-            }
-
-            // Placement selector (shared by quick wireless activation & new profile)
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = tr("Display Placement"),
-                    color = p.textSecondary,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                PrecisionSegmentedRow(
-                    options = listOf(
-                        DisplayPlacement.RIGHT_OF to tr(DisplayPlacement.RIGHT_OF.shortLabel),
-                        DisplayPlacement.LEFT_OF to tr(DisplayPlacement.LEFT_OF.shortLabel),
-                        DisplayPlacement.ABOVE to tr(DisplayPlacement.ABOVE.shortLabel),
-                    ),
-                    selected = selectedPlacement,
-                    onSelect = { selectedPlacement = it },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                PrecisionSegmentedRow(
-                    options = listOf(
-                        DisplayPlacement.BELOW to tr(DisplayPlacement.BELOW.shortLabel),
-                        DisplayPlacement.MIRROR to tr(DisplayPlacement.MIRROR.shortLabel),
-                        DisplayPlacement.STANDALONE to tr(DisplayPlacement.STANDALONE.shortLabel),
-                    ),
-                    selected = selectedPlacement,
-                    onSelect = { selectedPlacement = it },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-
-            // Profiles header & add toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PrecisionPillBadge(
-                    text = trFormat("%d saved", profiles.size),
-                    tone = if (profiles.isNotEmpty()) PillTone.CYAN else PillTone.NEUTRAL,
-                    monospace = true,
-                )
-                Spacer(Modifier.weight(1f))
-                PrecisionButton(
-                    text = if (showCreateForm) tr("Cancel") else tr("New Profile"),
-                    style = if (showCreateForm) PrecisionButtonStyle.SUBTLE else PrecisionButtonStyle.TONAL,
-                    compact = true,
-                    onClick = {
-                        if (showCreateForm) {
-                            resetCreateForm()
-                            showCreateForm = false
-                        } else {
-                            formError = null
-                            showCreateForm = true
-                        }
-                    },
-                )
-            }
-
-            if (showCreateForm) {
+        val metrics = rememberAdaptiveWindowMetrics()
+        AdaptiveSplitPane(
+            leftWeight = 0.46f,
+            leftScrollable = true,
+            rightScrollable = showCreateForm,
+            left = {
+                // One-tap Wireless Secondary Display card matching current Android device
                 PrecisionCard(
-                    sunken = true,
+                    highlighted = activeProfileId != null,
                     cornerRadius = 14.dp,
                     contentPadding = PaddingValues(12.dp),
                     verticalSpacing = 8.dp,
                 ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = tr("Wireless Secondary Display"),
+                                color = p.textPrimary,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${deviceProfile.resolutionLabel()} · ${formatDpiScale(deviceProfile.dpiScale)} · ${tr(selectedPlacement.displayLabel)}",
+                                color = p.textSecondary,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        PrecisionPillBadge(
+                            text = if (activeProfileId != null) tr("Active") else tr("Match Device"),
+                            tone = if (activeProfileId != null) PillTone.EMERALD else PillTone.BRAND,
+                            showDot = activeProfileId != null,
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        PrecisionSegmentedRow(
+                            options = listOf(true to tr("Landscape"), false to tr("Portrait")),
+                            selected = wirelessLandscape,
+                            onSelect = { wirelessLandscape = it },
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (activeProfileId != null && onDeactivateDisplay != null) {
+                            PrecisionButton(
+                                text = tr("Stop"),
+                                style = PrecisionButtonStyle.DANGER_TONAL,
+                                compact = true,
+                                onClick = onDeactivateDisplay,
+                            )
+                        }
+                        PrecisionButton(
+                            text = tr("Activate"),
+                            leadingSymbol = MobileSymbol.View,
+                            style = PrecisionButtonStyle.PRIMARY,
+                            compact = true,
+                            onClick = { onActivateProfile?.invoke(deviceProfile) },
+                        )
+                    }
+                }
+
+                // Placement selector (shared by quick wireless activation & new profile)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = tr("Resolution Preset"),
+                        text = tr("Display Placement"),
                         color = p.textSecondary,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                     PrecisionSegmentedRow(
-                        options = StandardDisplayPresets.take(3).map { it to it.displayLabel },
-                        selected = selectedPreset,
-                        onSelect = { selectedPreset = it; formError = null },
+                        options = listOf(
+                            DisplayPlacement.RIGHT_OF to tr(DisplayPlacement.RIGHT_OF.shortLabel),
+                            DisplayPlacement.LEFT_OF to tr(DisplayPlacement.LEFT_OF.shortLabel),
+                            DisplayPlacement.ABOVE to tr(DisplayPlacement.ABOVE.shortLabel),
+                        ),
+                        selected = selectedPlacement,
+                        onSelect = { selectedPlacement = it },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     PrecisionSegmentedRow(
-                        options = StandardDisplayPresets.drop(3).map { it to it.displayLabel },
-                        selected = selectedPreset,
-                        onSelect = { selectedPreset = it; formError = null },
+                        options = listOf(
+                            DisplayPlacement.BELOW to tr(DisplayPlacement.BELOW.shortLabel),
+                            DisplayPlacement.MIRROR to tr(DisplayPlacement.MIRROR.shortLabel),
+                            DisplayPlacement.STANDALONE to tr(DisplayPlacement.STANDALONE.shortLabel),
+                        ),
+                        selected = selectedPlacement,
+                        onSelect = { selectedPlacement = it },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Text(
-                        text = "${selectedPreset.defaultWidth}x${selectedPreset.defaultHeight} · ${formatDpiScale(selectedPreset.defaultDpiScale)}",
-                        color = p.textTertiary,
-                        fontSize = 11.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                    PrecisionSegmentedRow(
-                        options = RefreshRateOptions.map { it to "${it}Hz" },
-                        selected = selectedRefreshHz,
-                        onSelect = { selectedRefreshHz = it; formError = null },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    PrecisionTextField(
-                        value = profileNameInput,
-                        onValueChange = { profileNameInput = it; formError = null },
-                        label = tr("Profile name (optional)"),
-                    )
-                    PrecisionSwitchRow(
-                        title = tr("Persist after disconnect"),
-                        subtitle = tr("Keep this virtual display attached on the host when disconnected."),
-                        checked = persistAfterDisconnect,
-                        onCheckedChange = { persistAfterDisconnect = it },
-                    )
-                    formError?.let { message ->
-                        Text(
-                            text = message,
-                            color = p.dangerText,
-                            fontSize = 12.sp,
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        PrecisionButton(
-                            text = tr("Save"),
-                            leadingSymbol = MobileSymbol.Check,
-                            style = PrecisionButtonStyle.PRIMARY,
-                            compact = true,
-                            onClick = {
-                                val displayName = profileNameInput.trim().ifEmpty {
-                                    "${selectedPreset.displayLabel} $defaultPlacementShort"
-                                }
-                                val profile = VirtualDisplayProfile.fromPreset(
-                                    preset = selectedPreset,
-                                    placement = selectedPlacement,
-                                    name = displayName,
-                                    refreshHz = selectedRefreshHz,
-                                    persistAfterDisconnect = persistAfterDisconnect,
-                                )
-                                VirtualDisplayStore.add(appContext, profile)
-                                    .onSuccess { updated ->
-                                        profiles = updated
-                                        onProfilesChanged?.invoke(updated)
-                                        resetCreateForm()
-                                        showCreateForm = false
-                                    }
-                                    .onFailure { failure ->
-                                        formError = failure.message ?: invalidProfileMsg
-                                    }
-                            },
-                        )
-                    }
                 }
-            }
+            },
+            right = {
+                // Profiles header & add toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PrecisionPillBadge(
+                        text = trFormat("%d saved", profiles.size),
+                        tone = if (profiles.isNotEmpty()) PillTone.CYAN else PillTone.NEUTRAL,
+                        monospace = true,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    PrecisionButton(
+                        text = if (showCreateForm) tr("Cancel") else tr("New Profile"),
+                        style = if (showCreateForm) PrecisionButtonStyle.SUBTLE else PrecisionButtonStyle.TONAL,
+                        compact = true,
+                        onClick = {
+                            if (showCreateForm) {
+                                resetCreateForm()
+                                showCreateForm = false
+                            } else {
+                                formError = null
+                                showCreateForm = true
+                            }
+                        },
+                    )
+                }
 
-            if (profiles.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(p.surfaceSunken)
-                        .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
-                        .padding(14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = tr("No saved virtual display profiles yet."),
-                        color = p.textSecondary,
-                        fontSize = 12.5.sp,
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 260.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(profiles, key = { it.id }) { profile ->
-                        VirtualDisplayProfileRow(
-                            profile = profile,
-                            isActive = profile.id == activeProfileId,
-                            onActivate = { onActivateProfile?.invoke(profile) },
-                            onDelete = {
-                                val updated = VirtualDisplayStore.remove(appContext, profile.id)
-                                profiles = updated
-                                onProfilesChanged?.invoke(updated)
-                            },
+                if (showCreateForm) {
+                    PrecisionCard(
+                        sunken = true,
+                        cornerRadius = 14.dp,
+                        contentPadding = PaddingValues(12.dp),
+                        verticalSpacing = 8.dp,
+                    ) {
+                        Text(
+                            text = tr("Resolution Preset"),
+                            color = p.textSecondary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
                         )
+                        PrecisionSegmentedRow(
+                            options = StandardDisplayPresets.take(3).map { it to it.displayLabel },
+                            selected = selectedPreset,
+                            onSelect = { selectedPreset = it; formError = null },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        PrecisionSegmentedRow(
+                            options = StandardDisplayPresets.drop(3).map { it to it.displayLabel },
+                            selected = selectedPreset,
+                            onSelect = { selectedPreset = it; formError = null },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = "${selectedPreset.defaultWidth}x${selectedPreset.defaultHeight} · ${formatDpiScale(selectedPreset.defaultDpiScale)}",
+                            color = p.textTertiary,
+                            fontSize = 11.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        PrecisionSegmentedRow(
+                            options = RefreshRateOptions.map { it to "${it}Hz" },
+                            selected = selectedRefreshHz,
+                            onSelect = { selectedRefreshHz = it; formError = null },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        PrecisionTextField(
+                            value = profileNameInput,
+                            onValueChange = { profileNameInput = it; formError = null },
+                            label = tr("Profile name (optional)"),
+                        )
+                        PrecisionSwitchRow(
+                            title = tr("Persist after disconnect"),
+                            subtitle = tr("Keep this virtual display attached on the host when disconnected."),
+                            checked = persistAfterDisconnect,
+                            onCheckedChange = { persistAfterDisconnect = it },
+                        )
+                        formError?.let { message ->
+                            Text(
+                                text = message,
+                                color = p.dangerText,
+                                fontSize = 12.sp,
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            PrecisionButton(
+                                text = tr("Save"),
+                                leadingSymbol = MobileSymbol.Check,
+                                style = PrecisionButtonStyle.PRIMARY,
+                                compact = true,
+                                onClick = {
+                                    val displayName = profileNameInput.trim().ifEmpty {
+                                        "${selectedPreset.displayLabel} $defaultPlacementShort"
+                                    }
+                                    val profile = VirtualDisplayProfile.fromPreset(
+                                        preset = selectedPreset,
+                                        placement = selectedPlacement,
+                                        name = displayName,
+                                        refreshHz = selectedRefreshHz,
+                                        persistAfterDisconnect = persistAfterDisconnect,
+                                    )
+                                    VirtualDisplayStore.add(appContext, profile)
+                                        .onSuccess { updated ->
+                                            profiles = updated
+                                            onProfilesChanged?.invoke(updated)
+                                            resetCreateForm()
+                                            showCreateForm = false
+                                        }
+                                        .onFailure { failure ->
+                                            formError = failure.message ?: invalidProfileMsg
+                                        }
+                                },
+                            )
+                        }
                     }
                 }
-            }
-        }
+
+                if (profiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(p.surfaceSunken)
+                            .border(BorderStroke(1.dp, p.borderMuted), RoundedCornerShape(12.dp))
+                            .padding(14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = tr("No saved virtual display profiles yet."),
+                            color = p.textSecondary,
+                            fontSize = 12.5.sp,
+                        )
+                    }
+                } else if (!showCreateForm) {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = if (metrics.isShortLandscape) 210.dp else 260.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(profiles, key = { it.id }) { profile ->
+                            VirtualDisplayProfileRow(
+                                profile = profile,
+                                isActive = profile.id == activeProfileId,
+                                onActivate = { onActivateProfile?.invoke(profile) },
+                                onDelete = {
+                                    val updated = VirtualDisplayStore.remove(appContext, profile.id)
+                                    profiles = updated
+                                    onProfilesChanged?.invoke(updated)
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+        )
     }
 }
 

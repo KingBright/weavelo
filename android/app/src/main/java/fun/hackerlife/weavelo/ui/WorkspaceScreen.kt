@@ -304,16 +304,12 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
 
         @Composable
         fun SessionActionsDropdown(expanded: Boolean, onDismiss: () -> Unit) {
+            val menuMetrics = rememberAdaptiveWindowMetrics()
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = onDismiss,
             ) {
-                Column(
-                    modifier = Modifier
-                        .widthIn(min = 220.dp, max = 280.dp)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
+                val leftItems: @Composable ColumnScope.() -> Unit = {
                     if (!state.connected && !state.incomingEnded) {
                         PrecisionMenuItem(
                             text = tr("Reconnect"),
@@ -370,7 +366,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             keymapEditMode = !keymapEditMode
                         }
                     )
-                    HorizontalDivider(color = p.borderMuted)
+                }
+                val rightItems: @Composable ColumnScope.() -> Unit = {
+                    if (!menuMetrics.isWide) {
+                        HorizontalDivider(color = p.borderMuted)
+                    }
                     PrecisionMenuItem(
                         text = tr("Virtual displays"),
                         subtitle = activeVirtualDisplay?.resolutionLabel() ?: tr("Wireless secondary & profiles"),
@@ -404,6 +404,36 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         symbol = MobileSymbol.Settings,
                         onClick = { onDismiss(); backgroundSettings = true }
                     )
+                }
+                if (menuMetrics.isWide) {
+                    Row(
+                        modifier = Modifier
+                            .widthIn(min = 460.dp, max = 560.dp)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            content = leftItems
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            content = rightItems
+                        )
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .widthIn(min = 220.dp, max = 280.dp)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        leftItems()
+                        rightItems()
+                    }
                 }
             }
         }
