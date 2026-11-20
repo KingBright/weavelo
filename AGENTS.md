@@ -162,3 +162,28 @@ transaction. Do not scan the entire process table or run lsof to require package
 to be idle: existing Unix readers retain their original inode across replacement.
 Keep the transaction's exact ownership and byte checks, signing, installed-process
 identity, active transfer ownership and protection of unrelated files.
+
+## Default commit, push, and full-fleet rollout (2026-11-20)
+
+After completing any code change in Weavelo and verifying tests/checks pass,
+the default delivery workflow is end-to-end without asking for extra
+confirmation (unless the user explicitly says "local only" or "do not deploy"):
+
+1. **Bilingual UI gate**: Any new or modified user-facing UI text must be
+   localized for both Chinese and English before release (Android: `tr()` /
+   `trFormat()` + `LanguageCatalog.kt`; Desktop: `crate::i18n::tr()` +
+   `app/src/i18n/zh-CN.json`).
+2. **Commit & push**: Commit the verified changes cleanly and push to
+   `origin/main`.
+3. **Full-fleet upgrade**: Upgrade **every** affected online device to the new
+   commit/release automatically — desktop hosts (`Mac-Studio`, `MacBook-M2-Max`,
+   `cube`, `matrix`, `HO5`), NAS download site (and `weavelo-relay` if server
+   code changed), and all ADB-connected Android phones (`Xiaomi 14 Ultra`,
+   `Redmi 14C`), plus report availability for over-the-air phones (`vivo X Fold5`).
+4. **Preserve per-machine signing identity**: Never overwrite a Mac's
+   `Weavelo.app` with an app signed by a different machine's local certificate
+   without re-signing using that Mac's own local certificate, or macOS TCC
+   screen-recording permissions will break.
+
+Follow `.agents/skills/weavelo-fleet-rollout/SKILL.md` for exact per-device
+build, signing, transfer, and verification commands.
