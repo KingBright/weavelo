@@ -168,20 +168,29 @@ internal fun RemoteViewport(
                     .fillMaxSize()
                     .onSizeChanged { nextContainer ->
                         val previousBase = baseSize
-                        baseSize = nextBasePx
+                        val fitW = minOf(
+                            nextContainer.width.toFloat(),
+                            nextContainer.height.toFloat() * displayAspect
+                        ).coerceAtLeast(1f)
+                        val fitH = (fitW / displayAspect).coerceAtLeast(1f)
+                        val resolvedBasePx = IntSize(
+                            fitW.roundToInt().coerceAtLeast(1),
+                            fitH.roundToInt().coerceAtLeast(1)
+                        )
+                        baseSize = resolvedBasePx
                         containerSize = nextContainer
                         val resized = transformState.value.resized(
                             previousBase.width.toFloat(),
                             previousBase.height.toFloat(),
-                            nextBasePx.width.toFloat(),
-                            nextBasePx.height.toFloat(),
+                            resolvedBasePx.width.toFloat(),
+                            resolvedBasePx.height.toFloat(),
                             nextContainer.width.toFloat(),
                             nextContainer.height.toFloat()
                         )
                         transformState.value = resized
-                        onSize(nextBasePx)
+                        onSize(resolvedBasePx)
                         onContainerSize(nextContainer)
-                        pushDirectViewport(resized, nextBasePx, nextContainer)
+                        pushDirectViewport(resized, resolvedBasePx, nextContainer)
                     }
                     .remoteViewportGestures(
                         transformState = transformState,

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.core.view.ViewCompat
@@ -23,6 +24,7 @@ internal fun StreamOrientation(active: Boolean, landscapeOverride: Boolean? = nu
     val context = LocalContext.current
     val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
         .filterIsInstance<Activity>().firstOrNull()
+    val config = LocalConfiguration.current
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     LaunchedEffect(activity, active, landscapeOverride) {
         if (active) {
@@ -33,7 +35,7 @@ internal fun StreamOrientation(active: Boolean, landscapeOverride: Boolean? = nu
             }
         }
     }
-    LaunchedEffect(activity, active, imeVisible) {
+    LaunchedEffect(activity, active, imeVisible, config.orientation, config.screenWidthDp, config.screenHeightDp) {
         if (active && !imeVisible) {
             val controller = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

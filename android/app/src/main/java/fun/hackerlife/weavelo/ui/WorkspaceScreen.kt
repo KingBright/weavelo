@@ -1960,6 +1960,7 @@ private fun WorkspaceVideo(
                         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
                             clearTouches()
                             WorkspaceClient.surface(pane.id, sessionKey, generation, surfaceToken, "cancel")
+                            nativeViewport.get()?.notifySurfaceChanged()
                         }
                         override fun surfaceDestroyed(holder: SurfaceHolder) {
                             val token = surfaceToken

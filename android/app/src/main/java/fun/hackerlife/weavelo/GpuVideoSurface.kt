@@ -190,6 +190,11 @@ internal class GpuVideoSurface @JvmOverloads constructor(
             java.util.concurrent.locks.LockSupport.unpark(thread)
         }
     }
+    fun notifySurfaceChanged() {
+        viewportDirty = true
+        lastViewportRenderNs = 0L
+        java.util.concurrent.locks.LockSupport.unpark(thread)
+    }
     /** Called by the existing decoder worker; callbacks only signal availability. */
     fun renderPending() {
         checkThread()
@@ -241,13 +246,22 @@ internal class GpuVideoSurface @JvmOverloads constructor(
         )
         val cw = sw[0].coerceAtLeast(2).toFloat()
         val ch = sh[0].coerceAtLeast(2).toFloat()
-        val sx = cw / spec.containerWidth.coerceAtLeast(1f)
-        val sy = ch / spec.containerHeight.coerceAtLeast(1f)
-        val bw = (spec.baseWidth * sx).coerceAtLeast(1f)
-        val bh = (spec.baseHeight * sy).coerceAtLeast(1f)
+        val sourceAspect = if (g != null && g.sourceWidth > 0 && g.sourceHeight > 0) {
+            g.sourceWidth.toFloat() / g.sourceHeight.toFloat()
+        } else {
+            (spec.baseWidth / spec.baseHeight.coerceAtLeast(1f)).coerceAtLeast(0.01f)
+        }
+        // Always fit to the live EGL surface dimensions so orientation / foldable
+        // transitions never stretch or shrink the frame with a stale Compose container size.
+        val bw = minOf(cw, ch * sourceAspect).coerceAtLeast(1f)
+        val bh = (bw / sourceAspect).coerceAtLeast(1f)
         val s = spec.scale.coerceAtLeast(0.01f)
-        val ox = spec.offsetX * sx
-        val oy = spec.offsetY * sy
+        val offsetScaleX = bw / spec.baseWidth.coerceAtLeast(1f)
+        val offsetScaleY = bh / spec.baseHeight.coerceAtLeast(1f)
+        val maxOx = ((bw * s - minOf(cw, bw * s)) * 0.5f).coerceAtLeast(0f)
+        val maxOy = ((bh * s - minOf(ch, bh * s)) * 0.5f).coerceAtLeast(0f)
+        val ox = if (s <= 1.0f) 0f else (spec.offsetX * offsetScaleX).coerceIn(-maxOx, maxOx)
+        val oy = if (s <= 1.0f) 0f else (spec.offsetY * offsetScaleY).coerceIn(-maxOy, maxOy)
         val normLeft = g?.let { it.x.toFloat() / it.sourceWidth } ?: 0f
         val normRight = g?.let { (it.x + it.cropWidth).toFloat() / it.sourceWidth } ?: 1f
         val normTop = g?.let { it.y.toFloat() / it.sourceHeight } ?: 0f
