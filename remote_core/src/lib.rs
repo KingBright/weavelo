@@ -30,6 +30,7 @@ pub mod media_demand;
 pub mod media_pause;
 pub mod media_plane;
 pub mod mesh;
+pub mod multi_screen;
 pub mod net;
 pub mod p2p;
 #[cfg(feature = "pairing-image")]

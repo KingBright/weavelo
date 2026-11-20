@@ -28,6 +28,7 @@ mod display_power;
 mod input_injector;
 pub mod lifecycle;
 pub mod privacy_mode;
+pub mod virtual_display;
 pub use remote_core::directed_delivery;
 #[allow(dead_code)]
 mod sender;

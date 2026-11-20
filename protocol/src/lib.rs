@@ -15,6 +15,7 @@ pub mod shared_files;
 pub mod timing;
 pub mod touch;
 pub mod viewport;
+pub mod virtual_display;
 
 pub use gamepad::{ControllerKind, GamepadFeedback, GamepadState, TouchPoint};
 pub use scroll::{MomentumPhase, ScrollGesture, ScrollPhase};
