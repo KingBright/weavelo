@@ -640,7 +640,7 @@ internal object LanguageCatalog {
         "Custom" to "自定义",
         "%d presets" to "%d 个方案",
         "%d custom" to "%d 个自定义",
-        "No keymap presets match \"%s\"." to "未找到匹配“%s”的按键映射方案。",
+        "No keymap presets match %s." to "未找到匹配“%s”的按键映射方案。",
         "%d controls" to "%d 个控件",
         "Edit" to "编辑",
         "Use" to "启用",

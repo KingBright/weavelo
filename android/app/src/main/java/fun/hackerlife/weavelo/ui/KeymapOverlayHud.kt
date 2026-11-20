@@ -848,7 +848,7 @@ fun KeymapPickerDialog(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = trFormat("No keymap presets match \"%s\".", searchQuery),
+                        text = trFormat("No keymap presets match %s.", searchQuery),
                         color = p.textSecondary,
                         fontSize = 12.5.sp,
                     )
