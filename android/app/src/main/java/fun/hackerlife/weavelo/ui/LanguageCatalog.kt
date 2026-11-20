@@ -609,6 +609,19 @@ internal object LanguageCatalog {
         "Auto" to "自动",
         "NAS UDP" to "NAS UDP",
         "NAS WSS" to "NAS WSS",
+        "Keymap HUD" to "键位浮层",
+        "Edit keymap" to "编辑键位",
+        "Keymap presets" to "键位预设",
+        "Virtual displays" to "虚拟显示器",
+        "Wireless display" to "无线显示器",
+        "Port forwarding" to "端口转发",
+        "Privacy mode" to "隐私模式",
+        "Diagnostics" to "诊断信息",
+        "True color (4:4:4)" to "真彩 (4:4:4)",
+        "HDR10" to "HDR10",
+        "Color profile" to "色彩配置",
+        "Copy report" to "复制报告",
+        "Active" to "已启用",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

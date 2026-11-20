@@ -5,6 +5,16 @@ import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -121,10 +131,38 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
     val scope = rememberCoroutineScope()
     var selectedSettings by remember { mutableStateOf<WorkspacePane?>(null) }
     var settingsGeneration by remember { mutableLongStateOf(0L) }
+    val appContext = remember(context) { context.applicationContext }
+    var keymapHudEnabled by remember { mutableStateOf(KeymapStore.isHudEnabled(appContext)) }
+    var keymapEditMode by remember { mutableStateOf(false) }
+    var keymapPickerOpen by remember { mutableStateOf(false) }
+    var activeKeymapProfile by remember {
+        mutableStateOf(KeymapStore.getActiveProfile(appContext) ?: KeymapCatalog.all().firstOrNull())
+    }
+    var virtualDisplayDialogOpen by remember { mutableStateOf(false) }
+    var activeVirtualDisplay by remember { mutableStateOf<VirtualDisplayProfile?>(null) }
+    var portForwardDialogOpen by remember { mutableStateOf(false) }
+    var activePortForwardCount by remember { mutableIntStateOf(PortForwardStore.list(appContext).count { it.enabled }) }
+    var privacyModeEnabled by rememberSaveable(sessionKey) { mutableStateOf(false) }
+    var diagnosticsDialogOpen by remember { mutableStateOf(false) }
+    val toggleKeymapHud: () -> Unit = {
+        val next = !keymapHudEnabled
+        keymapHudEnabled = next
+        KeymapStore.setHudEnabled(appContext, next)
+        if (next) {
+            val resolved = activeKeymapProfile ?: KeymapCatalog.all().firstOrNull()
+            activeKeymapProfile = resolved
+            resolved?.let { KeymapStore.setActiveProfileId(appContext, it.id) }
+        } else {
+            keymapEditMode = false
+        }
+    }
     BackHandler(enabled = foreground) {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now - lastImeClosedAtMs in 0..400L) return@BackHandler
-        val hasOverlay = sourcePicker || ps5PairingOpen || actionsOpen || selectedSettings != null || sharedFilesOpen || receivedFiles || clipboardCenterOpen || backgroundSettings
+        val hasOverlay = sourcePicker || ps5PairingOpen || actionsOpen || selectedSettings != null ||
+            sharedFilesOpen || receivedFiles || clipboardCenterOpen || backgroundSettings ||
+            keymapPickerOpen || virtualDisplayDialogOpen || portForwardDialogOpen ||
+            diagnosticsDialogOpen || keymapEditMode
         when {
             ZeroOcclusionHudPolicy.evaluateBackPress(hasOverlay) == BackPressAction.ToggleControls -> {
                 if (state.panes.isEmpty() || now - lastBackPressMs in 1..2000L) {
@@ -134,6 +172,11 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                     android.widget.Toast.makeText(context, exitStreamHint, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
+            diagnosticsDialogOpen -> diagnosticsDialogOpen = false
+            portForwardDialogOpen -> portForwardDialogOpen = false
+            virtualDisplayDialogOpen -> virtualDisplayDialogOpen = false
+            keymapPickerOpen -> keymapPickerOpen = false
+            keymapEditMode -> keymapEditMode = false
             ps5PairingOpen -> ps5PairingOpen = false
             sourcePicker -> sourcePicker = false
             actionsOpen -> actionsOpen = false
@@ -295,6 +338,67 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         enabled = state.connected && state.clipboardAvailable,
                         onClick = { onDismiss(); clipboardCenterOpen = true }
                     )
+                    HorizontalDivider(color = p.borderMuted)
+                    PrecisionMenuItem(
+                        text = "Virtual Keymap HUD",
+                        subtitle = if (keymapHudEnabled) (activeKeymapProfile?.name ?: "Active") else "550+ game & app overlays",
+                        symbol = MobileSymbol.Gamepad,
+                        checked = keymapHudEnabled,
+                        onClick = { onDismiss(); toggleKeymapHud() }
+                    )
+                    PrecisionMenuItem(
+                        text = "Choose Keymap Preset",
+                        subtitle = activeKeymapProfile?.name ?: "Browse 550+ presets",
+                        symbol = MobileSymbol.Keyboard,
+                        onClick = { onDismiss(); keymapPickerOpen = true }
+                    )
+                    PrecisionMenuItem(
+                        text = if (keymapEditMode) "Done Editing HUD" else "Edit HUD Layout",
+                        subtitle = if (keymapEditMode) "Drag controls to reposition" else "Customize overlay & opacity",
+                        symbol = MobileSymbol.Control,
+                        checked = keymapEditMode,
+                        enabled = state.panes.isNotEmpty(),
+                        onClick = {
+                            onDismiss()
+                            if (!keymapHudEnabled) {
+                                keymapHudEnabled = true
+                                KeymapStore.setHudEnabled(appContext, true)
+                                val resolved = activeKeymapProfile ?: KeymapCatalog.all().firstOrNull()
+                                activeKeymapProfile = resolved
+                                resolved?.let { KeymapStore.setActiveProfileId(appContext, it.id) }
+                            }
+                            keymapEditMode = !keymapEditMode
+                        }
+                    )
+                    HorizontalDivider(color = p.borderMuted)
+                    PrecisionMenuItem(
+                        text = "Virtual Displays",
+                        subtitle = activeVirtualDisplay?.resolutionLabel() ?: "Wireless secondary & profiles",
+                        symbol = MobileSymbol.Devices,
+                        checked = activeVirtualDisplay != null,
+                        onClick = { onDismiss(); virtualDisplayDialogOpen = true }
+                    )
+                    PrecisionMenuItem(
+                        text = "Port Forwarding",
+                        subtitle = if (activePortForwardCount > 0) "$activePortForwardCount active tunnel(s)" else "TCP/UDP tunnel rules",
+                        symbol = MobileSymbol.Network,
+                        checked = activePortForwardCount > 0,
+                        onClick = { onDismiss(); portForwardDialogOpen = true }
+                    )
+                    PrecisionMenuItem(
+                        text = "Privacy Mode",
+                        subtitle = if (privacyModeEnabled) "Host screen privacy active" else "Mask host display locally",
+                        symbol = MobileSymbol.Permissions,
+                        checked = privacyModeEnabled,
+                        onClick = { onDismiss(); privacyModeEnabled = !privacyModeEnabled }
+                    )
+                    PrecisionMenuItem(
+                        text = "Redacted Diagnostics",
+                        subtitle = "Inspect & export scrubbed report",
+                        symbol = MobileSymbol.Settings,
+                        onClick = { onDismiss(); diagnosticsDialogOpen = true }
+                    )
+                    HorizontalDivider(color = p.borderMuted)
                     PrecisionMenuItem(
                         text = tr("Background"),
                         symbol = MobileSymbol.Settings,
@@ -450,6 +554,24 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                     },
                                                     onOpenClipboard = {
                                                         clipboardCenterOpen = true
+                                                    },
+                                                    keymapHudEnabled = keymapHudEnabled,
+                                                    keymapEditMode = keymapEditMode,
+                                                    activeKeymapProfile = activeKeymapProfile,
+                                                    privacyModeEnabled = privacyModeEnabled,
+                                                    onKeymapProfileUpdated = { updated ->
+                                                        KeymapStore.upsertCustom(appContext, updated)
+                                                        KeymapStore.setActiveProfileId(appContext, updated.id)
+                                                        activeKeymapProfile = updated
+                                                    },
+                                                    onOpenKeymapPicker = {
+                                                        keymapPickerOpen = true
+                                                    },
+                                                    onExitKeymapEditMode = {
+                                                        keymapEditMode = false
+                                                    },
+                                                    onTogglePrivacyMode = {
+                                                        privacyModeEnabled = !privacyModeEnabled
                                                     },
                                                     onError = { message, text ->
                                                         localError = message
@@ -712,6 +834,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 state.panes.any { it.id == pane.id && it.accepted } && (state.grid || state.selected == pane.id)
             var fps by remember(pane.id, pane.fps) { mutableStateOf(pane.fps.toString()) }
             var kbps by remember(pane.id, pane.kbps) { mutableStateOf(pane.kbps.toString()) }
+            var colorProfile by remember(pane.id) { mutableStateOf(ColorModePreferences.load(appContext)) }
             val naturalScroll by WeaveloClient.naturalScrollFlow.collectAsState()
             val isWindowSource = pane.source.isWindow
             val srcW = pane.source.width.coerceAtLeast(2)
@@ -746,6 +869,7 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                         onClick = {
                             val f = fps.toIntOrNull(); val k = kbps.toIntOrNull()
                             if (f != null && k != null && f in 1..240 && k in 100..500_000) {
+                                ColorModePreferences.save(appContext, colorProfile)
                                 val (w, h) = WorkspaceClient.scaledEncodeSize(srcW, srcH, pane.windowScalePercent)
                                 WorkspaceClient.settings(
                                     pane.id, sessionKey, settingsGeneration,
@@ -925,6 +1049,53 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             modifier = Modifier.weight(1f)
                         )
                     }
+                    PrecisionCard(sunken = true, contentPadding = PaddingValues(11.dp), verticalSpacing = 8.dp) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Color & Dynamic Range",
+                                color = p.textPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            PrecisionPillBadge(
+                                text = "${colorProfile.chroma.displayLabel} · ${colorProfile.hdr.displayLabel}",
+                                tone = if (colorProfile.chroma == ChromaMode.YUV444 || colorProfile.hdr == HdrMode.HDR10) PillTone.CYAN else PillTone.NEUTRAL,
+                                monospace = true
+                            )
+                        }
+                        PrecisionSegmentedRow(
+                            options = listOf(
+                                ChromaMode.YUV420 to ChromaMode.YUV420.displayLabel,
+                                ChromaMode.YUV444 to "${ChromaMode.YUV444.displayLabel} True Color"
+                            ),
+                            selected = colorProfile.chroma,
+                            enabled = settingsCurrent,
+                            modifier = Modifier.fillMaxWidth(),
+                            onSelect = { chroma ->
+                                val next = colorProfile.copy(chroma = chroma)
+                                colorProfile = next
+                                ColorModePreferences.save(appContext, next)
+                            }
+                        )
+                        PrecisionSegmentedRow(
+                            options = listOf(
+                                HdrMode.SDR to HdrMode.SDR.displayLabel,
+                                HdrMode.HDR10 to HdrMode.HDR10.displayLabel
+                            ),
+                            selected = colorProfile.hdr,
+                            enabled = settingsCurrent,
+                            modifier = Modifier.fillMaxWidth(),
+                            onSelect = { hdr ->
+                                val next = colorProfile.copy(hdr = hdr)
+                                colorProfile = next
+                                ColorModePreferences.save(appContext, next)
+                            }
+                        )
+                    }
                     PrecisionSwitchRow(
                         title = tr("Natural scrolling (Apple style)"),
                         subtitle = tr("Content moves in the same direction as your fingers"),
@@ -1092,6 +1263,56 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                 onClose = { clipboardCenterOpen = false }
             )
         }
+        if (keymapPickerOpen) {
+            KeymapPickerDialog(
+                onDismiss = { keymapPickerOpen = false },
+                activeProfileId = if (keymapHudEnabled) activeKeymapProfile?.id else null,
+                onSelectProfile = { profile ->
+                    activeKeymapProfile = profile
+                    keymapHudEnabled = true
+                    keymapEditMode = false
+                    KeymapStore.setActiveProfileId(appContext, profile.id)
+                    KeymapStore.setHudEnabled(appContext, true)
+                },
+                onEditProfile = { profile ->
+                    activeKeymapProfile = profile
+                    keymapHudEnabled = true
+                    keymapEditMode = true
+                    KeymapStore.setActiveProfileId(appContext, profile.id)
+                    KeymapStore.setHudEnabled(appContext, true)
+                },
+                onDisableHud = {
+                    keymapHudEnabled = false
+                    keymapEditMode = false
+                    KeymapStore.setHudEnabled(appContext, false)
+                }
+            )
+        }
+        if (virtualDisplayDialogOpen) {
+            VirtualDisplayDialog(
+                onDismiss = { virtualDisplayDialogOpen = false },
+                activeProfileId = activeVirtualDisplay?.id,
+                onActivateProfile = { profile ->
+                    activeVirtualDisplay = profile
+                },
+                onDeactivateDisplay = {
+                    activeVirtualDisplay = null
+                }
+            )
+        }
+        if (portForwardDialogOpen) {
+            PortForwardDialog(
+                onDismiss = { portForwardDialogOpen = false },
+                onRulesChanged = { rules ->
+                    activePortForwardCount = rules.count { it.enabled }
+                }
+            )
+        }
+        if (diagnosticsDialogOpen) {
+            DiagnosticsDialog(
+                onDismiss = { diagnosticsDialogOpen = false }
+            )
+        }
     }
 }
 
@@ -1135,6 +1356,14 @@ private fun WorkspaceVideo(
     sessionActionsContent: @Composable (Boolean, () -> Unit) -> Unit,
     onOpenFiles: () -> Unit = {},
     onOpenClipboard: () -> Unit = {},
+    keymapHudEnabled: Boolean = false,
+    keymapEditMode: Boolean = false,
+    activeKeymapProfile: KeymapProfile? = null,
+    privacyModeEnabled: Boolean = false,
+    onKeymapProfileUpdated: (KeymapProfile) -> Unit = {},
+    onOpenKeymapPicker: () -> Unit = {},
+    onExitKeymapEditMode: () -> Unit = {},
+    onTogglePrivacyMode: () -> Unit = {},
     onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit
 ) {
     val p = WeaveloTokens.colors
@@ -1191,6 +1420,10 @@ private fun WorkspaceVideo(
     val token = surfaceToken
     var keyboardBinding by remember(pane.id,sessionKey,generation,token) { mutableStateOf<String?>(null) }
     var keyboardVisible by remember(pane.id,sessionKey,generation,token) { mutableStateOf(false) }
+    var hudKeyboardBinding by remember(pane.id, sessionKey, generation, token) { mutableStateOf<String?>(null) }
+    LaunchedEffect(pane.inputError) {
+        if (pane.inputError != null) hudKeyboardBinding = null
+    }
     val focusGate = remember(pane.id,sessionKey,generation,token) { EditorFocusGate<Pair<JSONObject,Long>>() }
     DisposableEffect(focusGate) { onDispose { focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus() } }
 
@@ -1522,6 +1755,39 @@ private fun WorkspaceVideo(
                         baseHeight = baseMeasured.height.coerceAtLeast(1).toFloat()
                     )
                 }
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = keymapHudEnabled && activeKeymapProfile != null && !imeVisible && pane.accepted,
+                    enter = fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
+                        scaleIn(
+                            initialScale = 0.94f,
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                        ),
+                    exit = fadeOut() + scaleOut(targetScale = 0.94f),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    activeKeymapProfile?.let { profile ->
+                        KeymapOverlayHud(
+                            profile = profile,
+                            editMode = keymapEditMode,
+                            onKeyEvent = { key, pressed ->
+                                if (pane.input && token != 0L) {
+                                    val owner = hudKeyboardBinding ?: WorkspaceClient.keyboardBinding(
+                                        pane.id, sessionKey, generation, token
+                                    )?.also { hudKeyboardBinding = it }
+                                    if (owner != null) {
+                                        WorkspaceClient.keyboard(
+                                            pane.id, sessionKey, generation, token, owner,
+                                            key = key, pressed = pressed
+                                        )
+                                    }
+                                }
+                            },
+                            onProfileUpdated = onKeymapProfileUpdated,
+                            onRequestPicker = onOpenKeymapPicker,
+                            onExitEditMode = onExitKeymapEditMode
+                        )
+                    }
+                }
                 (videoStatus ?: pane.inputError)?.let { message ->
                     Surface(
                         modifier = Modifier
@@ -1758,6 +2024,61 @@ private fun WorkspaceVideo(
             )
         }
 
+        // Compact animated status pill when Keymap HUD or Privacy Mode is active
+        androidx.compose.animation.AnimatedVisibility(
+            visible = !imeVisible && !keymapEditMode && (keymapHudEnabled || privacyModeEnabled),
+            enter = fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
+                slideInVertically(
+                    initialOffsetY = { -it / 2 },
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                ) +
+                scaleIn(
+                    initialScale = 0.90f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                ),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it / 2 }) + scaleOut(targetScale = 0.90f),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .safeDrawingPadding()
+                .padding(8.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = p.surfaceGlass,
+                shadowElevation = 6.dp,
+                modifier = Modifier.border(
+                    0.75.dp,
+                    if (privacyModeEnabled) p.warningBorder else p.brandBorder.copy(alpha = 0.7f),
+                    RoundedCornerShape(999.dp)
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (keymapHudEnabled) {
+                        PrecisionPillBadge(
+                            text = "HUD · ${activeKeymapProfile?.name ?: "On"}",
+                            tone = PillTone.CYAN,
+                            showDot = true,
+                            modifier = Modifier
+                                .widthIn(max = 148.dp)
+                                .clickable(role = Role.Button) { onOpenKeymapPicker() }
+                        )
+                    }
+                    if (privacyModeEnabled) {
+                        PrecisionPillBadge(
+                            text = "Privacy",
+                            tone = PillTone.WARNING,
+                            showDot = true,
+                            modifier = Modifier.clickable(role = Role.Button) { onTogglePrivacyMode() }
+                        )
+                    }
+                }
+            }
+        }
+
         // Subtle right-edge handle + deliberate-intent compact right-side drawer (zero top bars!)
         if (!imeVisible) {
             val pillAlpha = ZeroOcclusionHudPolicy.edgePillAlpha(touching = touching, imeVisible = imeVisible)
@@ -1790,16 +2111,29 @@ private fun WorkspaceVideo(
                 .padding(start = 36.dp, end = 2.dp, top = 10.dp, bottom = 10.dp)
                 .background(p.brand.copy(alpha = pillAlpha), RoundedCornerShape(6.dp)))
 
-            if (sideDrawerOpen) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = sideDrawerOpen,
+                enter = fadeIn(animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)) +
+                    slideInHorizontally(
+                        initialOffsetX = { it / 3 },
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                    ) +
+                    scaleIn(
+                        initialScale = 0.94f,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                    ),
+                exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it / 3 }) + scaleOut(targetScale = 0.94f),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .safeDrawingPadding()
+                    .padding(end = 42.dp, top = 8.dp, bottom = 8.dp)
+            ) {
                 val paneTitle = localizedSourceTitle(pane.source)
                 val inputReady = pane.input && token != 0L
                 val slotBg = if (p.isDark) Color.White.copy(alpha = 0.055f) else p.surfaceSunken.copy(alpha = 0.85f)
                 Surface(
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .safeDrawingPadding()
-                        .padding(end = 42.dp, top = 8.dp, bottom = 8.dp)
-                        .widthIn(min = 244.dp, max = 296.dp)
+                        .widthIn(min = 244.dp, max = 304.dp)
                         .border(0.75.dp, p.borderStrong.copy(alpha = if (p.isDark) 0.7f else 0.55f), RoundedCornerShape(22.dp))
                         .pointerInput(pane.id, sessionKey, generation) {
                             awaitPointerEventScope {
@@ -1818,7 +2152,7 @@ private fun WorkspaceVideo(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Row 1: Compact device header + quick centers + exit stream
+                        // Row 1: Compact device header + quick centers + tools menu + exit stream
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1841,7 +2175,7 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Files,
                                 label = tr("File transfer & manager"),
                                 tonalWell = true,
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 sideDrawerOpen = false
                                 onOpenFiles()
@@ -1850,16 +2184,31 @@ private fun WorkspaceVideo(
                                 symbol = MobileSymbol.Clipboard,
                                 label = tr("Clipboard manager"),
                                 tonalWell = true,
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 sideDrawerOpen = false
                                 onOpenClipboard()
+                            }
+                            Box {
+                                MobileAction(
+                                    symbol = MobileSymbol.More,
+                                    label = tr("Connection actions"),
+                                    selected = sideMoreOpen || keymapHudEnabled || privacyModeEnabled,
+                                    tonalWell = true,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    sideMoreOpen = true
+                                    sideInteraction++
+                                }
+                                sessionActionsContent(sideMoreOpen) {
+                                    sideMoreOpen = false
+                                }
                             }
                             MobileAction(
                                 symbol = MobileSymbol.Disconnect,
                                 label = tr("Exit stream"),
                                 destructive = true,
-                                modifier = Modifier.size(38.dp),
+                                modifier = Modifier.size(36.dp),
                                 onClick = onDisconnect
                             )
                         }

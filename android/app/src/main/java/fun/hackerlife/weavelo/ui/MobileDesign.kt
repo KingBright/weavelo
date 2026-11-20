@@ -1,10 +1,23 @@
 package `fun`.hackerlife.weavelo.ui
 
 import android.app.Activity
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -15,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -31,6 +45,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalView
@@ -210,7 +225,13 @@ enum class MobileSymbol(path: String) {
     FullscreenExit("M9 4v3.5A1.5 1.5 0 0 1 7.5 9H4 M15 4v3.5A1.5 1.5 0 0 0 16.5 9H20 M20 15h-3.5A1.5 1.5 0 0 0 15 16.5V20 M4 15h3.5A1.5 1.5 0 0 1 9 16.5V20"),
     Collapse("M6 15l6-6 6 6"),
     Keyboard("M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M6 13h.01 M10 13h.01 M14 13h.01 M18 13h.01 M7 16h10"),
-    Gamepad("M6 8h12a4 4 0 0 1 3.8 5.2l-1.1 3.6a2.5 2.5 0 0 1-4.2 1L14.5 16h-5l-2 1.8a2.5 2.5 0 0 1-4.2-1L2.2 13.2A4 4 0 0 1 6 8z M8 10.5v3 M6.5 12h3 M15.5 11h.01 M17.5 12.5h.01");
+    Gamepad("M6 8h12a4 4 0 0 1 3.8 5.2l-1.1 3.6a2.5 2.5 0 0 1-4.2 1L14.5 16h-5l-2 1.8a2.5 2.5 0 0 1-4.2-1L2.2 13.2A4 4 0 0 1 6 8z M8 10.5v3 M6.5 12h3 M15.5 11h.01 M17.5 12.5h.01"),
+    Keymap("M9.5 5h5v5h-5z M3 13h5v5H3z M9.5 13h5v5h-5z M16 13h5v5h-5z"),
+    VirtualDisplay("M3 7h14v10H3z M7 20h6 M10 17v3 M7 7V4h14v10h-4"),
+    PortForward("M4 8h15 M15 4l4 4-4 4 M20 16H5 M9 12l-4 4 4 4"),
+    PrivacyShield("M12 3l7 3v5.5c0 4.5-3 8.3-7 9.5-4-1.2-7-5-7-9.5V6l7-3z M9.5 11.5h5v4h-5z M10.5 11.5V10a1.5 1.5 0 0 1 3 0v1.5"),
+    Diagnostics("M3 12h4l2.5-6.5L14 18.5 16.5 12H21"),
+    ColorPalette("M12 21A9 9 0 1 1 21 12c0 1.9-1.4 3-3 3h-1.8a1.7 1.7 0 0 0-1.5 2.5c.6 1 .2 3.5-2.7 3.5z M7.5 10.5h.01 M10.5 7.5h.01 M14.5 7.5h.01 M17 10.5h.01");
 
     val image: ImageVector = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
         .addPath(
@@ -1098,6 +1119,224 @@ internal fun WeaveloPointerOverlay(
                 radius = 0.85.dp.toPx(),
                 center = Offset(0.03f * len, 0.05f * len)
             )
+        }
+    }
+}
+
+/**
+ * Spring-based tactile press scale ("灵动" feedback) matching WeaveloTokens.
+ * Defers scale reads into [graphicsLayer] so animation ticks never trigger relayout.
+ */
+@Composable
+fun Modifier.fluidPressScale(
+    pressed: Boolean,
+    pressedScale: Float = 0.94f
+): Modifier {
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressedScale else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "fluidPressScale"
+    )
+    return this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
+
+/**
+ * Live status indicator dot with a smooth infinite breathing halo when [active] is true.
+ * Renders a zero-overhead static dot when inactive.
+ */
+@Composable
+fun PulsingStatusDot(
+    color: Color,
+    active: Boolean,
+    size: Dp = 7.dp,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier.size(size),
+        contentAlignment = Alignment.Center
+    ) {
+        if (active) {
+            val transition = rememberInfiniteTransition(label = "pulsingStatusDot")
+            val haloScale by transition.animateFloat(
+                initialValue = 1f,
+                targetValue = 2.2f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Restart
+                ),
+                label = "pulsingHaloScale"
+            )
+            val haloAlpha by transition.animateFloat(
+                initialValue = 0.55f,
+                targetValue = 0f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Restart
+                ),
+                label = "pulsingHaloAlpha"
+            )
+            val coreAlpha by transition.animateFloat(
+                initialValue = 1f,
+                targetValue = 0.78f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulsingCoreAlpha"
+            )
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .graphicsLayer {
+                        scaleX = haloScale
+                        scaleY = haloScale
+                        alpha = haloAlpha
+                    }
+                    .background(color, CircleShape)
+            )
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .graphicsLayer { alpha = coreAlpha }
+                    .background(color, CircleShape)
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .background(color, CircleShape)
+            )
+        }
+    }
+}
+
+/**
+ * Tactile glass-pill tool chip with spring press scale, animated active glow border,
+ * and optional count/status badge.
+ */
+@Composable
+fun FluidToolChip(
+    icon: MobileSymbol,
+    label: String,
+    badge: String? = null,
+    active: Boolean = false,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val p = WeaveloTokens.colors
+    val shape = RoundedCornerShape(999.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+
+    val containerColor by animateColorAsState(
+        targetValue = when {
+            active -> if (p.isDark) p.brandSoft.copy(alpha = 0.94f) else p.brandSoft
+            else -> p.surfaceGlass
+        },
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "fluidChipBg"
+    )
+    val contentColor by animateColorAsState(
+        targetValue = when {
+            !enabled -> p.textTertiary.copy(alpha = 0.45f)
+            active -> p.brand
+            else -> p.textPrimary
+        },
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "fluidChipFg"
+    )
+    val iconColor by animateColorAsState(
+        targetValue = when {
+            !enabled -> p.textTertiary.copy(alpha = 0.42f)
+            active -> p.brand
+            else -> p.textSecondary
+        },
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "fluidChipIcon"
+    )
+    val glowAlpha by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "fluidChipGlow"
+    )
+
+    val borderModifier = if (glowAlpha > 0.01f) {
+        Modifier.border(
+            width = 1.25.dp,
+            brush = Brush.linearGradient(
+                colors = listOf(
+                    p.brand.copy(alpha = 0.85f * glowAlpha + 0.15f),
+                    p.prismCyan.copy(alpha = 0.70f * glowAlpha + 0.15f),
+                    p.brandBorder.copy(alpha = 0.85f * glowAlpha + 0.15f)
+                )
+            ),
+            shape = shape
+        )
+    } else {
+        Modifier.border(1.dp, p.border, shape)
+    }
+
+    Row(
+        modifier = modifier
+            .fluidPressScale(pressed = pressed && enabled)
+            .heightIn(min = 34.dp)
+            .clip(shape)
+            .background(containerColor)
+            .then(borderModifier)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = LocalIndication.current,
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick
+            )
+            .padding(horizontal = 11.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            imageVector = icon.image,
+            contentDescription = null,
+            tint = iconColor,
+            modifier = Modifier.size(16.dp)
+        )
+        Text(
+            text = label,
+            color = contentColor,
+            fontSize = 12.sp,
+            lineHeight = 15.sp,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (!badge.isNullOrBlank()) {
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(
+                        if (active) p.brand.copy(alpha = if (p.isDark) 0.24f else 0.14f)
+                        else p.surfaceSunken
+                    )
+                    .padding(horizontal = 6.dp, vertical = 1.5.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = badge,
+                    color = if (active) p.brand else p.textSecondary,
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+            }
         }
     }
 }

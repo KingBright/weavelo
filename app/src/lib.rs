@@ -23,6 +23,7 @@ mod sharing_permissions;
 mod local_sharing;
 mod telemetry_display;
 pub mod network_diagnostics;
+pub mod pro_tools_panel;
 
 use remote_core::discovery::{
     DEFAULT_PEER_TTL, DiscoveredPeer, DiscoveryAnnouncement, DiscoveryCapabilities, DiscoveryEvent,
