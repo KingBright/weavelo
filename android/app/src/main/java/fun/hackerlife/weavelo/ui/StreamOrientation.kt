@@ -17,6 +17,13 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
+/** Respect the OS rotation lock by default; manual overrides still switch orientation explicitly. */
+internal fun resolveStreamOrientation(landscapeOverride: Boolean?): Int = when (landscapeOverride) {
+    true -> ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+    false -> ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
+    null -> ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+}
+
 /** The stream owns its orientation and immersive bars; closing IME re-hides system bars. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -28,11 +35,7 @@ internal fun StreamOrientation(active: Boolean, landscapeOverride: Boolean? = nu
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     LaunchedEffect(activity, active, landscapeOverride) {
         if (active) {
-            activity?.requestedOrientation = when (landscapeOverride) {
-                true -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                false -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                null -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-            }
+            activity?.requestedOrientation = resolveStreamOrientation(landscapeOverride)
         }
     }
     LaunchedEffect(activity, active, imeVisible, config.orientation, config.screenWidthDp, config.screenHeightDp) {
