@@ -690,7 +690,57 @@ impl WindowsInputInjector {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn windows_focused_editor_now() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CURSOR_SHOWING, CURSORINFO, GUITHREADINFO, GetCursorInfo, GetGUIThreadInfo,
+        GetWindowThreadProcessId, IDC_IBEAM, LoadCursorW,
+    };
+    unsafe {
+        let fg = GetForegroundWindow();
+        if !fg.is_null() {
+            let tid = GetWindowThreadProcessId(fg, std::ptr::null_mut());
+            if tid != 0 {
+                let mut gui: GUITHREADINFO = std::mem::zeroed();
+                gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+                if GetGUIThreadInfo(tid, &mut gui) != 0 && !gui.hwndCaret.is_null() {
+                    return true;
+                }
+            }
+        }
+        let mut ci: CURSORINFO = std::mem::zeroed();
+        ci.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+        let ibeam = LoadCursorW(std::ptr::null_mut(), IDC_IBEAM);
+        if GetCursorInfo(&mut ci) != 0
+            && (ci.flags & CURSOR_SHOWING) != 0
+            && !ibeam.is_null()
+            && ci.hCursor == ibeam
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_focused_editor_now() -> bool {
+    false
+}
+
 impl InputInjector for WindowsInputInjector {
+    fn focused_editor_probe(&self) -> Option<Box<dyn FnOnce() -> bool + Send>> {
+        Some(Box::new(|| {
+            for attempt in 0..3 {
+                if windows_focused_editor_now() {
+                    return true;
+                }
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            false
+        }))
+    }
     fn inject_input(&self, event: InputEvent) -> InputResult {
         self.inject_before(event, None)
     }

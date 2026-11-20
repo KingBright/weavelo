@@ -19,7 +19,7 @@ class EditorFocusGateTest {
     @Test fun expiredOrInvalidatedGeometryNeverOpensKeyboard() {
         val gate = EditorFocusGate<String>()
         gate.record(gate.intent(), "3", 100, "frame")
-        assertNull(gate.take("3", 701))
+        assertNull(gate.take("3", 1601))
         gate.record(gate.intent(), "4", 100, "frame")
         gate.invalidate() // pane, geometry, control or inset changed
         assertNull(gate.take("4", 200))

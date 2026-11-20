@@ -9,6 +9,7 @@ import android.view.View
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import androidx.core.view.SoftwareKeyboardControllerCompat
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.*
@@ -22,25 +23,43 @@ internal class RemoteImeView(context: Context, private val commit: (String) -> U
     var acceptingInput = true
     private var currentInput: InputConnection? = null
     private var keyboardWanted = false
+    private var showRetries = 0
     private val keyboard = SoftwareKeyboardControllerCompat(this)
-    private val showKeyboard = Runnable {
-        if (keyboardWanted && isAttachedToWindow && hasWindowFocus()) {
-            requestFocus()
-            if (isFocused) keyboard.show()
+    private val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+    private val showKeyboard: Runnable = object : Runnable {
+        override fun run() {
+            if (!keyboardWanted || !isAttachedToWindow || !hasWindowFocus()) return
+            if (!isFocused) requestFocus()
+            if (isFocused) {
+                keyboard.show()
+                imm?.showSoftInput(this@RemoteImeView, InputMethodManager.SHOW_IMPLICIT)
+                if (showRetries < 1) {
+                    showRetries++
+                    postDelayed(this, 60L)
+                }
+            } else if (showRetries < 2) {
+                showRetries++
+                postDelayed(this, 40L)
+            }
         }
     }
     fun discardInput() {
-        keyboardWanted=false; removeCallbacks(showKeyboard)
+        keyboardWanted=false; showRetries=0; removeCallbacks(showKeyboard)
         acceptingInput=false; currentInput?.finishComposingText()
     }
     fun setKeyboardVisible(visible: Boolean) {
         if (keyboardWanted == visible && acceptingInput == visible) return
         if (visible) {
-            keyboardWanted=true; acceptingInput=true; showWhenReady()
+            keyboardWanted=true; acceptingInput=true; showRetries=0; showWhenReady()
         } else {
             // A disposed remote editor must not dismiss a source-search field's IME.
             val ownedFocus=isFocused
-            discardInput(); if (ownedFocus) keyboard.hide(); clearFocus()
+            discardInput()
+            if (ownedFocus) {
+                keyboard.hide()
+                imm?.hideSoftInputFromWindow(windowToken, 0)
+            }
+            clearFocus()
         }
     }
     private fun showWhenReady() {

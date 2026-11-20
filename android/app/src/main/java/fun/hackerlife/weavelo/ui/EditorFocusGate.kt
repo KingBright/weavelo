@@ -13,6 +13,6 @@ internal class EditorFocusGate<T> {
         val value = pending ?: return null
         if (value.first != sequence) return null
         pending = null
-        return if (now - value.second in 0L..600L) value.third else null
+        return if (now - value.second in 0L..1500L) value.third else null
     }
 }

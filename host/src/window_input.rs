@@ -65,9 +65,9 @@ fn ax_window_bounds(window: &CFType) -> Option<CGRect> {
     }
     Some(CGRect::new(&origin, &dimensions))
 }
-/// Fail closed: require a focused, enabled editable text element at the clicked
-/// point, in the foreground application's actual focused window. For a window
-/// capture additionally require the exact selected WindowServer identity.
+/// Fail closed: require a focused, enabled editable text element in the
+/// foreground application's active window. For a window capture additionally
+/// require the exact selected WindowServer identity.
 pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bool {
     if !permission_available() { return false; }
     let Some((expected_id, expected_pid)) = target.or_else(|| {
@@ -80,26 +80,59 @@ pub(crate) fn focused_editor_at(point: CGPoint, target: Option<(u32,i32)>) -> bo
     let raw = unsafe { AXUIElementCreateApplication(expected_pid) };
     if raw.is_null() { return false; }
     let app = unsafe { CFType::wrap_under_create_rule(raw) };
-    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), 0.05); }
+    unsafe { AXUIElementSetMessagingTimeout(app.as_CFTypeRef(), 0.08); }
+    if !attr(&app, "AXFrontmost").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| bool::from(v)) {
+        return false;
+    }
     let Some(window) = attr(&app, "AXFocusedWindow") else { return false; };
     let Some(editor) = attr(&app, "AXFocusedUIElement") else { return false; };
-    unsafe { AXUIElementSetMessagingTimeout(window.as_CFTypeRef(), 0.05); AXUIElementSetMessagingTimeout(editor.as_CFTypeRef(), 0.05); }
-    if attr(&editor, "AXWindow").as_ref() != Some(&window) { return false; }
+    unsafe {
+        AXUIElementSetMessagingTimeout(window.as_CFTypeRef(), 0.08);
+        AXUIElementSetMessagingTimeout(editor.as_CFTypeRef(), 0.08);
+    }
+    let mut editor_pid = 0;
+    if unsafe { AXUIElementGetPid(editor.as_CFTypeRef(), &mut editor_pid) } != 0 || editor_pid != expected_pid {
+        return false;
+    }
+    if attr(&editor, "AXEnabled").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| !bool::from(v)) {
+        return false;
+    }
     let role = attr(&editor, "AXRole").and_then(|v| v.downcast::<CFString>()).map(|v| v.to_string());
-    if !matches!(role.as_deref(), Some("AXTextField" | "AXTextArea" | "AXComboBox")) { return false; }
-    if !attr(&editor, "AXEnabled").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| bool::from(v)) { return false; }
-    let mut settable = false;
-    let value = CFString::new("AXValue");
-    if unsafe { AXUIElementIsAttributeSettable(editor.as_CFTypeRef(), value.as_CFTypeRef(), &mut settable) } != 0 || !settable { return false; }
-    if !ax_window_bounds(&editor).is_some_and(|bounds| contains(bounds, point)) { return false; }
+    let subrole = attr(&editor, "AXSubrole").and_then(|v| v.downcast::<CFString>()).map(|v| v.to_string());
+    let is_standard_text_role = matches!(
+        role.as_deref(),
+        Some("AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField")
+    ) || matches!(
+        subrole.as_deref(),
+        Some("AXSearchField" | "AXSecureTextField")
+    );
+    let mut value_settable = false;
+    let ax_value_key = CFString::new("AXValue");
+    let _ = unsafe { AXUIElementIsAttributeSettable(editor.as_CFTypeRef(), ax_value_key.as_CFTypeRef(), &mut value_settable) };
+    let ax_editable = attr(&editor, "AXEditable")
+        .and_then(|v| v.downcast::<CFBoolean>())
+        .is_some_and(|v| bool::from(v));
+    let mut range_settable = false;
+    let ax_range_key = CFString::new("AXSelectedTextRange");
+    let _ = unsafe { AXUIElementIsAttributeSettable(editor.as_CFTypeRef(), ax_range_key.as_CFTypeRef(), &mut range_settable) };
+    let is_rich_editable = matches!(
+        role.as_deref(),
+        Some("AXWebArea" | "AXGroup" | "AXScrollArea" | "AXStaticText" | "AXUnknown")
+    ) && (ax_editable || value_settable || range_settable);
+
+    if !is_standard_text_role && !is_rich_editable {
+        return false;
+    }
+
     let mut pid = 0;
     if unsafe { AXUIElementGetPid(window.as_CFTypeRef(), &mut pid) } != 0 || pid != expected_pid { return false; }
     let Ok(list) = windows(1 | 16, 0) else { return false; };
-    let Some(id) = ax_window_bounds(&window).and_then(|bounds| focused_window_id(&list, pid, bounds)) else { return false; };
-    id == expected_id && top_at(list.iter().filter(|w| w.pid == pid), point) == Some(id)
-        && keyboard_focus(&list, id, pid, |_| Some(id))
-        && pointer_hit_pid(point).is_ok_and(|hit| hit == pid)
-        && attr(&app, "AXFrontmost").and_then(|v| v.downcast::<CFBoolean>()).is_some_and(|v| v.into())
+    if let Some(id) = ax_window_bounds(&window).and_then(|bounds| focused_window_id(&list, pid, bounds)) {
+        if id != expected_id && target.is_some() {
+            return false;
+        }
+    }
+    pointer_hit_pid(point).is_ok_and(|hit| hit == pid)
 }
 
 /// Use the real cross-process hit rather than the bounds of transparent system surfaces.
