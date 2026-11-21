@@ -1,19 +1,11 @@
 package `fun`.hackerlife.weavelo.ui
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,10 +25,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -104,8 +94,7 @@ fun MobileConsoleScreen(
     var invitationOpen by remember { mutableStateOf(false) }
     if (invitationOpen) InvitationDialog { invitationOpen = false }
 
-    // Pro Toolbox modal states & live store summaries
-    var proOverflowOpen by remember { mutableStateOf(false) }
+    // Tool modal states & live store summaries
     var virtualDisplayOpen by remember { mutableStateOf(false) }
     var portForwardOpen by remember { mutableStateOf(false) }
     var keymapPickerOpen by remember { mutableStateOf(false) }
@@ -220,6 +209,9 @@ fun MobileConsoleScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -243,108 +235,13 @@ fun MobileConsoleScreen(
                         }
                     }
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (update.release != null && activeTab != "Settings") {
-                        PrecisionButton(
-                            text = tr("Update available"),
-                            onClick = { activeTab = "Settings" },
-                            style = PrecisionButtonStyle.TONAL,
-                            compact = true
-                        )
-                    }
+                if (update.release != null && activeTab != "Settings") {
                     PrecisionButton(
-                        text = tr("Pair devices"),
-                        leadingSymbol = MobileSymbol.Network,
-                        enabled = nativeAvailable,
-                        style = if (activeTab == "Mesh P2P") PrecisionButtonStyle.PRIMARY else PrecisionButtonStyle.SUBTLE,
-                        compact = true,
-                        onClick = { activeTab = "Mesh P2P" }
+                        text = tr("Update available"),
+                        onClick = { activeTab = "Settings" },
+                        style = PrecisionButtonStyle.TONAL,
+                        compact = true
                     )
-                    Box {
-                        MobileAction(
-                            symbol = MobileSymbol.More,
-                            label = tr("Tools"),
-                            selected = proOverflowOpen,
-                            tonalWell = true,
-                            modifier = Modifier.size(38.dp),
-                            onClick = { proOverflowOpen = true }
-                        )
-                        DropdownMenu(
-                            expanded = proOverflowOpen,
-                            onDismissRequest = { proOverflowOpen = false }
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .widthIn(min = 248.dp, max = 288.dp)
-                                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                Text(
-                                    text = "PRO TOOLBOX",
-                                    color = p.textTertiary,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    letterSpacing = 0.8.sp,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                                PrecisionMenuItem(
-                                    text = tr("Virtual displays"),
-                                    subtitle = if (activeVirtualDisplayId != null) {
-                                        "${tr("Wireless display")} · ${tr("Active")}"
-                                    } else {
-                                        trFormat("%d saved", virtualDisplayProfiles.size)
-                                    },
-                                    symbol = MobileSymbol.VirtualDisplay,
-                                    checked = activeVirtualDisplayId != null,
-                                    onClick = {
-                                        proOverflowOpen = false
-                                        virtualDisplayOpen = true
-                                    }
-                                )
-                                PrecisionMenuItem(
-                                    text = tr("Port forwarding"),
-                                    subtitle = if (activePortForwardCount > 0) {
-                                        trFormat("%d / %d active", activePortForwardCount, portForwardRules.size)
-                                    } else {
-                                        trFormat("%d rules", portForwardRules.size)
-                                    },
-                                    symbol = MobileSymbol.PortForward,
-                                    checked = activePortForwardCount > 0,
-                                    onClick = {
-                                        proOverflowOpen = false
-                                        portForwardOpen = true
-                                    }
-                                )
-                                PrecisionMenuItem(
-                                    text = "${tr("Keymap presets")} (550+)",
-                                    subtitle = activeKeymapProfile?.name ?: tr("550+ built-in"),
-                                    symbol = MobileSymbol.Keymap,
-                                    checked = activeKeymapProfile != null,
-                                    onClick = {
-                                        proOverflowOpen = false
-                                        keymapPickerOpen = true
-                                    }
-                                )
-                                HorizontalDivider(
-                                    color = p.borderMuted,
-                                    modifier = Modifier.padding(vertical = 3.dp, horizontal = 6.dp)
-                                )
-                                PrecisionMenuItem(
-                                    text = tr("Diagnostics"),
-                                    subtitle = tr("Redacted JSON · Copy & Share"),
-                                    symbol = MobileSymbol.Diagnostics,
-                                    onClick = {
-                                        proOverflowOpen = false
-                                        diagnosticsOpen = true
-                                    }
-                                )
-                            }
-                        }
-                    }
                 }
             }
 
@@ -488,13 +385,7 @@ fun MobileConsoleScreen(
                         devices = devices,
                         nativeAvailable = nativeAvailable,
                         sessionState = sessionState,
-                        telemetry = telemetry,
                         discoveryDiagnostics = discoveryDiagnostics,
-                        manualEndpoint = manualEndpoint,
-                        onManualEndpointChange = { manualEndpoint = it },
-                        advancedConnection = advancedConnection,
-                        onToggleAdvanced = { advancedConnection = !advancedConnection },
-                        onConnectAddress = onConnectAddress,
                         onConnectWorkspace = onConnectWorkspace,
                         onSendFiles = onSendFiles,
                         localStatus = when {
@@ -503,30 +394,25 @@ fun MobileConsoleScreen(
                             outgoing.unattributedSharing > 0 -> trFormat("Sharing · %d direct streams", outgoing.unattributedSharing)
                             publishing && !controlReady -> tr("Sharing ready · review control permission")
                             publishing -> tr("Sharing ready")
-                            else -> tr("Sharing & permissions")
+                            else -> tr("Idle · Ready")
                         },
-                        onLocalSettings = { activeTab = "Security" },
-                        onLocalDetails = { activeTab = "Mesh P2P" },
+                        publishing = publishing,
                         outgoing = outgoing,
                         onSendScreen = onSendScreen,
                         onSendCamera = onSendCamera,
-                        onStopSending = onStopSending,
-                        onOutgoingQuality = openQuality,
-                        virtualDisplayCount = virtualDisplayProfiles.size,
-                        virtualDisplayActive = activeVirtualDisplayId != null,
-                        activePortForwardCount = activePortForwardCount,
-                        totalPortForwardCount = portForwardRules.size,
-                        activeKeymapName = activeKeymapProfile?.name,
-                        onOpenVirtualDisplays = { virtualDisplayOpen = true },
-                        onOpenPortForward = { portForwardOpen = true },
-                        onOpenKeymaps = { keymapPickerOpen = true },
-                        onOpenDiagnostics = { diagnosticsOpen = true }
+                        onStopSending = onStopSending
                     )
                     "Mesh P2P" -> MeshP2pTabContent(
                         devices = devices,
                         networkName = networkName,
                         nativeAvailable = nativeAvailable,
                         joiningNetwork = joiningNetwork,
+                        sessionState = sessionState,
+                        manualEndpoint = manualEndpoint,
+                        onManualEndpointChange = { manualEndpoint = it },
+                        advancedConnection = advancedConnection,
+                        onToggleAdvanced = { advancedConnection = !advancedConnection },
+                        onConnectAddress = onConnectAddress,
                         onConnectWorkspace = onConnectWorkspace
                     )
                     "Security" -> SecurityTabContent(
@@ -554,6 +440,14 @@ fun MobileConsoleScreen(
                         nativeAvailable = nativeAvailable,
                         discoveryDiagnostics = discoveryDiagnostics,
                         sessionState = sessionState,
+                        virtualDisplayCount = virtualDisplayProfiles.size,
+                        virtualDisplayActive = activeVirtualDisplayId != null,
+                        activePortForwardCount = activePortForwardCount,
+                        totalPortForwardCount = portForwardRules.size,
+                        activeKeymapName = activeKeymapProfile?.name,
+                        onOpenVirtualDisplays = { virtualDisplayOpen = true },
+                        onOpenPortForward = { portForwardOpen = true },
+                        onOpenKeymaps = { keymapPickerOpen = true },
                         onOpenDiagnostics = { diagnosticsOpen = true }
                     )
                 }
@@ -869,32 +763,15 @@ private fun DevicesTabContent(
     devices: List<HostDevice>,
     nativeAvailable: Boolean,
     sessionState: SessionState,
-    telemetry: TelemetrySnapshot,
     discoveryDiagnostics: DiscoveryDiagnostics,
-    manualEndpoint: String,
-    onManualEndpointChange: (String) -> Unit,
-    advancedConnection: Boolean,
-    onToggleAdvanced: () -> Unit,
-    onConnectAddress: (String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit,
     onSendFiles: (String, String) -> Unit,
     localStatus: String,
-    onLocalSettings: () -> Unit,
-    onLocalDetails: () -> Unit,
+    publishing: Boolean,
     outgoing: `fun`.hackerlife.weavelo.OutgoingScreenState,
     onSendScreen: (String) -> Unit,
     onSendCamera: (String) -> Unit,
-    onStopSending: (Long) -> Unit,
-    onOutgoingQuality: () -> Unit,
-    virtualDisplayCount: Int = 0,
-    virtualDisplayActive: Boolean = false,
-    activePortForwardCount: Int = 0,
-    totalPortForwardCount: Int = 0,
-    activeKeymapName: String? = null,
-    onOpenVirtualDisplays: () -> Unit = {},
-    onOpenPortForward: () -> Unit = {},
-    onOpenKeymaps: () -> Unit = {},
-    onOpenDiagnostics: () -> Unit = {}
+    onStopSending: (Long) -> Unit
 ) {
     val p = WeaveloTokens.colors
     val workspace by `fun`.hackerlife.weavelo.WorkspaceClient.state.collectAsState()
@@ -941,48 +818,15 @@ private fun DevicesTabContent(
                             lineHeight = 15.sp
                         )
                     }
-                    MobileAction(
-                        symbol = MobileSymbol.Settings,
-                        label = tr("Outgoing screen quality"),
-                        enabled = true,
-                        tonalWell = true,
-                        modifier = Modifier.size(40.dp),
-                        onClick = onOutgoingQuality
-                    )
-                    MobileAction(
-                        symbol = MobileSymbol.Permissions,
-                        label = tr("Sharing & permissions"),
-                        enabled = true,
-                        tonalWell = true,
-                        modifier = Modifier.size(40.dp),
-                        onClick = onLocalSettings
-                    )
-                    MobileAction(
-                        symbol = MobileSymbol.More,
-                        label = tr("This device & pairing"),
-                        enabled = true,
-                        tonalWell = true,
-                        modifier = Modifier.size(40.dp),
-                        onClick = onLocalDetails
-                    )
+                    if (publishing || outgoing.active) {
+                        PrecisionPillBadge(
+                            text = tr("Sharing"),
+                            tone = PillTone.EMERALD,
+                            showDot = true
+                        )
+                    }
                 }
             }
-        }
-
-        // Fluid Pro Toolbox Quick-Access Strip
-        item(key = "pro-toolbox-strip") {
-            ProToolboxStrip(
-                virtualDisplayCount = virtualDisplayCount,
-                virtualDisplayActive = virtualDisplayActive,
-                activePortForwardCount = activePortForwardCount,
-                totalPortForwardCount = totalPortForwardCount,
-                activeKeymapName = activeKeymapName,
-                diagnosticsReady = nativeAvailable,
-                onOpenVirtualDisplays = onOpenVirtualDisplays,
-                onOpenPortForward = onOpenPortForward,
-                onOpenKeymaps = onOpenKeymaps,
-                onOpenDiagnostics = onOpenDiagnostics
-            )
         }
 
         if (devices.isEmpty()) {
@@ -1043,264 +887,6 @@ private fun DevicesTabContent(
                 )
             }
         }
-
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PrecisionButton(
-                        text = if (advancedConnection) tr("Hide manual connection") else tr("Advanced: connect by address"),
-                        style = PrecisionButtonStyle.SUBTLE,
-                        compact = true,
-                        onClick = onToggleAdvanced
-                    )
-                    PrecisionButton(
-                        text = tr("Outgoing screen quality"),
-                        leadingSymbol = MobileSymbol.Settings,
-                        style = PrecisionButtonStyle.TONAL,
-                        compact = true,
-                        onClick = onOutgoingQuality
-                    )
-                }
-                if (advancedConnection) {
-                    PrecisionCard(cornerRadius = 16.dp) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PrecisionTextField(
-                                value = manualEndpoint,
-                                onValueChange = onManualEndpointChange,
-                                label = tr("Host IP:port")
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                PrecisionButton(
-                                    text = tr("Connect to address"),
-                                    leadingSymbol = MobileSymbol.View,
-                                    enabled = nativeAvailable && manualEndpoint.isNotBlank() && sessionState != SessionState.CONNECTING,
-                                    style = PrecisionButtonStyle.PRIMARY,
-                                    onClick = { onConnectAddress(manualEndpoint.trim()) }
-                                )
-                                PrecisionButton(
-                                    text = tr("Open workspace"),
-                                    enabled = nativeAvailable && manualEndpoint.isNotBlank(),
-                                    style = PrecisionButtonStyle.TONAL,
-                                    onClick = { onConnectWorkspace("", manualEndpoint.trim()) }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProToolboxStrip(
-    virtualDisplayCount: Int,
-    virtualDisplayActive: Boolean,
-    activePortForwardCount: Int,
-    totalPortForwardCount: Int,
-    activeKeymapName: String?,
-    diagnosticsReady: Boolean,
-    onOpenVirtualDisplays: () -> Unit,
-    onOpenPortForward: () -> Unit,
-    onOpenKeymaps: () -> Unit,
-    onOpenDiagnostics: () -> Unit
-) {
-    val p = WeaveloTokens.colors
-    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = tr("PRO TOOLBOX"),
-                color = p.textTertiary,
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 0.9.sp
-            )
-            Text(
-                text = tr("Tools"),
-                color = p.textTertiary.copy(alpha = 0.8f),
-                fontSize = 10.5.sp,
-                fontWeight = FontWeight.Medium
-            )
-        }
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(horizontal = 1.dp)
-        ) {
-            item(key = "tool-virtual-display") {
-                ProToolboxPillCard(
-                    title = tr("Virtual displays"),
-                    subtitle = tr("Wireless display"),
-                    symbol = MobileSymbol.VirtualDisplay,
-                    badgeText = if (virtualDisplayActive) tr("Active") else trFormat("%d saved", virtualDisplayCount),
-                    badgeTone = when {
-                        virtualDisplayActive -> PillTone.EMERALD
-                        virtualDisplayCount > 0 -> PillTone.CYAN
-                        else -> PillTone.NEUTRAL
-                    },
-                    highlighted = virtualDisplayActive,
-                    onClick = onOpenVirtualDisplays
-                )
-            }
-            item(key = "tool-port-forward") {
-                ProToolboxPillCard(
-                    title = tr("Port forwarding"),
-                    subtitle = if (totalPortForwardCount > 0) trFormat("%d rules", totalPortForwardCount) else "TCP / UDP",
-                    symbol = MobileSymbol.PortForward,
-                    badgeText = trFormat("%d active", activePortForwardCount),
-                    badgeTone = if (activePortForwardCount > 0) PillTone.EMERALD else PillTone.NEUTRAL,
-                    highlighted = activePortForwardCount > 0,
-                    onClick = onOpenPortForward
-                )
-            }
-            item(key = "tool-keymaps") {
-                ProToolboxPillCard(
-                    title = tr("Keymap presets"),
-                    subtitle = activeKeymapName ?: tr("550+ HUD"),
-                    symbol = MobileSymbol.Keymap,
-                    badgeText = if (activeKeymapName != null) tr("Active") else "550+",
-                    badgeTone = if (activeKeymapName != null) PillTone.BRAND else PillTone.CYAN,
-                    highlighted = activeKeymapName != null,
-                    onClick = onOpenKeymaps
-                )
-            }
-            item(key = "tool-diagnostics") {
-                ProToolboxPillCard(
-                    title = tr("Diagnostics"),
-                    subtitle = tr("Redacted JSON · Share"),
-                    symbol = MobileSymbol.Diagnostics,
-                    badgeText = if (diagnosticsReady) "JSON" else tr("Off"),
-                    badgeTone = if (diagnosticsReady) PillTone.BRAND else PillTone.NEUTRAL,
-                    highlighted = false,
-                    onClick = onOpenDiagnostics
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProToolboxPillCard(
-    title: String,
-    subtitle: String,
-    symbol: MobileSymbol,
-    badgeText: String,
-    badgeTone: PillTone,
-    highlighted: Boolean,
-    onClick: () -> Unit
-) {
-    val p = WeaveloTokens.colors
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed) 0.955f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "proToolPressScale"
-    )
-    val borderColor by animateColorAsState(
-        targetValue = when {
-            pressed -> p.brand
-            highlighted -> p.brandBorder
-            else -> p.border.copy(alpha = if (p.isDark) 0.92f else 0.85f)
-        },
-        label = "proToolBorder"
-    )
-    val shape = RoundedCornerShape(18.dp)
-    val glassBrush = remember(p.isDark, highlighted, pressed) {
-        val topTint = when {
-            pressed -> p.brandSoft
-            highlighted -> p.brandSoft.copy(alpha = if (p.isDark) 0.85f else 0.72f)
-            else -> p.surfaceGlass
-        }
-        val bottomTint = when {
-            pressed -> p.surfaceRaised
-            highlighted -> p.surface
-            else -> p.surface.copy(alpha = if (p.isDark) 0.92f else 0.96f)
-        }
-        Brush.verticalGradient(listOf(topTint, bottomTint))
-    }
-
-    Column(
-        modifier = Modifier
-            .width(168.dp)
-            .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-            }
-            .clip(shape)
-            .background(glassBrush)
-            .border(1.dp, borderColor, shape)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                role = Role.Button,
-                onClick = onClick
-            )
-            .padding(horizontal = 11.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(30.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(if (highlighted || pressed) p.brandSoft else p.surfaceSunken)
-                    .border(
-                        1.dp,
-                        if (highlighted || pressed) p.brandBorder.copy(alpha = 0.65f) else p.borderMuted,
-                        RoundedCornerShape(9.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = symbol.image,
-                    contentDescription = null,
-                    tint = if (highlighted || pressed) p.brand else p.textPrimary,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            PrecisionPillBadge(
-                text = badgeText,
-                tone = badgeTone,
-                showDot = highlighted,
-                monospace = true
-            )
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = title,
-                color = p.textPrimary,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = subtitle,
-                color = if (highlighted) p.brand else p.textSecondary,
-                fontSize = 11.sp,
-                lineHeight = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
     }
 }
 
@@ -1310,6 +896,12 @@ private fun MeshP2pTabContent(
     networkName: String,
     nativeAvailable: Boolean,
     joiningNetwork: Boolean,
+    sessionState: SessionState,
+    manualEndpoint: String,
+    onManualEndpointChange: (String) -> Unit,
+    advancedConnection: Boolean,
+    onToggleAdvanced: () -> Unit,
+    onConnectAddress: (String) -> Unit,
     onConnectWorkspace: (String, String) -> Unit
 ) {
     val p = WeaveloTokens.colors
@@ -1404,51 +996,55 @@ private fun MeshP2pTabContent(
                 }
             }
         } else {
-            items(devices.size) { index ->
-                val device = devices[index]
+            item {
                 PrecisionCard(cornerRadius = 16.dp) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = device.name.ifBlank { device.id },
-                                color = p.textPrimary,
-                                fontSize = 14.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f, fill = false),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            PrecisionPillBadge(
-                                text = device.scope,
-                                tone = PillTone.CYAN,
-                                monospace = true
-                            )
-                        }
-                        Text(
-                            text = trFormat("Endpoint: %s", device.endpoint.ifBlank { tr("Auto-negotiated UDP") }),
-                            color = p.textSecondary,
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            text = deviceCapabilities(device),
-                            color = p.textSecondary,
-                            fontSize = 12.sp
-                        )
-                        if (device.canOpenWorkspace) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                PrecisionButton(
-                                    text = tr("Inspect peer"),
-                                    leadingSymbol = MobileSymbol.View,
-                                    enabled = nativeAvailable && !joiningNetwork,
-                                    style = PrecisionButtonStyle.TONAL,
-                                    compact = true,
-                                    onClick = { onConnectWorkspace(device.id, device.endpoint) }
-                                )
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        devices.forEachIndexed { index, device ->
+                            if (index > 0) {
+                                HorizontalDivider(color = p.borderMuted)
+                            }
+                            val scopeTone = when (device.scope.uppercase(java.util.Locale.ROOT)) {
+                                "LAN" -> PillTone.EMERALD
+                                "P2P", "DIRECT" -> PillTone.CYAN
+                                "RELAY" -> PillTone.BRAND
+                                else -> PillTone.NEUTRAL
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = device.name.ifBlank { device.id },
+                                        color = p.textPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = device.endpoint.ifBlank { tr("Auto-negotiated UDP") },
+                                        color = p.textSecondary,
+                                        fontSize = 11.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (device.scope.isNotBlank()) {
+                                    PrecisionPillBadge(
+                                        text = device.scope,
+                                        tone = scopeTone,
+                                        showDot = device.online,
+                                        monospace = true
+                                    )
+                                }
                             }
                         }
                     }
@@ -1471,6 +1067,43 @@ private fun MeshP2pTabContent(
                         fontSize = 11.5.sp,
                         lineHeight = 17.sp
                     )
+                }
+            }
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                PrecisionButton(
+                    text = if (advancedConnection) tr("Hide manual connection") else tr("Advanced: connect by address"),
+                    style = PrecisionButtonStyle.SUBTLE,
+                    compact = true,
+                    onClick = onToggleAdvanced
+                )
+                if (advancedConnection) {
+                    PrecisionCard(cornerRadius = 16.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            PrecisionTextField(
+                                value = manualEndpoint,
+                                onValueChange = onManualEndpointChange,
+                                label = tr("Host IP:port")
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                PrecisionButton(
+                                    text = tr("Connect to address"),
+                                    leadingSymbol = MobileSymbol.View,
+                                    enabled = nativeAvailable && manualEndpoint.isNotBlank() && sessionState != SessionState.CONNECTING,
+                                    style = PrecisionButtonStyle.PRIMARY,
+                                    onClick = { onConnectAddress(manualEndpoint.trim()) }
+                                )
+                                PrecisionButton(
+                                    text = tr("Open workspace"),
+                                    enabled = nativeAvailable && manualEndpoint.isNotBlank(),
+                                    style = PrecisionButtonStyle.TONAL,
+                                    onClick = { onConnectWorkspace("", manualEndpoint.trim()) }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1500,6 +1133,11 @@ private fun SecurityTabContent(
     val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current.lifecycle
     var permissionRevision by remember { mutableStateOf(0) }
     var securityDetails by remember { mutableStateOf(false) }
+    var shareWithAudio by remember { mutableStateOf(false) }
+    var shareWithControl by remember { mutableStateOf(controlReady) }
+    LaunchedEffect(controlReady) {
+        shareWithControl = controlReady
+    }
     androidx.compose.runtime.DisposableEffect(lifecycle) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) permissionRevision++
@@ -1549,7 +1187,7 @@ private fun SecurityTabContent(
         }
         item {
             PrecisionCard(cornerRadius = 18.dp, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     SharingPermissionRow(
                         symbol = MobileSymbol.Share,
                         title = "Screen or app",
@@ -1557,11 +1195,38 @@ private fun SecurityTabContent(
                         action = if (publishing) "Stop" else "Share",
                         active = publishing,
                         destructiveAction = publishing,
+                        primaryAction = !publishing,
                         enabled = nativeAvailable
                     ) {
-                        if (publishing) onStopSharing() else onShareScreen(false)
+                        if (publishing) {
+                            onStopSharing()
+                        } else if (shareWithControl && controlReady) {
+                            onShareControlledScreen()
+                        } else {
+                            onShareScreen(shareWithAudio)
+                        }
                     }
-                    Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.End) {
+                    if (!publishing) {
+                        HorizontalDivider(color = p.borderMuted)
+                        PrecisionSwitchRow(
+                            title = tr("Include audio"),
+                            subtitle = if (audioAllowed) tr("Microphone allowed") else tr("Needs permission"),
+                            checked = shareWithAudio,
+                            enabled = nativeAvailable,
+                            leadingSymbol = MobileSymbol.Audio,
+                            onCheckedChange = { shareWithAudio = it }
+                        )
+                        PrecisionSwitchRow(
+                            title = tr("Allow remote control"),
+                            subtitle = if (controlReady) tr("Allowed") else tr("Needs permission"),
+                            checked = shareWithControl,
+                            enabled = controlReady,
+                            leadingSymbol = MobileSymbol.Control,
+                            onCheckedChange = { shareWithControl = it }
+                        )
+                    }
+                    HorizontalDivider(color = p.borderMuted)
+                    Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.End) {
                         PrecisionButton(
                             text = tr("Outgoing screen quality"),
                             leadingSymbol = MobileSymbol.Settings,
@@ -1570,7 +1235,12 @@ private fun SecurityTabContent(
                             onClick = onOutgoingQuality
                         )
                     }
-                    HorizontalDivider(color = p.borderMuted)
+                }
+            }
+        }
+        item {
+            PrecisionCard(cornerRadius = 18.dp, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     SharingPermissionRow(
                         symbol = MobileSymbol.Camera,
                         title = "Camera",
@@ -1594,15 +1264,6 @@ private fun SecurityTabContent(
                     )
                     HorizontalDivider(color = p.borderMuted)
                     SharingPermissionRow(
-                        symbol = MobileSymbol.Audio,
-                        title = "Audio",
-                        state = if (audioAllowed) tr("Microphone allowed") else tr("Needs permission"),
-                        action = "Share with audio",
-                        active = audioAllowed,
-                        enabled = nativeAvailable && !publishing
-                    ) { onShareScreen(true) }
-                    HorizontalDivider(color = p.borderMuted)
-                    SharingPermissionRow(
                         symbol = MobileSymbol.Notifications,
                         title = "Notifications",
                         state = if (notificationsAllowed) tr("Allowed") else tr("Off"),
@@ -1613,18 +1274,6 @@ private fun SecurityTabContent(
                         context.startActivity(
                             android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        )
-                    }
-                    if (controlReady) {
-                        HorizontalDivider(color = p.borderMuted)
-                        Spacer(Modifier.height(4.dp))
-                        PrecisionButton(
-                            text = tr("Share with control and audio"),
-                            leadingSymbol = MobileSymbol.Control,
-                            enabled = nativeAvailable && !publishing,
-                            style = PrecisionButtonStyle.PRIMARY,
-                            modifier = Modifier.fillMaxWidth(),
-                            onClick = onShareControlledScreen
                         )
                     }
                 }
@@ -1674,6 +1323,7 @@ private fun SharingPermissionRow(
     action: String,
     active: Boolean = false,
     destructiveAction: Boolean = false,
+    primaryAction: Boolean = false,
     enabled: Boolean,
     onClick: () -> Unit
 ) {
@@ -1710,6 +1360,7 @@ private fun SharingPermissionRow(
             enabled = enabled,
             style = when {
                 destructiveAction -> PrecisionButtonStyle.DANGER_TONAL
+                primaryAction -> PrecisionButtonStyle.PRIMARY
                 action == "Share" || action == "Start" || action == "Allow" -> PrecisionButtonStyle.TONAL
                 else -> PrecisionButtonStyle.SUBTLE
             },
@@ -1728,12 +1379,21 @@ private fun SettingsTabContent(
     nativeAvailable: Boolean,
     discoveryDiagnostics: DiscoveryDiagnostics,
     sessionState: SessionState,
+    virtualDisplayCount: Int = 0,
+    virtualDisplayActive: Boolean = false,
+    activePortForwardCount: Int = 0,
+    totalPortForwardCount: Int = 0,
+    activeKeymapName: String? = null,
+    onOpenVirtualDisplays: () -> Unit = {},
+    onOpenPortForward: () -> Unit = {},
+    onOpenKeymaps: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {}
 ) {
     val p = WeaveloTokens.colors
     val context = androidx.compose.ui.platform.LocalContext.current
     val backgroundPrefs = remember(context) { context.getSharedPreferences("stream", android.content.Context.MODE_PRIVATE) }
     var keepOnline by remember(backgroundPrefs) { mutableStateOf(`fun`.hackerlife.weavelo.DevicePresenceService.enabled(context)) }
+    var showGestureGuide by remember { mutableStateOf(false) }
     var showAdvancedDiagnostics by remember { mutableStateOf(false) }
     androidx.compose.runtime.DisposableEffect(backgroundPrefs) {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -1810,6 +1470,59 @@ private fun SettingsTabContent(
         item { DeviceBadgeSettings() }
         item {
             Text(
+                text = tr("ADVANCED TOOLS"),
+                color = p.textTertiary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 0.8.sp
+            )
+        }
+        item {
+            PrecisionCard(cornerRadius = 16.dp, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    PrecisionMenuItem(
+                        text = tr("Virtual displays"),
+                        subtitle = if (virtualDisplayActive) {
+                            "${tr("Wireless display")} · ${tr("Active")}"
+                        } else {
+                            trFormat("%d saved", virtualDisplayCount)
+                        },
+                        symbol = MobileSymbol.VirtualDisplay,
+                        checked = virtualDisplayActive,
+                        onClick = onOpenVirtualDisplays
+                    )
+                    HorizontalDivider(
+                        color = p.borderMuted,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Port forwarding"),
+                        subtitle = if (activePortForwardCount > 0) {
+                            trFormat("%d / %d active", activePortForwardCount, totalPortForwardCount)
+                        } else {
+                            trFormat("%d rules", totalPortForwardCount)
+                        },
+                        symbol = MobileSymbol.PortForward,
+                        checked = activePortForwardCount > 0,
+                        onClick = onOpenPortForward
+                    )
+                    HorizontalDivider(
+                        color = p.borderMuted,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    PrecisionMenuItem(
+                        text = tr("Keymap presets"),
+                        subtitle = activeKeymapName ?: tr("550+ built-in"),
+                        symbol = MobileSymbol.Keymap,
+                        checked = activeKeymapName != null,
+                        onClick = onOpenKeymaps
+                    )
+                }
+            }
+        }
+        item {
+            Text(
                 text = tr("GESTURE SYSTEM"),
                 color = p.textTertiary,
                 fontSize = 11.sp,
@@ -1831,19 +1544,28 @@ private fun SettingsTabContent(
                         leadingSymbol = MobileSymbol.Touch,
                         onCheckedChange = { WeaveloClient.updateNaturalScroll(it) }
                     )
-                    HorizontalDivider(color = p.borderMuted)
-                    GestureGuideSection(
-                        title = tr("Direct Touch (Screen-First)"),
-                        body = tr("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)\n• Two-Finger Tap: Mouse Right Click")
+                    PrecisionButton(
+                        text = if (showGestureGuide) tr("Hide gesture guide") else tr("Show gesture guide"),
+                        style = PrecisionButtonStyle.SUBTLE,
+                        compact = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { showGestureGuide = !showGestureGuide }
                     )
-                    GestureGuideSection(
-                        title = tr("Virtual Trackpad"),
-                        body = tr("• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Double-Tap & Hold Glide: Mouse Drag\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)")
-                    )
-                    GestureGuideSection(
-                        title = tr("Zoom & Canvas"),
-                        body = tr("• Two-Finger Pinch: Zoom & Pan Viewport\n• Three-Finger Drag / Pan Canvas Button: Move Zoomed Canvas")
-                    )
+                    if (showGestureGuide) {
+                        HorizontalDivider(color = p.borderMuted)
+                        GestureGuideSection(
+                            title = tr("Direct Touch (Screen-First)"),
+                            body = tr("• Single Tap: Mouse Left Click\n• Touch & Drag: Mouse Drag Selection\n• Long Press (380ms): Mouse Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)\n• Two-Finger Tap: Mouse Right Click")
+                        )
+                        GestureGuideSection(
+                            title = tr("Virtual Trackpad"),
+                            body = tr("• Single Finger Glide: Relative Cursor Move\n• Single Tap: Left Click\n• Double-Tap & Hold Glide: Mouse Drag\n• Two-Finger Tap: Right Click\n• Two-Finger Glide: Natural App Scroll (1x & Zoomed)")
+                        )
+                        GestureGuideSection(
+                            title = tr("Zoom & Canvas"),
+                            body = tr("• Two-Finger Pinch: Zoom & Pan Viewport\n• Three-Finger Drag / Pan Canvas Button: Move Zoomed Canvas")
+                        )
+                    }
                 }
             }
         }
@@ -1878,14 +1600,14 @@ private fun SettingsTabContent(
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Redacted JSON · Copy & Share",
+                            text = tr("Redacted JSON · Copy & Share"),
                             color = p.textSecondary,
                             fontSize = 11.5.sp,
                             lineHeight = 15.sp
                         )
                     }
                     PrecisionPillBadge(
-                        text = "Redacted",
+                        text = tr("Redacted"),
                         tone = PillTone.EMERALD,
                         showDot = true
                     )
@@ -1895,7 +1617,7 @@ private fun SettingsTabContent(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     PrecisionButton(
-                        text = tr("Diagnostics"),
+                        text = tr("Diagnostics Export"),
                         leadingSymbol = MobileSymbol.Diagnostics,
                         style = PrecisionButtonStyle.PRIMARY,
                         compact = true,

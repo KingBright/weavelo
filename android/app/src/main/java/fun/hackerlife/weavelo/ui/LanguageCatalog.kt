@@ -715,6 +715,11 @@ internal object LanguageCatalog {
         "Color profile" to "色彩配置",
         "Copy report" to "复制报告",
         "Active" to "已启用",
+        "ADVANCED TOOLS" to "高级工具",
+        "Include audio" to "同时共享音频",
+        "Allow remote control" to "允许远程控制",
+        "Show gesture guide" to "展开手势指南",
+        "Hide gesture guide" to "收起手势指南",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {
