@@ -3638,7 +3638,8 @@ async fn run_host_service_inner(
                                     let mut windows: Vec<(CaptureSource, Option<i32>)> = Vec::new();
                                     #[cfg(target_os = "linux")]
                                     let mut kwin_states: Vec<Arc<std::sync::Mutex<KwinInputState>>> = Vec::new();
-                                    let collect_sub = |s: &Subscription,
+                                    #[allow(unused_mut)]
+                                    let mut collect_sub = |s: &Subscription,
                                                        seen_sources: &mut std::collections::HashSet<CaptureSource>,
                                                        windows: &mut Vec<(CaptureSource, Option<i32>)>| {
                                         if s.task.is_finished() {
