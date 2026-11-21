@@ -45,6 +45,7 @@ mod video_encode;
 mod macos_viewport;
 #[cfg(target_os = "macos")]
 mod window_input;
+mod window_layout;
 
 #[cfg(any(test, target_os = "linux", target_os = "windows"))]
 mod capture_backend;

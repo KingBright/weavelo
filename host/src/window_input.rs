@@ -754,6 +754,160 @@ pub(crate) fn resize_window(
     Ok(actual)
 }
 
+fn saved_arranged_bounds() -> &'static std::sync::Mutex<std::collections::HashMap<u32, crate::window_layout::LogicalRect>> {
+    static SAVED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, crate::window_layout::LogicalRect>>> =
+        std::sync::OnceLock::new();
+    SAVED.get_or_init(Default::default)
+}
+
+fn find_ax_window(id: u32, pid: i32) -> Result<(CFType, crate::window_layout::LogicalRect), String> {
+    if id == 0 || pid <= 0 {
+        return Err("无效的远端窗口标识".into());
+    }
+    if !permission_available() {
+        return Err("需要在远端 Mac 开启辅助功能权限才能排布窗口".into());
+    }
+    let snapshot = current(id, pid)?;
+    let raw_app = unsafe { AXUIElementCreateApplication(pid) };
+    if raw_app.is_null() {
+        return Err("无法连接远端应用的辅助功能接口".into());
+    }
+    let application = unsafe { CFType::wrap_under_create_rule(raw_app) };
+    unsafe {
+        AXUIElementSetMessagingTimeout(application.as_CFTypeRef(), 0.25);
+    }
+    let ax_windows = attr(&application, "AXWindows")
+        .and_then(|v| v.downcast::<CFArray>())
+        .ok_or_else(|| "无法枚举远端应用窗口列表".to_string())?;
+    let on_screen = windows(1 | 16, 0).unwrap_or_default();
+    let mut matched = None;
+    for raw in ax_windows.iter() {
+        let w = unsafe { CFType::wrap_under_get_rule(*raw) };
+        let mut owner_pid = 0;
+        if unsafe { AXUIElementGetPid(w.as_CFTypeRef(), &mut owner_pid) } != 0 || owner_pid != pid {
+            continue;
+        }
+        let Some(bounds) = ax_window_bounds(&w) else {
+            continue;
+        };
+        let exact_id = focused_window_id(&on_screen, pid, bounds) == Some(id);
+        let exact_snapshot = (bounds.origin.x - snapshot.bounds.origin.x).abs() <= 2.0
+            && (bounds.origin.y - snapshot.bounds.origin.y).abs() <= 2.0
+            && (bounds.size.width - snapshot.bounds.size.width).abs() <= 2.0
+            && (bounds.size.height - snapshot.bounds.size.height).abs() <= 2.0;
+        if exact_id || exact_snapshot {
+            let rect = crate::window_layout::LogicalRect {
+                x: bounds.origin.x,
+                y: bounds.origin.y,
+                width: bounds.size.width,
+                height: bounds.size.height,
+            };
+            matched = Some((w, rect));
+            if exact_id {
+                break;
+            }
+        }
+    }
+    matched.ok_or_else(|| "未定位到对应的远端窗口".to_string())
+}
+
+fn apply_ax_window_rect(window: &CFType, rect: crate::window_layout::LogicalRect) -> Result<(), String> {
+    if attr(window, "AXFullScreen")
+        .and_then(|v| v.downcast::<CFBoolean>())
+        .is_some_and(|v| v.into())
+    {
+        return Err("存在处于全屏空间模式的窗口，无法自动平铺".into());
+    }
+    let pos = CGPoint::new(rect.x, rect.y);
+    let pos_val = unsafe { AXValueCreate(1, (&pos as *const CGPoint).cast()) };
+    let size = CGSize::new(rect.width, rect.height);
+    let size_val = unsafe { AXValueCreate(2, (&size as *const CGSize).cast()) };
+    if pos_val.is_null() || size_val.is_null() {
+        return Err("创建窗口位置/尺寸参数失败".into());
+    }
+    let ax_pos = unsafe { CFType::wrap_under_create_rule(pos_val) };
+    let ax_size = unsafe { CFType::wrap_under_create_rule(size_val) };
+    let pos_attr = CFString::new("AXPosition");
+    let size_attr = CFString::new("AXSize");
+    unsafe {
+        let _ = AXUIElementSetAttributeValue(
+            window.as_CFTypeRef(),
+            pos_attr.as_CFTypeRef(),
+            ax_pos.as_CFTypeRef(),
+        );
+        let _ = AXUIElementSetAttributeValue(
+            window.as_CFTypeRef(),
+            size_attr.as_CFTypeRef(),
+            ax_size.as_CFTypeRef(),
+        );
+        let _ = AXUIElementSetAttributeValue(
+            window.as_CFTypeRef(),
+            pos_attr.as_CFTypeRef(),
+            ax_pos.as_CFTypeRef(),
+        );
+        let action = CFString::new("AXRaise");
+        let _ = AXUIElementPerformAction(window.as_CFTypeRef(), action.as_CFTypeRef());
+    }
+    Ok(())
+}
+
+pub(crate) fn arrange_windows(
+    targets: &[(u32, i32)],
+    layout: protocol::session::WindowArrangeLayout,
+) -> Result<u32, String> {
+    use protocol::session::WindowArrangeLayout;
+    if targets.is_empty() {
+        return Err("没有可排布的应用窗口".into());
+    }
+    if layout == WindowArrangeLayout::Restore {
+        let saved: Vec<(u32, i32, crate::window_layout::LogicalRect)> = {
+            let mut guard = saved_arranged_bounds().lock().unwrap_or_else(|e| e.into_inner());
+            targets
+                .iter()
+                .filter_map(|&(id, pid)| guard.remove(&id).map(|rect| (id, pid, rect)))
+                .collect()
+        };
+        let mut restored = 0u32;
+        for (id, pid, rect) in saved {
+            if let Ok((w, _)) = find_ax_window(id, pid)
+                && apply_ax_window_rect(&w, rect).is_ok()
+            {
+                restored += 1;
+            }
+        }
+        return Ok(restored);
+    }
+
+    let resolved: Vec<(u32, CFType, crate::window_layout::LogicalRect)> = targets
+        .iter()
+        .filter_map(|&(id, pid)| find_ax_window(id, pid).ok().map(|(w, rect)| (id, w, rect)))
+        .collect();
+    if resolved.is_empty() {
+        return Err("未找到可自动排布的 Mac 窗口".into());
+    }
+    {
+        let mut guard = saved_arranged_bounds().lock().unwrap_or_else(|e| e.into_inner());
+        for (id, _, rect) in &resolved {
+            guard.entry(*id).or_insert(*rect);
+        }
+    }
+    let main_bounds = core_graphics::display::CGDisplay::main().bounds();
+    let work_area = crate::window_layout::LogicalRect {
+        x: main_bounds.origin.x,
+        y: main_bounds.origin.y + 28.0,
+        width: main_bounds.size.width.max(640.0),
+        height: (main_bounds.size.height - 28.0).max(480.0),
+    };
+    let rects = crate::window_layout::compute_tile_rects(work_area, resolved.len(), layout);
+    let mut applied = 0u32;
+    for ((_, w, _), rect) in resolved.into_iter().zip(rects) {
+        if apply_ax_window_rect(&w, rect).is_ok() {
+            applied += 1;
+        }
+    }
+    Ok(applied)
+}
+
 impl WindowTarget {
     fn app_frontmost(&self) -> bool {
         attr(&self.application, "AXFrontmost")

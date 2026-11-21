@@ -274,7 +274,7 @@ fn linux_x11_window_size(win_id: u32) -> Result<(u32, u32), String> {
 #[cfg(target_os = "linux")]
 fn focus_linux_window_blocking(source: CaptureSource) -> Result<(), String> {
     if crate::linux_kwin::is_kwin_window(source) {
-        return Ok(());
+        return crate::linux_kwin::focus_window_blocking(source);
     }
     let CaptureSource::Window(win_id) = source else {
         return Ok(());
@@ -368,6 +368,17 @@ struct Subscription {
     native_capture: Option<PreparedPortalCapture>,
     #[cfg(target_os = "linux")]
     kwin_capture: Option<PreparedKwinCapture>,
+    #[cfg(target_os = "linux")]
+    kwin_input_monitors: Vec<PreparedPortalCapture>,
+    #[cfg(target_os = "linux")]
+    kwin_input_state: Arc<std::sync::Mutex<KwinInputState>>,
+}
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct KwinInputState {
+    bounds_cache: Option<(crate::linux_kwin::KwinWindowGeometry, std::time::Instant)>,
+    last_norm: Option<((u16, u16), std::time::Instant)>,
+    last_focused: Option<std::time::Instant>,
 }
 impl Subscription {
     fn take_window_restore(&mut self) -> Option<(CaptureSource, Option<i32>, (u32, u32))> {
@@ -397,6 +408,18 @@ impl Subscription {
         #[cfg(all(unix, any(test, target_os = "linux")))]
         if let Some(capture) = &self.native_capture {
             return capture.input_status().map_err(|e| e.to_string());
+        }
+        #[cfg(target_os = "linux")]
+        if self.kwin_capture.is_some() {
+            if let Some(monitor) = self
+                .kwin_input_monitors
+                .iter()
+                .find(|m| m.input_status().is_ok())
+                .or_else(|| self.kwin_input_monitors.first())
+            {
+                return monitor.input_status().map_err(|e| e.to_string());
+            }
+            return Err("KDE Wayland window input requires shared screen portal input".into());
         }
         #[cfg(target_os="windows")]
         if let Some(InputTarget::Windows {source,width,height,..})=self.input_target {
@@ -726,17 +749,80 @@ impl Connection {
             _=>None,
         }
     }
+    #[cfg(target_os = "linux")]
+    fn kwin_input_monitors(&self) -> Vec<PreparedPortalCapture> {
+        let mut monitors = if self.share_scope == remote_core::shared_files::current_share_scope() {
+            self.shared_sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .input_monitors(self.share_scope)
+        } else {
+            Vec::new()
+        };
+        for capture in self.native_capture.values() {
+            if !capture.is_revoked()
+                && matches!(capture.source_info().source, CaptureSource::Display(_))
+                && capture.input_available()
+                && !monitors.iter().any(|existing| existing.same_source(capture))
+            {
+                monitors.push(capture.clone());
+            }
+        }
+        for sub in self.subscriptions.values() {
+            if let Some(capture) = &sub.native_capture
+                && !capture.is_revoked()
+                && matches!(capture.source_info().source, CaptureSource::Display(_))
+                && capture.input_available()
+                && !monitors.iter().any(|existing| existing.same_source(capture))
+            {
+                monitors.push(capture.clone());
+            }
+        }
+        monitors
+    }
     fn input_signature(&self,id:u32) -> Option<(u32,InputTarget,Option<u64>)> {
         if !self.can_input(id) {return None;}
         let sub=self.subscriptions.get(&id)?;
         #[cfg(all(unix, any(test,target_os="linux")))]
         let generation=sub.native_capture.as_ref().map(PreparedPortalCapture::generation);
+        #[cfg(target_os = "linux")]
+        let generation = generation.or_else(|| {
+            if sub.kwin_capture.is_some() {
+                sub.kwin_input_monitors
+                    .iter()
+                    .find(|m| !m.is_revoked() && m.input_available())
+                    .or_else(|| sub.kwin_input_monitors.first())
+                    .map(PreparedPortalCapture::generation)
+            } else {
+                None
+            }
+        });
         #[cfg(not(all(unix, any(test,target_os="linux"))))]
         let generation=None;
         Some((sub.source_revision,sub.input_target?,generation))
     }
     fn input_binding(&mut self,connection:u32,id:u32,revision:u32,request:u64) -> Option<SessionCommand> {
         if connection!=self.id || request==0 {return None;}
+        #[cfg(target_os = "linux")]
+        {
+            let needs_refresh = self.subscriptions.get(&id).is_some_and(|sub| {
+                sub.kwin_capture.is_some()
+                    && sub
+                        .kwin_input_monitors
+                        .iter()
+                        .all(|m| m.is_revoked() || !m.input_available())
+            });
+            if needs_refresh {
+                let refreshed = self.kwin_input_monitors();
+                if !refreshed.is_empty()
+                    && let Some(sub) = self.subscriptions.get_mut(&id)
+                {
+                    sub.kwin_input_monitors = refreshed;
+                    sub.supports_input = true;
+                    sub.input_target = Some(InputTarget::Portal);
+                }
+            }
+        }
         #[cfg(target_os="windows")]
         if let Some(sub) = self.subscriptions.get_mut(&id)
             && sub.supports_input
@@ -1068,6 +1154,14 @@ impl Connection {
             Ok(legacy) => sources.extend(legacy),
             Err(error) if sources.is_empty() => return Err(error),
             Err(_) => {}
+        }
+        #[cfg(target_os = "linux")]
+        if !self.kwin_input_monitors().is_empty() {
+            for info in &mut sources {
+                if crate::linux_kwin::is_kwin_window(info.source) {
+                    info.supports_input = true;
+                }
+            }
         }
         let mut unique = std::collections::HashSet::new();
         let supports_console = self.session_version >= protocol::session::CONSOLE_SESSION_VERSION;
@@ -1513,12 +1607,29 @@ impl Connection {
                 Some(InputTarget::Windows {source:selection.source,canvas,width:selection.bounds.width,height:selection.bounds.height})
             }
         } else {None};
+        #[cfg(target_os = "linux")]
+        let kwin_input_monitors = if crate::linux_kwin::is_kwin_window(request.source) {
+            self.kwin_input_monitors()
+        } else {
+            Vec::new()
+        };
         #[cfg(all(unix, any(test, target_os = "linux")))]
         let input_target = if native_capture.is_some() {
             Some(InputTarget::Portal)
         } else {
+            #[cfg(target_os = "linux")]
+            {
+                if !kwin_input_monitors.is_empty() {
+                    Some(InputTarget::Portal)
+                } else {
+                    input_target
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
             input_target
         };
+        #[cfg(target_os = "linux")]
+        let supports_input = supports_input || !kwin_input_monitors.is_empty();
         let supports_input = supports_input && input_target.is_some();
         let wants_audio_group = !matches!(request.source,CaptureSource::Camera(_) | CaptureSource::Console(_))
             && (request.audio || (legacy && env_flag_enabled("WEAVELO_MICROPHONE_CAPTURE")));
@@ -1750,6 +1861,10 @@ impl Connection {
                 native_capture,
                 #[cfg(target_os = "linux")]
                 kwin_capture,
+                #[cfg(target_os = "linux")]
+                kwin_input_monitors,
+                #[cfg(target_os = "linux")]
+                kwin_input_state: Arc::new(std::sync::Mutex::new(KwinInputState::default())),
             },
         );
         self.refresh_audio();
@@ -2123,6 +2238,165 @@ async fn send_session(sender: &UdpSender, addr: SocketAddr, command: SessionComm
         .send_control(&ControlMessage::Session(Box::new(command)), addr)
         .await;
 }
+#[cfg(all(unix, any(test, target_os = "linux")))]
+fn map_portal_input_result(
+    capture: &PreparedPortalCapture,
+    result: Result<(), crate::linux_portal::runtime::PortalInputError>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if result == Err(crate::linux_portal::runtime::PortalInputError::Transport) {
+        // An unknown up outcome cannot be retried. Close this exact
+        // compositor lease to clear its state without a second up RPC.
+        capture.revoke_source();
+    }
+    result.map_err(|e| -> Box<dyn Error + Send + Sync> {
+        if e == crate::linux_portal::runtime::PortalInputError::Expired {
+            Box::new(remote_core::InputExpired("before Linux portal dispatch"))
+        } else {
+            Box::new(e)
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn prepare_kwin_input(
+    source: CaptureSource,
+    monitors: &[PreparedPortalCapture],
+    state: &std::sync::Mutex<KwinInputState>,
+    changed_owner: bool,
+    event: InputEvent,
+) -> Result<Option<(PreparedPortalCapture, Option<InputEvent>, InputEvent)>, Box<dyn Error + Send + Sync>> {
+    let available: Vec<(PreparedPortalCapture, ((i32, i32), (i32, i32)))> = monitors
+        .iter()
+        .filter(|m| !m.is_revoked() && m.input_available())
+        .filter_map(|m| m.logical_geometry().map(|geom| (m.clone(), geom)))
+        .collect();
+    if available.is_empty() {
+        return Err("KDE Wayland window input requires an active shared screen portal session".into());
+    }
+    let needs_focus_for_event = match &event {
+        InputEvent::MouseDown(_) | InputEvent::KeyDown(_) | InputEvent::Text(_) => true,
+        InputEvent::Key { pressed: true, .. } => true,
+        InputEvent::MouseScroll {
+            delta_x,
+            delta_y,
+            gesture,
+        } => gesture.can_take_control(*delta_x, *delta_y),
+        _ => false,
+    };
+    let (mut cached_geom, last_norm, should_focus) = {
+        let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = guard
+            .bounds_cache
+            .filter(|(g, t)| !g.minimized && t.elapsed() < Duration::from_millis(250))
+            .map(|(g, _)| g);
+        let focus_stale = guard
+            .last_focused
+            .is_none_or(|t| t.elapsed() >= Duration::from_millis(1200));
+        (
+            cached,
+            guard.last_norm,
+            changed_owner || (needs_focus_for_event && focus_stale),
+        )
+    };
+    if cached_geom.is_none()
+        && let Ok(Ok(geom)) = tokio::time::timeout(
+            Duration::from_millis(30),
+            crate::linux_kwin::window_geometry(source),
+        )
+        .await
+    {
+        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.bounds_cache = Some((geom, std::time::Instant::now()));
+        cached_geom = Some(geom);
+    }
+    if should_focus || cached_geom.is_some_and(|g| g.minimized) {
+        let was_minimized = cached_geom.is_some_and(|g| g.minimized);
+        if tokio::time::timeout(
+            Duration::from_millis(45),
+            crate::linux_kwin::focus_window(source),
+        )
+        .await
+        .is_ok_and(|res| res.is_ok())
+        {
+            let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.last_focused = Some(std::time::Instant::now());
+            if was_minimized {
+                guard.bounds_cache = None;
+            }
+        }
+        if was_minimized
+            && let Ok(Ok(geom)) = tokio::time::timeout(
+                Duration::from_millis(35),
+                crate::linux_kwin::window_geometry(source),
+            )
+            .await
+        {
+            let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.bounds_cache = Some((geom, std::time::Instant::now()));
+            cached_geom = Some(geom);
+        }
+    }
+    let geom = match cached_geom {
+        Some(g) if !g.minimized && g.rect.is_valid() => g,
+        _ => {
+            if matches!(
+                event,
+                InputEvent::MouseMoveAbsolute { .. } | InputEvent::MouseScroll { .. }
+            ) {
+                return Ok(None);
+            }
+            return Ok(Some((available[0].0.clone(), None, event)));
+        }
+    };
+    let monitor_geoms: Vec<((i32, i32), (i32, i32))> =
+        available.iter().map(|(_, g)| *g).collect();
+    let idx = crate::window_layout::pick_monitor_index(geom.rect, &monitor_geoms).unwrap_or(0);
+    let (monitor, (mon_pos, mon_size)) = &available[idx];
+    match event {
+        InputEvent::MouseMoveAbsolute { x, y } => {
+            let Some((mx, my)) = crate::window_layout::map_window_point_to_monitor(
+                x, y, geom.rect, *mon_pos, *mon_size,
+            ) else {
+                return Ok(None);
+            };
+            let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.last_norm = Some(((x, y), std::time::Instant::now()));
+            Ok(Some((
+                monitor.clone(),
+                None,
+                InputEvent::MouseMoveAbsolute { x: mx, y: my },
+            )))
+        }
+        InputEvent::MouseScroll {
+            delta_x,
+            delta_y,
+            gesture,
+        } => {
+            let need_pre_move = changed_owner
+                || last_norm.is_none_or(|(_, t)| t.elapsed() >= Duration::from_millis(700));
+            let pre_move = if need_pre_move && (delta_x != 0 || delta_y != 0) {
+                let (nx, ny) = last_norm.map_or((32768, 32768), |(pt, _)| pt);
+                crate::window_layout::map_window_point_to_monitor(
+                    nx, ny, geom.rect, *mon_pos, *mon_size,
+                )
+                .map(|(mx, my)| InputEvent::MouseMoveAbsolute { x: mx, y: my })
+            } else {
+                None
+            };
+            Ok(Some((
+                monitor.clone(),
+                pre_move,
+                InputEvent::MouseScroll {
+                    delta_x,
+                    delta_y,
+                    gesture,
+                },
+            )))
+        }
+        other => Ok(Some((monitor.clone(), None, other))),
+    }
+}
+
 async fn inject_fresh(
     injector: &LazyInputInjector,
     owner: &mut ActiveInput,
@@ -2156,7 +2430,22 @@ async fn inject_fresh(
         .subscriptions
         .get(&id)
         .and_then(|s| s.native_capture.clone());
-    let mut changed = owner.owner != Some((addr, id))
+    #[cfg(target_os = "linux")]
+    let kwin_sub = peer.subscriptions.get(&id).and_then(|s| {
+        s.kwin_capture.as_ref()?;
+        let monitors = if s
+            .kwin_input_monitors
+            .iter()
+            .any(|m| !m.is_revoked() && m.input_available())
+        {
+            s.kwin_input_monitors.clone()
+        } else {
+            peer.kwin_input_monitors()
+        };
+        Some((s.request.source, monitors, s.kwin_input_state.clone()))
+    });
+    let changed_owner = owner.owner != Some((addr, id));
+    let mut changed = changed_owner
         || owner
             .console_injector
             .as_ref()
@@ -2164,11 +2453,17 @@ async fn inject_fresh(
             != console_injector.as_ref().map(|c| c.generation());
     #[cfg(all(unix, any(test, target_os = "linux")))]
     {
-        changed |= owner
-            .capture
-            .as_ref()
-            .map(PreparedPortalCapture::generation)
-            != capture.as_ref().map(PreparedPortalCapture::generation);
+        #[cfg(target_os = "linux")]
+        let skip_capture_cmp = kwin_sub.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let skip_capture_cmp = false;
+        if !skip_capture_cmp {
+            changed |= owner
+                .capture
+                .as_ref()
+                .map(PreparedPortalCapture::generation)
+                != capture.as_ref().map(PreparedPortalCapture::generation);
+        }
     }
     if changed {
         if let Err(error) = owner.release(injector).await {
@@ -2190,20 +2485,70 @@ async fn inject_fresh(
             None => console.inject_input(event),
         }
     } else {
+        #[cfg(target_os = "linux")]
+        if let Some((kwin_source, kwin_monitors, kwin_state)) = kwin_sub {
+            match prepare_kwin_input(kwin_source, &kwin_monitors, &kwin_state, changed_owner, event).await {
+                Ok(Some((monitor, pre_move, mapped_event))) => {
+                    if owner.owner != Some((addr, id))
+                        || owner.capture.as_ref().map(PreparedPortalCapture::generation)
+                            != Some(monitor.generation())
+                    {
+                        if let Err(error) = owner.release(injector).await {
+                            owner
+                                .during_control(injector, input_error(peer, udp, addr, id, &error.to_string()))
+                                .await;
+                            return false;
+                        }
+                        owner.owner = Some((addr, id));
+                        owner.console_injector = None;
+                        owner.capture = Some(monitor.clone());
+                    }
+                    if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                        return false;
+                    }
+                    let pre_result = if let Some(pre) = pre_move {
+                        map_portal_input_result(&monitor, monitor.inject_input_before(pre, deadline).await)
+                    } else {
+                        Ok(())
+                    };
+                    match pre_result {
+                        Ok(()) => map_portal_input_result(
+                            &monitor,
+                            monitor.inject_input_before(mapped_event, deadline).await,
+                        ),
+                        Err(err) => Err(err),
+                    }
+                }
+                Ok(None) => return true,
+                Err(error) => {
+                    if let Err(cleanup) = owner.release(injector).await {
+                        owner
+                            .during_control(injector, input_error(peer, udp, addr, id, &cleanup.to_string()))
+                            .await;
+                        return false;
+                    }
+                    owner
+                        .during_control(injector, input_error(peer, udp, addr, id, &error.to_string()))
+                        .await;
+                    return false;
+                }
+            }
+        } else {
+            match capture {
+                Some(capture) => {
+                    let result = capture.inject_input_before(event, deadline).await;
+                    map_portal_input_result(&capture, result)
+                }
+                None => injector.inject_target_before(target, event, deadline),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
         match capture {
             Some(capture) => {
-                let result=capture.inject_input_before(event,deadline).await;
-                if result==Err(crate::linux_portal::runtime::PortalInputError::Transport) {
-                    // An unknown up outcome cannot be retried. Close this exact
-                    // compositor lease to clear its state without a second up RPC.
-                    capture.revoke_source();
-                }
-                result.map_err(|e| -> Box<dyn Error+Send+Sync> {
-                    if e==crate::linux_portal::runtime::PortalInputError::Expired {Box::new(remote_core::InputExpired("before Linux portal dispatch"))}
-                    else {Box::new(e)}
-                })
-            },
-            None => injector.inject_target_before(target, event,deadline),
+                let result = capture.inject_input_before(event, deadline).await;
+                map_portal_input_result(&capture, result)
+            }
+            None => injector.inject_target_before(target, event, deadline),
         }
     };
     #[cfg(not(all(unix, any(test, target_os = "linux"))))]
@@ -3285,6 +3630,133 @@ async fn run_host_service_inner(
                                     tokio::spawn(async move {
                                         let consoles = crate::ps5_bridge::remove_console(console_id).await;
                                         send_session(&udp, addr, SessionCommand::Consoles { request_id, consoles }).await;
+                                    });
+                                }
+                                SessionCommand::ArrangeWindows { request_id, ids, layout } if peers.contains_key(&addr) => {
+                                    let mut seen = std::collections::HashSet::new();
+                                    let mut seen_sources = std::collections::HashSet::new();
+                                    let mut windows: Vec<(CaptureSource, Option<i32>)> = Vec::new();
+                                    #[cfg(target_os = "linux")]
+                                    let mut kwin_states: Vec<Arc<std::sync::Mutex<KwinInputState>>> = Vec::new();
+                                    let collect_sub = |s: &Subscription,
+                                                       seen_sources: &mut std::collections::HashSet<CaptureSource>,
+                                                       windows: &mut Vec<(CaptureSource, Option<i32>)>| {
+                                        if s.task.is_finished() {
+                                            return;
+                                        }
+                                        let CaptureSource::Window(win_id) = s.request.source else {
+                                            return;
+                                        };
+                                        if !seen_sources.insert(s.request.source) {
+                                            return;
+                                        }
+                                        let _ = win_id;
+                                        #[cfg(target_os = "macos")]
+                                        let hint_pid = match s.input_target {
+                                            Some(InputTarget::Window { id: tid, pid }) if tid == win_id => Some(pid),
+                                            _ => s.original_window_size.and_then(|(_, p, _)| p),
+                                        };
+                                        #[cfg(not(target_os = "macos"))]
+                                        let hint_pid: Option<i32> = None;
+                                        windows.push((s.request.source, hint_pid));
+                                        #[cfg(target_os = "linux")]
+                                        if crate::linux_kwin::is_kwin_window(s.request.source) {
+                                            kwin_states.push(s.kwin_input_state.clone());
+                                        }
+                                    };
+                                    if let Some(peer) = peers.get(&addr) {
+                                        for sub_id in &ids {
+                                            if !seen.insert(*sub_id) {
+                                                continue;
+                                            }
+                                            if let Some(s) = peer.subscriptions.get(sub_id) {
+                                                collect_sub(s, &mut seen_sources, &mut windows);
+                                            }
+                                        }
+                                    }
+                                    // Desktop clients open one connection per stream window from the same IP;
+                                    // gather sibling authenticated window subscriptions from the same client IP.
+                                    if windows.len() < 2 {
+                                        let mut sibling_addrs: Vec<SocketAddr> = peers
+                                            .keys()
+                                            .copied()
+                                            .filter(|other| {
+                                                *other != addr
+                                                    && other.ip() == addr.ip()
+                                                    && authenticated.contains_key(other)
+                                            })
+                                            .collect();
+                                        sibling_addrs.sort_by_key(|a| a.port());
+                                        for sib_addr in sibling_addrs {
+                                            if let Some(sib) = peers.get(&sib_addr) {
+                                                let mut sub_ids: Vec<u32> = sib.subscriptions.keys().copied().collect();
+                                                sub_ids.sort_unstable();
+                                                for sub_id in sub_ids {
+                                                    if let Some(s) = sib.subscriptions.get(&sub_id) {
+                                                        collect_sub(s, &mut seen_sources, &mut windows);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let udp = udp_sender.clone();
+                                    tokio::spawn(async move {
+                                        let outcome = if windows.is_empty() {
+                                            Err("没有可自动排布的应用窗口画面".to_string())
+                                        } else {
+                                            match tokio::task::spawn_blocking(move || -> Result<u32, String> {
+                                                #[cfg(target_os = "macos")]
+                                                {
+                                                    let catalog = if windows.iter().any(|(_, pid)| pid.is_none()) {
+                                                        crate::capture_sources::list().ok()
+                                                    } else {
+                                                        None
+                                                    };
+                                                    let targets: Vec<(u32, i32)> = windows
+                                                        .into_iter()
+                                                        .filter_map(|(src, pid)| {
+                                                            let CaptureSource::Window(win_id) = src else {
+                                                                return None;
+                                                            };
+                                                            let resolved_pid = pid.or_else(|| {
+                                                                catalog
+                                                                    .as_ref()?
+                                                                    .iter()
+                                                                    .find(|i| i.source == src)
+                                                                    .and_then(|i| i.process_id)
+                                                            })?;
+                                                            Some((win_id, resolved_pid))
+                                                        })
+                                                        .collect();
+                                                    crate::window_input::arrange_windows(&targets, layout)
+                                                }
+                                                #[cfg(target_os = "windows")]
+                                                {
+                                                    let sources: Vec<CaptureSource> =
+                                                        windows.into_iter().map(|(src, _)| src).collect();
+                                                    crate::windows_sources::arrange_windows_client(&sources, layout)
+                                                }
+                                                #[cfg(target_os = "linux")]
+                                                {
+                                                    let sources: Vec<CaptureSource> = windows
+                                                        .into_iter()
+                                                        .map(|(src, _)| src)
+                                                        .filter(|src| crate::linux_kwin::is_kwin_window(*src))
+                                                        .collect();
+                                                    crate::linux_kwin::arrange_windows_blocking(&sources, layout)
+                                                }
+                                            })
+                                            .await
+                                            {
+                                                Ok(res) => res,
+                                                Err(_) => Err("窗口排布任务执行中断".to_string()),
+                                            }
+                                        };
+                                        #[cfg(target_os = "linux")]
+                                        for state in kwin_states {
+                                            state.lock().unwrap_or_else(|e| e.into_inner()).bounds_cache = None;
+                                        }
+                                        send_session(&udp, addr, SessionCommand::WindowsArranged { request_id, outcome }).await;
                                     });
                                 }
                                 _ => {}
@@ -5145,6 +5617,10 @@ mod failure_admission_tests {
                 native_capture: None,
                 #[cfg(target_os = "linux")]
                 kwin_capture: None,
+                #[cfg(target_os = "linux")]
+                kwin_input_monitors: Vec::new(),
+                #[cfg(target_os = "linux")]
+                kwin_input_state: Arc::new(std::sync::Mutex::new(KwinInputState::default())),
             },
             stopped,
         )

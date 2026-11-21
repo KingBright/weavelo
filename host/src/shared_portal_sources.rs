@@ -108,6 +108,34 @@ impl SharedPortalSources {
         sources.sort_by_key(|info| format!("{:?}", info.source));
         sources
     }
+
+    pub fn input_monitors(&self, current: ShareScope) -> Vec<PreparedPortalCapture> {
+        if self.scope.is_none() || self.scope != current {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Some(primary_id) = self.display
+            && let Some(capture) = self.sources.get(&primary_id)
+            && !capture.is_revoked()
+            && capture.input_available()
+        {
+            out.push(capture.clone());
+        }
+        for (source, capture) in &self.sources {
+            if matches!(source, CaptureSource::Display(_))
+                && Some(*source) != self.display
+                && !capture.is_revoked()
+                && capture.input_available()
+            {
+                out.push(capture.clone());
+            }
+        }
+        out
+    }
+
+    pub fn primary_input_monitor(&self, current: ShareScope) -> Option<PreparedPortalCapture> {
+        self.input_monitors(current).into_iter().next()
+    }
 }
 impl Drop for SharedPortalSources {
     fn drop(&mut self) {

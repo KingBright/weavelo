@@ -7,6 +7,7 @@ pub(super) enum WindowPurpose {
     Management,
     Stream,
     Sending,
+    ScreenWall,
 }
 
 /// A closed management window leaves the frontend coordinator alive. Its
@@ -110,6 +111,7 @@ impl RestoredDashboard {
         } else { div() };
         let transfers = if self.active_tab == DrawerTab::Files { self.transfers_panel(cx) } else { div() };
         let update_card = (self.active_tab == DrawerTab::Network).then(|| desktop_update_card(self, cx));
+        let wall_count = screen_wall::registry_entries(cx).len();
         div()
             .relative()
             .size_full()
@@ -147,6 +149,25 @@ impl RestoredDashboard {
                 self.owner.clone(),
                 cx,
             ))
+            .when(wall_count > 0, |tree| {
+                tree.child(
+                    div()
+                        .absolute()
+                        .bottom(px(14.0))
+                        .right(px(18.0))
+                        .child(
+                            command_button("management-open-screen-wall", ActionVariantKind::Primary, cx)
+                                .h(px(30.0))
+                                .px_3()
+                                .rounded_full()
+                                .shadow_lg()
+                                .tooltip(tooltip(crate::i18n::tr("Open Screen Wall · Cmd/Ctrl+0")).build())
+                                .on_click(|_, _, cx| screen_wall::open_or_focus_screen_wall(cx))
+                                .child(icon(IconName::Display).size(px(14.0)))
+                                .child(crate::i18n::tr_format!("Screen Wall ({})", wall_count)),
+                        ),
+                )
+            })
             .when_some(self.source_selection.as_ref(), |tree, selection| {
                 tree.child(source_selection::render(
                     selection,

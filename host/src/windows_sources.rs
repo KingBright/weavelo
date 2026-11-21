@@ -599,6 +599,126 @@ pub(crate) fn focus_window_client(source: CaptureSource) -> Result<(), String> {
     Ok(())
 }
 
+fn saved_arranged_windows() -> &'static Mutex<HashMap<u32, crate::window_layout::LogicalRect>> {
+    static SAVED: OnceLock<Mutex<HashMap<u32, crate::window_layout::LogicalRect>>> = OnceLock::new();
+    SAVED.get_or_init(Default::default)
+}
+
+pub(crate) fn arrange_windows_client(
+    sources: &[CaptureSource],
+    layout: protocol::session::WindowArrangeLayout,
+) -> Result<u32, String> {
+    use protocol::session::WindowArrangeLayout;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
+    };
+    let mut targets: Vec<(u32, HWND, crate::window_layout::LogicalRect)> = Vec::new();
+    unsafe {
+        let _coordinates = PhysicalCoordinates::enter()?;
+        for &src in sources {
+            let CaptureSource::Window(id) = src else {
+                continue;
+            };
+            let Ok(selected) = resolve(src) else {
+                continue;
+            };
+            if !selected.window {
+                continue;
+            }
+            let hwnd = selected.handle as usize as HWND;
+            if IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
+                continue;
+            }
+            let mut rect: RECT = std::mem::zeroed();
+            if GetWindowRect(hwnd, &mut rect) == 0 {
+                continue;
+            }
+            targets.push((
+                id,
+                hwnd,
+                crate::window_layout::LogicalRect {
+                    x: f64::from(rect.left),
+                    y: f64::from(rect.top),
+                    width: f64::from(rect.right - rect.left),
+                    height: f64::from(rect.bottom - rect.top),
+                },
+            ));
+        }
+        if targets.is_empty() {
+            return Err("未找到可自动排布的 Windows 应用窗口".into());
+        }
+        if layout == WindowArrangeLayout::Restore {
+            let mut guard = saved_arranged_windows().lock().unwrap_or_else(|e| e.into_inner());
+            let mut restored = 0u32;
+            for (id, hwnd, _) in targets {
+                if let Some(orig) = guard.remove(&id) {
+                    if IsIconic(hwnd) != 0 {
+                        ShowWindow(hwnd, SW_RESTORE);
+                    }
+                    if SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        orig.x.round() as i32,
+                        orig.y.round() as i32,
+                        orig.width.round() as i32,
+                        orig.height.round() as i32,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    ) != 0
+                    {
+                        restored += 1;
+                    }
+                }
+            }
+            return Ok(restored);
+        }
+        {
+            let mut guard = saved_arranged_windows().lock().unwrap_or_else(|e| e.into_inner());
+            for (id, _, rect) in &targets {
+                guard.entry(*id).or_insert(*rect);
+            }
+        }
+        let monitor = MonitorFromWindow(targets[0].1, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let work_area = if GetMonitorInfoW(monitor, &mut info) != 0 {
+            let w = info.rcWork;
+            crate::window_layout::LogicalRect {
+                x: f64::from(w.left),
+                y: f64::from(w.top),
+                width: f64::from((w.right - w.left).max(640)),
+                height: f64::from((w.bottom - w.top).max(480)),
+            }
+        } else {
+            crate::window_layout::LogicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1040.0,
+            }
+        };
+        let planned = crate::window_layout::compute_tile_rects(work_area, targets.len(), layout);
+        let mut applied = 0u32;
+        for ((_, hwnd, _), rect) in targets.into_iter().zip(planned) {
+            if IsIconic(hwnd) != 0 || IsZoomed(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            if SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                rect.x.round() as i32,
+                rect.y.round() as i32,
+                rect.width.round() as i32,
+                rect.height.round() as i32,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            ) != 0
+            {
+                applied += 1;
+            }
+        }
+        Ok(applied)
+    }
+}
+
 pub(crate) fn application_path(pid: u32) -> Option<String> {
     process(pid).map(|p| p.1)
 }

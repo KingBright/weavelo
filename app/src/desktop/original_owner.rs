@@ -1033,8 +1033,8 @@ impl OriginalOwner {
                 let (conn,mut events)=if allow_files {
                     let profile=remote_core::mesh::default_app_private_mesh_dir();
                     let receive_dir=remote_core::desktop_storage::receive_directory_at(&profile,Some(&receive_dir))?;
-                    WorkspaceConnection::connect(endpoint,receive_dir).await?
-                } else {WorkspaceConnection::connect_media(endpoint).await?};
+                    Box::pin(WorkspaceConnection::connect(endpoint,receive_dir)).await?
+                } else {Box::pin(WorkspaceConnection::connect_media(endpoint)).await?};
                 if purpose == ConnectionPurpose::Files && !conn.files_available {
                     return Err("Enable Receive files on the target device, then try again".into());
                 }
@@ -1186,15 +1186,15 @@ impl OriginalOwner {
             (key,mode,capture,purpose)
         };
         if let Some(mode) = mode {
-            return self.connect_mode(&key, options, mode.purpose, mode.audio, Some(mode.scope), None, mode.auto_list, mode.capture).await;
+            return Box::pin(self.connect_mode(&key, options, mode.purpose, mode.audio, Some(mode.scope), None, mode.auto_list, mode.capture)).await;
         }
         self.disconnect_active().await?;
         match purpose {
-            ConnectionPurpose::Sources=>self.connect_source_browser(&key).await,
-            ConnectionPurpose::Files=>self.connect_files(&key).await,
+            ConnectionPurpose::Sources=>Box::pin(self.connect_source_browser(&key)).await,
+            ConnectionPurpose::Files=>Box::pin(self.connect_files(&key)).await,
             ConnectionPurpose::View=>match capture {
-                Some(source)=>self.connect_capture_device(&key,source,options).await,
-                None=>self.connect_device(&key,options,0).await,
+                Some(source)=>Box::pin(self.connect_capture_device(&key,source,options)).await,
+                None=>Box::pin(self.connect_device(&key,options,0)).await,
             },
         }
     }
@@ -2151,6 +2151,33 @@ impl OriginalOwner {
         if let Some(entry) = self.pool.lock().unwrap().active_mut() {
             entry.session.set_host_audio(mode);
         }
+    }
+    pub(crate) fn arrange_windows(
+        &self,
+        ids: Vec<u32>,
+        layout: protocol::session::WindowArrangeLayout,
+    ) -> Result<u32, String> {
+        let mut p = self.pool.lock().unwrap();
+        let entry = p
+            .active_mut()
+            .ok_or_else(|| "当前没有已连接的会话".to_string())?;
+        entry.session.arrange_windows(ids, layout)
+    }
+    pub(crate) fn viewing_subscription_meta(
+        &self,
+    ) -> Option<(String, u32, protocol::session::CaptureSource)> {
+        let p = self.pool.lock().unwrap();
+        let s = &p.active()?.session;
+        if !s.connected || !s.confirmed {
+            return None;
+        }
+        Some((s.key.clone(), s.video_id, s.source))
+    }
+    pub(crate) fn window_arrange_notice(&self) -> Option<(Result<u32, String>, std::time::Duration)> {
+        let p = self.pool.lock().unwrap();
+        let (outcome, at) = p.active()?.session.window_arrange_notice.as_ref()?;
+        let elapsed = at.elapsed();
+        (elapsed < std::time::Duration::from_secs(6)).then(|| (outcome.clone(), elapsed))
     }
     pub fn file_transfer_snapshot(&self) -> Vec<TransferEntrySnapshot> {
         let p = self.pool.lock().unwrap();

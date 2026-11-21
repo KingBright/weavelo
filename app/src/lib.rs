@@ -848,6 +848,14 @@ pub struct UnifiedRuntimeConfig {
     pub enable_session_timeout_monitor: bool,
 }
 
+fn resolve_p2p_rendezvous(enable_p2p: bool, raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.to_string(),
+        None if enable_p2p => DEFAULT_P2P_RENDEZVOUS.to_string(),
+        None => String::new(),
+    }
+}
+
 impl UnifiedRuntimeConfig {
     pub fn app_defaults() -> Self {
         Self {
@@ -897,11 +905,10 @@ impl UnifiedRuntimeConfig {
             config.discovery_port = discovery_port_from_env()?;
         }
         config.enable_p2p = env_flag_or(WEAVELO_P2P_ENV, config.enable_p2p);
-        if let Ok(value) = std::env::var(WEAVELO_P2P_RENDEZVOUS_ENV)
-            && !value.trim().is_empty()
-        {
-            config.p2p_rendezvous = value.trim().to_string();
-        }
+        config.p2p_rendezvous = resolve_p2p_rendezvous(
+            config.enable_p2p,
+            std::env::var(WEAVELO_P2P_RENDEZVOUS_ENV).ok().as_deref(),
+        );
         config.p2p_bind_addr =
             env_socket_addr(WEAVELO_P2P_BIND_ADDR_ENV, config.p2p_bind_addr)?;
         config.p2p_log_events = env_flag_or(WEAVELO_P2P_LOG_ENV, false);
@@ -3229,6 +3236,17 @@ mod tests {
         assert_eq!(config.discovery_port, remote_core::desktop_identity::identity().discovery_port);
         assert_ne!(config.host_bind_addr.port(), DEFAULT_CONTROL_PORT);
         assert_ne!(config.discovery_port, remote_core::discovery::DEFAULT_DISCOVERY_PORT);
+    }
+
+    #[test]
+    fn p2p_rendezvous_defaults_only_when_p2p_enabled() {
+        assert!(resolve_p2p_rendezvous(false, None).is_empty());
+        assert_eq!(resolve_p2p_rendezvous(true, None), DEFAULT_P2P_RENDEZVOUS);
+        assert_eq!(resolve_p2p_rendezvous(true, Some("  ")), DEFAULT_P2P_RENDEZVOUS);
+        assert_eq!(
+            resolve_p2p_rendezvous(true, Some(" custom.example:3478 ")),
+            "custom.example:3478"
+        );
     }
 
     #[test]

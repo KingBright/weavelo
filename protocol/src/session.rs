@@ -430,6 +430,22 @@ pub enum SessionCommand {
         request_id: u32,
         console_id: u64,
     },
+    ArrangeWindows {
+        request_id: u32,
+        ids: Vec<u32>,
+        layout: WindowArrangeLayout,
+    },
+    WindowsArranged {
+        request_id: u32,
+        outcome: Result<u32, String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WindowArrangeLayout {
+    TileHorizontal,
+    TileGrid,
+    Restore,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -770,6 +786,21 @@ mod tests {
                 SessionCommand::RemoveConsole {
                     request_id: 102,
                     console_id: 42,
+                },
+            ),
+            (
+                52,
+                SessionCommand::ArrangeWindows {
+                    request_id: 103,
+                    ids: vec![1, 2],
+                    layout: WindowArrangeLayout::TileHorizontal,
+                },
+            ),
+            (
+                53,
+                SessionCommand::WindowsArranged {
+                    request_id: 103,
+                    outcome: Ok(2),
                 },
             ),
         ];

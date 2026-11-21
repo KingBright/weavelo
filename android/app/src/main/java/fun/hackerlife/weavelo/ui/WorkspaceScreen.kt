@@ -41,8 +41,10 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
@@ -529,7 +531,18 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
             }
         }
 
-        Box(Modifier.fillMaxSize().background(if (state.panes.isEmpty()) p.canvas else Color(0xFF070A0F))) {
+    var switcherExpanded by remember { mutableStateOf(false) }
+    var switcherInteractionTick by remember { mutableIntStateOf(0) }
+    var switcherToast by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(switcherToast) {
+        if (switcherToast != null) {
+            kotlinx.coroutines.delay(1_200L)
+            switcherToast = null
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(if (state.panes.isEmpty()) p.canvas else Color(0xFF070A0F))) {
             Column(Modifier.fillMaxSize().imePadding()) {
                 val visible = if (state.grid) state.panes else state.panes.filter { it.id == state.selected }
                 if (visible.isNotEmpty()) BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
@@ -542,7 +555,24 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             Row(Modifier.weight(1f).fillMaxWidth()) {
                                 row.forEach { pane ->
                                     key(pane.id, state.connectionGeneration) {
-                                        Box(Modifier.weight(1f).fillMaxHeight().padding(if (visible.size > 1) 2.dp else 0.dp)) {
+                                        val activeInGrid = state.grid && visible.size > 1 && pane.id == state.selected
+                                        Box(
+                                            Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight()
+                                                .padding(if (visible.size > 1) 2.dp else 0.dp)
+                                                .then(
+                                                    if (visible.size > 1) {
+                                                        Modifier
+                                                            .clip(RoundedCornerShape(6.dp))
+                                                            .border(
+                                                                width = if (activeInGrid) 1.5.dp else 0.75.dp,
+                                                                color = if (activeInGrid) p.brand else p.borderMuted.copy(alpha = 0.45f),
+                                                                shape = RoundedCornerShape(6.dp)
+                                                            )
+                                                    } else Modifier
+                                                )
+                                        ) {
                                             if (foreground && state.connected) {
                                                 WorkspaceVideo(
                                                     pane = pane,
@@ -603,6 +633,9 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                                                     onTogglePrivacyMode = {
                                                         privacyModeEnabled = !privacyModeEnabled
                                                     },
+                                                    onVideoTouchDown = {
+                                                        if (switcherExpanded) switcherExpanded = false
+                                                    },
                                                     onError = { message, text ->
                                                         localError = message
                                                         localErrorText = text
@@ -623,47 +656,113 @@ fun WorkspaceScreen(endpoint: String, sendFileOnConnect: Boolean = false, device
                             }
                         }
                     }
-                    // Only show a compact floating notice if disconnected or an error occurred during streaming.
+                    // Compact top-center stack: ultra-lightweight floating window switcher + transient error/reconnect pill.
                     val streamIssue = localError ?: if (!state.connected) state.status else null
-                    if (!streamIssue.isNullOrBlank() && !typing) {
-                        Surface(
+                    val showSwitcher = state.panes.size > 1 && !typing && foreground && state.connected
+                    if (showSwitcher || (!streamIssue.isNullOrBlank() && !typing)) {
+                        Column(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
                                 .safeDrawingPadding()
-                                .padding(8.dp)
-                                .border(1.dp, p.borderStrong, RoundedCornerShape(18.dp)),
-                            shape = RoundedCornerShape(18.dp),
-                            color = p.surfaceGlass,
-                            shadowElevation = 6.dp
+                                .padding(top = 6.dp, start = 8.dp, end = 8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = if (localError != null && localErrorText != null) appText(localErrorText!!)
-                                        else if (localError == null && state.statusText != null) appText(state.statusText!!)
-                                        else trFormat("Details: %s", streamIssue),
-                                    color = p.textPrimary,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 2,
-                                    modifier = Modifier.widthIn(max = 240.dp)
-                                )
-                                if (!state.connected && !state.incomingEnded) {
-                                    PrecisionButton(
-                                        text = tr("Reconnect"),
-                                        onClick = { WorkspaceClient.reconnect() },
-                                        style = PrecisionButtonStyle.TONAL,
-                                        compact = true
-                                    )
-                                }
-                                if (localError != null) {
-                                    MobileAction(MobileSymbol.Close, tr("Close"), tonalWell = true, modifier = Modifier.size(32.dp)) {
-                                        localError = null; localErrorText = null
+                            if (showSwitcher) {
+                                FloatingWindowSwitcher(
+                                    panes = state.panes,
+                                    selectedId = state.selected,
+                                    gridMode = state.grid,
+                                    expanded = switcherExpanded,
+                                    interactionTick = switcherInteractionTick,
+                                    onExpandChange = { expand ->
+                                        switcherExpanded = expand
+                                        if (expand) switcherInteractionTick++
+                                    },
+                                    onInteraction = { switcherInteractionTick++ },
+                                    onSelectPane = { id ->
+                                        WorkspaceClient.focusPane(id)
+                                        switcherExpanded = false
+                                    },
+                                    onCyclePane = { delta ->
+                                        WorkspaceClient.cyclePane(delta)?.let { next ->
+                                            switcherToast = localizedSourceTitle(next.source)
+                                        }
+                                    },
+                                    onClosePane = { id ->
+                                        WorkspaceClient.remove(id)
+                                        switcherInteractionTick++
+                                    },
+                                    onToggleGrid = {
+                                        WorkspaceClient.layout(!state.grid, state.selected)
+                                        switcherInteractionTick++
+                                    },
+                                    onTileWindows = {
+                                        WorkspaceClient.arrangeHostWindows("TileHorizontal")
+                                        switcherExpanded = false
+                                    },
+                                    onAddSource = {
+                                        switcherExpanded = false
+                                        WorkspaceClient.refreshSources(sessionKey, state.connectionGeneration)
+                                        pickerGeneration = state.connectionGeneration
+                                        sourcePicker = true
                                     }
-                                } else {
-                                    MobileAction(MobileSymbol.Close, tr("Exit stream"), tonalWell = true, modifier = Modifier.size(32.dp), onClick = disconnect)
+                                )
+                                switcherToast?.let { toastTitle ->
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = p.surfaceGlass,
+                                        modifier = Modifier.border(0.75.dp, p.borderStrong, RoundedCornerShape(12.dp))
+                                    ) {
+                                        Text(
+                                            text = trFormat("Switched to %s", toastTitle),
+                                            color = p.textPrimary,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            if (!streamIssue.isNullOrBlank() && !typing) {
+                                Surface(
+                                    modifier = Modifier.border(1.dp, p.borderStrong, RoundedCornerShape(18.dp)),
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = p.surfaceGlass,
+                                    shadowElevation = 6.dp
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (localError != null && localErrorText != null) appText(localErrorText!!)
+                                                else if (localError == null && state.statusText != null) appText(state.statusText!!)
+                                                else trFormat("Details: %s", streamIssue),
+                                            color = p.textPrimary,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 2,
+                                            modifier = Modifier.widthIn(max = 240.dp)
+                                        )
+                                        if (!state.connected && !state.incomingEnded) {
+                                            PrecisionButton(
+                                                text = tr("Reconnect"),
+                                                onClick = { WorkspaceClient.reconnect() },
+                                                style = PrecisionButtonStyle.TONAL,
+                                                compact = true
+                                            )
+                                        }
+                                        if (localError != null) {
+                                            MobileAction(MobileSymbol.Close, tr("Close"), tonalWell = true, modifier = Modifier.size(32.dp)) {
+                                                localError = null; localErrorText = null
+                                            }
+                                        } else {
+                                            MobileAction(MobileSymbol.Close, tr("Exit stream"), tonalWell = true, modifier = Modifier.size(32.dp), onClick = disconnect)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1394,6 +1493,7 @@ private fun WorkspaceVideo(
     onOpenKeymapPicker: () -> Unit = {},
     onExitKeymapEditMode: () -> Unit = {},
     onTogglePrivacyMode: () -> Unit = {},
+    onVideoTouchDown: () -> Unit = {},
     onError: (String, `fun`.hackerlife.weavelo.AppText?) -> Unit
 ) {
     val p = WeaveloTokens.colors
@@ -1656,7 +1756,11 @@ private fun WorkspaceVideo(
                     WorkspaceClient.surface(pane.id,sessionKey,generation,token,"cancel")
                 } else {
                 when (action) {
-                    0 -> pointers.add(id)
+                    0 -> {
+                        pointers.add(id)
+                        onVideoTouchDown()
+                        WorkspaceClient.ensurePaneFocused(pane.id)
+                    }
                     2 -> pointers.remove(id)
                     3 -> pointers.clear()
                 }
@@ -1684,6 +1788,8 @@ private fun WorkspaceVideo(
             sendTouchBatch = { sample ->
                 if (sample.any { it.action == 0 }) {
                     focusGate.invalidate(); WorkspaceClient.invalidateEditorFocus()
+                    onVideoTouchDown()
+                    WorkspaceClient.ensurePaneFocused(pane.id)
                     if (sideDrawerOpen && !sideMoreOpen) sideDrawerOpen = false
                 }
                 val gestureIntent = focusGate.intent()
@@ -1752,6 +1858,10 @@ private fun WorkspaceVideo(
                 }
             },
             sendTouchFrame = { sample ->
+                if (sample.any { it.action == 0 }) {
+                    onVideoTouchDown()
+                    WorkspaceClient.ensurePaneFocused(pane.id)
+                }
                 if (sideDrawerOpen && !sideMoreOpen) sideDrawerOpen = false
                 val presentation=nativeViewport.get()?.presentation
                 val geometry=presentation?.geometry
@@ -2297,6 +2407,16 @@ private fun WorkspaceVideo(
                                 ) {
                                     WorkspaceClient.layout(!gridMode)
                                 }
+                                if (allPanes.count { it.accepted && it.source.isWindow } >= 2) {
+                                    MobileAction(
+                                        symbol = MobileSymbol.Sources,
+                                        label = tr("Tile host windows"),
+                                        tonalWell = true,
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        WorkspaceClient.arrangeHostWindows("TileHorizontal")
+                                    }
+                                }
                                 MobileAction(
                                     symbol = MobileSymbol.Close,
                                     label = trFormat("Close %s", paneTitle),
@@ -2324,7 +2444,7 @@ private fun WorkspaceVideo(
                                             .heightIn(min = 28.dp)
                                             .clip(RoundedCornerShape(9.dp))
                                             .background(if (active) p.surfaceRaised else Color.Transparent)
-                                            .clickable(role = Role.Tab) { WorkspaceClient.layout(false, candidate.id) }
+                                            .clickable(role = Role.Tab) { WorkspaceClient.focusPane(candidate.id) }
                                             .padding(horizontal = 9.dp, vertical = 4.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -2681,6 +2801,268 @@ private fun SourcePicker(
                             onClick = { query = "" }
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FloatingWindowSwitcher(
+    panes: List<WorkspacePane>,
+    selectedId: Int,
+    gridMode: Boolean,
+    expanded: Boolean,
+    interactionTick: Int,
+    onExpandChange: (Boolean) -> Unit,
+    onInteraction: () -> Unit,
+    onSelectPane: (Int) -> Unit,
+    onCyclePane: (Int) -> Unit,
+    onClosePane: (Int) -> Unit,
+    onToggleGrid: () -> Unit,
+    onTileWindows: () -> Unit,
+    onAddSource: () -> Unit,
+) {
+    val p = WeaveloTokens.colors
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val activeIdx = panes.indexOfFirst { it.id == selectedId }.let { if (it >= 0) it else 0 }
+    val activePane = panes.getOrNull(activeIdx) ?: return
+    val windowCount = panes.count { it.accepted && it.source.isWindow }
+    val addLabel = tr("Add screen or window")
+    val modeLabel = if (gridMode) tr("Single window focus") else tr("Side-by-side split")
+    val tileLabel = tr("Tile host windows")
+    val closeTabLabel = tr("Close tab")
+
+    LaunchedEffect(expanded, interactionTick) {
+        if (expanded) {
+            kotlinx.coroutines.delay(4_000L)
+            onExpandChange(false)
+        }
+    }
+
+    if (!expanded) {
+        val horizontalThresholdPx = with(density) { 36.dp.toPx() }
+        val verticalThresholdPx = with(density) { 20.dp.toPx() }
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = p.surfaceGlass.copy(alpha = 0.88f),
+            shadowElevation = 4.dp,
+            modifier = Modifier
+                .border(0.75.dp, p.borderStrong.copy(alpha = 0.75f), RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(role = Role.Button) { onExpandChange(true) }
+                .pointerInput(panes.size, selectedId) {
+                    var accX = 0f
+                    var accY = 0f
+                    var triggered = false
+                    detectDragGestures(
+                        onDragStart = {
+                            accX = 0f
+                            accY = 0f
+                            triggered = false
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            if (triggered) return@detectDragGestures
+                            accX += dragAmount.x
+                            accY += dragAmount.y
+                            if (kotlin.math.abs(accX) >= horizontalThresholdPx && kotlin.math.abs(accX) > kotlin.math.abs(accY)) {
+                                triggered = true
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onCyclePane(if (accX < 0f) 1 else -1)
+                            } else if (accY >= verticalThresholdPx) {
+                                triggered = true
+                                onExpandChange(true)
+                            }
+                        }
+                    )
+                }
+        ) {
+            Row(
+                modifier = Modifier
+                    .height(24.dp)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(p.brand)
+                )
+                Text(
+                    text = localizedSourceTitle(activePane.source),
+                    color = p.textPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 152.dp)
+                )
+                Text(
+                    text = "${activeIdx + 1}/${panes.size}",
+                    color = p.textSecondary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Icon(
+                    imageVector = MobileSymbol.ChevronRight.image,
+                    contentDescription = null,
+                    tint = p.textTertiary,
+                    modifier = Modifier.size(12.dp)
+                )
+            }
+        }
+    } else {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = p.surfaceGlass,
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .widthIn(max = 600.dp)
+                .border(1.dp, p.borderStrong, RoundedCornerShape(16.dp))
+        ) {
+            Row(
+                modifier = Modifier
+                    .height(38.dp)
+                    .padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    panes.forEach { candidate ->
+                        val active = candidate.id == selectedId
+                        Row(
+                            modifier = Modifier
+                                .height(28.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (active) p.brandSoft else p.surfaceSunken.copy(alpha = 0.55f))
+                                .border(
+                                    width = if (active) 1.dp else 0.75.dp,
+                                    color = if (active) p.brand else p.borderMuted,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable(role = Role.Tab) { onSelectPane(candidate.id) }
+                                .padding(start = 8.dp, end = if (active && panes.size > 1) 4.dp else 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            val bmp = candidate.source.icon
+                            if (bmp != null) {
+                                Image(
+                                    bitmap = remember(bmp) { bmp.asImageBitmap() },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = (if (candidate.source.isConsole) MobileSymbol.Gamepad
+                                        else if (candidate.source.isCamera) MobileSymbol.Camera
+                                        else if (candidate.source.isWindow) MobileSymbol.Sources
+                                        else MobileSymbol.Devices).image,
+                                    contentDescription = null,
+                                    tint = if (active) p.brand else p.textSecondary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            }
+                            Text(
+                                text = localizedSourceTitle(candidate.source),
+                                color = if (active) p.brand else p.textPrimary,
+                                fontSize = 11.5.sp,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 108.dp)
+                            )
+                            if (active && panes.size > 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable(role = Role.Button, onClickLabel = closeTabLabel) {
+                                            onClosePane(candidate.id)
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = MobileSymbol.Close.image,
+                                        contentDescription = closeTabLabel,
+                                        tint = p.textSecondary,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .height(18.dp)
+                        .background(p.borderMuted)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(p.surfaceRaised)
+                        .clickable(role = Role.Button, onClickLabel = addLabel) { onAddSource() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("+", color = p.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(if (gridMode) p.brandSoft else p.surfaceRaised)
+                        .clickable(role = Role.Button, onClickLabel = modeLabel) { onToggleGrid() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = MobileSymbol.Grid.image,
+                        contentDescription = modeLabel,
+                        tint = if (gridMode) p.brand else p.textPrimary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                if (windowCount >= 2) {
+                    Box(
+                        modifier = Modifier
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(p.surfaceRaised)
+                            .clickable(role = Role.Button, onClickLabel = tileLabel) { onTileWindows() }
+                            .padding(horizontal = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(tr("Tile"), color = p.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .size(26.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(role = Role.Button, onClickLabel = tr("Close")) {
+                            onInteraction()
+                            onExpandChange(false)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = MobileSymbol.Close.image,
+                        contentDescription = tr("Close"),
+                        tint = p.textSecondary,
+                        modifier = Modifier.size(13.dp)
+                    )
                 }
             }
         }

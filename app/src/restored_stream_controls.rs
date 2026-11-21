@@ -637,6 +637,11 @@ impl RestoredDashboard {
             )
         });
         if !fullscreen {
+            let tab_strip = if !tiny {
+                screen_wall::render_titlebar_tab_strip(cx.entity().entity_id(), cx)
+            } else {
+                None
+            };
             row = row.child(
                 div()
                     .id("stream-titlebar-drag-region")
@@ -646,6 +651,7 @@ impl RestoredDashboard {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .gap_1p5()
                     .on_mouse_down(MouseButton::Left, |event, window, _| {
                         if event.click_count >= 2 {
                             window.titlebar_double_click();
@@ -653,6 +659,7 @@ impl RestoredDashboard {
                             window.start_window_move();
                         }
                     })
+                    .when_some(tab_strip, |drag, strip| drag.child(strip))
                     .when_some((!tiny).then_some(cua_mode).flatten(), |drag, mode| {
                         let badge_color = match mode {
                             crate::desktop::original_owner::ComputerUseMode::Observing => {
@@ -940,10 +947,23 @@ impl RestoredDashboard {
                         .child(icon(IconName::Home).size(px(13.))),
                 );
         }
+        let wall_button = command_button("stream-primary-wall", ActionVariantKind::Neutral, cx)
+            .size(px(button_size))
+            .rounded_full()
+            .p_0()
+            .tooltip(tooltip(crate::i18n::tr("Open Screen Wall · Cmd/Ctrl+0")).build())
+            .child(icon(IconName::Display).size(px(if tiny {
+                12.
+            } else if compact {
+                13.
+            } else {
+                14.
+            })))
+            .on_click(|_, _, cx| screen_wall::open_or_focus_screen_wall(cx));
         row = row
             .child(control_button)
             .child(source_button)
-            .when(!tiny, |r| r.child(mute_button).child(fit_button))
+            .when(!tiny, |r| r.child(wall_button).child(mute_button).child(fit_button))
             .child(files_button)
             .child(more_button)
             .child(fullscreen_button);

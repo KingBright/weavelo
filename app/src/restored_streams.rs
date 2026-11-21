@@ -7,6 +7,8 @@ use protocol::session::{CaptureSource, CaptureSourceInfo};
 impl RestoredDashboard {
     pub(super) fn prepare_stream_close(&mut self, cx: &mut Context<Self>) {
         if self.purpose != WindowPurpose::Stream { return; }
+        let entity_id = cx.entity().entity_id();
+        screen_wall::unregister_stream_entry(cx, entity_id);
         self.native_window_artwork.close();
         self.session_commands.begin();
         self.invalidate_source_commands();

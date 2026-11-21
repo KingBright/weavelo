@@ -720,6 +720,14 @@ internal object LanguageCatalog {
         "Allow remote control" to "允许远程控制",
         "Show gesture guide" to "展开手势指南",
         "Hide gesture guide" to "收起手势指南",
+        "Touch control blocked by system security. Enable USB debugging (Security settings) or Weavelo Accessibility." to "系统安全限制拦截了触控注入。请在手机「开发者选项」开启「USB 调试（安全设置）」，或前往无障碍设置开启「Weavelo」。",
+        "Switched to %s" to "已切换：%s",
+        "Close tab" to "关闭标签",
+        "Add screen or window" to "添加屏幕或窗口",
+        "Single window focus" to "单窗口独占",
+        "Side-by-side split" to "同屏分栏",
+        "Tile" to "平铺",
+        "Tile host windows" to "平铺同设备窗口",
     )
 
     fun resolvePreference(saved: String?, systemLanguage: String): AppLanguage = when (saved) {

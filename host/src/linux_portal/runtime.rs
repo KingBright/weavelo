@@ -503,6 +503,22 @@ impl PreparedPortalCapture {
         actual == source || (source == CaptureSource::MainDisplay
             && self.is_subscriber() && matches!(actual, CaptureSource::Display(_)))
     }
+    pub(crate) fn logical_geometry(&self) -> Option<((i32, i32), (i32, i32))> {
+        let selected = self
+            .inner
+            .lease
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .selected_source();
+        if selected.kind != SourceKind::Monitor {
+            return None;
+        }
+        let size = selected.logical_size?;
+        if size.0 <= 0 || size.1 <= 0 {
+            return None;
+        }
+        Some((selected.logical_position.unwrap_or((0, 0)), size))
+    }
     /// This process-local route never uses the global desktop/uinput injector.
     /// The caller must first check authenticated peer, source ID and revision.
     pub fn input_available(&self) -> bool {

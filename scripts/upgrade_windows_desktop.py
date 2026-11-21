@@ -136,10 +136,12 @@ def runtime_env(profile):
         'WEAVELO_RELAY_SERVER_ADDR',
         'udp://192.168.2.200:39494,ws://192.168.2.200:39493/v1/relay,udp://weavelo.hackerlife.fun:39494,wss://weavelo.hackerlife.fun:8443/v1/relay',
     )
+    p2p_enabled = os.environ.get('WEAVELO_P2P', '1')
+    p2p_rendezvous = os.environ.get('WEAVELO_P2P_RENDEZVOUS', 'p.hackerlife.fun:3478')
     return dict(os.environ, WEAVELO_DEVICE_GROUP_DIR=str(profile),
                 WEAVELO_HOST_BIND_ADDR='0.0.0.0:39273', WEAVELO_DISCOVERY_PORT='38119',
                 WEAVELO_RELAY='1', WEAVELO_RELAY_SERVER_ADDR=relay_addr,
-                WEAVELO_P2P='0')
+                WEAVELO_P2P=p2p_enabled, WEAVELO_P2P_RENDEZVOUS=p2p_rendezvous)
 
 
 class NativeOwners:

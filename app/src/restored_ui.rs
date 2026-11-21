@@ -6,6 +6,8 @@ mod network_status;
 mod stream_controls;
 #[path = "restored_streams.rs"]
 mod stream_windows;
+#[path = "screen_wall.rs"]
+mod screen_wall;
 use stream_controls::{DeviceFiles, StreamPanel};
 #[path = "restored_sending.rs"]
 mod sending;
@@ -405,6 +407,7 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
         WindowPurpose::Management => (size(px(580.), px(500.)), size(px(520.), px(440.))),
         WindowPurpose::Sending => (size(px(560.), px(340.)), size(px(420.), px(260.))),
         WindowPurpose::Stream => (size(px(1280.), px(800.)), size(px(120.), px(120.))),
+        WindowPurpose::ScreenWall => (size(px(1360.), px(840.)), size(px(720.), px(480.))),
     };
     let window_bounds = cx
         .primary_display()
@@ -419,7 +422,8 @@ fn restored_window_options(cx: &App, purpose: WindowPurpose) -> WindowOptions {
             Bounds::centered_at(work.center(), window_size)
         })
         .unwrap_or_else(|| bounds(point(px(80.), px(60.)), preferred));
-    let stream_custom_titlebar = cfg!(target_os = "macos") && purpose == WindowPurpose::Stream;
+    let stream_custom_titlebar = cfg!(target_os = "macos")
+        && matches!(purpose, WindowPurpose::Stream | WindowPurpose::ScreenWall);
     WindowOptions {
         app_id: Some(
             remote_core::desktop_identity::identity()
@@ -1100,7 +1104,9 @@ impl RestoredDashboard {
             this.sync_media_pause();
             if !this.window_active {
                 this.reset_pointer_scroll();
-                this.owner.release_input();
+                if !screen_wall::is_wall_focused_window(this.window_handle) {
+                    this.owner.release_input();
+                }
                 this.pointer_input = PointerInputTracker::default();
             } else if !was_active
                 && !this.drawer_open
@@ -2416,9 +2422,14 @@ impl RestoredDashboard {
 
     fn sync_media_pause(&mut self) {
         let paused = self.manual_media_paused;
-        let visible =
-            !self.pause_when_inactive || self.window_visible.unwrap_or(true) || self.pip_visible;
-        self.owner.set_view_demand(visible, self.window_active);
+        let wall_visible = self.purpose == WindowPurpose::Stream && screen_wall::is_wall_visible();
+        let visible = !self.pause_when_inactive
+            || self.window_visible.unwrap_or(true)
+            || self.pip_visible
+            || wall_visible;
+        let focused = self.window_active
+            || (wall_visible && screen_wall::is_wall_focused_window(self.window_handle));
+        self.owner.set_view_demand(visible, focused);
         if paused || self.drawer_open {
             self.release_pointer_input();
         }
@@ -3831,6 +3842,34 @@ impl Render for RestoredDashboard {
             window.set_window_title(&title);
             self.native_window_title = title;
         }
+        if self.purpose == WindowPurpose::Stream {
+            let meta = self.owner.viewing_subscription_meta();
+            let dev_id = meta
+                .as_ref()
+                .map(|(d, _, _)| d.clone())
+                .or_else(|| self.stream_device.clone())
+                .unwrap_or_default();
+            let is_window = meta.as_ref().is_some_and(|(_, _, src)| {
+                matches!(src, protocol::session::CaptureSource::Window(_))
+            });
+            let video_id = meta.as_ref().map(|(_, vid, _)| *vid);
+            let entry = screen_wall::StreamWallEntry {
+                entity_id: cx.entity().entity_id(),
+                view: cx.weak_entity(),
+                window_handle: self.window_handle,
+                device_id: dev_id,
+                device_name: peer.unwrap_or("").to_owned(),
+                title: self.native_window_title.clone(),
+                is_window,
+                video_id,
+            };
+            let needs_sync = !cx
+                .try_global::<screen_wall::ScreenWallRegistry>()
+                .is_some_and(|reg| reg.entries().iter().any(|existing| *existing == entry));
+            if needs_sync {
+                screen_wall::register_stream_entry(cx, entry);
+            }
+        }
         let appearance = snapshot
             .source_appearances
             .get(&snapshot.active_capture_source);
@@ -4260,6 +4299,29 @@ impl Render for RestoredDashboard {
                             cx.stop_propagation();
                             cx.notify();
                             return;
+                        }
+                        let cmd = keystroke.modifiers.control || keystroke.modifiers.platform;
+                        if cmd && !keystroke.modifiers.alt {
+                            if keystroke.key == "0" {
+                                screen_wall::open_or_focus_screen_wall(cx);
+                                cx.stop_propagation();
+                                return;
+                            }
+                            if this.purpose == WindowPurpose::Stream {
+                                if keystroke.key == "[" || keystroke.key == "]" {
+                                    let delta = if keystroke.key == "]" { 1 } else { -1 };
+                                    if screen_wall::switch_tab_by_delta(cx.entity().entity_id(), delta, cx) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
+                                } else if let Ok(num) = keystroke.key.parse::<usize>()
+                                    && (1..=9).contains(&num)
+                                    && screen_wall::switch_tab_by_index(num - 1, cx)
+                                {
+                                    cx.stop_propagation();
+                                    return;
+                                }
+                            }
                         }
                     }))
                     .child(

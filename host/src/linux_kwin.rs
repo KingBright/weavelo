@@ -61,6 +61,13 @@ mod kwin_wayland_bindings {
 pub(crate) struct WindowInfo {
     pub source: CaptureSourceInfo,
     pub uuid: String,
+    pub runner_id: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KwinWindowGeometry {
+    pub rect: crate::window_layout::LogicalRect,
+    pub minimized: bool,
 }
 
 #[derive(Clone)]
@@ -171,6 +178,12 @@ fn clear_catalog() {
 }
 
 async fn resolve_async(source: CaptureSource) -> Result<WindowInfo, String> {
+    let window = cached_window_info(source)?;
+    validate_window_alive(&window).await?;
+    Ok(window)
+}
+
+fn cached_window_info(source: CaptureSource) -> Result<WindowInfo, String> {
     if !is_kwin_window(source) {
         return Err("The selected Linux application window is no longer available".into());
     }
@@ -178,15 +191,263 @@ async fn resolve_async(source: CaptureSource) -> Result<WindowInfo, String> {
         clear_catalog();
         return Err("KWin window capture requires a Wayland session".into());
     }
-    let window = catalog()
+    catalog()
         .read()
         .unwrap_or_else(|error| error.into_inner())
         .by_source
         .get(&source)
         .map(|entry| entry.info.clone())
-        .ok_or_else(|| "The selected Linux application window is no longer available".to_owned())?;
-    validate_window_alive(&window).await?;
-    Ok(window)
+        .ok_or_else(|| "The selected Linux application window is no longer available".to_owned())
+}
+
+async fn session_bus() -> Result<BusConnection, String> {
+    static BUS: tokio::sync::OnceCell<BusConnection> = tokio::sync::OnceCell::const_new();
+    let conn = BUS
+        .get_or_try_init(|| async {
+            tokio::time::timeout(DBUS_TIMEOUT, BusConnection::session())
+                .await
+                .map_err(|_| "KWin D-Bus connection timed out".to_string())?
+                .map_err(|_| "KWin D-Bus session is unavailable".to_string())
+        })
+        .await?;
+    Ok(conn.clone())
+}
+
+pub(crate) async fn window_geometry(source: CaptureSource) -> Result<KwinWindowGeometry, String> {
+    let window = cached_window_info(source)?;
+    let connection = session_bus().await?;
+    let kwin = Proxy::new_owned(
+        connection,
+        KWIN_BUS.to_owned(),
+        KWIN_PATH.to_owned(),
+        KWIN_IFACE.to_owned(),
+    )
+    .await
+    .map_err(|_| "KWin window geometry interface is unavailable")?;
+    let info: HashMap<String, OwnedValue> = tokio::time::timeout(
+        DBUS_TIMEOUT,
+        kwin.call("getWindowInfo", &(window.uuid.as_str(),)),
+    )
+    .await
+    .map_err(|_| "KWin window geometry lookup timed out")?
+    .map_err(|_| "KWin selected window is no longer available")?;
+    let uuid = value_string(&info, "uuid").unwrap_or_else(|| window.uuid.clone());
+    if normalize_uuid(&uuid) != normalize_uuid(&window.uuid)
+        || value_i32(&info, "pid") != window.source.process_id
+    {
+        return Err("KWin selected window identity changed".into());
+    }
+    let rect = crate::window_layout::LogicalRect {
+        x: value_f64(&info, "x").ok_or_else(|| "KWin window x coordinate unavailable".to_string())?,
+        y: value_f64(&info, "y").ok_or_else(|| "KWin window y coordinate unavailable".to_string())?,
+        width: value_f64(&info, "width")
+            .ok_or_else(|| "KWin window width unavailable".to_string())?,
+        height: value_f64(&info, "height")
+            .ok_or_else(|| "KWin window height unavailable".to_string())?,
+    };
+    if !rect.is_valid() {
+        return Err("KWin selected window reported invalid bounds".into());
+    }
+    Ok(KwinWindowGeometry {
+        rect,
+        minimized: value_bool(&info, "minimized"),
+    })
+}
+
+pub(crate) async fn focus_window(source: CaptureSource) -> Result<(), String> {
+    let window = cached_window_info(source)?;
+    let connection = session_bus().await?;
+    let runner = Proxy::new_owned(
+        connection,
+        KWIN_BUS.to_owned(),
+        WINDOW_RUNNER_PATH.to_owned(),
+        WINDOW_RUNNER_IFACE.to_owned(),
+    )
+    .await
+    .map_err(|_| "KWin window runner is unavailable")?;
+    tokio::time::timeout(
+        DBUS_TIMEOUT,
+        runner.call::<_, _, ()>("Run", &(window.runner_id.as_str(), "")),
+    )
+    .await
+    .map_err(|_| "KWin window focus timed out")?
+    .map_err(|_| "KWin refused window activation".into())
+}
+
+pub(crate) fn focus_window_blocking(source: CaptureSource) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "KWin focus runtime could not start")?;
+    runtime.block_on(focus_window(source))
+}
+
+fn saved_kwin_rects() -> &'static std::sync::Mutex<HashMap<String, crate::window_layout::LogicalRect>> {
+    static SAVED: OnceLock<std::sync::Mutex<HashMap<String, crate::window_layout::LogicalRect>>> =
+        OnceLock::new();
+    SAVED.get_or_init(Default::default)
+}
+
+pub(crate) fn arrange_windows_blocking(
+    sources: &[CaptureSource],
+    layout: protocol::session::WindowArrangeLayout,
+) -> Result<u32, String> {
+    let windows: Vec<WindowInfo> = sources
+        .iter()
+        .filter_map(|&src| cached_window_info(src).ok())
+        .collect();
+    if windows.is_empty() {
+        return Err("未找到可排布的 KDE Wayland 应用窗口".into());
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "KWin 排布运行时启动失败")?;
+    runtime.block_on(arrange_windows_async(&windows, layout))
+}
+
+async fn arrange_windows_async(
+    windows: &[WindowInfo],
+    layout: protocol::session::WindowArrangeLayout,
+) -> Result<u32, String> {
+    use protocol::session::WindowArrangeLayout;
+    let connection = session_bus().await?;
+    let mut updates: Vec<(String, crate::window_layout::LogicalRect)> = Vec::new();
+    if layout == WindowArrangeLayout::Restore {
+        let mut saved = saved_kwin_rects().lock().unwrap_or_else(|e| e.into_inner());
+        for win in windows {
+            let key = normalize_uuid(&win.uuid);
+            if let Some(orig) = saved.remove(&key) {
+                updates.push((key, orig));
+            }
+        }
+        if updates.is_empty() {
+            return Ok(0);
+        }
+    } else {
+        let mut current = Vec::with_capacity(windows.len());
+        let kwin = Proxy::new_owned(
+            connection.clone(),
+            KWIN_BUS.to_owned(),
+            KWIN_PATH.to_owned(),
+            KWIN_IFACE.to_owned(),
+        )
+        .await
+        .map_err(|_| "无法连接 KWin 窗口接口")?;
+        for win in windows {
+            if let Ok(Ok(info)) = tokio::time::timeout(
+                DBUS_TIMEOUT,
+                kwin.call::<_, _, HashMap<String, OwnedValue>>("getWindowInfo", &(win.uuid.as_str(),)),
+            )
+            .await
+                && let (Some(x), Some(y), Some(w), Some(h)) = (
+                    value_f64(&info, "x"),
+                    value_f64(&info, "y"),
+                    value_f64(&info, "width"),
+                    value_f64(&info, "height"),
+                )
+            {
+                let rect = crate::window_layout::LogicalRect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                };
+                if rect.is_valid() {
+                    current.push((normalize_uuid(&win.uuid), rect));
+                }
+            }
+        }
+        if current.is_empty() {
+            return Err("无法读取待排布窗口的当前位置".into());
+        }
+        {
+            let mut saved = saved_kwin_rects().lock().unwrap_or_else(|e| e.into_inner());
+            for (uuid, rect) in &current {
+                saved.entry(uuid.clone()).or_insert(*rect);
+            }
+        }
+        let max_right = current
+            .iter()
+            .map(|(_, r)| r.x + r.width)
+            .fold(1920.0_f64, f64::max);
+        let max_bottom = current
+            .iter()
+            .map(|(_, r)| r.y + r.height)
+            .fold(1040.0_f64, f64::max);
+        let min_x = current.iter().map(|(_, r)| r.x).fold(0.0_f64, f64::min).max(0.0);
+        let min_y = current.iter().map(|(_, r)| r.y).fold(0.0_f64, f64::min).max(0.0);
+        let work_area = crate::window_layout::LogicalRect {
+            x: min_x,
+            y: min_y,
+            width: (max_right - min_x).max(1280.0),
+            height: (max_bottom - min_y).max(720.0),
+        };
+        let targets = crate::window_layout::compute_tile_rects(work_area, current.len(), layout);
+        for ((uuid, _), rect) in current.into_iter().zip(targets) {
+            updates.push((uuid, rect));
+        }
+    }
+
+    let entries_js: Vec<String> = updates
+        .iter()
+        .map(|(uuid, rect)| {
+            format!(
+                "\"{uuid}\": {{x: {}, y: {}, width: {}, height: {}}}",
+                rect.x.round() as i32,
+                rect.y.round() as i32,
+                rect.width.round() as i32,
+                rect.height.round() as i32
+            )
+        })
+        .collect();
+    let script = format!(
+        "(function(){{ var targets = {{{}}}; var wins = workspace.windowList(); for (var i = 0; i < wins.length; i++) {{ var w = wins[i]; var id = String(w.internalId || '').replace(/[-{{}}]/g, '').toLowerCase(); if (targets[id]) {{ if (w.minimized) w.minimized = false; var t = targets[id]; w.frameGeometry = Qt.rect(t.x, t.y, t.width, t.height); }} }} }})();\n",
+        entries_js.join(", ")
+    );
+    let plugin_name = format!("weavelo_arrange_{}", std::process::id());
+    let temp_path = std::env::temp_dir().join(format!("{plugin_name}.js"));
+    std::fs::write(&temp_path, script.as_bytes())
+        .map_err(|e| format!("写入 KWin 临时排布脚本失败: {e}"))?;
+    let path_str = temp_path.to_string_lossy().into_owned();
+    let scripting = Proxy::new_owned(
+        connection,
+        KWIN_BUS.to_owned(),
+        "/Scripting".to_owned(),
+        "org.kde.kwin.Scripting".to_owned(),
+    )
+    .await
+    .map_err(|_| "KWin Scripting D-Bus 接口不可用")?;
+    let script_id: Result<i32, _> = tokio::time::timeout(
+        DBUS_TIMEOUT,
+        scripting.call("loadScript", &(path_str.as_str(), plugin_name.as_str())),
+    )
+    .await
+    .map_err(|_| "加载 KWin 窗口排布脚本超时".to_string())?;
+    let outcome = match script_id {
+        Ok(id) if id >= 0 => {
+            let run_path = format!("/{id}");
+            let script_proxy = Proxy::new_owned(
+                scripting.connection().clone(),
+                KWIN_BUS.to_owned(),
+                run_path,
+                "org.kde.kwin.Script".to_owned(),
+            )
+            .await;
+            if let Ok(sp) = script_proxy {
+                let _ = tokio::time::timeout(DBUS_TIMEOUT, sp.call::<_, _, ()>("run", &())).await;
+            }
+            let _ = tokio::time::timeout(
+                DBUS_TIMEOUT,
+                scripting.call::<_, _, bool>("unloadScript", &(plugin_name.as_str(),)),
+            )
+            .await;
+            Ok(updates.len() as u32)
+        }
+        _ => Err("KDE KWin 当前未开放脚本化排布窗口接口".into()),
+    };
+    let _ = std::fs::remove_file(&temp_path);
+    outcome
 }
 
 async fn validate_window_alive(window: &WindowInfo) -> Result<(), String> {
@@ -392,12 +653,13 @@ async fn discover_with_diagnostics() -> Result<(Vec<CatalogEntry>, DiscoverySumm
                     process_id: Some(pid),
                     width,
                     height,
-                    // KWin's stream is scoped to one real UUID. Input remains
-                    // disabled until an OS-authorized exact-window injector exists.
+                    // KWin's stream is scoped to one real UUID; host service upgrades
+                    // `supports_input` when a consented Portal monitor seat is active.
                     supports_input: false,
                     camera: None,
                 },
                 uuid,
+                runner_id: id,
             },
             icon,
         ));
@@ -448,6 +710,22 @@ fn value_dimension(properties: &HashMap<String, OwnedValue>, key: &str) -> Optio
     let rounded = dimension.round();
     (rounded.is_finite() && (2.0..=f64::from(u32::MAX)).contains(&rounded))
         .then_some(rounded as u32)
+}
+
+fn value_f64(properties: &HashMap<String, OwnedValue>, key: &str) -> Option<f64> {
+    let value = properties.get(key)?.try_clone().ok()?;
+    f64::try_from(value.try_clone().ok()?)
+        .ok()
+        .or_else(|| i32::try_from(value).ok().map(f64::from))
+        .filter(|v| v.is_finite())
+}
+
+fn value_bool(properties: &HashMap<String, OwnedValue>, key: &str) -> bool {
+    properties
+        .get(key)
+        .and_then(|v| v.try_clone().ok())
+        .and_then(|v| bool::try_from(v).ok())
+        .unwrap_or(false)
 }
 
 fn uuid_from_runner_id(id: &str) -> Option<String> {

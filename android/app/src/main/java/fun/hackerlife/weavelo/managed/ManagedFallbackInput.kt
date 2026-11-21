@@ -32,12 +32,33 @@ internal class ManagedFallbackInput(
             }
             return true
         }
+
+        private const val INJECT_DENIED_MESSAGE =
+            "Touch control blocked by system security. Enable USB debugging (Security settings) or Weavelo Accessibility."
+
+        internal fun isPermissionDenial(error: Throwable?): Boolean {
+            var current = error
+            var depth = 0
+            while (current != null && depth < 8) {
+                if (current is SecurityException) return true
+                val msg = current.message.orEmpty()
+                if (msg.contains("INJECT_EVENTS", ignoreCase = true) ||
+                    msg.contains("Permission Denial", ignoreCase = true)
+                ) {
+                    return true
+                }
+                current = current.cause
+                depth++
+            }
+            return false
+        }
     }
 
     private val active = AtomicBoolean(true)
     private val thread = HandlerThread("weavelo-managed-input").apply { start() }
     private val handler = Handler(thread.looper)
     private var advertised = false
+    private var permissionDenied = false
     private var generation = -1L
     private var currentInput: ManagedApplicationInput? = null
     private var aiInput: OctendraAiInput? = null
@@ -59,7 +80,12 @@ internal class ManagedFallbackInput(
                 releaseInputs()
                 generation = -1L
                 advertised = false
+                permissionDenied = false
                 handler.postDelayed(this, 250L)
+                return
+            }
+            if (permissionDenied) {
+                handler.postDelayed(this, 1000L)
                 return
             }
             if (!advertised) {
@@ -76,6 +102,8 @@ internal class ManagedFallbackInput(
                 handler.postDelayed(this, 100L)
                 return
             }
+            var pendingGen = -1L
+            var pendingJobId = -1L
             runCatching {
                 val raw = PublisherClient.action(9)
                 if (raw != "null") {
@@ -88,6 +116,8 @@ internal class ManagedFallbackInput(
                         "Events" -> {
                             val jobId = job.getLong("token")
                             val gen = job.getLong("generation")
+                            pendingGen = gen
+                            pendingJobId = jobId
                             if (gen != generation) {
                                 complete(gen, jobId, false)
                             } else {
@@ -138,12 +168,30 @@ internal class ManagedFallbackInput(
                         }
                     }
                 }
-            }.onFailure {
+            }.onFailure { error ->
+                if (pendingJobId >= 0L) {
+                    complete(pendingGen, pendingJobId, false)
+                }
                 releaseInputs()
                 generation = -1L
+                if (isPermissionDenial(error)) {
+                    android.util.Log.w("WeaveloInput", "Inject events denied by system security; disabling fallback advertising", error)
+                    permissionDenied = true
+                    if (advertised) {
+                        runCatching { PublisherClient.action(8, "false") }
+                        advertised = false
+                    }
+                    PublisherClient.status(
+                        INJECT_DENIED_MESSAGE,
+                        true,
+                        `fun`.hackerlife.weavelo.AppText(INJECT_DENIED_MESSAGE),
+                    )
+                } else {
+                    android.util.Log.w("WeaveloInput", "Managed fallback input dispatch failed", error)
+                }
             }
             if (active.get() && isSessionRunning()) {
-                handler.postDelayed(this, 12L)
+                handler.postDelayed(this, if (permissionDenied) 1000L else 12L)
             }
         }
     }

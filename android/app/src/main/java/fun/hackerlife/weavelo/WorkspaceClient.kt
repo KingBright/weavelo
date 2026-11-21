@@ -80,7 +80,7 @@ data class WorkspaceState(val deviceId: String = "", val transferring: Boolean =
     val files: Boolean = false, val clipboardAvailable: Boolean = false, val sources: List<WorkspaceSource> = emptyList(),
     val sourcesLoaded: Boolean = false,
     val androidHost: Boolean = false,
-    val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = true, val selected: Int = 0,
+    val panes: List<WorkspacePane> = emptyList(), val status: String = "Connecting…", val grid: Boolean = false, val selected: Int = 0,
     val incomingEnded: Boolean = false, val connectionId: Long = 0,
     val statusText: AppText? = AppText("Connecting…"),
     val activeTransfers: List<ActiveTransferItem> = emptyList(),
@@ -534,8 +534,71 @@ object WorkspaceClient {
         if (panes.isEmpty() && ownership.request()?.incomingId != null && !incomingEnded) endIncoming(reason, rejected, reasonText)
         else activity()
     }
+    private var focusSourceSeq = 0L
+    private var lastFocusPaneId = -1
+    private var lastFocusSentMs = 0L
+    private var windowArrangeSeq = 0
+    private var pendingWindowArrangeId = 0
+
     fun layout(grid: Boolean, selected: Int = mutable.value.selected) = guarded {
         mutable.value = mutable.value.copy(grid = grid, selected = selected); activity()
+        sendFocusForPane(selected, force = true)
+    }
+    fun focusPane(id: Int) = guarded {
+        val s = mutable.value
+        if (s.panes.none { it.id == id }) return@guarded
+        if (s.selected != id) {
+            mutable.value = s.copy(selected = id)
+            activity()
+        }
+        sendFocusForPane(id, force = true)
+    }
+    fun cyclePane(delta: Int): WorkspacePane? {
+        var nextPane: WorkspacePane? = null
+        guarded {
+            val s = mutable.value
+            if (s.panes.size <= 1) return@guarded
+            val idx = s.panes.indexOfFirst { it.id == s.selected }.coerceAtLeast(0)
+            val nextIdx = Math.floorMod(idx + delta, s.panes.size)
+            val target = s.panes[nextIdx]
+            nextPane = target
+            if (s.selected != target.id) {
+                mutable.value = s.copy(selected = target.id)
+                activity()
+            }
+            sendFocusForPane(target.id, force = true)
+        }
+        return nextPane
+    }
+    fun ensurePaneFocused(id: Int) = guarded {
+        val s = mutable.value
+        if (s.panes.none { it.id == id }) return@guarded
+        if (s.selected != id) {
+            mutable.value = s.copy(selected = id)
+            activity()
+            sendFocusForPane(id, force = true)
+        } else {
+            sendFocusForPane(id, force = false)
+        }
+    }
+    fun arrangeHostWindows(layoutName: String = "TileHorizontal") = guarded {
+        val windowIds = mutable.value.panes.filter { it.accepted && it.source.isWindow }.map { it.id }
+        if (windowIds.isEmpty()) return@guarded
+        val reqId = ++windowArrangeSeq
+        pendingWindowArrangeId = reqId
+        val ids = JSONArray().apply { windowIds.forEach { put(it) } }
+        command("ArrangeWindows", JSONObject().put("request_id", reqId).put("ids", ids).put("layout", layoutName))
+    }
+    private fun sendFocusForPane(id: Int, force: Boolean) {
+        val pane = mutable.value.panes.firstOrNull { it.id == id } ?: return
+        if (!pane.accepted || !pane.input || !pane.source.isWindow) return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && lastFocusPaneId == id && now - lastFocusSentMs < 1_200L) return
+        lastFocusPaneId = id
+        lastFocusSentMs = now
+        runCatching {
+            command("FocusSource", JSONObject().put("id", id).put("source_revision", 0).put("sequence", ++focusSourceSeq))
+        }
     }
     private fun activity() {
         if (asleep) return
@@ -1226,6 +1289,19 @@ object WorkspaceClient {
                     }
                 }
             }
+            control?.optJSONObject("WindowsArranged")?.let { reply ->
+                val reqId = reply.getInt("request_id")
+                if (pendingWindowArrangeId == reqId) {
+                    pendingWindowArrangeId = 0
+                    val outcome = reply.getJSONObject("outcome")
+                    val err = if (outcome.has("Err")) outcome.optString("Err") else null
+                    val count = outcome.optInt("Ok", 0)
+                    mutable.value = mutable.value.copy(
+                        status = if (err != null) err else "Arranged $count host windows",
+                        statusText = null
+                    )
+                }
+            }
             control?.optJSONObject("WindowResized")?.let { reply ->
                 val reqId = reply.getInt("request_id")
                 val paneId = reply.getInt("id")
@@ -1359,6 +1435,9 @@ object WorkspaceClient {
                     }
                 }
                 activity()
+                if (mutable.value.selected == subId) {
+                    sendFocusForPane(subId, force = true)
+                }
             }
             control?.optJSONObject("Error")?.let {
                 val id = it.getInt("request_id")

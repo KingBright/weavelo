@@ -73,6 +73,8 @@ pub struct SessionState<Texture, Pan: Default> {
     host_audio_status: Option<(u64, AudioOutputStatus)>,
     pub window_resize_request: Option<u32>,
     pub window_resize_notice: Option<Result<(u32, u32), String>>,
+    pub window_arrange_request: Option<u32>,
+    pub window_arrange_notice: Option<(Result<u32, String>, Instant)>,
     pub zoom: f32,
     pub pan: Pan,
     pub fit: bool,
@@ -200,6 +202,8 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             host_audio_status: None,
             window_resize_request: None,
             window_resize_notice: None,
+            window_arrange_request: None,
+            window_arrange_notice: None,
             confirmed: false,
             supports_input: false,
             // The authenticated connection authorizes control. Source, lease,
@@ -493,6 +497,28 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
             source_revision: self.source_revision,
             sequence: self.focus_sequence,
         })
+    }
+    pub fn arrange_windows(
+        &mut self,
+        ids: Vec<u32>,
+        layout: protocol::session::WindowArrangeLayout,
+    ) -> Result<u32, String> {
+        if !self.confirmed || !self.connected {
+            return Err("Host connection is not ready".into());
+        }
+        if ids.is_empty() {
+            return Err("No application windows selected to arrange".into());
+        }
+        self.next_request = self.next_request.wrapping_add(1).max(1000);
+        let request_id = self.next_request;
+        self.conn.try_control_checked(SessionCommand::ArrangeWindows {
+            request_id,
+            ids,
+            layout,
+        })?;
+        self.window_arrange_request = Some(request_id);
+        self.window_arrange_notice = None;
+        Ok(request_id)
     }
     pub fn switch_source(&mut self, source: CaptureSource) {
         // A previously denied source must be explicitly selectable again after
@@ -1038,10 +1064,19 @@ impl<Texture, Pan: Default> SessionState<Texture, Pan> {
                     self.window_resize_request = None;
                     self.window_resize_notice = Some(applied_size);
                 }
+                SessionCommand::WindowsArranged {
+                    request_id,
+                    outcome,
+                } if self.window_arrange_request == Some(request_id) => {
+                    self.window_arrange_request = None;
+                    self.window_arrange_notice = Some((outcome, Instant::now()));
+                }
                 SessionCommand::Closed { reason, .. } => {
                     self.camera_switch=None;self.pending=None;
                     self.window_resize_request = None;
                     self.window_resize_notice = None;
+                    self.window_arrange_request = None;
+                    self.window_arrange_notice = None;
                     self.release_input();
                     self.connected = false;
                     self.reconcile_clipboard();
